@@ -10,6 +10,7 @@ import {
   findStaleRecords,
   markDeprecated
 } from './lib/maintenance.js'
+import { writeSuggestions } from './lib/promotions.js'
 import { DEFAULT_CONFIG, type Config } from './lib/types.js'
 
 const SIMILARITY_THRESHOLD = 0.85
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
 
   await runStaleCheck(config)
   await runConsolidation(config)
+  await runPromotions(config)
 
   console.error('[claude-memory] Maintenance complete.')
 }
@@ -82,6 +84,24 @@ async function runConsolidation(config: Config): Promise<void> {
   }
 
   console.error(`[claude-memory] Consolidation summary: clusters=${clustersFound} merged=${clustersMerged} deprecated=${deprecated}`)
+}
+
+async function runPromotions(config: Config): Promise<void> {
+  try {
+    const result = await writeSuggestions(config, process.cwd())
+    const skills = result.skillFiles.length
+    const claudeMd = result.claudeMdFiles.length
+    console.error(`[claude-memory] Promotion suggestions: skills=${skills} claude-md=${claudeMd}`)
+
+    for (const file of result.skillFiles) {
+      console.error(`[claude-memory] Skill suggestion: ${file}`)
+    }
+    for (const file of result.claudeMdFiles) {
+      console.error(`[claude-memory] CLAUDE.md suggestion: ${file}`)
+    }
+  } catch (error) {
+    console.error('[claude-memory] Failed to generate promotion suggestions:', error)
+  }
 }
 
 function loadConfig(root: string): Config {
