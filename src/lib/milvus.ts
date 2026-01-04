@@ -17,7 +17,7 @@ import {
 const CONTENT_MAX_LENGTH = 16384
 const EXACT_TEXT_MAX_LENGTH = 4096
 const SEARCH_NPROBE = 64
-const POST_FLUSH_DELAY_MS = 150 // IVF_FLAT index needs time to update after flush
+const POST_FLUSH_DELAY_MS = 500 // IVF_FLAT index needs time to update after flush
 
 const OUTPUT_FIELDS = [
   'id',
@@ -142,6 +142,89 @@ export async function getRecord(
     console.error('[claude-memory] getRecord failed:', error)
     throw error
   }
+}
+
+export interface DomainExample {
+  domain: string
+  examples: string[]
+}
+
+/**
+ * Get all distinct domains with example records for each.
+ * Used to guide extraction model to use consistent domains.
+ */
+export async function getDomainExamples(
+  examplesPerDomain: number = 2,
+  config: Config = DEFAULT_CONFIG
+): Promise<DomainExample[]> {
+  try {
+    await ensureClient(config)
+
+    // Query all non-deprecated records to get domains
+    const result = await client!.query({
+      collection_name: config.milvus.collection,
+      filter: 'deprecated == false',
+      output_fields: ['domain', 'type', 'content'],
+      limit: 1000
+    })
+
+    // Group by domain and collect examples
+    const domainMap = new Map<string, string[]>()
+
+    for (const row of result.data ?? []) {
+      const domain = (row.domain as string) ?? ''
+      if (!domain) continue
+
+      const examples = domainMap.get(domain) ?? []
+      if (examples.length >= examplesPerDomain) continue
+
+      // Extract a short example from the record
+      const example = extractShortExample(row as Record<string, unknown>)
+      if (example) {
+        examples.push(example)
+        domainMap.set(domain, examples)
+      }
+    }
+
+    return Array.from(domainMap.entries())
+      .map(([domain, examples]) => ({ domain, examples }))
+      .sort((a, b) => a.domain.localeCompare(b.domain))
+  } catch (error) {
+    console.error('[claude-memory] getDomainExamples failed:', error)
+    return []
+  }
+}
+
+function extractShortExample(row: Record<string, unknown>): string | null {
+  try {
+    const content = row.content as string
+    if (!content) return null
+
+    const parsed = JSON.parse(content) as Record<string, unknown>
+    const type = parsed.type as string
+
+    switch (type) {
+      case 'command':
+        return truncateExample(parsed.command as string, 60)
+      case 'error':
+        return truncateExample(parsed.errorText as string, 60)
+      case 'discovery':
+        return truncateExample(parsed.what as string, 60)
+      case 'procedure':
+        return truncateExample(parsed.name as string, 60)
+      default:
+        return null
+    }
+  } catch {
+    return null
+  }
+}
+
+function truncateExample(text: string | undefined, maxLen: number): string | null {
+  if (!text) return null
+  const trimmed = text.trim()
+  if (trimmed.length <= maxLen) return trimmed
+  return trimmed.slice(0, maxLen - 3) + '...'
 }
 
 export async function queryRecords(
@@ -292,11 +375,9 @@ export async function findSimilar(
       params: { nprobe: SEARCH_NPROBE }
     })
 
-    const exactText = normalizeExactText(buildExactText(record))
     const matches = (searchResults.results ?? [])
       .map(row => ({ record: parseRecordFromRow(row), similarity: row.score ?? 0 }))
       .filter(result => result.similarity >= similarityThreshold)
-      .filter(result => exactText.length > 0 && isExactTextMatch(exactText, result.record))
 
     matches.sort((a, b) => b.similarity - a.similarity)
     return matches

@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
 import type { Transcript, TranscriptEvent } from './transcript.js'
+import { getDomainExamples, type DomainExample } from './milvus.js'
 
 // OAuth subscription auth constants (same as kira-runtime)
 const OAUTH_BETAS = 'oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14'
@@ -39,7 +40,7 @@ const MAX_INTENT_CHARS = 240
 const MAX_TRUNCATED_OUTPUT_CHARS = 6000
 const MAX_TOOL_INPUT_CHARS = 4000
 
-const SYSTEM_PROMPT = `You extract durable technical knowledge from Claude Code transcripts.
+const SYSTEM_PROMPT_BASE = `You extract durable technical knowledge from Claude Code transcripts.
 
 Rules:
 - Output ONLY via the tool call "${TOOL_NAME}" exactly once.
@@ -50,6 +51,29 @@ Rules:
 - Commands and errors must be verbatim from tool calls/output.
 - When transcript output includes a "[truncated]" marker, do not include that marker in extracted text.
 `
+
+const DOMAIN_INSTRUCTIONS = `
+Domain assignment:
+- Use an existing domain when the record fits its category.
+- Only create a new domain if no existing domain is appropriate.
+- Domain names should be lowercase, hyphenated (e.g., "cloud-infra", "web-dev").
+- Keep domains broad enough to group related tools (e.g., "docker" not "docker-compose").
+`
+
+function buildSystemPrompt(domainExamples: DomainExample[]): string {
+  if (domainExamples.length === 0) {
+    return SYSTEM_PROMPT_BASE
+  }
+
+  const domainList = domainExamples
+    .map(d => `- ${d.domain}: ${d.examples.map(e => `"${e}"`).join(', ')}`)
+    .join('\n')
+
+  return SYSTEM_PROMPT_BASE + DOMAIN_INSTRUCTIONS + `
+Existing domains:
+${domainList}
+`
+}
 
 const EMIT_RECORDS_TOOL: Anthropic.Tool = {
   name: TOOL_NAME,
@@ -176,6 +200,10 @@ export async function extractRecords(
       return []
     }
 
+    // Fetch existing domains to guide consistent domain assignment
+    const domainExamples = await getDomainExamples(2, config)
+    const systemPrompt = buildSystemPrompt(domainExamples)
+
     const userPrompt = buildUserPrompt(transcript, resolvedContext)
 
     const response = await client.messages.create({
@@ -184,7 +212,7 @@ export async function extractRecords(
       temperature: 0,
       system: [
         { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-        { type: 'text', text: SYSTEM_PROMPT }
+        { type: 'text', text: systemPrompt }
       ],
       messages: [{ role: 'user', content: userPrompt }],
       tools: [EMIT_RECORDS_TOOL],

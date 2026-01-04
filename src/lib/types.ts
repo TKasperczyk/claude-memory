@@ -1,7 +1,7 @@
 // Record type definitions for Claude Memory
 // See PLAN.md for full schemas
 
-export const EMBEDDING_DIM = 4096
+export const EMBEDDING_DIM = 1536
 
 export type RecordType = 'command' | 'error' | 'discovery' | 'procedure'
 
@@ -134,7 +134,7 @@ export const DEFAULT_CONFIG: Config = {
   },
   embeddings: {
     baseUrl: process.env.CC_EMBEDDINGS_URL ?? 'http://127.0.0.1:1234/v1',
-    model: process.env.CC_EMBEDDINGS_MODEL ?? 'text-embedding-qwen3-embedding-8b'
+    model: process.env.CC_EMBEDDINGS_MODEL ?? 'text-embedding-jina-code-embeddings-1.5b'
   },
   extraction: {
     model: process.env.CC_EXTRACTION_MODEL ?? 'claude-haiku-4-5-20251001',

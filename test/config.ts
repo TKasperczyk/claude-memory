@@ -1,26 +1,15 @@
-import type { Config } from '../src/lib/types.js'
+import { DEFAULT_CONFIG, createConfig } from '../src/lib/types.js'
 
 /**
- * Test configuration using isolated test collection.
+ * Test configuration - inherits from DEFAULT_CONFIG, only overrides collection name.
+ * This ensures tests use the same models/endpoints as production.
  */
-export const TEST_CONFIG: Config = {
+export const TEST_CONFIG = createConfig({
   milvus: {
-    address: 'localhost:19530',
+    ...DEFAULT_CONFIG.milvus,
     collection: 'cc_memories_e2e_test'
-  },
-  embeddings: {
-    baseUrl: 'http://127.0.0.1:1234/v1',
-    model: 'text-embedding-qwen3-embedding-8b'
-  },
-  extraction: {
-    model: 'claude-haiku-4-20250514',
-    maxTokens: 4000
-  },
-  injection: {
-    maxRecords: 5,
-    maxTokens: 2000
   }
-}
+})
 
 export const TEST_PROJECT = '/tmp/e2e-test-project'
 export const TEST_CWD = '/tmp/e2e-test-project'
