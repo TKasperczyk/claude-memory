@@ -137,7 +137,7 @@ export const DEFAULT_CONFIG: Config = {
     model: process.env.CC_EMBEDDINGS_MODEL ?? 'text-embedding-qwen3-embedding-8b'
   },
   extraction: {
-    model: process.env.CC_EXTRACTION_MODEL ?? 'claude-sonnet-4-20250514',
+    model: process.env.CC_EXTRACTION_MODEL ?? 'claude-haiku-4-5-20251001',
     maxTokens: 4000
   },
   injection: {
