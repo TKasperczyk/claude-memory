@@ -176,7 +176,7 @@ Add to `~/.claude/settings.json`:
       {
         "hooks": [{
           "type": "command",
-          "command": "/home/luthriel/Programming/claude-memory/dist/pre-prompt.js",
+          "command": "/home/luthriel/Programming/claude-memory/dist/hooks/pre-prompt.js",
           "timeout": 5
         }]
       }
@@ -185,7 +185,7 @@ Add to `~/.claude/settings.json`:
       {
         "hooks": [{
           "type": "command",
-          "command": "/home/luthriel/Programming/claude-memory/dist/post-session.js",
+          "command": "/home/luthriel/Programming/claude-memory/dist/hooks/post-session.js",
           "timeout": 60
         }]
       }
