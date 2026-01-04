@@ -1,0 +1,147 @@
+import fs from 'fs'
+import path from 'path'
+import { homedir } from 'os'
+import { type InjectedMemoryEntry, type InjectionSessionRecord } from './types.js'
+
+const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
+
+export function getSessionTrackingPath(sessionId: string): string {
+  const safeId = sanitizeSessionId(sessionId)
+  return path.join(SESSIONS_DIR, `${safeId}.json`)
+}
+
+export function loadSessionTracking(sessionId: string): InjectionSessionRecord | null {
+  const filePath = getSessionTrackingPath(sessionId)
+  if (!fs.existsSync(filePath)) return null
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8')
+    const parsed = JSON.parse(raw) as unknown
+    return coerceSessionRecord(parsed, sessionId)
+  } catch (error) {
+    console.error('[claude-memory] Failed to read session tracking file:', error)
+    return null
+  }
+}
+
+export function saveSessionTracking(record: InjectionSessionRecord): void {
+  try {
+    fs.mkdirSync(SESSIONS_DIR, { recursive: true })
+    const filePath = getSessionTrackingPath(record.sessionId)
+    fs.writeFileSync(filePath, JSON.stringify(record, null, 2))
+  } catch (error) {
+    console.error('[claude-memory] Failed to write session tracking file:', error)
+  }
+}
+
+export function appendSessionTracking(
+  sessionId: string,
+  entries: InjectedMemoryEntry[],
+  cwd?: string,
+  prompt?: string
+): InjectionSessionRecord {
+  // Add prompt to all entries if provided
+  if (prompt) {
+    entries = entries.map(e => ({ ...e, prompt }))
+  }
+  const existing = loadSessionTracking(sessionId)
+  const now = Date.now()
+  const record: InjectionSessionRecord = {
+    sessionId,
+    createdAt: existing?.createdAt ?? now,
+    lastActivity: now,
+    cwd: cwd ?? existing?.cwd,
+    memories: [...(existing?.memories ?? []), ...entries]
+  }
+  saveSessionTracking(record)
+  return record
+}
+
+export function listAllSessions(): InjectionSessionRecord[] {
+  if (!fs.existsSync(SESSIONS_DIR)) return []
+
+  try {
+    const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.json'))
+    const sessions: InjectionSessionRecord[] = []
+
+    for (const file of files) {
+      const sessionId = file.replace(/\.json$/, '')
+      const record = loadSessionTracking(sessionId)
+      if (record) sessions.push(record)
+    }
+
+    // Sort by lastActivity descending (most recent first)
+    sessions.sort((a, b) => b.lastActivity - a.lastActivity)
+    return sessions
+  } catch (error) {
+    console.error('[claude-memory] Failed to list sessions:', error)
+    return []
+  }
+}
+
+export function removeSessionTracking(sessionId: string): void {
+  const filePath = getSessionTrackingPath(sessionId)
+  if (!fs.existsSync(filePath)) return
+
+  try {
+    fs.unlinkSync(filePath)
+  } catch (error) {
+    console.error('[claude-memory] Failed to remove session tracking file:', error)
+  }
+}
+
+function sanitizeSessionId(sessionId: string): string {
+  return sessionId.replace(/[\\/]/g, '_')
+}
+
+function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessionRecord | null {
+  if (!isPlainObject(value)) return null
+
+  const record = value as Record<string, unknown>
+  const memories = coerceMemoryEntries(record.memories)
+  const now = Date.now()
+  const createdAt = asNumber(record.createdAt) ?? now
+
+  return {
+    sessionId: asString(record.sessionId) ?? sessionId,
+    createdAt,
+    lastActivity: asNumber(record.lastActivity) ?? createdAt,
+    cwd: asString(record.cwd),
+    memories
+  }
+}
+
+function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
+  if (!Array.isArray(value)) return []
+
+  const entries: InjectedMemoryEntry[] = []
+  for (const item of value) {
+    if (!isPlainObject(item)) continue
+    const record = item as Record<string, unknown>
+    const id = asString(record.id)
+    const snippet = asString(record.snippet)
+    const injectedAt = asNumber(record.injectedAt)
+    const prompt = asString(record.prompt)
+    if (!id || !snippet || injectedAt === null) continue
+    entries.push({ id, snippet, injectedAt, ...(prompt && { prompt }) })
+  }
+
+  return entries
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return Math.trunc(parsed)
+  }
+  return null
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}

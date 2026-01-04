@@ -18,6 +18,20 @@ const MAX_ENTRY_CHARS = 600
 const MAX_PROCEDURE_STEPS = 3
 const MAX_STEP_CHARS = 160
 
+// Words/phrases to strip from prompts before memory processing
+const NOISE_PATTERNS = [
+  /\bultrathink\b/gi,
+  /\bultrathin\b/gi,  // common typo
+]
+
+export function stripNoiseWords(text: string): string {
+  let result = text
+  for (const pattern of NOISE_PATTERNS) {
+    result = result.replace(pattern, '')
+  }
+  return result.replace(/\s+/g, ' ').trim()
+}
+
 const STACK_START_REGEXES = [
   /^Traceback \(most recent call last\):/i,
   /^Exception in thread/i,
@@ -89,11 +103,12 @@ const KNOWN_COMMANDS = new Set([
 ])
 
 export function extractSignals(prompt: string, cwd: string): ContextSignals {
+  const cleanPrompt = stripNoiseWords(prompt)
   const projectRoot = findGitRoot(cwd)
   const projectName = projectRoot ? path.basename(projectRoot) : path.basename(cwd)
   const domain = inferDomain(projectRoot ?? cwd)
-  const errors = extractErrorSignals(prompt)
-  const commands = extractCommandSignals(prompt)
+  const errors = extractErrorSignals(cleanPrompt)
+  const commands = extractCommandSignals(cleanPrompt)
 
   return {
     errors,
@@ -108,8 +123,20 @@ export function formatContext(
   records: MemoryRecord[],
   config: Config = DEFAULT_CONFIG
 ): string {
+  return buildContext(records, config).context
+}
+
+export interface ContextBuildResult {
+  context: string
+  records: MemoryRecord[]
+}
+
+export function buildContext(
+  records: MemoryRecord[],
+  config: Config = DEFAULT_CONFIG
+): ContextBuildResult {
   const filtered = records.filter(record => !record.deprecated)
-  if (filtered.length === 0) return ''
+  if (filtered.length === 0) return { context: '', records: [] }
 
   const maxTokens = config.injection.maxTokens
   const maxRecords = config.injection.maxRecords
@@ -119,6 +146,7 @@ export function formatContext(
   const lines: string[] = [header]
   let usedTokens = estimateTokens(header)
   let added = 0
+  const selected: MemoryRecord[] = []
 
   for (const record of filtered) {
     if (added >= maxRecords) break
@@ -133,12 +161,17 @@ export function formatContext(
     lines.push(line)
     usedTokens += lineTokens
     added += 1
+    selected.push(record)
   }
 
-  if (added === 0) return ''
+  if (added === 0) return { context: '', records: [] }
 
   lines.push(footer)
-  return lines.join('\n')
+  return { context: lines.join('\n'), records: selected }
+}
+
+export function formatRecordSnippet(record: MemoryRecord): string | null {
+  return formatRecord(record)
 }
 
 function extractErrorSignals(prompt: string): string[] {

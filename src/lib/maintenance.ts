@@ -12,6 +12,8 @@ const PROCEDURE_STEP_CHECK_COUNT = 3
 const CONSOLIDATION_SEARCH_LIMIT = 12
 const CONSOLIDATION_MAX_CLUSTER_SIZE = 8
 const TEXT_SIMILARITY_RATIO = 0.2
+const LOW_USAGE_MIN_RETRIEVALS = 5
+const LOW_USAGE_RATIO_THRESHOLD = 0.1
 
 export interface ValidityResult {
   valid: boolean
@@ -23,6 +25,8 @@ export interface ConsolidationResult {
   deprecatedIds: string[]
   successCount: number
   failureCount: number
+  retrievalCount: number
+  usageCount: number
   lastUsed: number
 }
 
@@ -30,6 +34,20 @@ export async function findStaleRecords(config: Config = DEFAULT_CONFIG): Promise
   const cutoff = Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000
   const filter = `deprecated == false && last_used < ${Math.trunc(cutoff)}`
   return fetchRecords(filter, config, false)
+}
+
+export async function findLowUsageRecords(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
+  // Find records retrieved at least N times with usage ratio below threshold
+  const filter = `deprecated == false && retrieval_count >= ${LOW_USAGE_MIN_RETRIEVALS}`
+  const records = await fetchRecords(filter, config, false)
+
+  return records.filter(record => {
+    const retrievalCount = record.retrievalCount ?? 0
+    const usageCount = record.usageCount ?? 0
+    if (retrievalCount < LOW_USAGE_MIN_RETRIEVALS) return false
+    const ratio = usageCount / retrievalCount
+    return ratio < LOW_USAGE_RATIO_THRESHOLD
+  })
 }
 
 export async function checkValidity(record: MemoryRecord): Promise<ValidityResult> {
@@ -158,15 +176,19 @@ export async function consolidateCluster(
     (acc, record) => {
       acc.success += record.successCount ?? 0
       acc.failure += record.failureCount ?? 0
+      acc.retrieval += record.retrievalCount ?? 0
+      acc.usage += record.usageCount ?? 0
       acc.lastUsed = Math.max(acc.lastUsed, record.lastUsed ?? 0)
       return acc
     },
-    { success: 0, failure: 0, lastUsed: 0 }
+    { success: 0, failure: 0, retrieval: 0, usage: 0, lastUsed: 0 }
   )
 
   const updates: Partial<MemoryRecord> = {
     successCount: totals.success,
-    failureCount: totals.failure
+    failureCount: totals.failure,
+    retrievalCount: totals.retrieval,
+    usageCount: totals.usage
   }
   if (totals.lastUsed > 0) {
     updates.lastUsed = totals.lastUsed
@@ -186,6 +208,8 @@ export async function consolidateCluster(
     deprecatedIds,
     successCount: totals.success,
     failureCount: totals.failure,
+    retrievalCount: totals.retrieval,
+    usageCount: totals.usage,
     lastUsed: totals.lastUsed
   }
 }

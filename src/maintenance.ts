@@ -6,6 +6,7 @@ import { initMilvus } from './lib/milvus.js'
 import {
   checkValidity,
   consolidateCluster,
+  findLowUsageRecords,
   findSimilarClusters,
   findStaleRecords,
   markDeprecated
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
   console.error('[claude-memory] Maintenance started.')
 
   await runStaleCheck(config)
+  await runLowUsageCheck(config)
   await runConsolidation(config)
   await runPromotions(config)
 
@@ -56,6 +58,30 @@ async function runStaleCheck(config: Config): Promise<void> {
   }
 
   console.error(`[claude-memory] Stale check summary: checked=${staleRecords} deprecated=${deprecated}`)
+}
+
+async function runLowUsageCheck(config: Config): Promise<void> {
+  let candidates = 0
+  let deprecated = 0
+
+  try {
+    const records = await findLowUsageRecords(config)
+    candidates = records.length
+    console.error(`[claude-memory] Low usage candidates: ${candidates}`)
+
+    for (const record of records) {
+      const ratio = (record.usageCount ?? 0) / (record.retrievalCount ?? 1)
+      const updated = await markDeprecated(record.id, config)
+      if (updated) {
+        deprecated += 1
+        console.error(`[claude-memory] Deprecated ${record.id} (low-usage:${(ratio * 100).toFixed(0)}% over ${record.retrievalCount} retrievals)`)
+      }
+    }
+  } catch (error) {
+    console.error('[claude-memory] Failed to check low usage records:', error)
+  }
+
+  console.error(`[claude-memory] Low usage check summary: candidates=${candidates} deprecated=${deprecated}`)
 }
 
 async function runConsolidation(config: Config): Promise<void> {

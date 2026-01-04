@@ -7,3 +7,8 @@ config.local.json
 # Generated suggestions (reviewed manually)
 suggestions/skills/*.md
 suggestions/claude-md/*.md
+
+# Dashboard
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.env.local

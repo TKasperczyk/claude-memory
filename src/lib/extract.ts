@@ -3,9 +3,10 @@ import { randomUUID } from 'crypto'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
-import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
+import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type InjectedMemoryEntry, type MemoryRecord, type ProcedureRecord } from './types.js'
 import type { Transcript, TranscriptEvent } from './transcript.js'
 import { getDomainExamples, type DomainExample } from './milvus.js'
+import { stripNoiseWords } from './context.js'
 
 // OAuth subscription auth constants (same as kira-runtime)
 const OAUTH_BETAS = 'oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14'
@@ -35,10 +36,13 @@ export interface ExtractionContext {
 }
 
 const TOOL_NAME = 'emit_records'
+const USEFULNESS_TOOL_NAME = 'emit_usefulness'
 const MAX_TRANSCRIPT_CHARS = 60000
+const MAX_USEFULNESS_TRANSCRIPT_CHARS = 40000
 const MAX_INTENT_CHARS = 240
 const MAX_TRUNCATED_OUTPUT_CHARS = 6000
 const MAX_TOOL_INPUT_CHARS = 4000
+const USEFULNESS_MAX_TOKENS = 800
 
 const SYSTEM_PROMPT_BASE = `You extract durable technical knowledge from Claude Code transcripts.
 
@@ -50,6 +54,11 @@ Rules:
 - Ignore chit-chat, long code listings, and private thinking blocks.
 - Commands and errors must be verbatim from tool calls/output.
 - When transcript output includes a "[truncated]" marker, do not include that marker in extracted text.
+
+Priority guidance:
+- Prefer extracting project-level context over routine commands.
+- A single "project uses SvelteKit with Supabase" discovery is more valuable than 10 routine build commands.
+- Focus on insights that would help orient a future session in this codebase.
 `
 
 const DOMAIN_INSTRUCTIONS = `
@@ -58,6 +67,15 @@ Domain assignment:
 - Only create a new domain if no existing domain is appropriate.
 - Domain names should be lowercase, hyphenated (e.g., "cloud-infra", "web-dev").
 - Keep domains broad enough to group related tools (e.g., "docker" not "docker-compose").
+`
+
+const USEFULNESS_SYSTEM_PROMPT = `You evaluate which injected memories were actually used or helpful.
+
+Rules:
+- Only return IDs from the provided list.
+- Only include a memory if it clearly influenced the solution.
+- If unsure, omit it.
+- Output ONLY via the tool call "${USEFULNESS_TOOL_NAME}" exactly once.
 `
 
 function buildSystemPrompt(domainExamples: DomainExample[]): string {
@@ -180,6 +198,22 @@ const EMIT_RECORDS_TOOL: Anthropic.Tool = {
   }
 }
 
+const EMIT_USEFULNESS_TOOL: Anthropic.Tool = {
+  name: USEFULNESS_TOOL_NAME,
+  description: 'Return IDs of injected memories that were helpful.',
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['helpfulIds'],
+    properties: {
+      helpfulIds: {
+        type: 'array',
+        items: { type: 'string' }
+      }
+    }
+  }
+}
+
 type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
 
 export async function extractRecords(
@@ -190,7 +224,7 @@ export async function extractRecords(
   const derivedIntent = context.intent ?? inferIntent(transcript) ?? 'unknown'
   const resolvedContext: ExtractionContext = {
     ...context,
-    intent: truncateIntent(derivedIntent)
+    intent: truncateIntent(stripNoiseWords(derivedIntent))
   }
 
   try {
@@ -226,6 +260,44 @@ export async function extractRecords(
     console.error('[claude-memory] extractRecords failed:', error)
     return []
   }
+}
+
+export async function rateInjectedMemories(
+  transcript: Transcript,
+  injectedMemories: InjectedMemoryEntry[],
+  config: Config = DEFAULT_CONFIG
+): Promise<string[]> {
+  if (injectedMemories.length === 0) return []
+
+  const client = await createAnthropicClient()
+  if (!client) {
+    throw new Error('No authentication available for usefulness rating. Set ANTHROPIC_API_KEY or run kira login.')
+  }
+
+  const userPrompt = buildUsefulnessPrompt(transcript, injectedMemories)
+
+  const response = await client.messages.create({
+    model: config.extraction.model,
+    max_tokens: Math.min(USEFULNESS_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: USEFULNESS_SYSTEM_PROMPT }
+    ],
+    messages: [{ role: 'user', content: userPrompt }],
+    tools: [EMIT_USEFULNESS_TOOL],
+    tool_choice: { type: 'tool', name: USEFULNESS_TOOL_NAME }
+  })
+
+  const toolInput = response.content.find((block): block is ToolUseBlock =>
+    isToolUseBlock(block) && block.name === USEFULNESS_TOOL_NAME
+  )?.input
+  if (!toolInput) {
+    throw new Error('Usefulness tool call missing in response.')
+  }
+
+  const allowedIds = new Set(injectedMemories.map(entry => entry.id))
+  return coerceUsefulnessResult(toolInput, allowedIds)
 }
 
 interface ClaudeCodeCredentials {
@@ -391,9 +463,15 @@ function buildUserPrompt(transcript: Transcript, context: ExtractionContext): st
 - intent: ${context.intent ?? 'unknown'}
 
 Extraction guidance:
-1) CommandRecord: for shell commands (Bash/Shell) and their outputs. Keep command EXACT.
+1) CommandRecord: for notable shell commands with meaningful outcomes. Skip routine commands
+   like "pnpm build" or "git status" unless they revealed something important.
 2) ErrorRecord: include exact error text + resolution if a fix was found.
-3) DiscoveryRecord: durable factual discoveries about tools/projects/config.
+3) DiscoveryRecord: durable factual discoveries. Prioritize project-level context:
+   - Architecture & tech stack ("SvelteKit 2 with Svelte 5 runes, Supabase backend")
+   - Key patterns & conventions ("API routes at /api/[resource]/+server.ts")
+   - Important dependencies & integrations ("uses TanStack Query for data fetching")
+   - Project structure insights ("tests in /tests, e2e uses Playwright")
+   Also include specific tool/config discoveries when genuinely useful.
 4) ProcedureRecord: step-by-step procedures with exact commands.
 
 Formatting rules:
@@ -405,6 +483,26 @@ Formatting rules:
 Transcript:
 ${transcriptText}
 `
+}
+
+function buildUsefulnessPrompt(transcript: Transcript, injectedMemories: InjectedMemoryEntry[]): string {
+  const transcriptText = formatTranscript(transcript.events, MAX_USEFULNESS_TRANSCRIPT_CHARS)
+  const memoriesText = injectedMemories.map(formatInjectedMemory).join('\n')
+
+  return `Question: Which of these injected memories were actually used or helpful in solving the user's task?
+
+Injected memories:
+${memoriesText || '(none)'}
+
+Transcript:
+${transcriptText}
+`
+}
+
+function formatInjectedMemory(entry: InjectedMemoryEntry): string {
+  const injectedAt = new Date(entry.injectedAt).toISOString()
+  const snippet = cleanInline(entry.snippet)
+  return `- id: ${entry.id}\n  injected_at: ${injectedAt}\n  snippet: ${snippet}`
 }
 
 function formatTranscript(events: TranscriptEvent[], maxChars: number): string {
@@ -537,7 +635,8 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
   const contextInput = isPlainObject(input.context) ? input.context : {}
   const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
   const cwd = asString((contextInput as Record<string, unknown>).cwd) ?? context.cwd ?? project
-  const intent = asString((contextInput as Record<string, unknown>).intent) ?? context.intent ?? 'unknown'
+  const intentRaw = asString((contextInput as Record<string, unknown>).intent) ?? context.intent ?? 'unknown'
+  const intent = stripNoiseWords(intentRaw)
 
   const record: CommandRecord = {
     id: randomUUID(),
@@ -673,6 +772,10 @@ function inferIntent(transcript: Transcript): string | undefined {
   return undefined
 }
 
+function cleanInline(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
 function truncateIntent(value: string): string {
   if (value.length <= MAX_INTENT_CHARS) return value
   return value.slice(0, MAX_INTENT_CHARS)
@@ -715,6 +818,23 @@ function coerceStringArray(value: unknown): string[] {
     items.push(item)
   }
   return items
+}
+
+function coerceUsefulnessResult(input: unknown, allowedIds: Set<string>): string[] {
+  if (!isPlainObject(input)) return []
+
+  const rawIds = coerceStringArray((input as Record<string, unknown>).helpfulIds)
+  const result: string[] = []
+  const seen = new Set<string>()
+
+  for (const id of rawIds) {
+    if (!allowedIds.has(id)) continue
+    if (seen.has(id)) continue
+    seen.add(id)
+    result.push(id)
+  }
+
+  return result
 }
 
 function asString(value: unknown): string | undefined {

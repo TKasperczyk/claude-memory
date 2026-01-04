@@ -1,7 +1,7 @@
 // Record type definitions for Claude Memory
 // See PLAN.md for full schemas
 
-export const EMBEDDING_DIM = 1536
+export const EMBEDDING_DIM = 4096
 
 export type RecordType = 'command' | 'error' | 'discovery' | 'procedure'
 
@@ -13,6 +13,8 @@ export interface BaseRecord {
   domain?: string
   successCount?: number
   failureCount?: number
+  retrievalCount?: number
+  usageCount?: number
   lastUsed?: number
   deprecated?: boolean
   embedding?: number[]
@@ -67,16 +69,33 @@ export interface ProcedureRecord extends BaseRecord {
 
 export type MemoryRecord = CommandRecord | ErrorRecord | DiscoveryRecord | ProcedureRecord
 
+export interface InjectedMemoryEntry {
+  id: string
+  snippet: string
+  injectedAt: number
+  prompt?: string
+}
+
+export interface InjectionSessionRecord {
+  sessionId: string
+  createdAt: number
+  lastActivity: number
+  cwd?: string
+  memories: InjectedMemoryEntry[]
+}
+
 export interface HybridSearchParams {
   query: string
   limit?: number
   project?: string
   domain?: string
   type?: RecordType
+  excludeDeprecated?: boolean
   embedding?: number[]
   vectorWeight?: number
   keywordWeight?: number
   minSimilarity?: number
+  minScore?: number
   vectorLimit?: number
   keywordLimit?: number
 }
@@ -142,7 +161,7 @@ export const DEFAULT_CONFIG: Config = {
   },
   embeddings: {
     baseUrl: process.env.CC_EMBEDDINGS_URL ?? 'http://127.0.0.1:1234/v1',
-    model: process.env.CC_EMBEDDINGS_MODEL ?? 'text-embedding-jina-code-embeddings-1.5b'
+    model: process.env.CC_EMBEDDINGS_MODEL ?? 'text-embedding-qwen3-embedding-8b'
   },
   extraction: {
     model: process.env.CC_EXTRACTION_MODEL ?? 'claude-haiku-4-5-20251001',

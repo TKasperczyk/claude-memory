@@ -2,11 +2,12 @@
 
 import fs from 'fs'
 import path from 'path'
-import { initMilvus } from '../lib/milvus.js'
-import { extractSignals, formatContext, type ContextSignals } from '../lib/context.js'
+import { initMilvus, incrementRecordCounters } from '../lib/milvus.js'
+import { buildContext, extractSignals, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { hybridSearch } from '../lib/milvus.js'
 import { embed } from '../lib/embed.js'
-import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type UserPromptSubmitInput } from '../lib/types.js'
+import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type MemoryRecord, type UserPromptSubmitInput } from '../lib/types.js'
+import { appendSessionTracking } from '../lib/session-tracking.js'
 
 const MAX_KEYWORD_QUERIES = 4
 const MAX_KEYWORD_ERRORS = 2
@@ -18,6 +19,7 @@ export interface PrePromptResult {
   context: string | null
   signals: ContextSignals
   results: HybridSearchResult[]
+  injectedRecords: MemoryRecord[]
   timedOut: boolean
 }
 
@@ -35,6 +37,7 @@ export async function handlePrePrompt(
       context: null,
       signals: { errors: [], commands: [] },
       results: [],
+      injectedRecords: [],
       timedOut: false
     }
   }
@@ -44,11 +47,11 @@ export async function handlePrePrompt(
   const result = await runWithTimeout(async () => {
     const results = await searchMemories(input.prompt, signals, config, input.cwd)
     if (results.length === 0) {
-      return { context: null, results }
+      return { context: null, results, injectedRecords: [] }
     }
 
-    const context = formatContext(results.map(r => r.record), config)
-    return { context: context || null, results }
+    const { context, records: injectedRecords } = buildContext(results.map(r => r.record), config)
+    return { context: context || null, results, injectedRecords }
   }, PREPROMPT_TIMEOUT_MS)
 
   if (!result.completed) {
@@ -56,6 +59,7 @@ export async function handlePrePrompt(
       context: null,
       signals,
       results: [],
+      injectedRecords: [],
       timedOut: true
     }
   }
@@ -64,6 +68,7 @@ export async function handlePrePrompt(
     context: result.value?.context ?? null,
     signals,
     results: result.value?.results ?? [],
+    injectedRecords: result.value?.injectedRecords ?? [],
     timedOut: false
   }
 }
@@ -74,19 +79,20 @@ async function searchMemories(
   config: Config,
   cwd: string
 ): Promise<HybridSearchResult[]> {
+  const cleanPrompt = stripNoiseWords(prompt)
   const scope = {
     project: signals.projectRoot ?? cwd,
     domain: signals.domain
   }
 
   // Pre-compute embedding once to avoid duplicate API calls on retry
-  const semanticQuery = buildSemanticQuery(prompt, signals)
+  const semanticQuery = buildSemanticQuery(cleanPrompt, signals)
   const embedding = semanticQuery ? await embed(semanticQuery, config) : undefined
 
-  let results = await searchWithScope(prompt, signals, config, scope, embedding)
+  let results = await searchWithScope(cleanPrompt, signals, config, scope, embedding)
   if (results.length === 0 && (scope.project || scope.domain)) {
     console.error('[claude-memory] No project-scoped hits; retrying without scope.')
-    results = await searchWithScope(prompt, signals, config, {}, embedding)
+    results = await searchWithScope(cleanPrompt, signals, config, {}, embedding)
   }
 
   return results
@@ -273,6 +279,42 @@ async function main(): Promise<void> {
   }
 
   process.stdout.write(result.context)
+  void trackInjectedMemories(payload.session_id, result.injectedRecords, payload.cwd, payload.prompt, config)
+    .catch(error => {
+      console.error('[claude-memory] Failed to track injected memories:', error)
+    })
+}
+
+async function trackInjectedMemories(
+  sessionId: string,
+  records: MemoryRecord[],
+  cwd: string,
+  prompt: string,
+  config: Config
+): Promise<void> {
+  if (!sessionId || records.length === 0) return
+
+  const injectedAt = Date.now()
+  const entries = records.map(record => ({
+    id: record.id,
+    snippet: normalizeSnippet(formatRecordSnippet(record) ?? `type: ${record.type}`),
+    injectedAt
+  }))
+
+  appendSessionTracking(sessionId, entries, cwd, prompt)
+
+  try {
+    // NOTE: Best-effort counters; concurrent sessions can drop increments.
+    await Promise.all(entries.map(entry =>
+      incrementRecordCounters(entry.id, { retrievalCount: 1 }, config)
+    ))
+  } catch (error) {
+    console.error('[claude-memory] Failed to update retrieval counts:', error)
+  }
+}
+
+function normalizeSnippet(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
 }
 
 // Only run main when executed directly (not imported)

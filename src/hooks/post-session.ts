@@ -5,14 +5,15 @@
  * This file also exports the core logic for testing.
  */
 
-import fs from 'fs'
+import fs, { appendFileSync } from 'fs'
 import { spawn } from 'child_process'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
+import { homedir } from 'os'
 import { extractRecords } from '../lib/extract.js'
 import { findGitRoot } from '../lib/context.js'
 import { initMilvus, findSimilar, insertRecord, updateRecord } from '../lib/milvus.js'
-import { parseTranscript } from '../lib/transcript.js'
+import { parseTranscript, type Transcript } from '../lib/transcript.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord, type ExtractionHookInput } from '../lib/types.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -23,6 +24,7 @@ export interface PostSessionResult {
   updated: number
   skipped: number
   records: MemoryRecord[]
+  transcript?: Transcript
   reason?: 'clear' | 'no_transcript' | 'no_records' | 'wrong_event'
 }
 
@@ -63,7 +65,7 @@ export async function handlePostSession(
   })
 
   if (records.length === 0) {
-    return { inserted: 0, updated: 0, skipped: 0, records: [], reason: 'no_records' }
+    return { inserted: 0, updated: 0, skipped: 0, records: [], reason: 'no_records', transcript }
   }
 
   let inserted = 0
@@ -89,7 +91,7 @@ export async function handlePostSession(
     inserted += 1
   }
 
-  return { inserted, updated, skipped, records }
+  return { inserted, updated, skipped, records, transcript }
 }
 
 export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Partial<MemoryRecord> {
@@ -176,72 +178,96 @@ export function deriveUsageDelta(record: MemoryRecord): { successDelta: number; 
   return { successDelta: 0, failureDelta: 0 }
 }
 
-/**
- * Read all of stdin and return as string.
- */
-function readStdin(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = ''
-    process.stdin.setEncoding('utf-8')
-    process.stdin.on('data', chunk => {
-      data += chunk
-    })
-    process.stdin.on('end', () => resolve(data))
-    process.stdin.on('error', reject)
-  })
+const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
+const DEBUG_LOG_FILE = `${homedir()}/.claude-memory/debug.log`
+
+function debugLog(msg: string): void {
+  if (!DEBUG) return
+  const ts = new Date().toISOString()
+  const line = `[launcher] ${ts} ${msg}\n`
+  console.error(line.trim())
+  try {
+    appendFileSync(DEBUG_LOG_FILE, line)
+  } catch {
+    // ignore
+  }
 }
 
 /**
  * Launcher main - spawns worker as detached process and exits immediately.
+ *
+ * Writes stdin to a temp file and passes the path to the worker.
+ * This completely decouples the launcher from data transfer so Claude Code
+ * doesn't wait for the stdin fd to close.
  */
-async function launcherMain(): Promise<void> {
-  const input = await readStdin()
+function launcherMain(): void {
+  const startTime = Date.now()
+  debugLog(`START pid=${process.pid}`)
+
+  // Read stdin synchronously (it's small, ~300 bytes)
+  let input = ''
+  const BUFSIZE = 1024
+  const buf = Buffer.alloc(BUFSIZE)
+  let bytesRead: number
+
+  try {
+    while ((bytesRead = fs.readSync(0, buf, 0, BUFSIZE, null)) > 0) {
+      input += buf.toString('utf8', 0, bytesRead)
+    }
+  } catch (e: unknown) {
+    // EOF or error - that's fine
+    if ((e as NodeJS.ErrnoException).code !== 'EOF' && (e as NodeJS.ErrnoException).code !== 'EAGAIN') {
+      debugLog(`stdin read error: ${e}`)
+    }
+  }
+
+  debugLog(`Read stdin: ${input.length} bytes in ${Date.now() - startTime}ms`)
+
   if (!input.trim()) {
-    // No input, nothing to do
+    debugLog('Empty input, exiting')
     return
   }
 
-  // Quick validation - don't spawn worker for skip cases
+  // Write to temp file
+  const tempFile = join(homedir(), '.claude-memory', `hook-input-${process.pid}.json`)
   try {
-    const payload = JSON.parse(input) as ExtractionHookInput
-    if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
-      return // Skip extraction for clear
-    }
-    if (!payload.transcript_path) {
-      return // Skip if no transcript
-    }
-  } catch {
-    // Invalid JSON, let worker handle the error
+    fs.mkdirSync(dirname(tempFile), { recursive: true })
+    fs.writeFileSync(tempFile, input)
+    debugLog(`Wrote temp file: ${tempFile}`)
+  } catch (e) {
+    debugLog(`Failed to write temp file: ${e}`)
+    return
   }
 
-  // Determine worker path - use .js in dist, .ts in src
+  // Determine worker path
   const workerPath = __filename.endsWith('.ts')
     ? join(__dirname, 'post-session-worker.ts')
     : join(__dirname, 'post-session-worker.js')
 
-  // Spawn worker as detached process
-  const child = spawn('node', [workerPath], {
+  debugLog(`Spawning worker: ${workerPath}`)
+
+  // Spawn worker with temp file path as argument
+  // ALL stdio must be 'ignore' - any inherited fd keeps Claude Code waiting
+  const child = spawn('node', [workerPath, tempFile], {
     detached: true,
-    stdio: ['pipe', 'ignore', 'inherit'] // pipe stdin, ignore stdout, inherit stderr
+    stdio: ['ignore', 'ignore', 'ignore']
   })
 
-  // Write input to worker's stdin
-  child.stdin!.write(input)
-  child.stdin!.end()
+  debugLog(`Worker spawned pid=${child.pid}, took ${Date.now() - startTime}ms`)
 
-  // Unref so parent can exit
   child.unref()
+
+  debugLog(`EXIT after ${Date.now() - startTime}ms`)
 }
 
 // Only run launcher when executed directly (not imported)
 const isMainModule = import.meta.url === `file://${process.argv[1]}`
 if (isMainModule) {
-  launcherMain()
-    .then(() => {
-      process.exitCode = 0
-    })
-    .catch(error => {
-      console.error('[claude-memory] post-session launcher failed:', error)
-      process.exitCode = 2
-    })
+  try {
+    launcherMain()
+    process.exitCode = 0
+  } catch (error) {
+    console.error('[claude-memory] post-session launcher failed:', error)
+    process.exitCode = 2
+  }
 }

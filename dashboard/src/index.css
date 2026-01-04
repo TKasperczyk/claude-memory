@@ -1,0 +1,68 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0b0f16;
+  --panel: #111827;
+  --panel-soft: #0f172a;
+  --text: #e5e7eb;
+  --muted: #94a3b8;
+  --accent: #34d399;
+  --accent-warm: #fbbf24;
+  --accent-cool: #60a5fa;
+  --danger: #fb7185;
+}
+
+body {
+  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+  background: radial-gradient(circle at top left, rgba(16, 185, 129, 0.08), transparent 35%),
+    radial-gradient(circle at top right, rgba(251, 191, 36, 0.08), transparent 40%),
+    var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+pre,
+code {
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.bg-grid {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.6s ease both;
+}
+
+@keyframes floatGlow {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.75;
+  }
+  50% {
+    transform: translateY(-14px);
+    opacity: 1;
+  }
+}
+
+.animate-float {
+  animation: floatGlow 10s ease-in-out infinite;
+}
