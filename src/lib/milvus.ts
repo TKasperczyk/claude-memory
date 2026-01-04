@@ -149,6 +149,40 @@ export async function getRecord(
   }
 }
 
+export async function queryRecords(
+  options: {
+    filter?: string
+    limit?: number
+    offset?: number
+    includeEmbeddings?: boolean
+  },
+  config: Config = DEFAULT_CONFIG
+): Promise<MemoryRecord[]> {
+  try {
+    await ensureClient(config)
+
+    const limit = options.limit ?? 1000
+    const offset = options.offset ?? 0
+    const filter = options.filter ?? 'id != ""'
+    const outputFields = options.includeEmbeddings
+      ? [...OUTPUT_FIELDS, 'embedding']
+      : OUTPUT_FIELDS
+
+    const result = await client!.query({
+      collection_name: config.milvus.collection,
+      filter,
+      output_fields: outputFields,
+      limit,
+      offset
+    })
+
+    return (result.data ?? []).map(row => parseRecordFromRow(row as Record<string, unknown>))
+  } catch (error) {
+    console.error('[claude-memory] queryRecords failed:', error)
+    throw error
+  }
+}
+
 export async function hybridSearch(
   params: HybridSearchParams,
   config: Config = DEFAULT_CONFIG
@@ -273,6 +307,43 @@ export async function findSimilar(
     return matches
   } catch (error) {
     console.error('[claude-memory] findSimilar failed:', error)
+    throw error
+  }
+}
+
+export async function vectorSearchSimilar(
+  embedding: number[],
+  options: {
+    filter?: string
+    limit?: number
+    similarityThreshold?: number
+  },
+  config: Config = DEFAULT_CONFIG
+): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
+  try {
+    await ensureClient(config)
+    ensureEmbeddingDim(embedding)
+
+    const limit = options.limit ?? 10
+    const similarityThreshold = options.similarityThreshold ?? 0
+
+    const searchResults = await client!.search({
+      collection_name: config.milvus.collection,
+      data: [embedding],
+      limit,
+      filter: options.filter,
+      output_fields: OUTPUT_FIELDS,
+      params: { nprobe: SEARCH_NPROBE }
+    })
+
+    const matches = (searchResults.results ?? [])
+      .map(row => ({ record: parseRecordFromRow(row), similarity: row.score ?? 0 }))
+      .filter(result => result.similarity >= similarityThreshold)
+
+    matches.sort((a, b) => b.similarity - a.similarity)
+    return matches
+  } catch (error) {
+    console.error('[claude-memory] vectorSearchSimilar failed:', error)
     throw error
   }
 }
