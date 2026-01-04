@@ -26,7 +26,18 @@ import { initMilvus, insertRecord, getRecord, hybridSearch, findSimilar } from '
 import { handlePostSession } from '../src/hooks/post-session.js'
 import type { SessionEndInput } from '../src/lib/types.js'
 
-const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
+import { existsSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
+
+// Check for any available auth method (API key, env token, or credential files)
+const hasAnthropicAuth = !!(
+  process.env.ANTHROPIC_API_KEY ||
+  process.env.OPENCODE_API_KEY ||
+  process.env.ANTHROPIC_AUTH_TOKEN ||
+  existsSync(join(homedir(), '.claude', '.credentials.json')) ||
+  existsSync(join(homedir(), '.kira', 'credentials.json'))
+)
 
 describe('Extraction E2E', () => {
   beforeAll(async () => {
@@ -217,7 +228,7 @@ this is not valid json
   })
 
   describe('Post-Session Hook Integration', () => {
-    it.skipIf(!hasAnthropicKey)('should extract and store records from transcript', async () => {
+    it.skipIf(!hasAnthropicAuth)('should extract and store records from transcript', async () => {
       const entries = buildTypicalTranscriptEntries()
       const transcriptPath = createMockTranscript(entries)
 

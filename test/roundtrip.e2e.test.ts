@@ -21,8 +21,18 @@ import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
 import type { CommandRecord, ErrorRecord, UserPromptSubmitInput, SessionEndInput } from '../src/lib/types.js'
 import { randomUUID } from 'crypto'
+import { existsSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 
-const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
+// Check for any available auth method (API key, env token, or credential files)
+const hasAnthropicAuth = !!(
+  process.env.ANTHROPIC_API_KEY ||
+  process.env.OPENCODE_API_KEY ||
+  process.env.ANTHROPIC_AUTH_TOKEN ||
+  existsSync(join(homedir(), '.claude', '.credentials.json')) ||
+  existsSync(join(homedir(), '.kira', 'credentials.json'))
+)
 
 describe('Round-Trip E2E', () => {
   beforeAll(async () => {
@@ -200,7 +210,7 @@ How do I fix it?`
     })
   })
 
-  describe.skipIf(!hasAnthropicKey)('Full Round-Trip (With Extraction)', () => {
+  describe.skipIf(!hasAnthropicAuth)('Full Round-Trip (With Extraction)', () => {
     it('should extract from transcript and inject in subsequent query', async () => {
       // Step 1: Create a transcript with interesting commands
       const now = new Date().toISOString()
