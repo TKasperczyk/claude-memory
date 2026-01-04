@@ -263,9 +263,11 @@ export async function findSimilar(
       params: { nprobe: SEARCH_NPROBE }
     })
 
+    const exactText = normalizeExactText(buildExactText(record))
     const matches = (searchResults.results ?? [])
       .map(row => ({ record: parseRecordFromRow(row), similarity: row.score ?? 0 }))
       .filter(result => result.similarity >= similarityThreshold)
+      .filter(result => exactText.length > 0 && isExactTextMatch(exactText, result.record))
 
     matches.sort((a, b) => b.similarity - a.similarity)
     return matches
@@ -393,6 +395,17 @@ function buildExactText(record: MemoryRecord): string {
     case 'procedure':
       return [record.name, ...record.steps].filter(Boolean).join('\n')
   }
+}
+
+function normalizeExactText(value: string): string {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+}
+
+function isExactTextMatch(exactText: string, record: MemoryRecord): boolean {
+  if (!exactText) return false
+  const candidate = normalizeExactText(buildExactText(record))
+  if (!candidate) return false
+  return exactText === candidate
 }
 
 function buildEmbeddingInput(

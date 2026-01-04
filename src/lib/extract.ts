@@ -1,0 +1,544 @@
+import Anthropic from '@anthropic-ai/sdk'
+import { randomUUID } from 'crypto'
+import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
+import type { Transcript, TranscriptEvent } from './transcript.js'
+
+export interface ExtractionContext {
+  sessionId: string
+  cwd: string
+  project?: string
+  transcriptPath?: string
+  intent?: string
+  domain?: string
+}
+
+const TOOL_NAME = 'emit_records'
+const MAX_TRANSCRIPT_CHARS = 60000
+const MAX_INTENT_CHARS = 240
+const MAX_TRUNCATED_OUTPUT_CHARS = 6000
+const MAX_TOOL_INPUT_CHARS = 4000
+
+const SYSTEM_PROMPT = `You extract durable technical knowledge from Claude Code transcripts.
+
+Rules:
+- Output ONLY via the tool call "${TOOL_NAME}" exactly once.
+- Do NOT paraphrase commands or error messages. Copy them EXACTLY from the transcript.
+- If you are unsure about a field, omit the record entirely.
+- Extract only durable, re-usable items (commands, errors + resolutions, discoveries, procedures).
+- Ignore chit-chat, long code listings, and private thinking blocks.
+- Commands and errors must be verbatim from tool calls/output.
+- When transcript output includes a "[truncated]" marker, do not include that marker in extracted text.
+`
+
+const EMIT_RECORDS_TOOL: Anthropic.Tool = {
+  name: TOOL_NAME,
+  description: 'Emit extracted technical knowledge records.',
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['records'],
+    properties: {
+      records: {
+        type: 'array',
+        items: {
+          oneOf: [
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['type', 'command', 'exitCode', 'context', 'outcome'],
+              properties: {
+                type: { const: 'command' },
+                command: { type: 'string' },
+                exitCode: { type: 'number' },
+                truncatedOutput: { type: 'string' },
+                outcome: { type: 'string', enum: ['success', 'failure', 'partial'] },
+                resolution: { type: 'string' },
+                project: { type: 'string' },
+                domain: { type: 'string' },
+                context: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['project', 'cwd', 'intent'],
+                  properties: {
+                    project: { type: 'string' },
+                    cwd: { type: 'string' },
+                    intent: { type: 'string' }
+                  }
+                }
+              }
+            },
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['type', 'errorText', 'errorType', 'resolution', 'context'],
+              properties: {
+                type: { const: 'error' },
+                errorText: { type: 'string' },
+                errorType: { type: 'string' },
+                cause: { type: 'string' },
+                resolution: { type: 'string' },
+                project: { type: 'string' },
+                domain: { type: 'string' },
+                context: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['project'],
+                  properties: {
+                    project: { type: 'string' },
+                    file: { type: 'string' },
+                    tool: { type: 'string' }
+                  }
+                }
+              }
+            },
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['type', 'what', 'where', 'evidence', 'confidence'],
+              properties: {
+                type: { const: 'discovery' },
+                what: { type: 'string' },
+                where: { type: 'string' },
+                evidence: { type: 'string' },
+                confidence: { type: 'string', enum: ['verified', 'inferred', 'tentative'] },
+                project: { type: 'string' },
+                domain: { type: 'string' }
+              }
+            },
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['type', 'name', 'steps', 'context'],
+              properties: {
+                type: { const: 'procedure' },
+                name: { type: 'string' },
+                steps: { type: 'array', items: { type: 'string' } },
+                prerequisites: { type: 'array', items: { type: 'string' } },
+                verification: { type: 'string' },
+                project: { type: 'string' },
+                domain: { type: 'string' },
+                context: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['domain'],
+                  properties: {
+                    project: { type: 'string' },
+                    domain: { type: 'string' }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+
+type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
+
+export async function extractRecords(
+  transcript: Transcript,
+  context: ExtractionContext,
+  config: Config = DEFAULT_CONFIG
+): Promise<MemoryRecord[]> {
+  const derivedIntent = context.intent ?? inferIntent(transcript) ?? 'unknown'
+  const resolvedContext: ExtractionContext = {
+    ...context,
+    intent: truncateIntent(derivedIntent)
+  }
+
+  try {
+    const client = createAnthropicClient()
+    if (!client) {
+      console.error('[claude-memory] No Anthropic API key available for extraction.')
+      return []
+    }
+
+    const userPrompt = buildUserPrompt(transcript, resolvedContext)
+
+    const response = await client.messages.create({
+      model: config.extraction.model,
+      max_tokens: config.extraction.maxTokens,
+      temperature: 0,
+      system: [{ type: 'text', text: SYSTEM_PROMPT }],
+      messages: [{ role: 'user', content: userPrompt }],
+      tools: [EMIT_RECORDS_TOOL],
+      tool_choice: { type: 'tool', name: TOOL_NAME }
+    })
+
+    const toolInput = response.content.find((block): block is ToolUseBlock => isToolUseBlock(block) && block.name === TOOL_NAME)?.input
+    if (!toolInput) return []
+    return coerceExtractionResult(toolInput, resolvedContext)
+  } catch (error) {
+    console.error('[claude-memory] extractRecords failed:', error)
+    return []
+  }
+}
+
+function createAnthropicClient(): Anthropic | null {
+  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.OPENCODE_API_KEY
+  if (!apiKey) return null
+
+  const baseURL = process.env.ANTHROPIC_BASE_URL
+  return new Anthropic({
+    apiKey,
+    ...(baseURL ? { baseURL } : {})
+  })
+}
+
+function buildUserPrompt(transcript: Transcript, context: ExtractionContext): string {
+  const project = context.project ?? context.cwd ?? 'unknown'
+  const cwd = context.cwd ?? 'unknown'
+  const transcriptText = formatTranscript(transcript.events, MAX_TRANSCRIPT_CHARS)
+
+  return `Context:
+- session_id: ${context.sessionId}
+- project: ${project}
+- cwd: ${cwd}
+- transcript_path: ${context.transcriptPath ?? 'unknown'}
+- intent: ${context.intent ?? 'unknown'}
+
+Extraction guidance:
+1) CommandRecord: for shell commands (Bash/Shell) and their outputs. Keep command EXACT.
+2) ErrorRecord: include exact error text + resolution if a fix was found.
+3) DiscoveryRecord: durable factual discoveries about tools/projects/config.
+4) ProcedureRecord: step-by-step procedures with exact commands.
+
+Formatting rules:
+- Keep command and errorText EXACT (verbatim).
+- Use short, specific intent strings.
+- If exit code is not explicit, infer 0 for success and 1 for failure.
+- Do not include the "[truncated]" marker in extracted fields.
+
+Transcript:
+${transcriptText}
+`
+}
+
+function formatTranscript(events: TranscriptEvent[], maxChars: number): string {
+  const formatted: string[] = []
+  for (const event of events) {
+    const block = formatEvent(event)
+    if (block) formatted.push(block)
+  }
+
+  let total = 0
+  const selected: string[] = []
+  for (let i = formatted.length - 1; i >= 0; i -= 1) {
+    const block = formatted[i]
+    const blockLength = block.length + 2
+    if (total + blockLength > maxChars && selected.length > 0) break
+    selected.push(block)
+    total += blockLength
+  }
+
+  return selected.reverse().join('\n\n')
+}
+
+function formatEvent(event: TranscriptEvent): string | null {
+  const cwd = event.cwd ? ` cwd=${event.cwd}` : ''
+  switch (event.type) {
+    case 'user':
+      return `[User${cwd}]\n${event.text}`
+    case 'assistant':
+      return `[Assistant${cwd}]\n${event.text}`
+    case 'tool_call': {
+      const header = `[Tool Call${cwd}] name=${event.name}${event.id ? ` id=${event.id}` : ''}`
+      const input = formatJson(event.input)
+      const truncatedInput = input ? truncateBlock(input, MAX_TOOL_INPUT_CHARS) : undefined
+      return truncatedInput ? `${header}\ninput:\n${truncatedInput}` : header
+    }
+    case 'tool_result': {
+      const header = `[Tool Result${cwd}]${event.name ? ` name=${event.name}` : ''}${event.toolUseId ? ` id=${event.toolUseId}` : ''}`
+      const meta = formatToolResultMeta(event.metadata, event.isError)
+      const output = event.outputText?.trim()
+      const parts = [header]
+      if (meta) parts.push(`meta: ${meta}`)
+      if (output) parts.push(`output:\n${output}`)
+      return parts.join('\n')
+    }
+    default:
+      return null
+  }
+}
+
+function formatToolResultMeta(meta: unknown, isError?: boolean): string | undefined {
+  const parts: string[] = []
+  if (isError) parts.push('isError=true')
+  if (!meta || typeof meta !== 'object') return parts.length > 0 ? parts.join(', ') : undefined
+
+  const record = meta as Record<string, unknown>
+  const exitCode = record.exitCode
+  if (typeof exitCode === 'number' && Number.isFinite(exitCode)) {
+    parts.push(`exitCode=${Math.trunc(exitCode)}`)
+  }
+  if (record.interrupted === true) parts.push('interrupted=true')
+
+  return parts.length > 0 ? parts.join(', ') : undefined
+}
+
+function formatJson(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function truncateBlock(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const head = value.slice(0, Math.max(0, maxLength - 200))
+  const tail = value.slice(-200)
+  return `${head}\n...[truncated]...\n${tail}`
+}
+
+function isToolUseBlock(value: unknown): value is ToolUseBlock {
+  return (
+    isPlainObject(value) &&
+    value.type === 'tool_use' &&
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    'input' in value
+  )
+}
+
+function coerceExtractionResult(input: unknown, context: ExtractionContext): MemoryRecord[] {
+  if (!isPlainObject(input)) return []
+  const rawRecords = Array.isArray(input.records) ? input.records : []
+  const records: MemoryRecord[] = []
+
+  for (const item of rawRecords) {
+    if (!isPlainObject(item)) continue
+    const type = asString(item.type)
+    if (type === 'command') {
+      const record = coerceCommandRecord(item, context)
+      if (record) records.push(record)
+      continue
+    }
+    if (type === 'error') {
+      const record = coerceErrorRecord(item, context)
+      if (record) records.push(record)
+      continue
+    }
+    if (type === 'discovery') {
+      const record = coerceDiscoveryRecord(item, context)
+      if (record) records.push(record)
+      continue
+    }
+    if (type === 'procedure') {
+      const record = coerceProcedureRecord(item, context)
+      if (record) records.push(record)
+    }
+  }
+
+  return records
+}
+
+function coerceCommandRecord(input: Record<string, unknown>, context: ExtractionContext): CommandRecord | null {
+  const commandRaw = asString(input.command)
+  const command = commandRaw ? stripTruncationMarkers(commandRaw) : undefined
+  const exitCodeRaw = asNumber(input.exitCode)
+  const outcome = coerceOutcome(input.outcome)
+  if (!command || exitCodeRaw === null || !outcome) return null
+
+  const contextInput = isPlainObject(input.context) ? input.context : {}
+  const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
+  const cwd = asString((contextInput as Record<string, unknown>).cwd) ?? context.cwd ?? project
+  const intent = asString((contextInput as Record<string, unknown>).intent) ?? context.intent ?? 'unknown'
+
+  const record: CommandRecord = {
+    id: randomUUID(),
+    type: 'command',
+    command,
+    exitCode: Math.trunc(exitCodeRaw),
+    outcome,
+    context: {
+      project,
+      cwd,
+      intent: truncateIntent(intent)
+    }
+  }
+
+  const truncatedOutputRaw = asString(input.truncatedOutput)
+  const truncatedOutput = truncatedOutputRaw ? stripTruncationMarkers(truncatedOutputRaw) : undefined
+  if (truncatedOutput) {
+    record.truncatedOutput = truncateOutput(truncatedOutput)
+  }
+  const resolution = asString(input.resolution)
+  if (resolution) record.resolution = resolution
+
+  const projectOverride = asString(input.project)
+  if (projectOverride) record.project = projectOverride
+  const domainOverride = asString(input.domain)
+  if (domainOverride) record.domain = domainOverride
+
+  return record
+}
+
+function coerceErrorRecord(input: Record<string, unknown>, context: ExtractionContext): ErrorRecord | null {
+  const errorTextRaw = asString(input.errorText)
+  const errorText = errorTextRaw ? stripTruncationMarkers(errorTextRaw) : undefined
+  const errorType = asString(input.errorType)
+  const resolution = asString(input.resolution)
+  if (!errorText || !errorType || !resolution) return null
+
+  const contextInput = isPlainObject(input.context) ? input.context : {}
+  const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
+  const record: ErrorRecord = {
+    id: randomUUID(),
+    type: 'error',
+    errorText,
+    errorType,
+    resolution,
+    context: {
+      project
+    }
+  }
+
+  const cause = asString(input.cause)
+  if (cause) record.cause = cause
+
+  const file = asString((contextInput as Record<string, unknown>).file)
+  if (file) record.context.file = file
+  const tool = asString((contextInput as Record<string, unknown>).tool)
+  if (tool) record.context.tool = tool
+
+  const projectOverride = asString(input.project)
+  if (projectOverride) record.project = projectOverride
+  const domainOverride = asString(input.domain)
+  if (domainOverride) record.domain = domainOverride
+
+  return record
+}
+
+function coerceDiscoveryRecord(input: Record<string, unknown>, context: ExtractionContext): DiscoveryRecord | null {
+  const what = asString(input.what)
+  const where = asString(input.where)
+  const evidence = asString(input.evidence)
+  const confidence = coerceConfidence(input.confidence)
+  if (!what || !where || !evidence || !confidence) return null
+
+  const record: DiscoveryRecord = {
+    id: randomUUID(),
+    type: 'discovery',
+    what,
+    where,
+    evidence,
+    confidence
+  }
+
+  const project = asString(input.project) ?? context.project ?? context.cwd
+  if (project) record.project = project
+  const domain = asString(input.domain) ?? context.domain
+  if (domain) record.domain = domain
+
+  return record
+}
+
+function coerceProcedureRecord(input: Record<string, unknown>, context: ExtractionContext): ProcedureRecord | null {
+  const name = asString(input.name)
+  const steps = coerceStringArray(input.steps)
+  if (!name || steps.length === 0) return null
+
+  const contextInput = isPlainObject(input.context) ? input.context : {}
+  const domain = asString((contextInput as Record<string, unknown>).domain) ?? context.domain ?? 'general'
+
+  const record: ProcedureRecord = {
+    id: randomUUID(),
+    type: 'procedure',
+    name,
+    steps,
+    context: {
+      domain
+    }
+  }
+
+  const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
+  if (project) record.context.project = project
+
+  const prerequisites = coerceStringArray(input.prerequisites)
+  if (prerequisites.length > 0) record.prerequisites = prerequisites
+
+  const verification = asString(input.verification)
+  if (verification) record.verification = verification
+
+  const projectOverride = asString(input.project)
+  if (projectOverride) record.project = projectOverride
+  const domainOverride = asString(input.domain)
+  if (domainOverride) record.domain = domainOverride
+
+  return record
+}
+
+function inferIntent(transcript: Transcript): string | undefined {
+  for (let i = transcript.messages.length - 1; i >= 0; i -= 1) {
+    const message = transcript.messages[i]
+    if (message.role !== 'user') continue
+    const text = message.text.trim()
+    if (text) return text.slice(0, MAX_INTENT_CHARS)
+  }
+  return undefined
+}
+
+function truncateIntent(value: string): string {
+  if (value.length <= MAX_INTENT_CHARS) return value
+  return value.slice(0, MAX_INTENT_CHARS)
+}
+
+function truncateOutput(value: string): string {
+  if (value.length <= MAX_TRUNCATED_OUTPUT_CHARS) return value
+  const head = value.slice(0, Math.max(0, MAX_TRUNCATED_OUTPUT_CHARS - 300))
+  const tail = value.slice(-300)
+  return `${head}\n...[truncated]...\n${tail}`
+}
+
+function stripTruncationMarkers(value: string): string {
+  return value
+    .replace(/\.\.\.\s*\[truncated\]\s*\.\.\./gi, '')
+    .replace(/\[truncated\]/gi, '')
+    .trim()
+}
+
+function pickProject(project: string | undefined, context: ExtractionContext): string {
+  return project ?? context.project ?? context.cwd ?? 'unknown'
+}
+
+function coerceOutcome(value: unknown): CommandRecord['outcome'] | null {
+  if (value === 'success' || value === 'failure' || value === 'partial') return value
+  return null
+}
+
+function coerceConfidence(value: unknown): DiscoveryRecord['confidence'] | null {
+  if (value === 'verified' || value === 'inferred' || value === 'tentative') return value
+  return null
+}
+
+function coerceStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const items: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    if (!item.trim()) continue
+    items.push(item)
+  }
+  return items
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
