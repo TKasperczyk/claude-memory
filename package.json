@@ -6,7 +6,10 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/",
-    "maintenance": "tsx src/maintenance.ts"
+    "maintenance": "tsx src/maintenance.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
@@ -16,6 +19,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.16"
   }
 }

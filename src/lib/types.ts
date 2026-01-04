@@ -129,19 +129,31 @@ export interface Config {
 
 export const DEFAULT_CONFIG: Config = {
   milvus: {
-    address: 'localhost:19530',
-    collection: 'cc_memories'
+    address: process.env.CC_MEMORIES_ADDRESS ?? 'localhost:19530',
+    collection: process.env.CC_MEMORIES_COLLECTION ?? 'cc_memories'
   },
   embeddings: {
-    baseUrl: 'http://127.0.0.1:1234/v1',
-    model: 'text-embedding-qwen3-embedding-8b'
+    baseUrl: process.env.CC_EMBEDDINGS_URL ?? 'http://127.0.0.1:1234/v1',
+    model: process.env.CC_EMBEDDINGS_MODEL ?? 'text-embedding-qwen3-embedding-8b'
   },
   extraction: {
-    model: 'claude-haiku-4-20250514',
+    model: process.env.CC_EXTRACTION_MODEL ?? 'claude-haiku-4-20250514',
     maxTokens: 4000
   },
   injection: {
     maxRecords: 5,
     maxTokens: 2000
+  }
+}
+
+/**
+ * Create a config with optional overrides, respecting environment variables.
+ */
+export function createConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    milvus: { ...DEFAULT_CONFIG.milvus, ...overrides.milvus },
+    embeddings: { ...DEFAULT_CONFIG.embeddings, ...overrides.embeddings },
+    extraction: { ...DEFAULT_CONFIG.extraction, ...overrides.extraction },
+    injection: { ...DEFAULT_CONFIG.injection, ...overrides.injection }
   }
 }
