@@ -5,6 +5,7 @@ import path from 'path'
 import { initMilvus } from '../lib/milvus.js'
 import { extractSignals, formatContext, type ContextSignals } from '../lib/context.js'
 import { hybridSearch } from '../lib/milvus.js'
+import { embed } from '../lib/embed.js'
 import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type UserPromptSubmitInput } from '../lib/types.js'
 
 const MAX_KEYWORD_QUERIES = 4
@@ -78,10 +79,14 @@ async function searchMemories(
     domain: signals.domain
   }
 
-  let results = await searchWithScope(prompt, signals, config, scope)
+  // Pre-compute embedding once to avoid duplicate API calls on retry
+  const semanticQuery = buildSemanticQuery(prompt, signals)
+  const embedding = semanticQuery ? await embed(semanticQuery, config) : undefined
+
+  let results = await searchWithScope(prompt, signals, config, scope, embedding)
   if (results.length === 0 && (scope.project || scope.domain)) {
     console.error('[claude-memory] No project-scoped hits; retrying without scope.')
-    results = await searchWithScope(prompt, signals, config, {})
+    results = await searchWithScope(prompt, signals, config, {}, embedding)
   }
 
   return results
@@ -91,7 +96,8 @@ async function searchWithScope(
   prompt: string,
   signals: ContextSignals,
   config: Config,
-  scope: { project?: string; domain?: string }
+  scope: { project?: string; domain?: string },
+  precomputedEmbedding?: number[]
 ): Promise<HybridSearchResult[]> {
   const limit = config.injection.maxRecords
   const keywordQueries = buildKeywordQueries(signals)
@@ -123,19 +129,17 @@ async function searchWithScope(
     addResults(keywordResults)
   }
 
-  if (results.length < limit) {
-    const semanticQuery = buildSemanticQuery(prompt, signals)
-    if (semanticQuery) {
-      const semanticResults = await hybridSearch({
-        query: semanticQuery,
-        limit: limit - results.length,
-        project: scope.project,
-        domain: scope.domain,
-        vectorWeight: 1,
-        keywordWeight: 0
-      }, config)
-      addResults(semanticResults)
-    }
+  if (results.length < limit && precomputedEmbedding) {
+    const semanticResults = await hybridSearch({
+      query: '', // Not used when embedding provided
+      embedding: precomputedEmbedding,
+      limit: limit - results.length,
+      project: scope.project,
+      domain: scope.domain,
+      vectorWeight: 1,
+      keywordWeight: 0
+    }, config)
+    addResults(semanticResults)
   }
 
   return results
