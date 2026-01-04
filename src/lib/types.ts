@@ -107,6 +107,14 @@ export interface SessionEndInput extends HookInput {
   reason: 'clear' | 'logout' | 'prompt_input_exit' | 'other'
 }
 
+export interface PreCompactInput extends HookInput {
+  hook_event_name: 'PreCompact'
+  trigger: 'manual' | 'auto'
+}
+
+/** Input for extraction hooks - either SessionEnd or PreCompact */
+export type ExtractionHookInput = SessionEndInput | PreCompactInput
+
 // Configuration
 export interface Config {
   milvus: {

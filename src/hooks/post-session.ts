@@ -1,11 +1,22 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env node
+/**
+ * Post-session hook launcher - spawns worker as detached process for fast exit.
+ *
+ * This file also exports the core logic for testing.
+ */
 
 import fs from 'fs'
+import { spawn } from 'child_process'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 import { extractRecords } from '../lib/extract.js'
 import { findGitRoot } from '../lib/context.js'
 import { initMilvus, findSimilar, insertRecord, updateRecord } from '../lib/milvus.js'
 import { parseTranscript } from '../lib/transcript.js'
-import { DEFAULT_CONFIG, type Config, type MemoryRecord, type SessionEndInput } from '../lib/types.js'
+import { DEFAULT_CONFIG, type Config, type MemoryRecord, type ExtractionHookInput } from '../lib/types.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 export interface PostSessionResult {
   inserted: number
@@ -21,14 +32,16 @@ export interface PostSessionResult {
  * Extracts records from transcript and stores them in Milvus.
  */
 export async function handlePostSession(
-  input: SessionEndInput,
+  input: ExtractionHookInput,
   config: Config = DEFAULT_CONFIG
 ): Promise<PostSessionResult> {
-  if (input.hook_event_name !== 'SessionEnd') {
+  // Accept both SessionEnd and PreCompact events
+  if (input.hook_event_name !== 'SessionEnd' && input.hook_event_name !== 'PreCompact') {
     return { inserted: 0, updated: 0, skipped: 0, records: [], reason: 'wrong_event' }
   }
 
-  if (input.reason === 'clear') {
+  // Skip extraction if session was cleared (only applies to SessionEnd)
+  if (input.hook_event_name === 'SessionEnd' && input.reason === 'clear') {
     return { inserted: 0, updated: 0, skipped: 0, records: [], reason: 'clear' }
   }
 
@@ -163,26 +176,9 @@ export function deriveUsageDelta(record: MemoryRecord): { successDelta: number; 
   return { successDelta: 0, failureDelta: 0 }
 }
 
-function loadConfig(root: string): Config {
-  // In future, can load from project-specific config.json
-  return DEFAULT_CONFIG
-}
-
-async function readHookInput(): Promise<SessionEndInput | null> {
-  const raw = await readStdin()
-  if (!raw.trim()) {
-    console.error('[claude-memory] Empty hook input.')
-    return null
-  }
-
-  try {
-    return JSON.parse(raw) as SessionEndInput
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Failed to parse hook input: ${message}`)
-  }
-}
-
+/**
+ * Read all of stdin and return as string.
+ */
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = ''
@@ -195,52 +191,57 @@ function readStdin(): Promise<string> {
   })
 }
 
-async function main(): Promise<void> {
-  const payload = await readHookInput()
-  if (!payload) return
-
-  if (payload.hook_event_name !== 'SessionEnd') {
-    console.error('[claude-memory] Unexpected hook event:', payload.hook_event_name)
+/**
+ * Launcher main - spawns worker as detached process and exits immediately.
+ */
+async function launcherMain(): Promise<void> {
+  const input = await readStdin()
+  if (!input.trim()) {
+    // No input, nothing to do
     return
   }
 
-  if (payload.reason === 'clear') {
-    console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
-    return
+  // Quick validation - don't spawn worker for skip cases
+  try {
+    const payload = JSON.parse(input) as ExtractionHookInput
+    if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
+      return // Skip extraction for clear
+    }
+    if (!payload.transcript_path) {
+      return // Skip if no transcript
+    }
+  } catch {
+    // Invalid JSON, let worker handle the error
   }
 
-  if (!payload.transcript_path) {
-    console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
-    return
-  }
+  // Determine worker path - use .js in dist, .ts in src
+  const workerPath = __filename.endsWith('.ts')
+    ? join(__dirname, 'post-session-worker.ts')
+    : join(__dirname, 'post-session-worker.js')
 
-  const config = loadConfig(payload.cwd)
-  await initMilvus(config)
+  // Spawn worker as detached process
+  const child = spawn('node', [workerPath], {
+    detached: true,
+    stdio: ['pipe', 'ignore', 'inherit'] // pipe stdin, ignore stdout, inherit stderr
+  })
 
-  const result = await handlePostSession(payload, config)
+  // Write input to worker's stdin
+  child.stdin!.write(input)
+  child.stdin!.end()
 
-  if (result.reason === 'no_transcript') {
-    console.warn(`[claude-memory] Transcript not found; skipping extraction. path=${payload.transcript_path}`)
-    return
-  }
-
-  if (result.reason === 'no_records') {
-    console.error('[claude-memory] No records extracted.')
-    return
-  }
-
-  console.error(`[claude-memory] Extraction complete: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}`)
+  // Unref so parent can exit
+  child.unref()
 }
 
-// Only run main when executed directly (not imported)
+// Only run launcher when executed directly (not imported)
 const isMainModule = import.meta.url === `file://${process.argv[1]}`
 if (isMainModule) {
-  main()
+  launcherMain()
     .then(() => {
       process.exitCode = 0
     })
     .catch(error => {
-      console.error('[claude-memory] post-session failed:', error)
+      console.error('[claude-memory] post-session launcher failed:', error)
       process.exitCode = 2
     })
 }
