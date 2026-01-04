@@ -2,6 +2,7 @@
 
 import fs from 'fs'
 import { extractRecords } from '../lib/extract.js'
+import { findGitRoot } from '../lib/context.js'
 import { findSimilar, insertRecord, updateRecord } from '../lib/milvus.js'
 import { parseTranscript } from '../lib/transcript.js'
 import type { MemoryRecord, SessionEndInput } from '../lib/types.js'
@@ -30,10 +31,11 @@ async function main(): Promise<void> {
     console.error(`[claude-memory] Transcript parse warnings: ${transcript.parseErrors}`)
   }
 
+  const projectRoot = findGitRoot(payload.cwd) ?? payload.cwd
   const records = await extractRecords(transcript, {
     sessionId: payload.session_id,
     cwd: payload.cwd,
-    project: payload.cwd,
+    project: projectRoot,
     transcriptPath: payload.transcript_path
   })
 

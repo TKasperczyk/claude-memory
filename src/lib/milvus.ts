@@ -551,7 +551,8 @@ function buildFilter(filters: {
   }
 
   if (filters.domain) {
-    parts.push(`domain == "${escapeFilterValue(filters.domain)}"`)
+    const domainValue = escapeFilterValue(filters.domain)
+    parts.push(`(domain == "${domainValue}" || domain == "")`)
   }
 
   if (filters.type) {
