@@ -2,6 +2,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { initMilvus } from '../lib/milvus.js'
 import { extractSignals, formatContext, type ContextSignals } from '../lib/context.js'
 import { hybridSearch } from '../lib/milvus.js'
 import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type UserPromptSubmitInput } from '../lib/types.js'
@@ -12,46 +13,58 @@ const MAX_KEYWORD_COMMANDS = 2
 const PREPROMPT_TIMEOUT_MS = 4000
 const MAX_SEMANTIC_QUERY_CHARS = 1200
 
-async function main(): Promise<void> {
-  const payload = await readHookInput()
-  if (!payload) return
+export interface PrePromptResult {
+  context: string | null
+  signals: ContextSignals
+  results: HybridSearchResult[]
+  timedOut: boolean
+}
 
-  if (payload.hook_event_name !== 'UserPromptSubmit') {
-    console.error('[claude-memory] Unexpected hook event:', payload.hook_event_name)
-    return
+/**
+ * Core pre-prompt hook logic. Exported for testing.
+ *
+ * Searches memories based on the prompt and returns formatted context.
+ */
+export async function handlePrePrompt(
+  input: UserPromptSubmitInput,
+  config: Config = DEFAULT_CONFIG
+): Promise<PrePromptResult> {
+  if (!input.prompt || !input.prompt.trim()) {
+    return {
+      context: null,
+      signals: { errors: [], commands: [] },
+      results: [],
+      timedOut: false
+    }
   }
 
-  if (!payload.prompt || !payload.prompt.trim()) {
-    console.error('[claude-memory] Empty prompt; skipping injection.')
-    return
-  }
+  const signals = extractSignals(input.prompt, input.cwd)
 
   const result = await runWithTimeout(async () => {
-    const signals = extractSignals(payload.prompt, payload.cwd)
-    const config = loadConfig(signals.projectRoot ?? payload.cwd)
-
-    const results = await searchMemories(payload.prompt, signals, config, payload.cwd)
+    const results = await searchMemories(input.prompt, signals, config, input.cwd)
     if (results.length === 0) {
-      console.error('[claude-memory] No matching memories found.')
-      return null
+      return { context: null, results }
     }
 
-    const context = formatContext(results.map(result => result.record), config)
-    if (!context) {
-      console.error('[claude-memory] Context empty after formatting.')
-      return null
-    }
-
-    return context
+    const context = formatContext(results.map(r => r.record), config)
+    return { context: context || null, results }
   }, PREPROMPT_TIMEOUT_MS)
 
   if (!result.completed) {
-    console.error(`[claude-memory] Pre-prompt timed out after ${PREPROMPT_TIMEOUT_MS}ms; skipping injection.`)
-    return
+    return {
+      context: null,
+      signals,
+      results: [],
+      timedOut: true
+    }
   }
 
-  if (!result.value) return
-  process.stdout.write(result.value)
+  return {
+    context: result.value?.context ?? null,
+    signals,
+    results: result.value?.results ?? [],
+    timedOut: false
+  }
 }
 
 async function searchMemories(
@@ -221,11 +234,52 @@ function readStdin(): Promise<string> {
   })
 }
 
-main()
-  .then(() => {
-    process.exitCode = 0
-  })
-  .catch(error => {
-    console.error('[claude-memory] pre-prompt failed:', error)
-    process.exitCode = 2
-  })
+async function main(): Promise<void> {
+  const payload = await readHookInput()
+  if (!payload) return
+
+  if (payload.hook_event_name !== 'UserPromptSubmit') {
+    console.error('[claude-memory] Unexpected hook event:', payload.hook_event_name)
+    return
+  }
+
+  if (!payload.prompt || !payload.prompt.trim()) {
+    console.error('[claude-memory] Empty prompt; skipping injection.')
+    return
+  }
+
+  const config = loadConfig(extractSignals(payload.prompt, payload.cwd).projectRoot ?? payload.cwd)
+  await initMilvus(config)
+
+  const result = await handlePrePrompt(payload, config)
+
+  if (result.timedOut) {
+    console.error(`[claude-memory] Pre-prompt timed out after ${PREPROMPT_TIMEOUT_MS}ms; skipping injection.`)
+    return
+  }
+
+  if (result.results.length === 0) {
+    console.error('[claude-memory] No matching memories found.')
+    return
+  }
+
+  if (!result.context) {
+    console.error('[claude-memory] Context empty after formatting.')
+    return
+  }
+
+  process.stdout.write(result.context)
+}
+
+// Only run main when executed directly (not imported)
+const isMainModule = import.meta.url === `file://${process.argv[1]}`
+if (isMainModule) {
+  main()
+    .then(() => {
+      process.exitCode = 0
+    })
+    .catch(error => {
+      console.error('[claude-memory] pre-prompt failed:', error)
+      process.exitCode = 2
+    })
+}

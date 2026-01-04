@@ -8,7 +8,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
@@ -24,6 +23,8 @@ import {
 } from './helpers.js'
 import { parseTranscript } from '../src/lib/transcript.js'
 import { initMilvus, insertRecord, getRecord, hybridSearch, findSimilar } from '../src/lib/milvus.js'
+import { handlePostSession } from '../src/hooks/post-session.js'
+import type { SessionEndInput } from '../src/lib/types.js'
 
 const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
 
@@ -215,17 +216,12 @@ this is not valid json
     })
   })
 
-  // Hook integration tests are skipped by default because they spawn subprocesses
-  // that may have race conditions with Milvus state. Run manually with:
-  // INTEGRATION=1 pnpm test
-  const skipIntegration = !process.env.INTEGRATION
-
-  describe.skipIf(skipIntegration)('Post-Session Hook Integration', () => {
+  describe('Post-Session Hook Integration', () => {
     it.skipIf(!hasAnthropicKey)('should extract and store records from transcript', async () => {
       const entries = buildTypicalTranscriptEntries()
       const transcriptPath = createMockTranscript(entries)
 
-      const hookInput = {
+      const hookInput: SessionEndInput = {
         session_id: 'test-session-123',
         transcript_path: transcriptPath,
         cwd: TEST_PROJECT,
@@ -234,10 +230,10 @@ this is not valid json
         reason: 'prompt_input_exit'
       }
 
-      // Run the post-session hook
-      const result = await runHook('post-session', hookInput)
+      const result = await handlePostSession(hookInput, TEST_CONFIG)
 
-      expect(result.exitCode).toBe(0)
+      expect(result.reason).toBeUndefined()
+      expect(result.inserted + result.updated).toBeGreaterThan(0)
 
       // Check that records were stored
       const count = await countTestRecords()
@@ -248,7 +244,7 @@ this is not valid json
       const entries = buildTypicalTranscriptEntries()
       const transcriptPath = createMockTranscript(entries)
 
-      const hookInput = {
+      const hookInput: SessionEndInput = {
         session_id: 'test-session-456',
         transcript_path: transcriptPath,
         cwd: TEST_PROJECT,
@@ -257,10 +253,11 @@ this is not valid json
         reason: 'clear'
       }
 
-      const result = await runHook('post-session', hookInput)
+      const result = await handlePostSession(hookInput, TEST_CONFIG)
 
-      expect(result.exitCode).toBe(0)
-      expect(result.stderr).toContain('reason=clear')
+      expect(result.reason).toBe('clear')
+      expect(result.inserted).toBe(0)
+      expect(result.updated).toBe(0)
 
       // Should not have stored any records
       const count = await countTestRecords()
@@ -268,7 +265,7 @@ this is not valid json
     })
 
     it('should handle missing transcript gracefully', async () => {
-      const hookInput = {
+      const hookInput: SessionEndInput = {
         session_id: 'test-session-789',
         transcript_path: '/nonexistent/path/transcript.jsonl',
         cwd: TEST_PROJECT,
@@ -277,62 +274,10 @@ this is not valid json
         reason: 'prompt_input_exit'
       }
 
-      const result = await runHook('post-session', hookInput)
+      const result = await handlePostSession(hookInput, TEST_CONFIG)
 
-      expect(result.exitCode).toBe(0)
-      expect(result.stderr).toContain('Transcript not found')
+      expect(result.reason).toBe('no_transcript')
+      expect(result.inserted).toBe(0)
     })
   })
 })
-
-/**
- * Run a hook script with the given input.
- */
-async function runHook(
-  hookName: 'post-session' | 'pre-prompt',
-  input: object
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const scriptPath = path.resolve(__dirname, `../src/hooks/${hookName}.ts`)
-
-  return new Promise((resolve, reject) => {
-    const child = spawn('npx', ['tsx', scriptPath], {
-      cwd: path.resolve(__dirname, '..'),
-      env: {
-        ...process.env,
-        CC_MEMORIES_COLLECTION: TEST_CONFIG.milvus.collection,
-        DEBUG: ''
-      }
-    })
-
-    let stdout = ''
-    let stderr = ''
-
-    child.stdout.on('data', data => {
-      stdout += data.toString()
-    })
-
-    child.stderr.on('data', data => {
-      stderr += data.toString()
-    })
-
-    // Send input via stdin
-    child.stdin.write(JSON.stringify(input))
-    child.stdin.end()
-
-    child.on('close', code => {
-      resolve({
-        exitCode: code ?? 0,
-        stdout,
-        stderr
-      })
-    })
-
-    child.on('error', reject)
-
-    // Timeout after 30 seconds
-    setTimeout(() => {
-      child.kill()
-      reject(new Error('Hook execution timed out'))
-    }, 30000)
-  })
-}

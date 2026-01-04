@@ -5,8 +5,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { spawn } from 'child_process'
-import path from 'path'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
 import {
   dropTestCollection,
@@ -18,6 +16,8 @@ import {
 } from './helpers.js'
 import { initMilvus, insertRecord, hybridSearch } from '../src/lib/milvus.js'
 import { extractSignals, formatContext } from '../src/lib/context.js'
+import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
+import type { UserPromptSubmitInput } from '../src/lib/types.js'
 
 describe('Injection E2E', () => {
   beforeAll(async () => {
@@ -264,12 +264,7 @@ And it failed. What should I do?`
     })
   })
 
-  // Hook integration tests are skipped by default because they spawn subprocesses
-  // that may have race conditions with Milvus state. Run manually with:
-  // INTEGRATION=1 pnpm test
-  const skipIntegration = !process.env.INTEGRATION
-
-  describe.skipIf(skipIntegration)('Pre-Prompt Hook Integration', () => {
+  describe('Pre-Prompt Hook Integration', () => {
     it('should inject context for matching memories', async () => {
       // Pre-populate with a known record
       await insertRecord(createMockErrorRecord({
@@ -278,7 +273,7 @@ And it failed. What should I do?`
         resolution: 'Start PostgreSQL with: sudo systemctl start postgresql'
       }), TEST_CONFIG)
 
-      const hookInput = {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'test-session-inject-1',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -287,17 +282,17 @@ And it failed. What should I do?`
         prompt: 'I am getting ECONNREFUSED error on port 5432'
       }
 
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
 
-      expect(result.exitCode).toBe(0)
-      // stdout should contain injected context
-      expect(result.stdout).toContain('<prior-knowledge>')
-      expect(result.stdout).toContain('ECONNREFUSED')
-      expect(result.stdout).toContain('postgresql')
+      expect(result.timedOut).toBe(false)
+      expect(result.context).not.toBeNull()
+      expect(result.context).toContain('<prior-knowledge>')
+      expect(result.context).toContain('ECONNREFUSED')
+      expect(result.context).toContain('postgresql')
     })
 
     it('should handle empty prompt gracefully', async () => {
-      const hookInput = {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'test-session-inject-2',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -306,15 +301,14 @@ And it failed. What should I do?`
         prompt: ''
       }
 
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
 
-      expect(result.exitCode).toBe(0)
-      expect(result.stderr).toContain('Empty prompt')
-      expect(result.stdout).toBe('')
+      expect(result.context).toBeNull()
+      expect(result.results.length).toBe(0)
     })
 
     it('should handle no matching memories', async () => {
-      const hookInput = {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'test-session-inject-3',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -323,16 +317,14 @@ And it failed. What should I do?`
         prompt: 'How do I cook pasta?'
       }
 
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
 
-      expect(result.exitCode).toBe(0)
-      expect(result.stderr).toContain('No matching memories')
-      // stdout may contain Milvus debug logs, just check no prior-knowledge
-      expect(result.stdout).not.toContain('<prior-knowledge>')
+      expect(result.results.length).toBe(0)
+      expect(result.context).toBeNull()
     })
 
-    it('should respect timeout and not hang', async () => {
-      const hookInput = {
+    it('should complete within reasonable time', async () => {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'test-session-inject-4',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -342,65 +334,12 @@ And it failed. What should I do?`
       }
 
       const start = Date.now()
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
       const elapsed = Date.now() - start
 
-      expect(result.exitCode).toBe(0)
-      // Should complete within the 4s timeout + buffer
+      expect(result.timedOut).toBe(false)
+      // Should complete within the 4s internal timeout + buffer
       expect(elapsed).toBeLessThan(10000)
     })
   })
 })
-
-/**
- * Run a hook script with the given input.
- */
-async function runHook(
-  hookName: 'post-session' | 'pre-prompt',
-  input: object
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const scriptPath = path.resolve(__dirname, `../src/hooks/${hookName}.ts`)
-
-  return new Promise((resolve, reject) => {
-    const child = spawn('npx', ['tsx', scriptPath], {
-      cwd: path.resolve(__dirname, '..'),
-      env: {
-        ...process.env,
-        CC_MEMORIES_COLLECTION: TEST_CONFIG.milvus.collection,
-        // Suppress Milvus debug logs
-        DEBUG: ''
-      }
-    })
-
-    let stdout = ''
-    let stderr = ''
-
-    child.stdout.on('data', data => {
-      stdout += data.toString()
-    })
-
-    child.stderr.on('data', data => {
-      stderr += data.toString()
-    })
-
-    // Send input via stdin
-    child.stdin.write(JSON.stringify(input))
-    child.stdin.end()
-
-    child.on('close', code => {
-      resolve({
-        exitCode: code ?? 0,
-        stdout,
-        stderr
-      })
-    })
-
-    child.on('error', reject)
-
-    // Timeout after 30 seconds
-    setTimeout(() => {
-      child.kill()
-      reject(new Error('Hook execution timed out'))
-    }, 30000)
-  })
-}

@@ -17,6 +17,7 @@ import {
 const CONTENT_MAX_LENGTH = 16384
 const EXACT_TEXT_MAX_LENGTH = 4096
 const SEARCH_NPROBE = 64
+const POST_FLUSH_DELAY_MS = 150 // IVF_FLAT index needs time to update after flush
 
 const OUTPUT_FIELDS = [
   'id',
@@ -66,9 +67,7 @@ export async function insertRecord(
       data: [row]
     })
 
-    await client!.flush({
-      collection_names: [config.milvus.collection]
-    })
+    await flushAndWait(config.milvus.collection)
   } catch (error) {
     console.error('[claude-memory] insertRecord failed:', error)
     throw error
@@ -104,9 +103,7 @@ export async function updateRecord(
       data: [row]
     })
 
-    await client!.flush({
-      collection_names: [config.milvus.collection]
-    })
+    await flushAndWait(config.milvus.collection)
 
     return true
   } catch (error) {
@@ -127,9 +124,7 @@ export async function deleteRecord(
       filter: `id == "${escapeFilterValue(id)}"`
     })
 
-    await client!.flush({
-      collection_names: [config.milvus.collection]
-    })
+    await flushAndWait(config.milvus.collection)
   } catch (error) {
     console.error('[claude-memory] deleteRecord failed:', error)
     throw error
@@ -498,6 +493,14 @@ function serializeRecord(record: MemoryRecord): string {
 function truncateString(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value
   return value.slice(0, maxLength)
+}
+
+async function flushAndWait(collectionName: string): Promise<void> {
+  await client!.flush({
+    collection_names: [collectionName]
+  })
+  // IVF_FLAT index needs time to update after flush before search works reliably
+  await new Promise(resolve => setTimeout(resolve, POST_FLUSH_DELAY_MS))
 }
 
 function toInt64(value: number | string | undefined, fallback: number): number {

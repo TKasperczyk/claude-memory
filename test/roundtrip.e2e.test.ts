@@ -9,8 +9,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { spawn } from 'child_process'
-import path from 'path'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
 import {
   dropTestCollection,
@@ -19,17 +17,14 @@ import {
   countTestRecords
 } from './helpers.js'
 import { initMilvus, insertRecord } from '../src/lib/milvus.js'
-import type { CommandRecord, ErrorRecord } from '../src/lib/types.js'
+import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
+import { handlePostSession } from '../src/hooks/post-session.js'
+import type { CommandRecord, ErrorRecord, UserPromptSubmitInput, SessionEndInput } from '../src/lib/types.js'
 import { randomUUID } from 'crypto'
 
 const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
 
-// Hook integration tests are skipped by default because they spawn subprocesses
-// that may have race conditions with Milvus state. Run manually with:
-// INTEGRATION=1 pnpm test
-const skipIntegration = !process.env.INTEGRATION
-
-describe.skipIf(skipIntegration)('Round-Trip E2E', () => {
+describe('Round-Trip E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
     await initMilvus(TEST_CONFIG)
@@ -71,7 +66,7 @@ describe.skipIf(skipIntegration)('Round-Trip E2E', () => {
       await insertRecord(commandRecord, TEST_CONFIG)
 
       // Step 2: Query with related prompt
-      const hookInput = {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'roundtrip-test-1',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -80,12 +75,12 @@ describe.skipIf(skipIntegration)('Round-Trip E2E', () => {
         prompt: 'How do I restart the kubernetes deployment?'
       }
 
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
 
       // Step 3: Verify context contains the command
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('<prior-knowledge>')
-      expect(result.stdout).toContain('kubectl rollout restart')
+      expect(result.timedOut).toBe(false)
+      expect(result.context).toContain('<prior-knowledge>')
+      expect(result.context).toContain('kubectl rollout restart')
     })
 
     it('should retrieve injected context for stored error resolution', async () => {
@@ -113,7 +108,7 @@ describe.skipIf(skipIntegration)('Round-Trip E2E', () => {
       await insertRecord(errorRecord, TEST_CONFIG)
 
       // Step 2: Query with related error
-      const hookInput = {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'roundtrip-test-2',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -124,13 +119,13 @@ FATAL: password authentication failed for user "postgres"
 How do I fix it?`
       }
 
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
 
       // Step 3: Verify context contains resolution
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('<prior-knowledge>')
-      expect(result.stdout).toContain('password')
-      expect(result.stdout).toContain('.env')
+      expect(result.timedOut).toBe(false)
+      expect(result.context).toContain('<prior-knowledge>')
+      expect(result.context).toContain('password')
+      expect(result.context).toContain('.env')
     })
 
     it('should handle multiple related memories', async () => {
@@ -188,7 +183,7 @@ How do I fix it?`
       }
 
       // Query for docker-related help
-      const hookInput = {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'roundtrip-test-3',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -197,11 +192,11 @@ How do I fix it?`
         prompt: 'How do I work with docker compose in this project?'
       }
 
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
 
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('<prior-knowledge>')
-      expect(result.stdout).toContain('docker compose')
+      expect(result.timedOut).toBe(false)
+      expect(result.context).toContain('<prior-knowledge>')
+      expect(result.context).toContain('docker compose')
     })
   })
 
@@ -253,7 +248,7 @@ How do I fix it?`
       const transcriptPath = createMockTranscript(transcriptEntries)
 
       // Step 2: Run post-session to extract
-      const extractInput = {
+      const extractInput: SessionEndInput = {
         session_id: 'roundtrip-full-1',
         transcript_path: transcriptPath,
         cwd: TEST_PROJECT,
@@ -262,15 +257,16 @@ How do I fix it?`
         reason: 'prompt_input_exit'
       }
 
-      const extractResult = await runHook('post-session', extractInput)
-      expect(extractResult.exitCode).toBe(0)
+      const extractResult = await handlePostSession(extractInput, TEST_CONFIG)
+      expect(extractResult.reason).toBeUndefined()
+      expect(extractResult.inserted + extractResult.updated).toBeGreaterThan(0)
 
       // Verify records were stored
       const count = await countTestRecords()
       expect(count).toBeGreaterThan(0)
 
       // Step 3: Query with related prompt
-      const injectInput = {
+      const injectInput: UserPromptSubmitInput = {
         session_id: 'roundtrip-full-2',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -279,12 +275,12 @@ How do I fix it?`
         prompt: 'How do I run database migrations in this project?'
       }
 
-      const injectResult = await runHook('pre-prompt', injectInput)
+      const injectResult = await handlePrePrompt(injectInput, TEST_CONFIG)
 
       // Step 4: Verify context
-      expect(injectResult.exitCode).toBe(0)
-      expect(injectResult.stdout).toContain('<prior-knowledge>')
-      expect(injectResult.stdout).toContain('prisma')
+      expect(injectResult.timedOut).toBe(false)
+      expect(injectResult.context).toContain('<prior-knowledge>')
+      expect(injectResult.context).toContain('prisma')
     })
   })
 
@@ -308,7 +304,7 @@ How do I fix it?`
 
       await insertRecord(record, TEST_CONFIG)
 
-      const hookInput = {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'roundtrip-edge-1',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -317,10 +313,12 @@ How do I fix it?`
         prompt: 'old-deprecated-command'
       }
 
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
 
       // Should not include deprecated command in context
-      expect(result.stdout).not.toContain('old-deprecated-command')
+      if (result.context) {
+        expect(result.context).not.toContain('old-deprecated-command')
+      }
     })
 
     it('should prioritize exact keyword matches', async () => {
@@ -362,7 +360,7 @@ How do I fix it?`
 
       await insertRecord(otherRecord, TEST_CONFIG)
 
-      const hookInput = {
+      const hookInput: UserPromptSubmitInput = {
         session_id: 'roundtrip-edge-2',
         transcript_path: '',
         cwd: TEST_PROJECT,
@@ -371,62 +369,10 @@ How do I fix it?`
         prompt: 'SPECIFIC_UNIQUE_KEYWORD_123'
       }
 
-      const result = await runHook('pre-prompt', hookInput)
+      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
 
       // Should find the exact keyword match
-      expect(result.stdout).toContain('SPECIFIC_UNIQUE_KEYWORD_123')
+      expect(result.context).toContain('SPECIFIC_UNIQUE_KEYWORD_123')
     })
   })
 })
-
-/**
- * Run a hook script with the given input.
- */
-async function runHook(
-  hookName: 'post-session' | 'pre-prompt',
-  input: object
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const scriptPath = path.resolve(__dirname, `../src/hooks/${hookName}.ts`)
-
-  return new Promise((resolve, reject) => {
-    const child = spawn('npx', ['tsx', scriptPath], {
-      cwd: path.resolve(__dirname, '..'),
-      env: {
-        ...process.env,
-        CC_MEMORIES_COLLECTION: TEST_CONFIG.milvus.collection,
-        DEBUG: ''
-      }
-    })
-
-    let stdout = ''
-    let stderr = ''
-
-    child.stdout.on('data', data => {
-      stdout += data.toString()
-    })
-
-    child.stderr.on('data', data => {
-      stderr += data.toString()
-    })
-
-    // Send input via stdin
-    child.stdin.write(JSON.stringify(input))
-    child.stdin.end()
-
-    child.on('close', code => {
-      resolve({
-        exitCode: code ?? 0,
-        stdout,
-        stderr
-      })
-    })
-
-    child.on('error', reject)
-
-    // Timeout after 30 seconds
-    setTimeout(() => {
-      child.kill()
-      reject(new Error('Hook execution timed out'))
-    }, 30000)
-  })
-}
