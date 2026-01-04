@@ -1,0 +1,147 @@
+// Record type definitions for Claude Memory
+// See PLAN.md for full schemas
+
+export const EMBEDDING_DIM = 4096
+
+export type RecordType = 'command' | 'error' | 'discovery' | 'procedure'
+
+export interface BaseRecord {
+  id: string
+  type: RecordType
+  timestamp?: number
+  project?: string
+  domain?: string
+  successCount?: number
+  failureCount?: number
+  lastUsed?: number
+  deprecated?: boolean
+  embedding?: number[]
+}
+
+export interface CommandRecord extends BaseRecord {
+  type: 'command'
+  command: string
+  exitCode: number
+  truncatedOutput?: string
+  context: {
+    project: string
+    cwd: string
+    intent: string
+  }
+  outcome: 'success' | 'failure' | 'partial'
+  resolution?: string
+}
+
+export interface ErrorRecord extends BaseRecord {
+  type: 'error'
+  errorText: string
+  errorType: string
+  cause?: string
+  resolution: string
+  context: {
+    project: string
+    file?: string
+    tool?: string
+  }
+}
+
+export interface DiscoveryRecord extends BaseRecord {
+  type: 'discovery'
+  what: string
+  where: string
+  evidence: string
+  confidence: 'verified' | 'inferred' | 'tentative'
+}
+
+export interface ProcedureRecord extends BaseRecord {
+  type: 'procedure'
+  name: string
+  steps: string[]
+  context: {
+    project?: string
+    domain: string
+  }
+  prerequisites?: string[]
+  verification?: string
+}
+
+export type MemoryRecord = CommandRecord | ErrorRecord | DiscoveryRecord | ProcedureRecord
+
+export interface HybridSearchParams {
+  query: string
+  limit?: number
+  project?: string
+  domain?: string
+  type?: RecordType
+  embedding?: number[]
+  vectorWeight?: number
+  keywordWeight?: number
+  minSimilarity?: number
+  vectorLimit?: number
+  keywordLimit?: number
+}
+
+export interface HybridSearchResult {
+  record: MemoryRecord
+  score: number
+  similarity: number
+  keywordMatch: boolean
+}
+
+// Hook input types (from Claude Code)
+export interface HookInput {
+  session_id: string
+  transcript_path: string
+  cwd: string
+  permission_mode: string
+  hook_event_name: string
+}
+
+export interface UserPromptSubmitInput extends HookInput {
+  hook_event_name: 'UserPromptSubmit'
+  prompt: string
+}
+
+export interface SessionEndInput extends HookInput {
+  hook_event_name: 'SessionEnd'
+  reason: 'clear' | 'logout' | 'prompt_input_exit' | 'other'
+}
+
+// Configuration
+export interface Config {
+  milvus: {
+    address: string
+    collection: string
+  }
+  embeddings: {
+    baseUrl: string
+    model: string
+  }
+  extraction: {
+    model: string
+    maxTokens: number
+  }
+  injection: {
+    maxRecords: number
+    maxTokens: number
+  }
+}
+
+export const DEFAULT_CONFIG: Config = {
+  milvus: {
+    address: 'localhost:19530',
+    collection: 'cc_memories'
+  },
+  embeddings: {
+    baseUrl: 'http://127.0.0.1:1234/v1',
+    model: 'text-embedding-qwen3-embedding-8b'
+  },
+  extraction: {
+    model: 'claude-haiku-4-20250514',
+    maxTokens: 4000
+  },
+  injection: {
+    maxRecords: 5,
+    maxTokens: 2000
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.env
+config.local.json
+
+# Generated suggestions (reviewed manually)
+suggestions/skills/*.md
+suggestions/claude-md/*.md

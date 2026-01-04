@@ -1,0 +1,21 @@
+{
+  "name": "claude-memory",
+  "version": "0.1.0",
+  "description": "Technical knowledge persistence for Claude Code",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/",
+    "maintenance": "tsx src/maintenance.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@zilliz/milvus2-sdk-node": "^2.5.10",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
