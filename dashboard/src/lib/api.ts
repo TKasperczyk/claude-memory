@@ -122,6 +122,10 @@ export interface InjectedMemoryEntry {
   injectedAt: number
   prompt?: string
   stats?: MemoryStats | null
+  // Retrieval trigger info
+  similarity?: number    // Semantic similarity score (0-1)
+  keywordMatch?: boolean // Whether it was found via keyword search
+  score?: number         // Combined relevance score
 }
 
 export interface SessionRecord {

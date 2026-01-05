@@ -123,7 +123,19 @@ function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
     const injectedAt = asNumber(record.injectedAt)
     const prompt = asString(record.prompt)
     if (!id || !snippet || injectedAt === null) continue
-    entries.push({ id, snippet, injectedAt, ...(prompt && { prompt }) })
+
+    const entry: InjectedMemoryEntry = { id, snippet, injectedAt }
+    if (prompt) entry.prompt = prompt
+
+    // Parse retrieval trigger metadata
+    const similarity = asFloat(record.similarity)
+    const keywordMatch = asBoolean(record.keywordMatch)
+    const score = asFloat(record.score)
+    if (similarity !== null) entry.similarity = similarity
+    if (keywordMatch !== null) entry.keywordMatch = keywordMatch
+    if (score !== null) entry.score = score
+
+    entries.push(entry)
   }
 
   return entries
@@ -139,6 +151,20 @@ function asNumber(value: unknown): number | null {
     const parsed = Number(value)
     if (Number.isFinite(parsed)) return Math.trunc(parsed)
   }
+  return null
+}
+
+function asFloat(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value
   return null
 }
 

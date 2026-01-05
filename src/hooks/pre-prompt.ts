@@ -354,7 +354,7 @@ async function main(): Promise<void> {
   }
 
   process.stdout.write(result.context)
-  void trackInjectedMemories(payload.session_id, result.injectedRecords, payload.cwd, payload.prompt, config)
+  void trackInjectedMemories(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt, config)
     .catch(error => {
       console.error('[claude-memory] Failed to track injected memories:', error)
     })
@@ -363,18 +363,29 @@ async function main(): Promise<void> {
 async function trackInjectedMemories(
   sessionId: string,
   records: MemoryRecord[],
+  searchResults: HybridSearchResult[],
   cwd: string,
   prompt: string,
   config: Config
 ): Promise<void> {
   if (!sessionId || records.length === 0) return
 
+  // Build lookup map for retrieval metadata
+  const resultById = new Map(searchResults.map(r => [r.record.id, r]))
+
   const injectedAt = Date.now()
-  const entries = records.map(record => ({
-    id: record.id,
-    snippet: normalizeSnippet(formatRecordSnippet(record) ?? `type: ${record.type}`),
-    injectedAt
-  }))
+  const entries = records.map(record => {
+    const searchResult = resultById.get(record.id)
+    return {
+      id: record.id,
+      snippet: normalizeSnippet(formatRecordSnippet(record) ?? `type: ${record.type}`),
+      injectedAt,
+      // Include retrieval trigger metadata
+      similarity: searchResult?.similarity,
+      keywordMatch: searchResult?.keywordMatch,
+      score: searchResult?.score
+    }
+  })
 
   appendSessionTracking(sessionId, entries, cwd, prompt)
 

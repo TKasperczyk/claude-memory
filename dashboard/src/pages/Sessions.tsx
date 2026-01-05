@@ -67,6 +67,33 @@ function getUsageColor(stats: MemoryStats | null | undefined): string {
   return 'text-red-400'
 }
 
+function formatRetrievalTrigger(memory: SessionRecord['memories'][0]): { label: string; color: string; title: string } | null {
+  const hasKeyword = memory.keywordMatch === true
+  const hasSemantic = typeof memory.similarity === 'number' && memory.similarity > 0
+
+  if (!hasKeyword && !hasSemantic) return null
+
+  if (hasKeyword && hasSemantic) {
+    return {
+      label: 'K+S',
+      color: 'text-purple-400',
+      title: `Keyword + Semantic (${(memory.similarity! * 100).toFixed(0)}% similarity, score: ${memory.score?.toFixed(2) ?? '?'})`
+    }
+  }
+  if (hasKeyword) {
+    return {
+      label: 'K',
+      color: 'text-amber-400',
+      title: `Keyword match (score: ${memory.score?.toFixed(2) ?? '?'})`
+    }
+  }
+  return {
+    label: 'S',
+    color: 'text-cyan-400',
+    title: `Semantic (${(memory.similarity! * 100).toFixed(0)}% similarity, score: ${memory.score?.toFixed(2) ?? '?'})`
+  }
+}
+
 interface TypeGroup {
   type: RecordType
   memories: SessionRecord['memories']
@@ -236,6 +263,7 @@ export default function Sessions() {
                             {group.memories.map((memory, mi) => {
                               const title = parseSnippetTitle(memory.snippet)
                               const isLoading = loadingMemory === memory.id
+                              const trigger = formatRetrievalTrigger(memory)
 
                               return (
                                 <button
@@ -245,6 +273,14 @@ export default function Sessions() {
                                   className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm hover:bg-background/60 transition-base disabled:opacity-50 group"
                                 >
                                   <span className="flex-1 truncate text-foreground/70 group-hover:text-foreground/90">{title}</span>
+                                  {trigger && (
+                                    <span
+                                      className={`text-[10px] font-mono px-1 py-0.5 rounded bg-background/50 shrink-0 ${trigger.color}`}
+                                      title={trigger.title}
+                                    >
+                                      {trigger.label}
+                                    </span>
+                                  )}
                                   <span className={`text-xs font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
                                     {formatUsageRatio(memory.stats)}
                                   </span>

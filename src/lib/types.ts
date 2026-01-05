@@ -79,6 +79,10 @@ export interface InjectedMemoryEntry {
   snippet: string
   injectedAt: number
   prompt?: string
+  // Retrieval trigger info
+  similarity?: number    // Semantic similarity score (0-1)
+  keywordMatch?: boolean // Whether it was found via keyword search
+  score?: number         // Combined relevance score
 }
 
 export interface InjectionSessionRecord {
