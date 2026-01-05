@@ -66,7 +66,7 @@ const finalScore = baseScore + (recencyBoost * recencyWeight)
 
 ---
 
-### 5. Global vs Project-Scoped Memories
+### 5. Global vs Project-Scoped Memories ✅ IMPLEMENTED
 
 **Problem**: "pnpm peer deps require --shamefully-hoist" is useful everywhere, but scoped to one project.
 
@@ -75,12 +75,12 @@ const finalScore = baseScore + (recencyBoost * recencyWeight)
 - At extraction, let Haiku mark universal knowledge as global
 - Retrieval: Always include global matches alongside project-scoped
 
-**Extraction prompt addition**:
-```
-If a discovery or procedure applies universally (not specific to this project),
-set scope: "global". Examples: general CLI flags, common error patterns,
-language features. Project-specific: architecture decisions, file locations.
-```
+**Implementation**:
+- `scope` field added to `BaseRecord` in `types.ts`
+- Milvus schema updated with migration (`ensureScopeField`)
+- Extraction prompt includes scope guidance for all record types
+- `hybridSearch` filter: `(project == X OR scope == "global")` when project is set
+- Defaults to `'project'` for backwards compatibility
 
 ---
 

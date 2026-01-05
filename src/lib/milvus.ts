@@ -12,6 +12,7 @@ import {
   type HybridSearchParams,
   type HybridSearchResult,
   type MemoryRecord,
+  type RecordScope,
   type RecordType
 } from './types.js'
 
@@ -30,6 +31,7 @@ const OUTPUT_FIELDS = [
   'content',
   'exact_text',
   'project',
+  'scope',
   'domain',
   'timestamp',
   'success_count',
@@ -55,6 +57,7 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
     await createCollection(config)
   } else {
     await ensureUsageFields(config)
+    await ensureScopeField(config)
   }
 
   // Release first in case collection is in an inconsistent state
@@ -443,6 +446,7 @@ export async function hybridSearch(
 
     const baseFilter = buildFilter({
       project: params.project,
+      includeGlobal: Boolean(params.project),
       domain: params.domain,
       type: params.type,
       excludeDeprecated: params.excludeDeprecated
@@ -629,6 +633,7 @@ async function createCollection(config: Config): Promise<void> {
       { name: 'content', data_type: DataType.VarChar, max_length: CONTENT_MAX_LENGTH },
       { name: 'exact_text', data_type: DataType.VarChar, max_length: EXACT_TEXT_MAX_LENGTH },
       { name: 'project', data_type: DataType.VarChar, max_length: 256 },
+      { name: 'scope', data_type: DataType.VarChar, max_length: 16 },
       { name: 'domain', data_type: DataType.VarChar, max_length: 64 },
       { name: 'timestamp', data_type: DataType.Int64 },
       { name: 'success_count', data_type: DataType.Int64 },
@@ -685,6 +690,34 @@ async function ensureUsageFields(config: Config): Promise<void> {
   }
 }
 
+async function ensureScopeField(config: Config): Promise<void> {
+  if (!client) throw new Error('Milvus client not initialized')
+
+  try {
+    const description = await client.describeCollection({
+      collection_name: config.milvus.collection
+    })
+
+    const fields = description.schema?.fields ?? []
+    const fieldNames = new Set(fields.map(field => field.name))
+    if (fieldNames.has('scope')) return
+
+    const result = await client.addCollectionFields({
+      collection_name: config.milvus.collection,
+      fields: [{ name: 'scope', data_type: DataType.VarChar, max_length: 16, nullable: true }]
+    })
+
+    if (result.error_code !== 'Success') {
+      console.error(`[claude-memory] Failed to add scope field: ${result.reason}`)
+      return
+    }
+
+    console.error(`[claude-memory] Added field to ${config.milvus.collection}: scope`)
+  } catch (error) {
+    console.error('[claude-memory] Failed to ensure scope field:', error)
+  }
+}
+
 async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<RowData> {
   const normalized = normalizeRecord(record)
   const content = serializeRecord(normalized)
@@ -705,6 +738,7 @@ async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<Row
     content,
     exact_text: exactText,
     project: normalized.project ?? '',
+    scope: normalized.scope,
     domain: normalized.domain ?? '',
     timestamp: toInt64(normalized.timestamp, Date.now()),
     success_count: toInt64(normalized.successCount, 0),
@@ -720,6 +754,7 @@ async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<Row
 function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const project = record.project ?? resolveProject(record)
   const domain = record.domain ?? resolveDomain(record)
+  const scope = normalizeScope(record.scope)
   const timestamp = toInt64(record.timestamp, Date.now())
   const successCount = toInt64(record.successCount, 0)
   const failureCount = toInt64(record.failureCount, 0)
@@ -731,6 +766,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   return {
     ...record,
     project,
+    scope,
     domain,
     timestamp,
     successCount,
@@ -832,6 +868,21 @@ function isValidConfidence(value: unknown): value is 'verified' | 'inferred' | '
   return value === 'verified' || value === 'inferred' || value === 'tentative'
 }
 
+function isValidScope(value: unknown): value is RecordScope {
+  return value === 'global' || value === 'project'
+}
+
+function normalizeScope(value: unknown): RecordScope {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'global' || normalized === 'project') {
+      return normalized as RecordScope
+    }
+  }
+  if (isValidScope(value)) return value
+  return 'project'
+}
+
 function isValidRecord(record: MemoryRecord): boolean {
   if (!isNonEmptyString(record.id)) return false
 
@@ -890,6 +941,7 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord | null {
     id: idValue,
     type: rawType,
     project: (row.project as string | undefined) ?? parsed.project,
+    scope: normalizeScope(row.scope ?? parsed.scope),
     domain: (row.domain as string | undefined) ?? parsed.domain,
     timestamp: toInt64((row.timestamp as number | string | undefined) ?? parsed.timestamp, 0),
     successCount: toInt64((row.success_count as number | string | undefined) ?? parsed.successCount, 0),
@@ -946,6 +998,7 @@ function needsEmbeddingRefresh(updates: Partial<MemoryRecord>): boolean {
     'usageCount',
     'lastUsed',
     'deprecated',
+    'scope',
     'embedding'
   ])
 
@@ -965,6 +1018,7 @@ function escapeLikeValue(value: string): string {
 
 function buildFilter(filters: {
   project?: string
+  includeGlobal?: boolean
   domain?: string
   type?: RecordType
   excludeId?: string
@@ -973,7 +1027,12 @@ function buildFilter(filters: {
   const parts: string[] = []
 
   if (filters.project) {
-    parts.push(`project == "${escapeFilterValue(filters.project)}"`)
+    const projectClause = `project == "${escapeFilterValue(filters.project)}"`
+    if (filters.includeGlobal) {
+      parts.push(`(${projectClause} || scope == "global")`)
+    } else {
+      parts.push(projectClause)
+    }
   }
 
   if (filters.domain) {

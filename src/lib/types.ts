@@ -4,10 +4,12 @@
 export const EMBEDDING_DIM = 4096
 
 export type RecordType = 'command' | 'error' | 'discovery' | 'procedure'
+export type RecordScope = 'global' | 'project'
 
 export interface BaseRecord {
   id: string
   type: RecordType
+  scope?: RecordScope
   timestamp?: number
   project?: string
   domain?: string

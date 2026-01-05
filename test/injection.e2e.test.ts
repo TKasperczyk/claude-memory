@@ -241,6 +241,30 @@ And it failed. What should I do?`
       expect(results.every(r => r.record.project === '/project-a')).toBe(true)
     })
 
+    it('should include global records when filtering by project', async () => {
+      await insertRecord(createMockCommandRecord({
+        command: 'pnpm build',
+        project: '/project-a'
+      }), TEST_CONFIG)
+
+      await insertRecord(createMockCommandRecord({
+        command: 'pnpm install --shamefully-hoist',
+        project: '/project-b',
+        scope: 'global'
+      }), TEST_CONFIG)
+
+      const results = await hybridSearch({
+        query: 'pnpm',
+        project: '/project-a',
+        limit: 10,
+        keywordWeight: 1,
+        vectorWeight: 0
+      }, TEST_CONFIG)
+
+      expect(results.some(r => r.record.scope === 'global')).toBe(true)
+      expect(results.every(r => r.record.project === '/project-a' || r.record.scope === 'global')).toBe(true)
+    })
+
     it('should support hybrid search combining keyword and vector', async () => {
       await insertRecord(createMockCommandRecord({
         command: 'kubectl get pods',

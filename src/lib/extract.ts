@@ -59,6 +59,11 @@ Priority guidance:
 - Prefer extracting project-level context over routine commands.
 - A single "project uses SvelteKit with Supabase" discovery is more valuable than 10 routine build commands.
 - Focus on insights that would help orient a future session in this codebase.
+
+Scope guidance:
+If a discovery or procedure applies universally (not specific to this project),
+set scope: "global". Examples: general CLI flags, common error patterns,
+language features. Project-specific: architecture decisions, file locations.
 `
 
 const DOMAIN_INSTRUCTIONS = `
@@ -117,6 +122,7 @@ const EMIT_RECORDS_TOOL: Anthropic.Tool = {
                 outcome: { type: 'string', enum: ['success', 'failure', 'partial'] },
                 resolution: { type: 'string' },
                 project: { type: 'string' },
+                scope: { type: 'string', enum: ['global', 'project'] },
                 domain: { type: 'string' },
                 context: {
                   type: 'object',
@@ -141,6 +147,7 @@ const EMIT_RECORDS_TOOL: Anthropic.Tool = {
                 cause: { type: 'string' },
                 resolution: { type: 'string' },
                 project: { type: 'string' },
+                scope: { type: 'string', enum: ['global', 'project'] },
                 domain: { type: 'string' },
                 context: {
                   type: 'object',
@@ -165,6 +172,7 @@ const EMIT_RECORDS_TOOL: Anthropic.Tool = {
                 evidence: { type: 'string' },
                 confidence: { type: 'string', enum: ['verified', 'inferred', 'tentative'] },
                 project: { type: 'string' },
+                scope: { type: 'string', enum: ['global', 'project'] },
                 domain: { type: 'string' }
               }
             },
@@ -179,6 +187,7 @@ const EMIT_RECORDS_TOOL: Anthropic.Tool = {
                 prerequisites: { type: 'array', items: { type: 'string' } },
                 verification: { type: 'string' },
                 project: { type: 'string' },
+                scope: { type: 'string', enum: ['global', 'project'] },
                 domain: { type: 'string' },
                 context: {
                   type: 'object',
@@ -651,6 +660,9 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
     }
   }
 
+  const scope = coerceScope(input.scope)
+  if (scope) record.scope = scope
+
   const truncatedOutputRaw = asString(input.truncatedOutput)
   const truncatedOutput = truncatedOutputRaw ? stripTruncationMarkers(truncatedOutputRaw) : undefined
   if (truncatedOutput) {
@@ -687,6 +699,9 @@ function coerceErrorRecord(input: Record<string, unknown>, context: ExtractionCo
     }
   }
 
+  const scope = coerceScope(input.scope)
+  if (scope) record.scope = scope
+
   const cause = asString(input.cause)
   if (cause) record.cause = cause
 
@@ -719,6 +734,9 @@ function coerceDiscoveryRecord(input: Record<string, unknown>, context: Extracti
     confidence
   }
 
+  const scope = coerceScope(input.scope)
+  if (scope) record.scope = scope
+
   const project = asString(input.project) ?? context.project ?? context.cwd
   if (project) record.project = project
   const domain = asString(input.domain) ?? context.domain
@@ -744,6 +762,9 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
       domain
     }
   }
+
+  const scope = coerceScope(input.scope)
+  if (scope) record.scope = scope
 
   const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
   if (project) record.context.project = project
@@ -797,6 +818,13 @@ function stripTruncationMarkers(value: string): string {
 
 function pickProject(project: string | undefined, context: ExtractionContext): string {
   return project ?? context.project ?? context.cwd ?? 'unknown'
+}
+
+function coerceScope(value: unknown): 'global' | 'project' | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'global' || normalized === 'project') return normalized
+  return null
 }
 
 function coerceOutcome(value: unknown): CommandRecord['outcome'] | null {
