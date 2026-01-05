@@ -176,13 +176,26 @@ app.post('/api/preview', async (req, res) => {
     const signals = extractSignals(prompt, cwd)
 
     const embedding = await embed(prompt, CONFIG)
-    const results = await hybridSearch({
+
+    // First try with project + domain scope
+    let results = await hybridSearch({
       query: prompt,
       embedding,
       limit: CONFIG.injection.maxRecords,
       project: signals.projectRoot,
       domain: signals.domain
     }, CONFIG)
+
+    // Fallback: if no project-scoped hits, retry with domain filter only
+    // (matches pre-prompt hook behavior)
+    if (results.length === 0 && signals.projectRoot) {
+      results = await hybridSearch({
+        query: prompt,
+        embedding,
+        limit: CONFIG.injection.maxRecords,
+        domain: signals.domain
+      }, CONFIG)
+    }
 
     const { context, records } = buildContext(
       results.map(r => r.record),
