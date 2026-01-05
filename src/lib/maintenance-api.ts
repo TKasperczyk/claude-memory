@@ -2,10 +2,9 @@ import { DEFAULT_CONFIG, type Config } from './types.js'
 import { findClaudeMdCandidates, findSkillCandidates } from './promotions.js'
 import {
   runStaleCheck,
+  runLowUsageDeprecation,
   runLowUsageCheck,
-  runGeneralization,
   runConsolidation,
-  runContradictionCheck,
   runGlobalPromotion,
   type MaintenanceAction,
   type MaintenanceRunResult
@@ -22,19 +21,17 @@ export interface OperationResult {
 
 export type MaintenanceOperation =
   | 'stale-check'
+  | 'low-usage-deprecation'
   | 'low-usage'
-  | 'generalization'
   | 'consolidation'
-  | 'contradictions'
   | 'global-promotion'
   | 'promotion-suggestions'
 
 export const MAINTENANCE_OPERATIONS: MaintenanceOperation[] = [
   'stale-check',
-  'generalization',
+  'low-usage-deprecation',
   'low-usage',
   'consolidation',
-  'contradictions',
   'global-promotion',
   'promotion-suggestions'
 ]
@@ -89,14 +86,12 @@ async function runOperation(
   switch (operation) {
     case 'stale-check':
       return runStaleCheck(dryRun, config)
+    case 'low-usage-deprecation':
+      return runLowUsageDeprecation(dryRun, config)
     case 'low-usage':
       return runLowUsageCheck(dryRun, config)
-    case 'generalization':
-      return runGeneralization(dryRun, config)
     case 'consolidation':
       return runConsolidation(dryRun, config)
-    case 'contradictions':
-      return runContradictionCheck(dryRun, config)
     case 'global-promotion':
       return runGlobalPromotion(dryRun, config)
     case 'promotion-suggestions':

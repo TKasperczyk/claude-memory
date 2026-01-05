@@ -3,36 +3,26 @@
 import { initMilvus } from './lib/milvus.js'
 import {
   checkValidity,
-  checkGeneralization,
-  checkContradiction,
   checkGlobalPromotion,
   consolidateCluster,
-  CONTRADICTION_BATCH_SIZE,
-  findContradictionPairs,
   findGlobalCandidates,
+  findLowUsageHighRetrieval,
   findLowUsageRecords,
   findSimilarClusters,
   GLOBAL_PROMOTION_BATCH_SIZE,
   GLOBAL_PROMOTION_MIN_CONFIDENCE,
   GLOBAL_PROMOTION_RECHECK_DAYS,
-  generalizeRecord,
   findStaleRecords,
   isConfidenceSufficient,
   markDeprecated,
   promoteToGlobal,
-  resolveContradictionWithLLM,
-  type ContradictionPair,
-  type ContradictionResult
 } from './lib/maintenance.js'
 import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from './lib/promotions.js'
 import { loadConfig } from './lib/config.js'
-import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './lib/types.js'
-import { queryRecords, updateRecord } from './lib/milvus.js'
+import { DEFAULT_CONFIG, type Config } from './lib/types.js'
+import { updateRecord } from './lib/milvus.js'
 
 const SIMILARITY_THRESHOLD = 0.85
-const GENERALIZATION_BATCH_SIZE = 20
-const GENERALIZATION_SAMPLE_LIMIT = 200
-const GENERALIZATION_RECHECK_DAYS = 30
 
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 
@@ -58,10 +48,9 @@ async function main(): Promise<void> {
   console.error('[claude-memory] Maintenance started.')
 
   logMaintenanceResult('Stale check', await runStaleCheck(dryRun, config), dryRun)
-  logMaintenanceResult('Generalization', await runGeneralization(dryRun, config), dryRun)
+  logMaintenanceResult('Low usage deprecation', await runLowUsageDeprecation(dryRun, config), dryRun)
   logMaintenanceResult('Low usage check', await runLowUsageCheck(dryRun, config), dryRun)
   logMaintenanceResult('Consolidation', await runConsolidation(dryRun, config), dryRun)
-  logMaintenanceResult('Contradiction check', await runContradictionCheck(dryRun, config), dryRun)
   logMaintenanceResult('Global promotion', await runGlobalPromotion(dryRun, config), dryRun)
   await runPromotions(config, dryRun)
 
@@ -142,6 +131,54 @@ export async function runStaleCheck(
   return { actions, summary: { checked, deprecated, errors } }
 }
 
+export async function runLowUsageDeprecation(
+  dryRun: boolean,
+  config: Config = DEFAULT_CONFIG
+): Promise<MaintenanceRunResult> {
+  const actions: MaintenanceAction[] = []
+  let candidates = 0
+  let deprecated = 0
+  let errors = 0
+
+  try {
+    const records = await findLowUsageHighRetrieval(config)
+    candidates = records.length
+
+    for (const record of records) {
+      const retrievalCount = record.retrievalCount ?? 0
+      const usageCount = record.usageCount ?? 0
+      const reason = `zero-usage:${retrievalCount} retrievals`
+      const action: MaintenanceAction = {
+        type: 'deprecate',
+        recordId: record.id,
+        snippet: truncateSnippet(buildRecordSnippet(record)),
+        reason,
+        details: { retrievalCount, usageCount }
+      }
+
+      try {
+        if (dryRun) {
+          actions.push(action)
+          deprecated += 1
+        } else {
+          const updated = await markDeprecated(record.id, config)
+          if (updated) {
+            actions.push(action)
+            deprecated += 1
+          }
+        }
+      } catch {
+        errors += 1
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { actions, summary: { candidates, deprecated, errors }, error: message }
+  }
+
+  return { actions, summary: { candidates, deprecated, errors } }
+}
+
 export async function runLowUsageCheck(
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG
@@ -149,22 +186,13 @@ export async function runLowUsageCheck(
   const actions: MaintenanceAction[] = []
   let candidates = 0
   let deprecated = 0
-  let skippedRecentGeneralization = 0
   let errors = 0
-
-  const generalizationCutoff = Date.now() - GENERALIZATION_RECHECK_DAYS * 24 * 60 * 60 * 1000
 
   try {
     const records = await findLowUsageRecords(config)
     candidates = records.length
 
     for (const record of records) {
-      const lastCheck = record.lastGeneralizationCheck ?? 0
-      if (lastCheck >= generalizationCutoff) {
-        skippedRecentGeneralization += 1
-        continue
-      }
-
       const retrievalCount = record.retrievalCount ?? 1
       const usageCount = record.usageCount ?? 0
       const ratio = usageCount / Math.max(retrievalCount, 1)
@@ -196,121 +224,12 @@ export async function runLowUsageCheck(
     const message = error instanceof Error ? error.message : String(error)
     return {
       actions,
-      summary: { candidates, deprecated, skippedRecentGeneralization, errors },
+      summary: { candidates, deprecated, errors },
       error: message
     }
   }
 
-  return { actions, summary: { candidates, deprecated, skippedRecentGeneralization, errors } }
-}
-
-export async function runGeneralization(
-  dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
-): Promise<MaintenanceRunResult> {
-  const actions: MaintenanceAction[] = []
-  let eligible = 0
-  let checked = 0
-  let generalized = 0
-  let skippedRecent = 0
-  let skippedGeneralized = 0
-  let errors = 0
-
-  const cutoff = Date.now() - GENERALIZATION_RECHECK_DAYS * 24 * 60 * 60 * 1000
-
-  try {
-    const [lowUsage, sampled] = await Promise.all([
-      findLowUsageRecords(config),
-      queryRecords({ filter: 'deprecated == false', limit: GENERALIZATION_SAMPLE_LIMIT }, config)
-    ])
-
-    const combined = new Map<string, MemoryRecord>()
-    for (const record of [...lowUsage, ...sampled]) {
-      combined.set(record.id, record)
-    }
-
-    const candidates = Array.from(combined.values())
-    const filtered = candidates.filter(record => {
-      if (record.deprecated) return false
-      if (record.generalized) {
-        skippedGeneralized += 1
-        return false
-      }
-      const lastCheck = record.lastGeneralizationCheck ?? 0
-      if (lastCheck >= cutoff) {
-        skippedRecent += 1
-        return false
-      }
-      return true
-    })
-
-    filtered.sort((a, b) => {
-      const scoreDiff = computeGeneralizationPriority(b) - computeGeneralizationPriority(a)
-      if (scoreDiff !== 0) return scoreDiff
-      return (b.retrievalCount ?? 0) - (a.retrievalCount ?? 0)
-    })
-
-    const batch = filtered.slice(0, GENERALIZATION_BATCH_SIZE)
-    eligible = batch.length
-
-    for (const record of batch) {
-      checked += 1
-      const checkedAt = Date.now()
-
-      try {
-        const result = await checkGeneralization(record, config)
-        let applied = false
-
-        if (result.shouldGeneralize && result.generalizedRecord) {
-          const updates: Partial<MemoryRecord> = { ...result.generalizedRecord }
-          if (record.timestamp) {
-            updates.timestamp = record.timestamp
-          }
-
-          const before = truncateSnippet(buildRecordSnippet(record), 140)
-          const afterRecord = { ...record, ...updates } as MemoryRecord
-          const after = truncateSnippet(buildRecordSnippet(afterRecord), 140)
-          const reason = result.reason ?? 'generalized'
-
-          const action: MaintenanceAction = {
-            type: 'update',
-            recordId: record.id,
-            snippet: after,
-            reason,
-            details: { before, after }
-          }
-
-          if (dryRun) {
-            actions.push(action)
-            generalized += 1
-            applied = true
-          } else {
-            const updated = await generalizeRecord(record.id, updates, config)
-            if (updated) {
-              actions.push(action)
-              generalized += 1
-              applied = true
-            }
-          }
-        }
-
-        if (!dryRun && !applied) {
-          await updateRecord(record.id, { lastGeneralizationCheck: checkedAt }, config)
-        }
-      } catch {
-        errors += 1
-      }
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return {
-      actions,
-      summary: { eligible, checked, generalized, skippedRecent, skippedGeneralized, errors },
-      error: message
-    }
-  }
-
-  return { actions, summary: { eligible, checked, generalized, skippedRecent, skippedGeneralized, errors } }
+  return { actions, summary: { candidates, deprecated, errors } }
 }
 
 export async function runConsolidation(
@@ -373,106 +292,6 @@ export async function runConsolidation(
   }
 
   return { actions, summary: { clusters: clustersFound, merged: clustersMerged, deprecated, errors } }
-}
-
-export async function runContradictionCheck(
-  dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
-): Promise<MaintenanceRunResult> {
-  const actions: MaintenanceAction[] = []
-  let pairsFound = 0
-  let checked = 0
-  let deprecated = 0
-  let keptBoth = 0
-  let keptOlder = 0
-  let keptNewer = 0
-  let merged = 0
-  let errors = 0
-
-  const recordDecision = (
-    decision: ContradictionResult['verdict'],
-    pair: ContradictionPair,
-    reason?: string
-  ): void => {
-    const similarity = pair.similarity
-    const reasonText = reason ? `reason=${reason}` : 'contradiction'
-    const summaryReason = `sim=${similarity.toFixed(2)} ${reasonText}`
-
-    if (decision === 'keep_newer') {
-      keptNewer += 1
-      deprecated += 1
-      actions.push({
-        type: 'deprecate',
-        recordId: pair.older.id,
-        snippet: truncateSnippet(buildRecordSnippet(pair.older)),
-        reason: summaryReason,
-        details: { keptId: pair.newer.id, similarity }
-      })
-      return
-    }
-
-    if (decision === 'keep_older') {
-      keptOlder += 1
-      deprecated += 1
-      actions.push({
-        type: 'deprecate',
-        recordId: pair.newer.id,
-        snippet: truncateSnippet(buildRecordSnippet(pair.newer)),
-        reason: summaryReason,
-        details: { keptId: pair.older.id, similarity }
-      })
-      return
-    }
-
-    if (decision === 'merge') {
-      merged += 1
-      deprecated += 1
-      actions.push({
-        type: 'merge',
-        recordId: pair.newer.id,
-        snippet: truncateSnippet(buildRecordSnippet(pair.newer)),
-        reason: summaryReason,
-        details: { keptId: pair.newer.id, deprecatedIds: [pair.older.id], similarity }
-      })
-      return
-    }
-
-    keptBoth += 1
-  }
-
-  try {
-    const pairs = await findContradictionPairs(config)
-    pairsFound = pairs.length
-    const batch = pairs.slice(0, CONTRADICTION_BATCH_SIZE)
-
-    for (const pair of batch) {
-      checked += 1
-      try {
-        const result = await checkContradiction(pair, config)
-        if (dryRun) {
-          recordDecision(result.verdict, pair, result.reason)
-          continue
-        }
-
-        const outcome = await resolveContradictionWithLLM(pair, result, config)
-        recordDecision(outcome.action, pair, result.reason)
-      } catch {
-        errors += 1
-      }
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return {
-      actions,
-      summary: { pairs: pairsFound, checked, deprecated, keptBoth, keptNewer, keptOlder, merged, errors },
-      error: message
-    }
-  }
-
-  return {
-    actions,
-    summary: { pairs: pairsFound, checked, deprecated, keptBoth, keptNewer, keptOlder, merged, errors }
-  }
 }
 
 export async function runGlobalPromotion(
@@ -615,14 +434,6 @@ function summarizeCluster(cluster: { id: string; successCount?: number; lastUsed
   const deprecatedIds = sorted.slice(1).map(record => record.id)
 
   return { keptId: keeper.id, deprecatedIds }
-}
-
-function computeGeneralizationPriority(record: MemoryRecord): number {
-  const retrievalCount = record.retrievalCount ?? 0
-  if (retrievalCount <= 0) return 0
-  const usageCount = record.usageCount ?? 0
-  const ratio = usageCount / Math.max(retrievalCount, 1)
-  return retrievalCount * (1 - ratio)
 }
 
 const isMainModule = import.meta.url === `file://${process.argv[1]}`

@@ -25,6 +25,7 @@ const CONSOLIDATION_MAX_CLUSTER_SIZE = 8
 const TEXT_SIMILARITY_RATIO = 0.2
 const LOW_USAGE_MIN_RETRIEVALS = 5
 const LOW_USAGE_RATIO_THRESHOLD = 0.1
+const LOW_USAGE_HIGH_RETRIEVAL_MIN = 10
 const CONTRADICTION_SIMILARITY_THRESHOLD = 0.75
 const CONTRADICTION_SEARCH_LIMIT = 8
 const GENERALIZATION_MAX_TOKENS = 800
@@ -34,6 +35,9 @@ export const GLOBAL_PROMOTION_BATCH_SIZE = 20
 const GLOBAL_PROMOTION_MAX_TOKENS = 400
 export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
 export const GLOBAL_PROMOTION_RECHECK_DAYS = 30
+const GLOBAL_PROMOTION_MIN_SUCCESS_COUNT = 2
+const GLOBAL_PROMOTION_MIN_USAGE_RATIO = 0.3
+const GLOBAL_PROMOTION_MIN_RETRIEVALS_FOR_USAGE_RATIO = 3
 const GLOBAL_TOOL_KEYWORDS = [
   'npm',
   'pnpm',
@@ -233,15 +237,19 @@ export async function findStaleRecords(config: Config = DEFAULT_CONFIG): Promise
 export async function findGlobalCandidates(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
   const candidates: MemoryRecord[] = []
   const types = ['error', 'command', 'discovery'] as const
+  const typeFilter = types.map(type => `type == "${type}"`).join(' || ')
+  const countFilter = [
+    `(type == "command" && success_count >= ${GLOBAL_PROMOTION_MIN_SUCCESS_COUNT})`,
+    `(type != "command" && usage_count >= ${GLOBAL_PROMOTION_MIN_SUCCESS_COUNT})`
+  ].join(' || ')
+  const filter = ['deprecated == false', `(${typeFilter})`, `(${countFilter})`].join(' && ')
+  const records = await fetchRecords(filter, config, false)
 
-  for (const type of types) {
-    const records = await fetchRecords(`deprecated == false && type == "${type}"`, config, false)
-    for (const record of records) {
-      if (record.scope === 'global') continue
-      if (record.deprecated) continue
-      if (isGlobalCandidate(record)) {
-        candidates.push(record)
-      }
+  for (const record of records) {
+    if (record.scope === 'global') continue
+    if (record.deprecated) continue
+    if (isGlobalCandidate(record)) {
+      candidates.push(record)
     }
   }
 
@@ -260,6 +268,14 @@ export async function findLowUsageRecords(config: Config = DEFAULT_CONFIG): Prom
     const ratio = usageCount / retrievalCount
     return ratio < LOW_USAGE_RATIO_THRESHOLD
   })
+}
+
+export async function findLowUsageHighRetrieval(
+  config: Config = DEFAULT_CONFIG
+): Promise<MemoryRecord[]> {
+  const filter = ['deprecated == false', `retrieval_count >= ${LOW_USAGE_HIGH_RETRIEVAL_MIN}`].join(' && ')
+  const records = await fetchRecords(filter, config, false)
+  return records.filter(record => (record.usageCount ?? 0) === 0)
 }
 
 export async function checkValidity(record: MemoryRecord): Promise<ValidityResult> {
@@ -744,6 +760,7 @@ function buildConsolidationFilter(record: MemoryRecord): string {
 }
 
 function isGlobalCandidate(record: MemoryRecord): boolean {
+  if (!passesGlobalPromotionHeuristics(record)) return false
   switch (record.type) {
     case 'error':
       return isGlobalErrorCandidate(record)
@@ -754,6 +771,44 @@ function isGlobalCandidate(record: MemoryRecord): boolean {
     default:
       return false
   }
+}
+
+function passesGlobalPromotionHeuristics(record: MemoryRecord): boolean {
+  const successCount = record.successCount ?? 0
+  const usageCount = record.usageCount ?? 0
+  if (record.type === 'command') {
+    if (successCount < GLOBAL_PROMOTION_MIN_SUCCESS_COUNT) return false
+  } else if (usageCount < GLOBAL_PROMOTION_MIN_SUCCESS_COUNT) {
+    return false
+  }
+  if (recordHasPathReference(record)) return false
+
+  const retrievalCount = record.retrievalCount ?? 0
+  if (retrievalCount >= GLOBAL_PROMOTION_MIN_RETRIEVALS_FOR_USAGE_RATIO) {
+    const ratio = usageCount / retrievalCount
+    if (ratio < GLOBAL_PROMOTION_MIN_USAGE_RATIO) return false
+  }
+
+  return true
+}
+
+function recordHasPathReference(record: MemoryRecord): boolean {
+  switch (record.type) {
+    case 'command':
+      return hasPathReference([record.command, record.resolution, record.truncatedOutput])
+    case 'error':
+      return hasPathReference([record.errorText, record.cause, record.resolution, record.context.file])
+    case 'discovery':
+      return hasPathReference([record.what, record.where, record.evidence])
+    default:
+      return false
+  }
+}
+
+function hasPathReference(values: Array<string | undefined>): boolean {
+  const combined = normalizeMatchText(values.filter(Boolean).join(' '))
+  if (!combined) return false
+  return PATH_TEXT_REGEX.test(combined)
 }
 
 function isGlobalErrorCandidate(record: Extract<MemoryRecord, { type: 'error' }>): boolean {

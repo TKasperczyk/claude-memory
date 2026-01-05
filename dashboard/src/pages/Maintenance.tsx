@@ -17,9 +17,9 @@ const OPERATIONS = [
     allowExecute: true
   },
   {
-    key: 'generalization',
-    label: 'Generalization',
-    description: 'Clean up overly-specific records (LLM)',
+    key: 'low-usage-deprecation',
+    label: 'Zero Usage Deprecation',
+    description: 'Deprecate records with 10+ retrievals and zero usage',
     allowExecute: true
   },
   {
@@ -32,12 +32,6 @@ const OPERATIONS = [
     key: 'consolidation',
     label: 'Consolidation',
     description: 'Merge duplicate records (>85% similar)',
-    allowExecute: true
-  },
-  {
-    key: 'contradictions',
-    label: 'Contradictions',
-    description: 'Find conflicting records',
     allowExecute: true
   },
   {

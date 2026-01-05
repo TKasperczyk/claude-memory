@@ -9,6 +9,8 @@ export default defineConfig({
     fileParallelism: false,
     sequence: {
       shuffle: false
-    }
+    },
+    // Suppress console output during tests (reduces noise from [claude-memory] logs)
+    silent: true
   }
 })

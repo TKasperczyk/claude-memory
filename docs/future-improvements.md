@@ -4,19 +4,15 @@ Prioritized list of features to enhance continuous learning capabilities.
 
 ## High Impact, Moderate Effort
 
-### 1. Contradiction Detection ✅ IMPLEMENTED
+### 1. Contradiction Detection ❌ REMOVED
 
 **Problem**: "Project uses React" stays valid even after "Migrated to Vue" is added. Stale facts are worse than no facts.
 
-**Solution**: During maintenance, find semantically similar records (>0.75 similarity) of same type/project with different content. The newer record supersedes the older.
+**Original Solution**: During maintenance, find semantically similar records (>0.75 similarity) of same type/project with different content. The newer record supersedes the older.
 
-**Implementation**: `findContradictionPairs()` and `resolveContradiction()` in `lib/maintenance.ts`, called via `runContradictionCheck()` in the maintenance pipeline.
+**Why Removed**: Testing revealed that 0.75 similarity captures complementary knowledge (e.g., page structure vs component details), not contradictions. The LLM arbitration consistently returned "keep_both" because the pairs were additive, not conflicting. The operation was conceptually flawed - similar knowledge isn't contradictory knowledge.
 
-**Key logic**:
-- Semantic similarity > 0.75 (same topic)
-- Text similarity low (different content, unlike consolidation which requires high text similarity)
-- Same type + same project
-- Newer timestamp wins
+**Underlying code kept**: `findContradictionPairs()`, `checkContradiction()` etc. remain in `lib/maintenance.ts` for potential future use in an "alternative detection" feature that links related approaches rather than deprecating them.
 
 ---
 
@@ -117,9 +113,9 @@ Track extraction confidence from Haiku. Weight low-confidence memories lower in 
 
 ## Implementation Priority
 
-1. **Contradiction detection** - Biggest correctness win
-2. **MMR diversity** - Quick win, improves context quality
+1. ~~**Contradiction detection**~~ - Removed (see above)
+2. **MMR diversity** ✅ - Quick win, improves context quality
 3. **User feedback command** - Low effort, high signal
 4. **Time decay** - Simple scoring adjustment
-5. **Global scope** - Requires schema + extraction changes
+5. **Global scope** ✅ - Requires schema + extraction changes
 6. **Exploration** - Easy but lower priority
