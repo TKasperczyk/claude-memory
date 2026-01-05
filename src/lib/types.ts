@@ -21,6 +21,7 @@ export interface BaseRecord {
   deprecated?: boolean
   generalized?: boolean
   lastGeneralizationCheck?: number
+  lastGlobalCheck?: number
   embedding?: number[]
 }
 

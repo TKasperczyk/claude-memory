@@ -28,6 +28,12 @@ const LOW_USAGE_RATIO_THRESHOLD = 0.1
 const CONTRADICTION_SIMILARITY_THRESHOLD = 0.75
 const CONTRADICTION_SEARCH_LIMIT = 8
 const GENERALIZATION_MAX_TOKENS = 800
+export const CONTRADICTION_BATCH_SIZE = 15
+const CONTRADICTION_MAX_TOKENS = 600
+export const GLOBAL_PROMOTION_BATCH_SIZE = 20
+const GLOBAL_PROMOTION_MAX_TOKENS = 400
+export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
+export const GLOBAL_PROMOTION_RECHECK_DAYS = 30
 const GLOBAL_TOOL_KEYWORDS = [
   'npm',
   'pnpm',
@@ -131,6 +137,52 @@ Return JSON:
   "generalized": { /* only if shouldGeneralize, partial record with updated fields */ }
 }`
 
+const CONTRADICTION_PROMPT = `Analyze these two memory records for contradiction.
+
+Both records are about the same topic (high semantic similarity) but have different content.
+Determine if they actually contradict each other or are complementary/additive.
+
+Contradicting means:
+- One record supersedes or corrects the other
+- They give conflicting advice for the same situation
+- The newer record reflects updated knowledge that invalidates the older
+
+Complementary means:
+- They cover different aspects of the same topic
+- Both can be true simultaneously
+- They add to each other without conflict
+
+Return JSON:
+{
+  "verdict": "keep_newer" | "keep_older" | "keep_both" | "merge",
+  "reason": "brief explanation",
+  "merged": { /* only if verdict is "merge", partial record combining both */ }
+}`
+
+const GLOBAL_PROMOTION_PROMPT = `Evaluate if this memory record should be promoted to global scope.
+
+Global scope means the knowledge is universally applicable across different projects.
+Project scope means the knowledge is specific to a particular codebase or environment.
+
+Criteria for GLOBAL:
+- Uses standard tools/languages without project-specific configuration
+- Error patterns or solutions that apply to any project using that tool
+- Generic commands that work the same everywhere
+- Universal best practices or conventions
+
+Criteria for PROJECT (keep local):
+- References project-specific paths, files, or configurations
+- Depends on project-specific setup or environment
+- Uses custom scripts or aliases unique to a project
+- Contains project-specific domain knowledge
+
+Return JSON:
+{
+  "shouldPromote": boolean,
+  "confidence": "high" | "medium" | "low",
+  "reason": "brief explanation"
+}`
+
 let cachedAnthropicClient: Awaited<ReturnType<typeof createAnthropicClient>> | undefined
 
 export interface ValidityResult {
@@ -154,9 +206,21 @@ export interface ContradictionPair {
   similarity: number
 }
 
+export interface ContradictionResult {
+  verdict: 'keep_newer' | 'keep_older' | 'keep_both' | 'merge'
+  reason?: string
+  mergedRecord?: Partial<MemoryRecord>
+}
+
 export interface GeneralizationResult {
   shouldGeneralize: boolean
   generalizedRecord?: Partial<MemoryRecord>
+  reason?: string
+}
+
+export interface GlobalPromotionResult {
+  shouldPromote: boolean
+  confidence: 'high' | 'medium' | 'low'
   reason?: string
 }
 
@@ -459,6 +523,69 @@ export async function resolveContradiction(
   return markDeprecated(pair.older.id, config)
 }
 
+export async function checkContradiction(
+  pair: ContradictionPair,
+  config: Config
+): Promise<ContradictionResult> {
+  const client = await getAnthropicClient()
+  if (!client) {
+    throw new Error('No authentication available for contradiction check. Set ANTHROPIC_API_KEY or run kira login.')
+  }
+
+  const payload = JSON.stringify(buildContradictionInput(pair), null, 2)
+
+  const response = await client.messages.create({
+    model: config.extraction.model,
+    max_tokens: Math.min(CONTRADICTION_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: CONTRADICTION_PROMPT }
+    ],
+    messages: [{ role: 'user', content: `Records:\n${payload}` }]
+  })
+
+  const rawText = extractResponseText(response.content)
+  return parseContradictionResponse(rawText)
+}
+
+export async function resolveContradictionWithLLM(
+  pair: ContradictionPair,
+  result: ContradictionResult,
+  config: Config = DEFAULT_CONFIG
+): Promise<{ action: ContradictionResult['verdict']; recordId?: string }> {
+  switch (result.verdict) {
+    case 'keep_newer': {
+      const updated = await markDeprecated(pair.older.id, config)
+      return updated ? { action: 'keep_newer', recordId: pair.older.id } : { action: 'keep_both' }
+    }
+    case 'keep_older': {
+      const updated = await markDeprecated(pair.newer.id, config)
+      return updated ? { action: 'keep_older', recordId: pair.newer.id } : { action: 'keep_both' }
+    }
+    case 'merge': {
+      const mergedUpdates = result.mergedRecord
+        ? filterContradictionMerge(pair.newer, result.mergedRecord)
+        : {}
+
+      if (Object.keys(mergedUpdates).length > 0) {
+        const updates: Partial<MemoryRecord> = { ...mergedUpdates }
+        if (pair.newer.timestamp) {
+          updates.timestamp = pair.newer.timestamp
+        }
+        const updated = await updateRecord(pair.newer.id, updates, config)
+        if (!updated) return { action: 'keep_both' }
+      }
+
+      const deprecated = await markDeprecated(pair.older.id, config)
+      return deprecated ? { action: 'merge', recordId: pair.older.id } : { action: 'keep_both' }
+    }
+    case 'keep_both':
+    default:
+      return { action: 'keep_both' }
+  }
+}
+
 export async function checkGeneralization(
   record: MemoryRecord,
   config: Config
@@ -519,6 +646,32 @@ export async function generalizeRecord(
     },
     config
   )
+}
+
+export async function checkGlobalPromotion(
+  record: MemoryRecord,
+  config: Config
+): Promise<GlobalPromotionResult> {
+  const client = await getAnthropicClient()
+  if (!client) {
+    throw new Error('No authentication available for global promotion check. Set ANTHROPIC_API_KEY or run kira login.')
+  }
+
+  const payload = JSON.stringify(buildGeneralizationInput(record), null, 2)
+
+  const response = await client.messages.create({
+    model: config.extraction.model,
+    max_tokens: Math.min(GLOBAL_PROMOTION_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: GLOBAL_PROMOTION_PROMPT }
+    ],
+    messages: [{ role: 'user', content: `Record:\n${payload}` }]
+  })
+
+  const rawText = extractResponseText(response.content)
+  return parseGlobalPromotionResponse(rawText)
 }
 
 function buildContradictionFilter(record: MemoryRecord): string {
@@ -942,6 +1095,22 @@ async function getAnthropicClient(): Promise<Awaited<ReturnType<typeof createAnt
   return cachedAnthropicClient
 }
 
+function buildContradictionInput(pair: ContradictionPair): Record<string, unknown> {
+  return {
+    similarity: pair.similarity,
+    newer: {
+      id: pair.newer.id,
+      timestamp: pair.newer.timestamp,
+      record: buildGeneralizationInput(pair.newer)
+    },
+    older: {
+      id: pair.older.id,
+      timestamp: pair.older.timestamp,
+      record: buildGeneralizationInput(pair.older)
+    }
+  }
+}
+
 function buildGeneralizationInput(record: MemoryRecord): Record<string, unknown> {
   const base = {
     type: record.type,
@@ -1024,6 +1193,76 @@ function parseGeneralizationResponse(rawText: string): GeneralizationResult {
   }
 }
 
+function parseContradictionResponse(rawText: string): ContradictionResult {
+  const parsed = extractJsonObject(rawText)
+  if (!isPlainObject(parsed)) {
+    return { verdict: 'keep_both', reason: 'invalid-json' }
+  }
+
+  const verdict = parseVerdict(parsed.verdict)
+  const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : undefined
+
+  if (verdict === 'merge') {
+    if (!isPlainObject(parsed.merged)) {
+      return { verdict: 'keep_both', reason: reason ? `${reason} (missing merged)` : 'missing-merged' }
+    }
+    return {
+      verdict: 'merge',
+      mergedRecord: parsed.merged as Partial<MemoryRecord>,
+      ...(reason ? { reason } : {})
+    }
+  }
+
+  return {
+    verdict,
+    ...(reason ? { reason } : {})
+  }
+}
+
+function parseGlobalPromotionResponse(rawText: string): GlobalPromotionResult {
+  const parsed = extractJsonObject(rawText)
+  if (!isPlainObject(parsed)) {
+    return { shouldPromote: false, confidence: 'low', reason: 'invalid-json' }
+  }
+
+  const shouldPromote = coerceBoolean(parsed.shouldPromote)
+  const confidence = parseConfidence(parsed.confidence)
+  const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : undefined
+
+  return {
+    shouldPromote,
+    confidence,
+    ...(reason ? { reason } : {})
+  }
+}
+
+function parseVerdict(value: unknown): ContradictionResult['verdict'] {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+    if (normalized === 'keep_newer' || normalized === 'keep_older' || normalized === 'keep_both' || normalized === 'merge') {
+      return normalized
+    }
+  }
+  return 'keep_both'
+}
+
+function parseConfidence(value: unknown): 'high' | 'medium' | 'low' {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'high' || normalized === 'medium' || normalized === 'low') {
+      return normalized
+    }
+  }
+  return 'low'
+}
+
+export function isConfidenceSufficient(actual: string, minimum: string): boolean {
+  const ranks = { low: 0, medium: 1, high: 2 }
+  const actualRank = ranks[parseConfidence(actual)]
+  const minimumRank = ranks[parseConfidence(minimum)]
+  return actualRank >= minimumRank
+}
+
 function filterGeneralizationUpdates(
   record: MemoryRecord,
   updates: Partial<MemoryRecord>
@@ -1089,6 +1328,13 @@ function filterGeneralizationUpdates(
       return filtered as Partial<MemoryRecord>
     }
   }
+}
+
+function filterContradictionMerge(
+  record: MemoryRecord,
+  updates: Partial<MemoryRecord>
+): Partial<MemoryRecord> {
+  return filterGeneralizationUpdates(record, updates)
 }
 
 function maybeUpdateString(existing: string | undefined, candidate: unknown): string | undefined {

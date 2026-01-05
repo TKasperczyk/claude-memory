@@ -4,16 +4,23 @@ import { initMilvus } from './lib/milvus.js'
 import {
   checkValidity,
   checkGeneralization,
+  checkContradiction,
+  checkGlobalPromotion,
   consolidateCluster,
+  CONTRADICTION_BATCH_SIZE,
   findContradictionPairs,
   findGlobalCandidates,
   findLowUsageRecords,
   findSimilarClusters,
+  GLOBAL_PROMOTION_BATCH_SIZE,
+  GLOBAL_PROMOTION_MIN_CONFIDENCE,
+  GLOBAL_PROMOTION_RECHECK_DAYS,
   generalizeRecord,
   findStaleRecords,
+  isConfidenceSufficient,
   markDeprecated,
   promoteToGlobal,
-  resolveContradiction
+  resolveContradictionWithLLM
 } from './lib/maintenance.js'
 import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from './lib/promotions.js'
 import { loadConfig } from './lib/config.js'
@@ -253,26 +260,60 @@ async function runConsolidation(config: Config, dryRun: boolean): Promise<void> 
 
 async function runContradictionCheck(config: Config, dryRun: boolean): Promise<void> {
   let pairsFound = 0
+  let checked = 0
   let deprecated = 0
+  let keptBoth = 0
+  let keptOlder = 0
+  let keptNewer = 0
+  let merged = 0
 
   try {
     const pairs = await findContradictionPairs(config)
     pairsFound = pairs.length
-    console.error(`[claude-memory] Contradiction pairs: ${pairsFound}`)
+    const batch = pairs.slice(0, CONTRADICTION_BATCH_SIZE)
+    console.error(`[claude-memory] Contradiction pairs: ${pairsFound} (batch=${batch.length})`)
 
-    for (const pair of pairs) {
+    for (const pair of batch) {
+      checked += 1
+      const newerSnippet = truncateForLog(buildRecordSnippet(pair.newer))
+      const olderSnippet = truncateForLog(buildRecordSnippet(pair.older))
+
       try {
+        const result = await checkContradiction(pair, config)
+        const reason = result.reason ? ` reason=${result.reason}` : ''
+        const meta = `sim=${pair.similarity.toFixed(2)}${reason}`
+
         if (dryRun) {
-          deprecated += 1
-          console.error(`[claude-memory] [DRY RUN] Would deprecate record ${pair.older.id} (contradiction sim=${pair.similarity.toFixed(2)})`)
-        } else {
-          const updated = await resolveContradiction(pair, config)
-          if (updated) {
+          if (result.verdict === 'keep_newer') {
+            keptNewer += 1
             deprecated += 1
-            const newerSnippet = truncateForLog(buildRecordSnippet(pair.newer))
-            const olderSnippet = truncateForLog(buildRecordSnippet(pair.older))
-            console.error(`[claude-memory] Contradiction resolved: kept="${newerSnippet}" deprecated="${olderSnippet}" (sim=${pair.similarity.toFixed(2)})`)
+          } else if (result.verdict === 'keep_older') {
+            keptOlder += 1
+            deprecated += 1
+          } else if (result.verdict === 'merge') {
+            merged += 1
+            deprecated += 1
+          } else {
+            keptBoth += 1
           }
+
+          console.error(`[claude-memory] [DRY RUN] Contradiction action=${result.verdict} newer="${newerSnippet}" older="${olderSnippet}" (${meta})`)
+        } else {
+          const outcome = await resolveContradictionWithLLM(pair, result, config)
+          if (outcome.action === 'keep_newer') {
+            keptNewer += 1
+            deprecated += 1
+          } else if (outcome.action === 'keep_older') {
+            keptOlder += 1
+            deprecated += 1
+          } else if (outcome.action === 'merge') {
+            merged += 1
+            deprecated += 1
+          } else {
+            keptBoth += 1
+          }
+
+          console.error(`[claude-memory] Contradiction action=${outcome.action} newer="${newerSnippet}" older="${olderSnippet}" (${meta})`)
         }
       } catch (error) {
         console.error(`[claude-memory] Failed to resolve contradiction:`, error)
@@ -282,35 +323,64 @@ async function runContradictionCheck(config: Config, dryRun: boolean): Promise<v
     console.error('[claude-memory] Failed to find contradiction pairs:', error)
   }
 
-  console.error(`[claude-memory] Contradiction check summary: pairs=${pairsFound} deprecated=${deprecated}`)
+  console.error(
+    `[claude-memory] Contradiction check summary: pairs=${pairsFound} checked=${checked} deprecated=${deprecated} kept_both=${keptBoth} kept_newer=${keptNewer} kept_older=${keptOlder} merged=${merged}`
+  )
 }
 
 async function runGlobalPromotion(config: Config, dryRun: boolean): Promise<void> {
   let candidates = 0
+  let checked = 0
   let promoted = 0
+  let skippedRecent = 0
 
   try {
     const records = await findGlobalCandidates(config)
     candidates = records.length
-    console.error(`[claude-memory] Global promotion candidates: ${candidates}`)
+    const cutoff = Date.now() - GLOBAL_PROMOTION_RECHECK_DAYS * 24 * 60 * 60 * 1000
+    const eligible = records.filter(record => (record.lastGlobalCheck ?? 0) < cutoff)
+    skippedRecent = candidates - eligible.length
 
-    for (const record of records) {
-      if (dryRun) {
-        promoted += 1
-        console.error(`[claude-memory] [DRY RUN] Would promote record ${record.id} to global scope`)
-      } else {
-        const updated = await promoteToGlobal(record.id, config)
-        if (updated) {
-          promoted += 1
-          console.error(`[claude-memory] Promoted ${record.id} to global scope`)
+    const batch = eligible.slice(0, GLOBAL_PROMOTION_BATCH_SIZE)
+    console.error(`[claude-memory] Global promotion candidates: ${candidates} (eligible=${batch.length})`)
+
+    for (const record of batch) {
+      checked += 1
+      const checkedAt = Date.now()
+
+      try {
+        const result = await checkGlobalPromotion(record, config)
+        const confidenceOk = isConfidenceSufficient(result.confidence, GLOBAL_PROMOTION_MIN_CONFIDENCE)
+        const reason = result.reason ? ` reason=${result.reason}` : ''
+        const detail = `confidence=${result.confidence}${reason}`
+
+        if (result.shouldPromote && confidenceOk) {
+          if (dryRun) {
+            promoted += 1
+            console.error(`[claude-memory] [DRY RUN] Would promote ${record.id} (${detail})`)
+          } else {
+            const updated = await promoteToGlobal(record.id, config)
+            if (updated) {
+              promoted += 1
+              console.error(`[claude-memory] Promoted ${record.id} (${detail})`)
+            }
+          }
         }
+
+        if (!dryRun) {
+          await updateRecord(record.id, { lastGlobalCheck: checkedAt }, config)
+        }
+      } catch (error) {
+        console.error(`[claude-memory] Global promotion check failed for ${record.id}:`, error)
       }
     }
   } catch (error) {
     console.error('[claude-memory] Failed to promote global candidates:', error)
   }
 
-  console.error(`[claude-memory] Global promotion summary: candidates=${candidates} promoted=${promoted}`)
+  console.error(
+    `[claude-memory] Global promotion summary: candidates=${candidates} checked=${checked} promoted=${promoted} skipped_recent=${skippedRecent}`
+  )
 }
 
 function buildRecordSnippet(record: { type: string; command?: string; errorText?: string; what?: string; name?: string }): string {

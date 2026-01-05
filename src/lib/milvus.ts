@@ -41,7 +41,8 @@ const OUTPUT_FIELDS = [
   'last_used',
   'deprecated',
   'generalized',
-  'last_generalization_check'
+  'last_generalization_check',
+  'last_global_check'
 ]
 
 let client: MilvusClient | null = null
@@ -61,6 +62,7 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
     await ensureUsageFields(config)
     await ensureScopeField(config)
     await ensureGeneralizationFields(config)
+    await ensureGlobalCheckField(config)
   }
 
   // Release first in case collection is in an inconsistent state
@@ -647,6 +649,7 @@ async function createCollection(config: Config): Promise<void> {
       { name: 'deprecated', data_type: DataType.Bool },
       { name: 'generalized', data_type: DataType.Bool },
       { name: 'last_generalization_check', data_type: DataType.Int64 },
+      { name: 'last_global_check', data_type: DataType.Int64 },
       { name: 'embedding', data_type: DataType.FloatVector, dim: EMBEDDING_DIM }
     ]
   })
@@ -756,6 +759,34 @@ async function ensureGeneralizationFields(config: Config): Promise<void> {
   }
 }
 
+async function ensureGlobalCheckField(config: Config): Promise<void> {
+  if (!client) throw new Error('Milvus client not initialized')
+
+  try {
+    const description = await client.describeCollection({
+      collection_name: config.milvus.collection
+    })
+
+    const fields = description.schema?.fields ?? []
+    const fieldNames = new Set(fields.map(field => field.name))
+    if (fieldNames.has('last_global_check')) return
+
+    const result = await client.addCollectionFields({
+      collection_name: config.milvus.collection,
+      fields: [{ name: 'last_global_check', data_type: DataType.Int64, nullable: true }]
+    })
+
+    if (result.error_code !== 'Success') {
+      console.error(`[claude-memory] Failed to add global check field: ${result.reason}`)
+      return
+    }
+
+    console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_global_check`)
+  } catch (error) {
+    console.error('[claude-memory] Failed to ensure global check field:', error)
+  }
+}
+
 async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<RowData> {
   const normalized = normalizeRecord(record)
   const content = serializeRecord(normalized)
@@ -787,6 +818,7 @@ async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<Row
     deprecated: Boolean(normalized.deprecated),
     generalized: Boolean(normalized.generalized),
     last_generalization_check: toInt64(normalized.lastGeneralizationCheck, 0),
+    last_global_check: toInt64(normalized.lastGlobalCheck, 0),
     embedding
   }
 }
@@ -804,6 +836,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const deprecated = Boolean(record.deprecated ?? false)
   const generalized = toBoolean(record.generalized, false)
   const lastGeneralizationCheck = toInt64(record.lastGeneralizationCheck, 0)
+  const lastGlobalCheck = toInt64(record.lastGlobalCheck, 0)
 
   return {
     ...record,
@@ -818,7 +851,8 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     lastUsed,
     deprecated,
     generalized,
-    lastGeneralizationCheck
+    lastGeneralizationCheck,
+    lastGlobalCheck
   }
 }
 
@@ -998,6 +1032,10 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord | null {
     lastGeneralizationCheck: toInt64(
       (row.last_generalization_check as number | string | undefined) ?? parsed.lastGeneralizationCheck,
       0
+    ),
+    lastGlobalCheck: toInt64(
+      (row.last_global_check as number | string | undefined) ?? parsed.lastGlobalCheck,
+      0
     )
   } as MemoryRecord
 
@@ -1049,6 +1087,7 @@ function needsEmbeddingRefresh(updates: Partial<MemoryRecord>): boolean {
     'deprecated',
     'generalized',
     'lastGeneralizationCheck',
+    'lastGlobalCheck',
     'scope',
     'embedding'
   ])
