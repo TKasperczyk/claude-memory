@@ -26,6 +26,8 @@ export interface PostSessionResult {
   skipped: number
   failed: number
   records: MemoryRecord[]
+  insertedIds: string[]
+  updatedIds: string[]
   transcript?: Transcript
   reason?: 'clear' | 'no_transcript' | 'no_records' | 'wrong_event'
 }
@@ -38,20 +40,50 @@ export interface PostSessionResult {
 export async function handlePostSession(
   input: ExtractionHookInput,
   config: Config = DEFAULT_CONFIG,
-  options: { flush?: FlushMode } = {}
+  options: {
+    flush?: FlushMode
+    recordAugmenter?: (record: MemoryRecord, transcript: Transcript) => MemoryRecord
+  } = {}
 ): Promise<PostSessionResult> {
   // Accept both SessionEnd and PreCompact events
   if (input.hook_event_name !== 'SessionEnd' && input.hook_event_name !== 'PreCompact') {
-    return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'wrong_event' }
+    return {
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      records: [],
+      insertedIds: [],
+      updatedIds: [],
+      reason: 'wrong_event'
+    }
   }
 
   // Skip extraction if session was cleared (only applies to SessionEnd)
   if (input.hook_event_name === 'SessionEnd' && input.reason === 'clear') {
-    return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'clear' }
+    return {
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      records: [],
+      insertedIds: [],
+      updatedIds: [],
+      reason: 'clear'
+    }
   }
 
   if (!input.transcript_path || !fs.existsSync(input.transcript_path)) {
-    return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'no_transcript' }
+    return {
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      records: [],
+      insertedIds: [],
+      updatedIds: [],
+      reason: 'no_transcript'
+    }
   }
 
   const transcript = await parseTranscript(input.transcript_path)
@@ -60,15 +92,29 @@ export async function handlePostSession(
   }
 
   const projectRoot = findGitRoot(input.cwd) ?? input.cwd
-  const records = await extractRecords(transcript, {
+  const extracted = await extractRecords(transcript, {
     sessionId: input.session_id,
     cwd: input.cwd,
     project: projectRoot,
     transcriptPath: input.transcript_path
   })
 
+  const records = options.recordAugmenter
+    ? extracted.map(record => options.recordAugmenter!(record, transcript))
+    : extracted
+
   if (records.length === 0) {
-    return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'no_records', transcript }
+    return {
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      records: [],
+      insertedIds: [],
+      updatedIds: [],
+      reason: 'no_records',
+      transcript
+    }
   }
 
   await precomputeEmbeddings(records, config)
@@ -77,6 +123,8 @@ export async function handlePostSession(
   let updated = 0
   let skipped = 0
   let failed = 0
+  const insertedIds: string[] = []
+  const updatedIds: string[] = []
 
   const flushMode = options.flush ?? 'always'
 
@@ -89,6 +137,7 @@ export async function handlePostSession(
         if (Object.keys(updates).length > 0) {
           await updateRecord(existing.id, updates, config, { flush: flushMode })
           updated += 1
+          updatedIds.push(existing.id)
         } else {
           skipped += 1
         }
@@ -98,13 +147,14 @@ export async function handlePostSession(
       const prepared = applyUsageCounters(record)
       await insertRecord(prepared, config, { flush: flushMode })
       inserted += 1
+      insertedIds.push(prepared.id)
     } catch (error) {
       failed += 1
       console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}:`, error)
     }
   }
 
-  return { inserted, updated, skipped, failed, records, transcript }
+  return { inserted, updated, skipped, failed, records, insertedIds, updatedIds, transcript }
 }
 
 async function precomputeEmbeddings(records: MemoryRecord[], config: Config): Promise<void> {
@@ -149,6 +199,8 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
 
   if (!existing.project && incoming.project) updates.project = incoming.project
   if (!existing.domain && incoming.domain) updates.domain = incoming.domain
+  if (!existing.sourceSessionId && incoming.sourceSessionId) updates.sourceSessionId = incoming.sourceSessionId
+  if (!existing.sourceExcerpt && incoming.sourceExcerpt) updates.sourceExcerpt = incoming.sourceExcerpt
 
   if (existing.type === 'command' && incoming.type === 'command') {
     const commandUpdates = updates as Partial<typeof existing>

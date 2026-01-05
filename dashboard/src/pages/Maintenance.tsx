@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Check, Circle, Eye, Loader2, Play } from 'lucide-react'
 import { PageHeader } from '@/App'
+import { formatDuration } from '@/lib/format'
 import {
   fetchMaintenanceOperations,
   runMaintenance,
@@ -46,12 +47,6 @@ const ACTION_STYLES: Record<MaintenanceActionType, { badge: string; dot: string;
     dot: 'bg-amber-400',
     label: 'Suggestion'
   }
-}
-
-function formatDuration(durationMs: number): string {
-  if (!durationMs || durationMs <= 0) return '0ms'
-  if (durationMs < 1000) return `${durationMs}ms`
-  return `${(durationMs / 1000).toFixed(1)}s`
 }
 
 function formatSummaryKey(key: string): string {

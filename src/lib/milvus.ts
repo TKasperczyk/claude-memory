@@ -25,6 +25,8 @@ export interface WriteOptions {
 
 const CONTENT_MAX_LENGTH = 16384
 const EXACT_TEXT_MAX_LENGTH = 4096
+const SOURCE_SESSION_ID_MAX_LENGTH = 128
+const SOURCE_EXCERPT_MAX_LENGTH = 512
 const SEARCH_NPROBE = 64
 const QUERY_ITERATOR_BATCH_SIZE = 1000
 const POST_FLUSH_DELAY_MS = 500 // IVF_FLAT index needs time to update after flush
@@ -47,7 +49,9 @@ const OUTPUT_FIELDS = [
   'deprecated',
   'generalized',
   'last_generalization_check',
-  'last_global_check'
+  'last_global_check',
+  'source_session_id',
+  'source_excerpt'
 ]
 
 let client: MilvusClient | null = null
@@ -68,6 +72,7 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
     await ensureScopeField(config)
     await ensureGeneralizationFields(config)
     await ensureGlobalCheckField(config)
+    await ensureSourceFields(config)
   }
 
   // Release first in case collection is in an inconsistent state
@@ -679,6 +684,8 @@ async function createCollection(config: Config): Promise<void> {
       { name: 'generalized', data_type: DataType.Bool },
       { name: 'last_generalization_check', data_type: DataType.Int64 },
       { name: 'last_global_check', data_type: DataType.Int64 },
+      { name: 'source_session_id', data_type: DataType.VarChar, max_length: SOURCE_SESSION_ID_MAX_LENGTH, nullable: true },
+      { name: 'source_excerpt', data_type: DataType.VarChar, max_length: SOURCE_EXCERPT_MAX_LENGTH, nullable: true },
       { name: 'embedding', data_type: DataType.FloatVector, dim: EMBEDDING_DIM }
     ]
   })
@@ -816,6 +823,39 @@ async function ensureGlobalCheckField(config: Config): Promise<void> {
   }
 }
 
+async function ensureSourceFields(config: Config): Promise<void> {
+  if (!client) throw new Error('Milvus client not initialized')
+
+  try {
+    const description = await client.describeCollection({
+      collection_name: config.milvus.collection
+    })
+
+    const fields = description.schema?.fields ?? []
+    const fieldNames = new Set(fields.map(field => field.name))
+    const missing = [
+      { name: 'source_session_id', data_type: DataType.VarChar, max_length: SOURCE_SESSION_ID_MAX_LENGTH, nullable: true },
+      { name: 'source_excerpt', data_type: DataType.VarChar, max_length: SOURCE_EXCERPT_MAX_LENGTH, nullable: true }
+    ].filter(field => !fieldNames.has(field.name))
+
+    if (missing.length === 0) return
+
+    const result = await client.addCollectionFields({
+      collection_name: config.milvus.collection,
+      fields: missing
+    })
+
+    if (result.error_code !== 'Success') {
+      console.error(`[claude-memory] Failed to add source fields: ${result.reason}`)
+      return
+    }
+
+    console.error(`[claude-memory] Added fields to ${config.milvus.collection}: ${missing.map(field => field.name).join(', ')}`)
+  } catch (error) {
+    console.error('[claude-memory] Failed to ensure source fields:', error)
+  }
+}
+
 async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<RowData> {
   const normalized = normalizeRecord(record)
   const content = serializeRecord(normalized)
@@ -825,6 +865,8 @@ async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<Row
 
   const exactTextRaw = buildExactText(normalized)
   const exactText = truncateString(exactTextRaw, EXACT_TEXT_MAX_LENGTH)
+  const sourceSessionId = normalizeOptionalString(normalized.sourceSessionId)
+  const sourceExcerpt = normalizeOptionalString(normalized.sourceExcerpt)
 
   const embedding = normalized.embedding
     ?? await embed(buildEmbeddingInput(normalized, exactTextRaw, content), config)
@@ -848,6 +890,8 @@ async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<Row
     generalized: Boolean(normalized.generalized),
     last_generalization_check: toInt64(normalized.lastGeneralizationCheck, 0),
     last_global_check: toInt64(normalized.lastGlobalCheck, 0),
+    source_session_id: sourceSessionId ? truncateString(sourceSessionId, SOURCE_SESSION_ID_MAX_LENGTH) : null,
+    source_excerpt: sourceExcerpt ? truncateString(sourceExcerpt, SOURCE_EXCERPT_MAX_LENGTH) : null,
     embedding
   }
 }
@@ -948,11 +992,23 @@ function toBoolean(value: unknown, fallback: boolean): boolean {
   return fallback
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
+}
+
 function isRecordType(value: unknown): value is RecordType {
   return value === 'command'
     || value === 'error'
     || value === 'discovery'
     || value === 'procedure'
+}
+
+function coerceOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1065,7 +1121,9 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord | null {
     lastGlobalCheck: toInt64(
       (row.last_global_check as number | string | undefined) ?? parsed.lastGlobalCheck,
       0
-    )
+    ),
+    sourceSessionId: coerceOptionalString(row.source_session_id) ?? parsed.sourceSessionId,
+    sourceExcerpt: coerceOptionalString(row.source_excerpt) ?? parsed.sourceExcerpt
   } as MemoryRecord
 
   if (!isValidRecord(record)) {

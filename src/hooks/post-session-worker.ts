@@ -6,12 +6,14 @@
 
 import fs, { appendFileSync } from 'fs'
 import { homedir } from 'os'
+import { randomUUID } from 'crypto'
 import { flushCollection, initMilvus, incrementRecordCounters } from '../lib/milvus.js'
 import { rateInjectedMemories } from '../lib/extract.js'
-import { parseTranscript, type Transcript } from '../lib/transcript.js'
+import { parseTranscript, type Transcript, type TranscriptEvent } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
-import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry } from '../lib/types.js'
+import { saveExtractionRun } from '../lib/extraction-log.js'
+import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord } from '../lib/types.js'
 import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
 
@@ -111,11 +113,22 @@ async function main(): Promise<void> {
 
   let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
   let shouldFlush = false
+  const extractionStart = Date.now()
+  let extractionDuration = 0
   try {
     debugLog('Running extraction...')
-    result = await handlePostSession(payload, config, { flush: 'end-of-batch' })
+    result = await handlePostSession(payload, config, {
+      flush: 'end-of-batch',
+      recordAugmenter: (record, transcript) => ({
+        ...record,
+        sourceSessionId: payload.session_id,
+        sourceExcerpt: buildSourceExcerpt(record, transcript)
+      })
+    })
     debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
     shouldFlush = (result.inserted + result.updated) > 0
+    extractionDuration = Date.now() - extractionStart
+    saveRunLog(payload, result, extractionDuration)
   } finally {
     debugLog('Running usefulness rating...')
     shouldFlush = (await processUsefulnessRating(payload, config, result?.transcript)) || shouldFlush
@@ -143,6 +156,29 @@ async function main(): Promise<void> {
     `[claude-memory] Extraction complete: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`
   )
   debugLog('COMPLETE')
+}
+
+function saveRunLog(
+  payload: ExtractionHookInput,
+  result: Awaited<ReturnType<typeof handlePostSession>>,
+  duration: number
+): void {
+  if (result.reason === 'no_transcript' || result.reason === 'clear' || result.reason === 'wrong_event') return
+
+  const extractedIds = [...(result.insertedIds ?? []), ...(result.updatedIds ?? [])]
+  const uniqueIds = Array.from(new Set(extractedIds))
+  const runId = randomUUID()
+
+  saveExtractionRun({
+    runId,
+    sessionId: payload.session_id,
+    transcriptPath: payload.transcript_path,
+    timestamp: Date.now(),
+    recordCount: uniqueIds.length,
+    parseErrorCount: result.transcript?.parseErrors ?? 0,
+    extractedRecordIds: uniqueIds,
+    duration
+  })
 }
 
 async function processUsefulnessRating(
@@ -226,6 +262,130 @@ function countRetrievalDeltas(memories: InjectedMemoryEntry[]): Map<string, numb
     counts.set(entry.id, (counts.get(entry.id) ?? 0) + 1)
   }
   return counts
+}
+
+const EXCERPT_MAX_CHARS = 240
+
+function buildSourceExcerpt(record: MemoryRecord, transcript: Transcript): string | undefined {
+  const candidates = buildExcerptCandidates(record)
+  if (candidates.length === 0) return undefined
+
+  const events = buildSearchableEvents(transcript.events)
+  if (events.length === 0) return undefined
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeExcerptText(candidate)
+    if (!normalizedCandidate) continue
+    const lowerCandidate = normalizedCandidate.toLowerCase()
+
+    for (const event of events) {
+      const directIndex = event.text.indexOf(normalizedCandidate)
+      const index = directIndex >= 0 ? directIndex : event.lower.indexOf(lowerCandidate)
+      if (index < 0) continue
+      return formatExcerpt(event.label, event.text, index, normalizedCandidate.length)
+    }
+  }
+
+  return undefined
+}
+
+function buildExcerptCandidates(record: MemoryRecord): string[] {
+  switch (record.type) {
+    case 'command':
+      return compactStrings([record.command, record.truncatedOutput, record.resolution])
+    case 'error':
+      return compactStrings([record.errorText, record.resolution, record.cause])
+    case 'discovery':
+      return compactStrings([record.what, record.evidence, record.where])
+    case 'procedure':
+      return compactStrings([record.name, ...record.steps, record.verification, ...(record.prerequisites ?? [])])
+    default:
+      return []
+  }
+}
+
+function buildSearchableEvents(events: TranscriptEvent[]): Array<{ label: string; text: string; lower: string }> {
+  const searchable: Array<{ label: string; text: string; lower: string }> = []
+
+  for (const event of events) {
+    const rawText = extractEventText(event)
+    if (!rawText) continue
+    const normalized = normalizeExcerptText(rawText)
+    if (!normalized) continue
+    const label = buildEventLabel(event)
+    searchable.push({ label, text: normalized, lower: normalized.toLowerCase() })
+  }
+
+  return searchable
+}
+
+function extractEventText(event: TranscriptEvent): string | undefined {
+  switch (event.type) {
+    case 'user':
+    case 'assistant':
+      return event.text
+    case 'tool_call':
+      return extractToolInputText(event.input)
+    case 'tool_result':
+      return event.outputText ?? extractToolInputText(event.metadata ?? event.input)
+    default:
+      return undefined
+  }
+}
+
+function buildEventLabel(event: TranscriptEvent): string {
+  switch (event.type) {
+    case 'user':
+      return 'User'
+    case 'assistant':
+      return 'Assistant'
+    case 'tool_call':
+      return event.name ? `Tool Call (${event.name})` : 'Tool Call'
+    case 'tool_result':
+      return event.name ? `Tool Result (${event.name})` : 'Tool Result'
+    default:
+      return 'Transcript'
+  }
+}
+
+function extractToolInputText(input: unknown): string | undefined {
+  if (!input) return undefined
+  if (typeof input === 'string') return input
+  if (typeof input !== 'object') return String(input)
+
+  const record = input as Record<string, unknown>
+  if (typeof record.command === 'string' && record.command.trim()) return record.command
+
+  return safeJsonStringify(record)
+}
+
+function safeJsonStringify(value: unknown): string | undefined {
+  try {
+    const serialized = JSON.stringify(value)
+    return serialized && serialized !== '{}' ? serialized : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function normalizeExcerptText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function formatExcerpt(label: string, text: string, matchIndex: number, matchLength: number): string {
+  const maxContext = Math.max(EXCERPT_MAX_CHARS - label.length - 2, matchLength)
+  const start = Math.max(0, Math.min(matchIndex - Math.floor((maxContext - matchLength) / 2), text.length))
+  const end = Math.min(text.length, start + maxContext)
+  let excerpt = text.slice(start, end).trim()
+  if (start > 0) excerpt = `...${excerpt}`
+  if (end < text.length) excerpt = `${excerpt}...`
+  return `${label}: ${excerpt}`
+}
+
+function compactStrings(values: Array<string | undefined>): string[] {
+  return values
+    .map(value => (typeof value === 'string' ? value.trim() : ''))
+    .filter(value => value.length > 0)
 }
 
 main()

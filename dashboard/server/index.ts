@@ -18,7 +18,8 @@ import { dedupeInjectedMemories, listAllSessions } from '../../src/lib/session-t
 import { findGitRoot } from '../../src/lib/context.js'
 import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
-import { type RecordType } from '../../src/lib/types.js'
+import { type MemoryRecord, type RecordType } from '../../src/lib/types.js'
+import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
 import {
   MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATION_DEFINITIONS,
@@ -265,6 +266,66 @@ app.get('/api/sessions', async (_req, res) => {
   } catch (error) {
     console.error('Sessions error:', error)
     res.status(500).json({ error: 'Failed to list sessions' })
+  }
+})
+
+// List extraction runs with pagination
+app.get('/api/extractions', (req, res) => {
+  try {
+    const runs = listExtractionRuns()
+    const limit = Math.min(parseNonNegativeInt(req.query.limit, 50), 500)
+    const offset = parseNonNegativeInt(req.query.offset, 0)
+    const page = runs.slice(offset, offset + limit)
+
+    res.json({
+      runs: page,
+      count: page.length,
+      total: runs.length,
+      offset,
+      limit
+    })
+  } catch (error) {
+    console.error('Extractions error:', error)
+    res.status(500).json({ error: 'Failed to list extractions' })
+  }
+})
+
+// Get single extraction run with associated records
+app.get('/api/extractions/:runId', async (req, res) => {
+  try {
+    const run = getExtractionRun(req.params.runId)
+    if (!run) {
+      return res.status(404).json({ error: 'Extraction run not found' })
+    }
+
+    const ids = run.extractedRecordIds ?? []
+    if (ids.length === 0) {
+      return res.json({ run, records: [] })
+    }
+
+    await ensureInitialized()
+
+    const records: MemoryRecord[] = []
+    const batchSize = 1000
+
+    for (let i = 0; i < ids.length; i += batchSize) {
+      const batchIds = ids.slice(i, i + batchSize)
+      const idFilter = batchIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
+      const batch = await queryRecords({
+        filter: `id in [${idFilter}]`,
+        limit: batchIds.length,
+        orderBy: 'timestamp_desc'
+      }, CONFIG)
+      records.push(...batch)
+    }
+
+    const byId = new Map(records.map(record => [record.id, record]))
+    const ordered = ids.map(id => byId.get(id)).filter((record): record is typeof records[number] => Boolean(record))
+
+    res.json({ run, records: ordered })
+  } catch (error) {
+    console.error('Extraction run error:', error)
+    res.status(500).json({ error: 'Failed to get extraction run' })
   }
 })
 

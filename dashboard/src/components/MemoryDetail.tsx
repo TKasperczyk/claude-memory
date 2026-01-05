@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { MemoryRecord } from '@/lib/api'
+import { formatDateTime } from '@/lib/format'
 
 export interface RetrievalContext {
   prompt?: string
@@ -22,11 +23,6 @@ const TYPE_COLORS: Record<string, string> = {
   error: '#f43f5e',
   discovery: '#60a5fa',
   procedure: '#a78bfa',
-}
-
-function formatDateTime(ts?: number): string {
-  if (!ts) return '—'
-  return new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(ts)
 }
 
 function formatRelative(ts?: number): string {

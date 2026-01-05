@@ -11,6 +11,8 @@ export interface BaseRecord {
   type: RecordType
   scope?: RecordScope
   timestamp?: number
+  sourceSessionId?: string
+  sourceExcerpt?: string
   project?: string
   domain?: string
   successCount?: number

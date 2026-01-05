@@ -1,6 +1,7 @@
 import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
-import { LayoutGrid, Database, FlaskConical, Activity, Wrench } from 'lucide-react'
+import { LayoutGrid, Database, FlaskConical, Activity, Wrench, FileText } from 'lucide-react'
 import ContextPreview from '@/pages/ContextPreview'
+import Extractions from '@/pages/Extractions'
 import MemoryPool from '@/pages/MemoryPool'
 import Maintenance from '@/pages/Maintenance'
 import Overview from '@/pages/Overview'
@@ -11,6 +12,7 @@ const navigation = [
   { name: 'Memories', href: '/memories', icon: Database },
   { name: 'Simulator', href: '/preview', icon: FlaskConical },
   { name: 'Sessions', href: '/sessions', icon: Activity },
+  { name: 'Extractions', href: '/extractions', icon: FileText },
   { name: 'Maintenance', href: '/maintenance', icon: Wrench },
 ]
 
@@ -86,6 +88,7 @@ export default function App() {
               <Route path="/memories" element={<MemoryPool />} />
               <Route path="/preview" element={<ContextPreview />} />
               <Route path="/sessions" element={<Sessions />} />
+              <Route path="/extractions" element={<Extractions />} />
               <Route path="/maintenance" element={<Maintenance />} />
             </Routes>
           </div>

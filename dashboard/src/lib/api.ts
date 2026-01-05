@@ -4,6 +4,8 @@ export interface BaseRecord {
   id: string
   type: RecordType
   timestamp?: number
+  sourceSessionId?: string
+  sourceExcerpt?: string
   project?: string
   domain?: string
   successCount?: number
@@ -142,6 +144,30 @@ export interface SessionsResponse {
   count: number
 }
 
+export interface ExtractionRun {
+  runId: string
+  sessionId: string
+  transcriptPath: string
+  timestamp: number
+  recordCount: number
+  parseErrorCount: number
+  extractedRecordIds: string[]
+  duration: number
+}
+
+export interface ExtractionListResponse {
+  runs: ExtractionRun[]
+  count: number
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface ExtractionRunResponse {
+  run: ExtractionRun
+  records: MemoryRecord[]
+}
+
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 
 export interface MaintenanceAction {
@@ -240,6 +266,21 @@ export function previewContext(payload: { prompt: string; cwd?: string }): Promi
 
 export function fetchSessions(): Promise<SessionsResponse> {
   return request('/sessions')
+}
+
+export function fetchExtractions(params: {
+  limit?: number
+  offset?: number
+} = {}): Promise<ExtractionListResponse> {
+  const search = new URLSearchParams()
+  if (typeof params.limit === 'number') search.set('limit', String(params.limit))
+  if (typeof params.offset === 'number') search.set('offset', String(params.offset))
+  const query = search.toString()
+  return request(`/extractions${query ? `?${query}` : ''}`)
+}
+
+export function fetchExtractionRun(runId: string): Promise<ExtractionRunResponse> {
+  return request(`/extractions/${runId}`)
 }
 
 export function fetchMaintenanceOperations(): Promise<MaintenanceOperationsResponse> {

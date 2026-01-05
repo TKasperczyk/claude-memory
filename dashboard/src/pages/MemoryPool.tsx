@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
 import { PageHeader } from '@/App'
 import MemoryDetail from '@/components/MemoryDetail'
 import MemoryTable from '@/components/MemoryTable'
 import { useApi } from '@/hooks/useApi'
 import {
+  fetchMemory,
   fetchMemories,
   fetchStats,
   searchMemories,
@@ -36,6 +38,8 @@ export default function MemoryPool() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedId = searchParams.get('id')
 
   const { data: stats } = useApi(fetchStats, [])
 
@@ -104,6 +108,45 @@ export default function MemoryPool() {
     run()
     return () => { active = false }
   }, [typeFilter, projectFilter, showDeprecated, searchQuery, offset])
+
+  useEffect(() => {
+    let active = true
+
+    const loadSelected = async () => {
+      if (!selectedId) {
+        if (selected) setSelected(null)
+        return
+      }
+
+      if (selected?.id === selectedId) return
+
+      try {
+        const record = await fetchMemory(selectedId)
+        if (active) setSelected(record)
+      } catch {
+        if (active) setSelected(null)
+      }
+    }
+
+    loadSelected()
+    return () => { active = false }
+  }, [selectedId, selected])
+
+  const handleSelect = (record: MemoryRecord) => {
+    setSelected(record)
+    const next = new URLSearchParams(searchParams)
+    next.set('id', record.id)
+    setSearchParams(next)
+  }
+
+  const handleClose = () => {
+    setSelected(null)
+    if (selectedId) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('id')
+      setSearchParams(next)
+    }
+  }
 
   const pageInfo = () => {
     if (loading) return 'Loading…'
@@ -197,7 +240,7 @@ export default function MemoryPool() {
       ) : (
         <MemoryTable
           records={records}
-          onSelect={setSelected}
+          onSelect={handleSelect}
           emptyMessage="No memories match these filters"
         />
       )}
@@ -224,7 +267,7 @@ export default function MemoryPool() {
       </div>
 
       {/* Detail modal */}
-      <MemoryDetail record={selected} onClose={() => setSelected(null)} />
+      <MemoryDetail record={selected} onClose={handleClose} />
     </div>
   )
 }
