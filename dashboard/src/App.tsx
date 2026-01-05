@@ -1,50 +1,91 @@
-import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import { LayoutGrid, Database, FlaskConical, Activity } from 'lucide-react'
 import ContextPreview from '@/pages/ContextPreview'
 import MemoryPool from '@/pages/MemoryPool'
 import Overview from '@/pages/Overview'
 import Sessions from '@/pages/Sessions'
 
-const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-  `text-sm font-semibold uppercase tracking-[0.25em] transition ${
-    isActive ? 'text-white' : 'text-slate-400 hover:text-white'
-  }`
+const navigation = [
+  { name: 'Overview', href: '/', icon: LayoutGrid },
+  { name: 'Memories', href: '/memories', icon: Database },
+  { name: 'Simulator', href: '/preview', icon: FlaskConical },
+  { name: 'Sessions', href: '/sessions', icon: Activity },
+]
+
+function Sidebar() {
+  const location = useLocation()
+
+  return (
+    <aside className="fixed inset-y-0 left-0 z-50 w-56 border-r border-border bg-card flex flex-col">
+      {/* Logo */}
+      <div className="h-14 flex items-center px-5 border-b border-border">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-foreground" />
+          <span className="font-semibold text-sm">Memory</span>
+        </div>
+      </div>
+
+      {/* Navigation */}
+      <nav className="flex-1 px-3 py-4">
+        <ul className="space-y-1">
+          {navigation.map((item) => {
+            const isActive = location.pathname === item.href
+            return (
+              <li key={item.name}>
+                <NavLink
+                  to={item.href}
+                  className={`flex items-center gap-3 px-3 py-2 text-sm rounded-md transition-base ${
+                    isActive
+                      ? 'bg-secondary text-foreground font-medium'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
+                  }`}
+                >
+                  <item.icon className="w-4 h-4" strokeWidth={1.5} />
+                  {item.name}
+                </NavLink>
+              </li>
+            )
+          })}
+        </ul>
+      </nav>
+
+      {/* Footer */}
+      <div className="p-4 border-t border-border">
+        <div className="text-2xs text-muted-foreground">
+          Claude Memory Dashboard
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+function PageHeader({ title, description }: { title: string; description?: string }) {
+  return (
+    <div className="mb-8">
+      <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+      {description && (
+        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+      )}
+    </div>
+  )
+}
+
+export { PageHeader }
 
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-grid relative overflow-hidden">
-        <div className="pointer-events-none fixed inset-0 -z-10">
-          <div className="absolute -top-48 left-1/2 h-[420px] w-[420px] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(16,185,129,0.22),transparent_65%)] blur-2xl animate-float" />
-          <div className="absolute -bottom-40 right-0 h-[380px] w-[380px] rounded-full bg-[radial-gradient(circle,rgba(251,191,36,0.2),transparent_65%)] blur-2xl animate-float" />
-        </div>
-        <nav className="sticky top-0 z-40 border-b border-white/5 bg-slate-950/80 backdrop-blur-xl">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-            <NavLink to="/" className="text-lg font-semibold text-white">
-              Claude Memory
-            </NavLink>
-            <div className="flex items-center gap-6">
-              <NavLink to="/" className={navLinkClass} end>
-                Overview
-              </NavLink>
-              <NavLink to="/memories" className={navLinkClass}>
-                Memories
-              </NavLink>
-              <NavLink to="/preview" className={navLinkClass}>
-                Preview
-              </NavLink>
-              <NavLink to="/sessions" className={navLinkClass}>
-                Sessions
-              </NavLink>
-            </div>
+      <div className="min-h-screen bg-background">
+        <Sidebar />
+        <main className="pl-56">
+          <div className="max-w-6xl mx-auto px-8 py-8">
+            <Routes>
+              <Route path="/" element={<Overview />} />
+              <Route path="/memories" element={<MemoryPool />} />
+              <Route path="/preview" element={<ContextPreview />} />
+              <Route path="/sessions" element={<Sessions />} />
+            </Routes>
           </div>
-        </nav>
-        <main className="mx-auto max-w-7xl px-6 py-10">
-          <Routes>
-            <Route path="/" element={<Overview />} />
-            <Route path="/memories" element={<MemoryPool />} />
-            <Route path="/preview" element={<ContextPreview />} />
-            <Route path="/sessions" element={<Sessions />} />
-          </Routes>
         </main>
       </div>
     </BrowserRouter>

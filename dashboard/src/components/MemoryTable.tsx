@@ -1,4 +1,3 @@
-import TypeBadge from '@/components/TypeBadge'
 import type { MemoryRecord } from '@/lib/api'
 
 interface MemoryTableProps {
@@ -7,113 +6,103 @@ interface MemoryTableProps {
   emptyMessage?: string
 }
 
-function truncateText(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value
-  return `${value.slice(0, maxLength - 3)}...`
+const TYPE_COLORS: Record<string, string> = {
+  command: '#2dd4bf',
+  error: '#f43f5e',
+  discovery: '#60a5fa',
+  procedure: '#a78bfa',
+}
+
+function truncate(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`
 }
 
 function getSummary(record: MemoryRecord): string {
   switch (record.type) {
-    case 'command':
-      return record.command
-    case 'error':
-      return record.errorText
-    case 'discovery':
-      return record.what
-    case 'procedure':
-      return record.name
+    case 'command': return record.command
+    case 'error': return record.errorText
+    case 'discovery': return record.what
+    case 'procedure': return record.name
   }
 }
 
 function formatRelativeTime(timestamp?: number): string {
-  if (!timestamp) return 'N/A'
-  const diffSeconds = Math.round((timestamp - Date.now()) / 1000)
-  const ranges: Array<{ unit: Intl.RelativeTimeFormatUnit; seconds: number }> = [
-    { unit: 'year', seconds: 31536000 },
-    { unit: 'month', seconds: 2592000 },
-    { unit: 'day', seconds: 86400 },
-    { unit: 'hour', seconds: 3600 },
-    { unit: 'minute', seconds: 60 },
-    { unit: 'second', seconds: 1 }
-  ]
+  if (!timestamp) return '—'
+  const diff = Date.now() - timestamp
+  const mins = Math.floor(diff / 60000)
+  const hours = Math.floor(mins / 60)
+  const days = Math.floor(hours / 24)
 
-  for (const range of ranges) {
-    if (Math.abs(diffSeconds) >= range.seconds) {
-      const value = Math.round(diffSeconds / range.seconds)
-      return new Intl.RelativeTimeFormat('en', { numeric: 'auto' }).format(value, range.unit)
-    }
-  }
-
-  return 'just now'
+  if (days > 0) return `${days}d`
+  if (hours > 0) return `${hours}h`
+  if (mins > 0) return `${mins}m`
+  return 'now'
 }
 
 export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryTableProps) {
   if (records.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-10 text-center text-sm text-slate-400">
-        {emptyMessage ?? 'No memories found.'}
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        {emptyMessage ?? 'No memories found'}
       </div>
     )
   }
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-[color:var(--panel)]">
-      <div className="overflow-x-auto">
-        <table className="min-w-[900px] w-full border-collapse text-sm">
-        <thead className="bg-white/5 text-xs uppercase tracking-[0.18em] text-slate-400">
-          <tr>
-            <th className="px-4 py-3 text-left font-medium">Type</th>
-            <th className="px-4 py-3 text-left font-medium">Summary</th>
-            <th className="px-4 py-3 text-left font-medium">Project</th>
-            <th className="px-4 py-3 text-left font-medium">Domain</th>
-            <th className="px-4 py-3 text-left font-medium">Retrievals</th>
-            <th className="px-4 py-3 text-left font-medium">Usage</th>
-            <th className="px-4 py-3 text-left font-medium">Last used</th>
+    <div className="border border-border rounded-lg overflow-hidden">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border bg-card">
+            <th className="text-left font-medium text-muted-foreground px-4 py-3 w-8"></th>
+            <th className="text-left font-medium text-muted-foreground px-4 py-3">Summary</th>
+            <th className="text-left font-medium text-muted-foreground px-4 py-3 w-32">Project</th>
+            <th className="text-left font-medium text-muted-foreground px-4 py-3 w-32">Domain</th>
+            <th className="text-right font-medium text-muted-foreground px-4 py-3 w-20">Retr.</th>
+            <th className="text-right font-medium text-muted-foreground px-4 py-3 w-20">Usage</th>
+            <th className="text-right font-medium text-muted-foreground px-4 py-3 w-16">Age</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-white/5">
+        <tbody>
           {records.map(record => {
-            const summary = truncateText(getSummary(record), 120)
-            const faded = record.deprecated ? 'opacity-60' : ''
+            const summary = truncate(getSummary(record), 80)
             return (
               <tr
                 key={record.id}
                 onClick={() => onSelect(record)}
-                onKeyDown={event => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onSelect(record)
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-                className={`cursor-pointer transition hover:bg-white/5 ${faded}`}
+                className={`border-b border-border last:border-0 cursor-pointer transition-base hover:bg-secondary/50 ${
+                  record.deprecated ? 'opacity-50' : ''
+                }`}
               >
                 <td className="px-4 py-3">
-                  <div className="flex flex-col gap-2">
-                    <TypeBadge type={record.type} />
-                    {record.deprecated ? (
-                      <span className="text-[10px] uppercase tracking-[0.2em] text-rose-300">Deprecated</span>
-                    ) : null}
-                  </div>
+                  <span
+                    className="block w-2 h-2 rounded-full"
+                    style={{ backgroundColor: TYPE_COLORS[record.type] }}
+                    title={record.type}
+                  />
                 </td>
                 <td className="px-4 py-3">
-                  <div className="text-slate-100">{summary}</div>
-                  <div className="text-xs text-slate-500">{record.id}</div>
+                  <div className="font-medium truncate">{summary}</div>
                 </td>
-                <td className="px-4 py-3 text-slate-300">{record.project ?? 'unknown'}</td>
-                <td className="px-4 py-3 text-slate-300">{record.domain ?? 'unknown'}</td>
-                <td className="px-4 py-3 text-slate-200">{record.retrievalCount ?? 0}</td>
-                <td className="px-4 py-3 text-slate-200">{record.usageCount ?? 0}</td>
-                <td className="px-4 py-3 text-slate-400">
+                <td className="px-4 py-3 text-muted-foreground truncate">
+                  {record.project ?? '—'}
+                </td>
+                <td className="px-4 py-3 text-muted-foreground truncate">
+                  {record.domain ?? '—'}
+                </td>
+                <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                  {record.retrievalCount ?? 0}
+                </td>
+                <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                  {record.usageCount ?? 0}
+                </td>
+                <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
                   {formatRelativeTime(record.lastUsed ?? record.timestamp)}
                 </td>
               </tr>
             )
           })}
         </tbody>
-        </table>
-      </div>
+      </table>
     </div>
   )
 }

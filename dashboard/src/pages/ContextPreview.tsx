@@ -1,40 +1,41 @@
 import { useState } from 'react'
-import TypeBadge from '@/components/TypeBadge'
+import { Play } from 'lucide-react'
+import { PageHeader } from '@/App'
 import { previewContext, type MemoryRecord, type PreviewResponse } from '@/lib/api'
 
-function escapeHtml(value: string): string {
-  return value
+const TYPE_COLORS: Record<string, string> = {
+  command: '#2dd4bf',
+  error: '#f43f5e',
+  discovery: '#60a5fa',
+  procedure: '#a78bfa',
+}
+
+function escapeHtml(str: string): string {
+  return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
 }
 
-function highlightContext(value: string): string {
-  let output = escapeHtml(value)
-  output = output.replace(
+function highlightContext(str: string): string {
+  let out = escapeHtml(str)
+  out = out.replace(
     /(&lt;\/?prior-knowledge&gt;)/g,
-    '<span class="text-emerald-300 font-semibold">$1</span>'
+    '<span class="text-type-discovery">$1</span>'
   )
-  output = output.replace(
+  out = out.replace(
     /(command:|error:|discovery:|procedure:|resolution:|cause:|outcome:|exit:|steps:|verify:|where:|confidence:)/g,
-    '<span class="text-amber-300">$1</span>'
+    '<span class="text-muted-foreground">$1</span>'
   )
-  output = output.replace(/^(- )/gm, '<span class="text-sky-300">$1</span>')
-  return output
+  return out
 }
 
-function recordSummary(record: MemoryRecord): string {
+function getSummary(record: MemoryRecord): string {
   switch (record.type) {
-    case 'command':
-      return record.command
-    case 'error':
-      return record.errorText
-    case 'discovery':
-      return record.what
-    case 'procedure':
-      return record.name
+    case 'command': return record.command
+    case 'error': return record.errorText
+    case 'discovery': return record.what
+    case 'procedure': return record.name
   }
 }
 
@@ -49,7 +50,7 @@ export default function ContextPreview() {
     const trimmed = prompt.trim()
     setResult(null)
     if (!trimmed) {
-      setError('Enter a prompt to preview.')
+      setError('Enter a prompt to preview')
       return
     }
 
@@ -59,195 +60,179 @@ export default function ContextPreview() {
       const response = await previewContext({ prompt: trimmed, cwd: cwd.trim() || undefined })
       setResult(response)
     } catch (err) {
-      setError((err as Error).message || 'Failed to preview context.')
-      setResult(null)
+      setError((err as Error).message || 'Failed to preview context')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="space-y-6 animate-fade-up">
-      <header className="space-y-2">
-        <p className="text-xs uppercase tracking-[0.3em] text-amber-300">Context preview</p>
-        <h1 className="text-3xl font-semibold text-white">Simulate memory injection.</h1>
-        <p className="max-w-2xl text-sm text-slate-400">
-          Draft a prompt and see which memories would be pulled into Claude Code before you send it.
-        </p>
-      </header>
+    <div className="space-y-6">
+      <PageHeader
+        title="Simulator"
+        description="Test what memories would be injected for a given prompt"
+      />
 
-      <div className="grid gap-4 rounded-2xl border border-white/10 bg-[color:var(--panel)] p-4">
-        <label className="text-xs uppercase tracking-[0.2em] text-slate-400">
-          Prompt
+      {/* Input form */}
+      <div className="p-6 rounded-lg border border-border bg-card space-y-4">
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1.5">Prompt</label>
           <textarea
             value={prompt}
-            onChange={event => setPrompt(event.target.value)}
-            rows={6}
-            placeholder="Paste the prompt you want to run through Claude Memory..."
-            className="mt-2 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+            onChange={e => setPrompt(e.target.value)}
+            rows={5}
+            placeholder="Enter a prompt to test memory injection…"
+            className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-1 focus:ring-ring"
           />
-        </label>
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <label className="text-xs uppercase tracking-[0.2em] text-slate-400">
-            Optional cwd
+        </div>
+
+        <div className="flex items-end gap-4">
+          <div className="flex-1">
+            <label className="block text-xs text-muted-foreground mb-1.5">
+              Working directory (optional)
+            </label>
             <input
+              type="text"
               value={cwd}
-              onChange={event => setCwd(event.target.value)}
-              placeholder="/home/you/project"
-              className="mt-2 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+              onChange={e => setCwd(e.target.value)}
+              placeholder="/home/user/project"
+              className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             />
-          </label>
+          </div>
           <button
             onClick={handlePreview}
             disabled={loading}
-            className="rounded-full border border-amber-400/40 bg-amber-400/10 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-amber-200 transition hover:border-amber-300 hover:text-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
           >
-            {loading ? 'Previewing...' : 'Preview'}
+            <Play className="w-4 h-4" />
+            {loading ? 'Running…' : 'Preview'}
           </button>
         </div>
-        {error ? (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">
-            {error}
-          </div>
-        ) : null}
+
+        {error && (
+          <div className="text-sm text-destructive">{error}</div>
+        )}
       </div>
 
-      {result ? (
-        <div className="grid gap-6 xl:grid-cols-[1.1fr_1fr]">
+      {/* Results */}
+      {result && (
+        <div className="grid lg:grid-cols-2 gap-6">
+          {/* Left column: Signals & Matches */}
           <div className="space-y-6">
-            <div className="rounded-2xl border border-white/10 bg-[color:var(--panel)] p-5">
-              <h2 className="text-lg font-semibold text-white">Signals extracted</h2>
-              <div className="mt-4 space-y-3 text-sm text-slate-300">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Project</p>
-                  <p className="mt-1">{result.signals.projectName ?? 'unknown'}</p>
-                  <p className="text-xs text-slate-500">{result.signals.projectRoot ?? 'N/A'}</p>
+            {/* Signals */}
+            <div className="p-6 rounded-lg border border-border bg-card">
+              <h3 className="text-sm font-medium mb-4">Extracted signals</h3>
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Project</span>
+                  <span>{result.signals.projectName ?? '—'}</span>
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Domain</p>
-                  <p className="mt-1">{result.signals.domain ?? 'unknown'}</p>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Domain</span>
+                  <span>{result.signals.domain ?? '—'}</span>
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Errors</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {result.signals.errors.length ? (
-                      result.signals.errors.map((errorSignal, index) => (
-                        <span
-                          key={`error-${index}`}
-                          className="rounded-full border border-rose-400/30 bg-rose-400/10 px-3 py-1 text-xs text-rose-200"
-                        >
-                          {errorSignal}
+                {result.signals.errors.length > 0 && (
+                  <div>
+                    <span className="text-muted-foreground">Errors</span>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {result.signals.errors.map((e, i) => (
+                        <span key={i} className="px-2 py-0.5 rounded text-xs bg-type-error/20 text-type-error">
+                          {e}
                         </span>
-                      ))
-                    ) : (
-                      <span className="text-xs text-slate-500">No error signals detected.</span>
-                    )}
+                      ))}
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Commands</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {result.signals.commands.length ? (
-                      result.signals.commands.map((commandSignal, index) => (
-                        <span
-                          key={`cmd-${index}`}
-                          className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-200"
-                        >
-                          {commandSignal}
+                )}
+                {result.signals.commands.length > 0 && (
+                  <div>
+                    <span className="text-muted-foreground">Commands</span>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {result.signals.commands.map((c, i) => (
+                        <span key={i} className="px-2 py-0.5 rounded text-xs bg-type-command/20 text-type-command">
+                          {c}
                         </span>
-                      ))
-                    ) : (
-                      <span className="text-xs text-slate-500">No command signals detected.</span>
-                    )}
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-[color:var(--panel)] p-5">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-white">Matches</h2>
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                  {result.results.length} results
-                </p>
+            {/* Matches */}
+            <div className="p-6 rounded-lg border border-border bg-card">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium">Search results</h3>
+                <span className="text-xs text-muted-foreground">{result.results.length} matches</span>
               </div>
-              <div className="mt-4 space-y-3">
-                {result.results.length ? (
-                  result.results.map(match => (
+              {result.results.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No matches found</p>
+              ) : (
+                <div className="space-y-2">
+                  {result.results.map(match => (
                     <div
                       key={match.record.id}
-                      className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200"
+                      className="p-3 rounded-md bg-secondary/50 text-sm"
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <TypeBadge type={match.record.type} />
-                        <div className="flex gap-4 text-xs text-slate-400">
-                          <span>Score {match.score.toFixed(2)}</span>
-                          <span>Sim {match.similarity.toFixed(2)}</span>
-                          <span>{match.keywordMatch ? 'Keyword match' : 'Vector match'}</span>
-                        </div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span
+                          className="w-2 h-2 rounded-full"
+                          style={{ backgroundColor: TYPE_COLORS[match.record.type] }}
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          Score {match.score.toFixed(2)} · Sim {match.similarity.toFixed(2)}
+                        </span>
                       </div>
-                      <p className="mt-3 text-sm text-slate-100">{recordSummary(match.record)}</p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {match.record.project ?? 'unknown'} | {match.record.domain ?? 'unknown'}
-                      </p>
+                      <div className="truncate">{getSummary(match.record)}</div>
                     </div>
-                  ))
-                ) : (
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-slate-400">
-                    No matches returned from search.
-                  </div>
-                )}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
+          {/* Right column: Injected context */}
           <div className="space-y-6">
-            <div className="rounded-2xl border border-white/10 bg-[color:var(--panel)] p-5">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-white">Injected context</h2>
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+            <div className="p-6 rounded-lg border border-border bg-card">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium">Injected context</h3>
+                <span className="text-xs text-muted-foreground">
                   {result.injectedRecords.length} memories
-                </p>
+                </span>
               </div>
-              <div className="mt-4">
-                {result.context ? (
-                  <pre
-                    className="max-h-[420px] overflow-auto rounded-xl bg-black/50 p-4 text-xs text-slate-100"
-                    dangerouslySetInnerHTML={{ __html: highlightContext(result.context) }}
-                  />
-                ) : (
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-slate-400">
-                    No context injected for this prompt.
-                  </div>
-                )}
-              </div>
+              {result.context ? (
+                <pre
+                  className="p-4 rounded-md bg-secondary text-xs font-mono overflow-x-auto max-h-[400px]"
+                  dangerouslySetInnerHTML={{ __html: highlightContext(result.context) }}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">No context would be injected</p>
+              )}
             </div>
-            <div className="rounded-2xl border border-white/10 bg-[color:var(--panel)] p-5">
-              <h2 className="text-lg font-semibold text-white">Injected memories</h2>
-              <div className="mt-4 space-y-3">
-                {result.injectedRecords.length ? (
-                  result.injectedRecords.map(record => (
-                    <div
-                      key={record.id}
-                      className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200"
-                    >
-                      <TypeBadge type={record.type} />
-                      <p className="mt-2 text-sm text-slate-100">{recordSummary(record)}</p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {record.project ?? 'unknown'} | {record.domain ?? 'unknown'}
-                      </p>
+
+            {result.injectedRecords.length > 0 && (
+              <div className="p-6 rounded-lg border border-border bg-card">
+                <h3 className="text-sm font-medium mb-4">Injected memories</h3>
+                <div className="space-y-2">
+                  {result.injectedRecords.map(record => (
+                    <div key={record.id} className="flex items-start gap-2 text-sm">
+                      <span
+                        className="w-2 h-2 rounded-full mt-1.5 shrink-0"
+                        style={{ backgroundColor: TYPE_COLORS[record.type] }}
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate">{getSummary(record)}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {record.project ?? '—'} · {record.domain ?? '—'}
+                        </div>
+                      </div>
                     </div>
-                  ))
-                ) : (
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center text-sm text-slate-400">
-                    No memories would be injected.
-                  </div>
-                )}
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
-      ) : null}
+      )}
     </div>
   )
 }

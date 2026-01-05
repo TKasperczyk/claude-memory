@@ -1,57 +1,104 @@
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from 'recharts'
+import { PageHeader } from '@/App'
 import StatsCard from '@/components/StatsCard'
 import { useApi } from '@/hooks/useApi'
 import { fetchStats, type RecordType } from '@/lib/api'
 
-const TYPE_ORDER: RecordType[] = ['command', 'error', 'discovery', 'procedure']
-
-const TYPE_LABELS: Record<RecordType, string> = {
-  command: 'Command',
-  error: 'Error',
-  discovery: 'Discovery',
-  procedure: 'Procedure'
+const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
+  command: { label: 'Commands', color: '#2dd4bf' },
+  error: { label: 'Errors', color: '#f43f5e' },
+  discovery: { label: 'Discoveries', color: '#60a5fa' },
+  procedure: { label: 'Procedures', color: '#a78bfa' },
 }
 
-const TYPE_COLORS: Record<RecordType, string> = {
-  command: '#34d399',
-  error: '#fb7185',
-  discovery: '#60a5fa',
-  procedure: '#fbbf24'
-}
-
-function formatNumber(value: number, digits = 0): string {
+function formatNumber(value: number, decimals = 0): string {
   return new Intl.NumberFormat('en', {
-    maximumFractionDigits: digits,
-    minimumFractionDigits: digits
+    maximumFractionDigits: decimals,
+    minimumFractionDigits: decimals,
   }).format(value)
 }
 
-function formatPercent(value: number): string {
-  return `${Math.round(value * 100)}%`
+function DistributionBar({ data }: { data: { type: RecordType; count: number }[] }) {
+  const total = data.reduce((sum, d) => sum + d.count, 0)
+  if (total === 0) return null
+
+  return (
+    <div className="space-y-3">
+      {/* Bar */}
+      <div className="flex h-2 rounded-full overflow-hidden bg-secondary">
+        {data.map(({ type, count }) => {
+          const percent = (count / total) * 100
+          if (percent === 0) return null
+          return (
+            <div
+              key={type}
+              style={{ width: `${percent}%`, backgroundColor: TYPE_CONFIG[type].color }}
+            />
+          )
+        })}
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-x-6 gap-y-2">
+        {data.map(({ type, count }) => (
+          <div key={type} className="flex items-center gap-2">
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: TYPE_CONFIG[type].color }}
+            />
+            <span className="text-sm text-muted-foreground">
+              {TYPE_CONFIG[type].label}
+            </span>
+            <span className="text-sm font-medium tabular-nums">{count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
-function buildBreakdown(source: Record<string, number>, limit = 8) {
-  const entries = Object.entries(source)
-    .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value)
+function TopList({
+  title,
+  data
+}: {
+  title: string
+  data: { name: string; value: number }[]
+}) {
+  if (data.length === 0) {
+    return (
+      <div>
+        <h3 className="text-sm font-medium mb-3">{title}</h3>
+        <p className="text-sm text-muted-foreground">No data yet</p>
+      </div>
+    )
+  }
 
-  if (entries.length <= limit) return entries
+  const maxValue = Math.max(...data.map(d => d.value))
 
-  const top = entries.slice(0, limit)
-  const restValue = entries.slice(limit).reduce((sum, entry) => sum + entry.value, 0)
-  if (restValue > 0) top.push({ name: 'other', value: restValue })
-  return top
+  return (
+    <div>
+      <h3 className="text-sm font-medium mb-3">{title}</h3>
+      <div className="space-y-2">
+        {data.slice(0, 6).map(({ name, value }) => (
+          <div key={name} className="flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm truncate" title={name}>{name}</span>
+                <span className="text-sm text-muted-foreground tabular-nums ml-2">
+                  {value}
+                </span>
+              </div>
+              <div className="h-1 rounded-full bg-secondary overflow-hidden">
+                <div
+                  className="h-full bg-foreground/20 rounded-full"
+                  style={{ width: `${(value / maxValue) * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export default function Overview() {
@@ -59,190 +106,77 @@ export default function Overview() {
 
   if (loading) {
     return (
-      <div className="rounded-2xl border border-white/10 bg-white/5 p-10 text-center text-sm text-slate-400">
-        Loading overview...
+      <div>
+        <PageHeader title="Overview" />
+        <div className="text-sm text-muted-foreground">Loading...</div>
       </div>
     )
   }
 
   if (error || !data) {
     return (
-      <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-10 text-center text-sm text-rose-200">
-        Failed to load overview data.
+      <div>
+        <PageHeader title="Overview" />
+        <div className="text-sm text-destructive">Failed to load statistics</div>
       </div>
     )
   }
 
-  const typeData = TYPE_ORDER.map(type => ({
-    name: TYPE_LABELS[type],
-    value: data.byType[type] ?? 0,
-    type
+  const typeData = (['command', 'error', 'discovery', 'procedure'] as const).map(type => ({
+    type,
+    count: data.byType[type] ?? 0,
   }))
 
-  const projectData = buildBreakdown(data.byProject)
-  const domainData = buildBreakdown(data.byDomain)
+  const projectData = Object.entries(data.byProject)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
 
-  const statCards = [
-    {
-      title: 'Total memories',
-      value: formatNumber(data.total),
-      detail: 'Active + deprecated',
-      accentClassName: 'text-emerald-300'
-    },
-    {
-      title: 'Deprecated',
-      value: formatNumber(data.deprecated),
-      detail: 'Marked for retirement',
-      accentClassName: 'text-rose-300'
-    },
-    {
-      title: 'Avg retrievals',
-      value: formatNumber(data.avgRetrievalCount, 1),
-      detail: 'Per injected memory',
-      accentClassName: 'text-sky-300'
-    },
-    {
-      title: 'Avg usage',
-      value: formatNumber(data.avgUsageCount, 1),
-      detail: 'Helpful ratings per inject',
-      accentClassName: 'text-cyan-300'
-    },
-    {
-      title: 'Usage ratio',
-      value: formatPercent(data.avgUsageRatio),
-      detail: 'Avg helpfulness rate',
-      accentClassName: 'text-amber-300'
-    }
-  ]
+  const domainData = Object.entries(data.byDomain)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
+
+  const usagePercent = Math.round(data.avgUsageRatio * 100)
 
   return (
-    <div className="space-y-8 animate-fade-up">
-      <header className="space-y-3">
-        <p className="text-xs uppercase tracking-[0.3em] text-emerald-300">Overview</p>
-        <h1 className="text-3xl font-semibold text-white">Memory telemetry in one glance.</h1>
-        <p className="max-w-2xl text-sm text-slate-400">
-          Track how Claude Memory is growing, where it is strongest, and which signals are pulling their
-          weight.
-        </p>
-      </header>
+    <div className="space-y-10">
+      <PageHeader
+        title="Overview"
+        description="Memory system statistics and distribution"
+      />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        {statCards.map((card, index) => (
-          <div
-            key={card.title}
-            className="animate-fade-up"
-            style={{ animationDelay: `${index * 90}ms` }}
-          >
-            <StatsCard {...card} />
-          </div>
-        ))}
+      {/* Key Metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-8">
+        <StatsCard label="Total memories" value={formatNumber(data.total)} />
+        <StatsCard label="Deprecated" value={formatNumber(data.deprecated)} />
+        <StatsCard
+          label="Avg retrievals"
+          value={formatNumber(data.avgRetrievalCount, 1)}
+        />
+        <StatsCard
+          label="Avg usage"
+          value={formatNumber(data.avgUsageCount, 1)}
+        />
+        <StatsCard
+          label="Usage ratio"
+          value={`${usagePercent}%`}
+          subtext="Helpfulness score"
+        />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1.1fr_1fr]">
-        <div className="rounded-2xl border border-white/10 bg-[color:var(--panel)] p-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-white">Memory mix</h2>
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">By type</p>
-          </div>
-          <div className="mt-6 h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={typeData}
-                  dataKey="value"
-                  nameKey="name"
-                  innerRadius={70}
-                  outerRadius={110}
-                  paddingAngle={4}
-                >
-                  {typeData.map(entry => (
-                    <Cell key={entry.type} fill={TYPE_COLORS[entry.type]} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{
-                    background: '#0f172a',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    color: '#e2e8f0'
-                  }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            {typeData.map(item => (
-              <div key={item.name} className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: TYPE_COLORS[item.type] }} />
-                  <span className="text-slate-300">{item.name}</span>
-                </div>
-                <span className="font-semibold text-slate-100">{formatNumber(item.value)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Distribution */}
+      <section className="p-6 rounded-lg border border-border bg-card">
+        <h2 className="text-sm font-medium mb-4">Type distribution</h2>
+        <DistributionBar data={typeData} />
+      </section>
 
-        <div className="space-y-6">
-          <div className="rounded-2xl border border-white/10 bg-[color:var(--panel)] p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-white">Top projects</h2>
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">By volume</p>
-            </div>
-            <div className="mt-5 h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={projectData} layout="vertical" margin={{ left: 10, right: 10 }}>
-                  <CartesianGrid stroke="rgba(255,255,255,0.06)" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    width={90}
-                    tick={{ fill: '#cbd5f5', fontSize: 11 }}
-                  />
-                  <Tooltip
-                    cursor={{ fill: 'rgba(255,255,255,0.06)' }}
-                    contentStyle={{
-                      background: '#0f172a',
-                      border: '1px solid rgba(255,255,255,0.1)',
-                      color: '#e2e8f0'
-                    }}
-                  />
-                  <Bar dataKey="value" fill="#38bdf8" radius={[8, 8, 8, 8]} barSize={12} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-[color:var(--panel)] p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-white">Top domains</h2>
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">By volume</p>
-            </div>
-            <div className="mt-5 h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={domainData} layout="vertical" margin={{ left: 10, right: 10 }}>
-                  <CartesianGrid stroke="rgba(255,255,255,0.06)" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    width={90}
-                    tick={{ fill: '#cbd5f5', fontSize: 11 }}
-                  />
-                  <Tooltip
-                    cursor={{ fill: 'rgba(255,255,255,0.06)' }}
-                    contentStyle={{
-                      background: '#0f172a',
-                      border: '1px solid rgba(255,255,255,0.1)',
-                      color: '#e2e8f0'
-                    }}
-                  />
-                  <Bar dataKey="value" fill="#fbbf24" radius={[8, 8, 8, 8]} barSize={12} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
+      {/* Lists */}
+      <div className="grid md:grid-cols-2 gap-8">
+        <section className="p-6 rounded-lg border border-border bg-card">
+          <TopList title="Top projects" data={projectData} />
+        </section>
+        <section className="p-6 rounded-lg border border-border bg-card">
+          <TopList title="Top domains" data={domainData} />
+        </section>
       </div>
     </div>
   )

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
+import { PageHeader } from '@/App'
 import MemoryDetail from '@/components/MemoryDetail'
 import MemoryTable from '@/components/MemoryTable'
-import TypeBadge from '@/components/TypeBadge'
 import { useApi } from '@/hooks/useApi'
 import {
   fetchMemories,
@@ -45,18 +46,18 @@ export default function MemoryPool() {
       .map(([name]) => name)
   }, [stats])
 
+  // Debounce search
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearchQuery(searchInput.trim())
-    }, 350)
-
+    const timer = setTimeout(() => setSearchQuery(searchInput.trim()), 300)
     return () => clearTimeout(timer)
   }, [searchInput])
 
+  // Reset offset on filter change
   useEffect(() => {
     setOffset(0)
   }, [typeFilter, projectFilter, showDeprecated, searchQuery])
 
+  // Fetch data
   useEffect(() => {
     let active = true
 
@@ -66,7 +67,7 @@ export default function MemoryPool() {
 
       try {
         if (searchQuery) {
-          const searchResponse = await searchMemories({
+          const response = await searchMemories({
             query: searchQuery,
             limit: SEARCH_LIMIT,
             type: typeFilter === 'all' ? undefined : typeFilter,
@@ -74,8 +75,8 @@ export default function MemoryPool() {
             deprecated: showDeprecated
           })
           if (!active) return
-          const results = searchResponse.results.map(result => result.record)
-          const total = searchResponse.total ?? results.length
+          const results = response.results.map(r => r.record)
+          const total = response.total ?? results.length
           setTotalCount(total)
           setHasMore(offset + PAGE_SIZE < total)
           setRecords(results.slice(offset, offset + PAGE_SIZE))
@@ -87,7 +88,6 @@ export default function MemoryPool() {
             project: projectFilter === 'all' ? undefined : projectFilter,
             deprecated: showDeprecated
           })
-
           if (!active) return
           setRecords(response.records)
           setTotalCount(response.total)
@@ -97,143 +97,133 @@ export default function MemoryPool() {
         if (!active) return
         setError(err as Error)
       } finally {
-        if (!active) return
-        setLoading(false)
+        if (active) setLoading(false)
       }
     }
 
     run()
-
-    return () => {
-      active = false
-    }
+    return () => { active = false }
   }, [typeFilter, projectFilter, showDeprecated, searchQuery, offset])
 
-  const pageLabel = () => {
-    if (loading) return 'Loading...'
-    if (error) return 'Unable to load'
+  const pageInfo = () => {
+    if (loading) return 'Loading…'
+    if (error) return 'Error'
     if (!records.length) return 'No results'
     const start = offset + 1
     const end = offset + records.length
-    if (totalCount !== null) {
-      return `Showing ${start}-${end} of ${totalCount} results`
-    }
-    return `Showing ${start}-${end}`
+    return totalCount ? `${start}–${end} of ${totalCount}` : `${start}–${end}`
   }
 
   return (
-    <div className="space-y-6 animate-fade-up">
-      <header className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-sky-300">Memory pool</p>
-          <h1 className="mt-2 text-3xl font-semibold text-white">Filter every stored memory.</h1>
-        </div>
-        <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs uppercase tracking-[0.3em] text-slate-400">
-          {pageLabel()}
-        </div>
-      </header>
+    <div className="space-y-6">
+      <PageHeader
+        title="Memories"
+        description="Browse and search stored memory records"
+      />
 
-      <div className="grid gap-4 rounded-2xl border border-white/10 bg-[color:var(--panel)] p-4 md:grid-cols-[1fr_1fr_auto_auto]">
-        <label className="text-xs uppercase tracking-[0.2em] text-slate-400">
-          Search
-          <input
-            value={searchInput}
-            onChange={event => setSearchInput(event.target.value)}
-            placeholder="Find commands, errors, procedures..."
-            className="mt-2 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-400 focus:outline-none"
-          />
-        </label>
-        <label className="text-xs uppercase tracking-[0.2em] text-slate-400">
-          Type
+      {/* Filters */}
+      <div className="flex flex-wrap items-end gap-4">
+        {/* Search */}
+        <div className="flex-1 min-w-[200px]">
+          <label className="block text-xs text-muted-foreground mb-1.5">Search</label>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input
+              type="text"
+              value={searchInput}
+              onChange={e => setSearchInput(e.target.value)}
+              placeholder="Search memories…"
+              className="w-full h-9 pl-9 pr-3 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        </div>
+
+        {/* Type */}
+        <div className="w-32">
+          <label className="block text-xs text-muted-foreground mb-1.5">Type</label>
           <select
             value={typeFilter}
-            onChange={event => setTypeFilter(event.target.value as RecordType | 'all')}
-            className="mt-2 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
+            onChange={e => setTypeFilter(e.target.value as RecordType | 'all')}
+            className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           >
-            {TYPE_OPTIONS.map(option => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
+            {TYPE_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
-        </label>
-        <label className="text-xs uppercase tracking-[0.2em] text-slate-400">
-          Project
+        </div>
+
+        {/* Project */}
+        <div className="w-40">
+          <label className="block text-xs text-muted-foreground mb-1.5">Project</label>
           <select
             value={projectFilter}
-            onChange={event => setProjectFilter(event.target.value)}
-            className="mt-2 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
+            onChange={e => setProjectFilter(e.target.value)}
+            className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           >
             <option value="all">All projects</option>
-            {projectOptions.map(project => (
-              <option key={project} value={project}>
-                {project}
-              </option>
+            {projectOptions.map(p => (
+              <option key={p} value={p}>{p}</option>
             ))}
           </select>
-        </label>
-        <label className="flex items-end gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+        </div>
+
+        {/* Deprecated toggle */}
+        <label className="flex items-center gap-2 h-9 px-3 rounded-md border border-border bg-background cursor-pointer">
           <input
             type="checkbox"
             checked={showDeprecated}
-            onChange={event => setShowDeprecated(event.target.checked)}
-            className="h-4 w-4 rounded border-white/20 bg-black/40 text-emerald-400"
+            onChange={e => setShowDeprecated(e.target.checked)}
+            className="w-4 h-4 rounded border-border"
           />
-          Include deprecated
+          <span className="text-sm text-muted-foreground">Deprecated</span>
         </label>
       </div>
 
-      {searchQuery ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-300">
-          <span>Search results for</span>
-          <span className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 text-xs uppercase tracking-[0.2em] text-emerald-200">
-            {searchQuery}
-          </span>
-          {totalCount !== null && totalCount >= SEARCH_LIMIT ? (
-            <span className="text-xs uppercase tracking-[0.2em] text-slate-500">
-              Showing top {SEARCH_LIMIT}
-            </span>
-          ) : null}
+      {/* Search indicator */}
+      {searchQuery && (
+        <div className="text-sm text-muted-foreground">
+          Searching for "<span className="text-foreground">{searchQuery}</span>"
+          {totalCount !== null && totalCount >= SEARCH_LIMIT && (
+            <span className="ml-2">(showing top {SEARCH_LIMIT})</span>
+          )}
         </div>
-      ) : null}
+      )}
 
+      {/* Table */}
       {loading ? (
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-10 text-center text-sm text-slate-400">
-          Loading memories...
-        </div>
+        <div className="py-12 text-center text-sm text-muted-foreground">Loading…</div>
       ) : error ? (
-        <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-10 text-center text-sm text-rose-200">
-          Failed to load memories.
-        </div>
+        <div className="py-12 text-center text-sm text-destructive">Failed to load memories</div>
       ) : (
         <MemoryTable
           records={records}
-          onSelect={record => setSelected(record)}
-          emptyMessage="No memories match these filters."
+          onSelect={setSelected}
+          emptyMessage="No memories match these filters"
         />
       )}
 
+      {/* Pagination */}
       <div className="flex items-center justify-between">
         <button
-          onClick={() => setOffset(current => Math.max(0, current - PAGE_SIZE))}
+          onClick={() => setOffset(o => Math.max(0, o - PAGE_SIZE))}
           disabled={offset === 0}
-          className="rounded-full border border-white/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-slate-300 transition enabled:hover:border-white/30 disabled:opacity-40"
+          className="flex items-center gap-1 h-8 px-3 text-sm rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
         >
+          <ChevronLeft className="w-4 h-4" />
           Previous
         </button>
-        <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-500">
-          <TypeBadge type="command" />
-          <span>Tap a row for detail</span>
-        </div>
+        <span className="text-sm text-muted-foreground">{pageInfo()}</span>
         <button
-          onClick={() => setOffset(current => current + PAGE_SIZE)}
+          onClick={() => setOffset(o => o + PAGE_SIZE)}
           disabled={!hasMore}
-          className="rounded-full border border-white/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-slate-300 transition enabled:hover:border-white/30 disabled:opacity-40"
+          className="flex items-center gap-1 h-8 px-3 text-sm rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
         >
           Next
+          <ChevronRight className="w-4 h-4" />
         </button>
       </div>
 
+      {/* Detail modal */}
       <MemoryDetail record={selected} onClose={() => setSelected(null)} />
     </div>
   )

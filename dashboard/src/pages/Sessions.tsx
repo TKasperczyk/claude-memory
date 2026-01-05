@@ -1,18 +1,24 @@
 import { useEffect, useState } from 'react'
-import TypeBadge from '@/components/TypeBadge'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { PageHeader } from '@/App'
 import { fetchSessions, type SessionRecord, type RecordType, type MemoryStats } from '@/lib/api'
 
-function formatRelativeTime(timestamp: number): string {
-  const diff = Date.now() - timestamp
-  const seconds = Math.floor(diff / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
+const TYPE_COLORS: Record<string, string> = {
+  command: '#2dd4bf',
+  error: '#f43f5e',
+  discovery: '#60a5fa',
+  procedure: '#a78bfa',
+}
 
+function formatRelative(ts: number): string {
+  const diff = Date.now() - ts
+  const mins = Math.floor(diff / 60000)
+  const hours = Math.floor(mins / 60)
+  const days = Math.floor(hours / 24)
   if (days > 0) return `${days}d ago`
   if (hours > 0) return `${hours}h ago`
-  if (minutes > 0) return `${minutes}m ago`
-  return 'just now'
+  if (mins > 0) return `${mins}m ago`
+  return 'now'
 }
 
 function parseSnippetType(snippet: string): RecordType | null {
@@ -21,12 +27,9 @@ function parseSnippetType(snippet: string): RecordType | null {
 }
 
 function parseSnippetTitle(snippet: string): string {
-  // Remove type prefix and extract main content
   const withoutType = snippet.replace(/^(command|error|discovery|procedure):\s*/, '')
-  // Get first part before any | delimiter
   const mainPart = withoutType.split('|')[0].trim()
-  // Truncate if too long
-  return mainPart.length > 80 ? mainPart.slice(0, 77) + '...' : mainPart
+  return mainPart.length > 60 ? mainPart.slice(0, 57) + '…' : mainPart
 }
 
 function extractProjectName(cwd: string | undefined): string {
@@ -36,8 +39,7 @@ function extractProjectName(cwd: string | undefined): string {
 }
 
 function isSessionActive(session: SessionRecord): boolean {
-  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000
-  return session.lastActivity > fiveMinutesAgo
+  return Date.now() - session.lastActivity < 5 * 60 * 1000
 }
 
 function dedupeMemories(memories: SessionRecord['memories']) {
@@ -49,6 +51,19 @@ function dedupeMemories(memories: SessionRecord['memories']) {
   })
 }
 
+function formatUsageRatio(stats: MemoryStats | null | undefined): string {
+  if (!stats || stats.retrievalCount === 0) return '—'
+  return `${stats.usageCount}/${stats.retrievalCount}`
+}
+
+function getUsageColor(stats: MemoryStats | null | undefined): string {
+  if (!stats || stats.retrievalCount === 0) return 'text-muted-foreground'
+  const ratio = stats.usageCount / stats.retrievalCount
+  if (ratio >= 0.7) return 'text-green-400'
+  if (ratio >= 0.3) return 'text-yellow-400'
+  return 'text-red-400'
+}
+
 interface PromptGroup {
   prompt: string
   injectedAt: number
@@ -57,44 +72,29 @@ interface PromptGroup {
 
 function groupByPrompt(memories: SessionRecord['memories']): PromptGroup[] {
   const groups: PromptGroup[] = []
-  let currentGroup: PromptGroup | null = null
+  let current: PromptGroup | null = null
 
-  for (const memory of memories) {
-    const prompt = memory.prompt || '(unknown trigger)'
-    if (!currentGroup || currentGroup.prompt !== prompt) {
-      currentGroup = { prompt, injectedAt: memory.injectedAt, memories: [] }
-      groups.push(currentGroup)
+  for (const m of memories) {
+    const prompt = m.prompt || '(unknown trigger)'
+    if (!current || current.prompt !== prompt) {
+      current = { prompt, injectedAt: m.injectedAt, memories: [] }
+      groups.push(current)
     }
-    currentGroup.memories.push(memory)
+    current.memories.push(m)
   }
 
   return groups
 }
 
-function truncatePrompt(prompt: string, maxLen = 120): string {
-  if (prompt.length <= maxLen) return prompt
-  return prompt.slice(0, maxLen - 3) + '...'
-}
-
-function formatUsageRatio(stats: MemoryStats | null | undefined): { label: string; color: string } {
-  if (!stats) return { label: '—', color: 'text-slate-600' }
-
-  const { retrievalCount, usageCount } = stats
-  if (retrievalCount === 0) return { label: '0/0', color: 'text-slate-500' }
-
-  const ratio = usageCount / retrievalCount
-  const label = `${usageCount}/${retrievalCount}`
-
-  if (ratio >= 0.7) return { label, color: 'text-emerald-400' }
-  if (ratio >= 0.3) return { label, color: 'text-amber-400' }
-  return { label, color: 'text-rose-400' }
+function truncatePrompt(prompt: string, max = 100): string {
+  return prompt.length <= max ? prompt : prompt.slice(0, max - 1) + '…'
 }
 
 export default function Sessions() {
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [expandedSession, setExpandedSession] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   async function loadSessions() {
     try {
@@ -110,145 +110,131 @@ export default function Sessions() {
 
   useEffect(() => {
     loadSessions()
-    // Auto-refresh every 5 seconds
     const interval = setInterval(loadSessions, 5000)
     return () => clearInterval(interval)
   }, [])
 
   if (loading && sessions.length === 0) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+      <div>
+        <PageHeader title="Sessions" />
+        <div className="text-sm text-muted-foreground">Loading…</div>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 p-6 text-rose-400">
-        {error}
-      </div>
-    )
-  }
-
-  if (sessions.length === 0) {
-    return (
-      <div className="text-center py-20 text-slate-400">
-        No sessions tracked yet. Sessions appear when Claude Code injects memories.
+      <div>
+        <PageHeader title="Sessions" />
+        <div className="text-sm text-destructive">{error}</div>
       </div>
     )
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-white">Active Sessions</h1>
-        <span className="text-sm text-slate-400">
-          {sessions.length} session{sessions.length !== 1 ? 's' : ''} tracked
-        </span>
-      </div>
+      <PageHeader
+        title="Sessions"
+        description={`${sessions.length} tracked session${sessions.length !== 1 ? 's' : ''}`}
+      />
 
-      <div className="space-y-4">
-        {sessions.map(session => {
-          const isActive = isSessionActive(session)
-          const isExpanded = expandedSession === session.sessionId
-          const uniqueMemories = dedupeMemories(session.memories)
+      {sessions.length === 0 ? (
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          No sessions tracked yet. Sessions appear when Claude Code injects memories.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {sessions.map(session => {
+            const active = isSessionActive(session)
+            const isOpen = expanded === session.sessionId
+            const memories = dedupeMemories(session.memories)
 
-          return (
-            <div
-              key={session.sessionId}
-              className={`rounded-lg border transition-colors ${
-                isActive
-                  ? 'border-emerald-500/30 bg-emerald-500/5'
-                  : 'border-white/5 bg-white/[0.02]'
-              }`}
-            >
-              <button
-                onClick={() => setExpandedSession(isExpanded ? null : session.sessionId)}
-                className="w-full px-5 py-4 text-left"
+            return (
+              <div
+                key={session.sessionId}
+                className={`rounded-lg border transition-base ${
+                  active ? 'border-green-500/30 bg-green-500/5' : 'border-border bg-card'
+                }`}
               >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`inline-flex h-2 w-2 rounded-full ${
-                          isActive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
-                        }`}
-                      />
-                      <span className="font-medium text-white truncate">
-                        {extractProjectName(session.cwd)}
-                      </span>
-                      {isActive && (
-                        <span className="text-xs font-medium text-emerald-400 uppercase tracking-wider">
-                          Active
-                        </span>
+                {/* Header */}
+                <button
+                  onClick={() => setExpanded(isOpen ? null : session.sessionId)}
+                  className="w-full px-4 py-3 flex items-center gap-3 text-left"
+                >
+                  {isOpen ? (
+                    <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                  )}
+
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${active ? 'bg-green-400' : 'bg-muted-foreground'}`} />
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium truncate">{extractProjectName(session.cwd)}</span>
+                      {active && (
+                        <span className="text-2xs text-green-400 font-medium">ACTIVE</span>
                       )}
                     </div>
                     {session.cwd && (
-                      <p className="mt-1 text-sm text-slate-500 truncate pl-5">
-                        {session.cwd}
-                      </p>
+                      <div className="text-xs text-muted-foreground truncate">{session.cwd}</div>
                     )}
                   </div>
-                  <div className="flex items-center gap-4 text-sm text-slate-400">
-                    <span>{uniqueMemories.length} memories</span>
-                    <span>{formatRelativeTime(session.lastActivity)}</span>
-                    <svg
-                      className={`h-5 w-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
+
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground shrink-0">
+                    <span>{memories.length} memories</span>
+                    <span>{formatRelative(session.lastActivity)}</span>
                   </div>
-                </div>
-              </button>
+                </button>
 
-              {isExpanded && (
-                <div className="border-t border-white/5 px-5 py-4 space-y-4">
-                  {groupByPrompt(uniqueMemories).map((group, groupIdx) => (
-                    <div key={groupIdx}>
-                      <div className="flex items-start gap-2 mb-2">
-                        <span className="text-xs text-amber-500/80 font-medium shrink-0">Trigger:</span>
-                        <span className="text-xs text-slate-400 italic" title={group.prompt}>
-                          {truncatePrompt(group.prompt)}
-                        </span>
-                        <span className="text-xs text-slate-600 shrink-0 ml-auto">
-                          {formatRelativeTime(group.injectedAt)}
-                        </span>
-                      </div>
-                      <div className="space-y-1.5 pl-3 border-l border-white/5">
-                        {group.memories.map((memory, idx) => {
-                          const type = parseSnippetType(memory.snippet)
-                          const title = parseSnippetTitle(memory.snippet)
-                          const usage = formatUsageRatio(memory.stats)
+                {/* Expanded content */}
+                {isOpen && (
+                  <div className="px-4 pb-4 pt-2 border-t border-border/50 space-y-4">
+                    {groupByPrompt(memories).map((group, gi) => (
+                      <div key={gi}>
+                        <div className="flex items-start gap-2 mb-2">
+                          <span className="text-2xs text-muted-foreground shrink-0">Trigger:</span>
+                          <span className="text-xs text-muted-foreground italic truncate" title={group.prompt}>
+                            {truncatePrompt(group.prompt)}
+                          </span>
+                          <span className="text-2xs text-muted-foreground shrink-0 ml-auto">
+                            {formatRelative(group.injectedAt)}
+                          </span>
+                        </div>
+                        <div className="space-y-1 pl-3 border-l border-border">
+                          {group.memories.map((memory, mi) => {
+                            const type = parseSnippetType(memory.snippet)
+                            const title = parseSnippetTitle(memory.snippet)
 
-                          return (
-                            <div
-                              key={`${memory.id}-${idx}`}
-                              className="flex items-start gap-3 rounded-md bg-white/[0.03] px-3 py-2"
-                            >
-                              {type && <TypeBadge type={type} />}
-                              <span className="text-sm text-slate-300 flex-1">{title}</span>
-                              <span
-                                className={`text-xs font-mono shrink-0 ${usage.color}`}
-                                title="useful/retrieved"
+                            return (
+                              <div
+                                key={`${memory.id}-${mi}`}
+                                className="flex items-center gap-2 py-1.5 px-2 rounded bg-secondary/30 text-sm"
                               >
-                                {usage.label}
-                              </span>
-                            </div>
-                          )
-                        })}
+                                {type && (
+                                  <span
+                                    className="w-2 h-2 rounded-full shrink-0"
+                                    style={{ backgroundColor: TYPE_COLORS[type] }}
+                                  />
+                                )}
+                                <span className="flex-1 truncate">{title}</span>
+                                <span className={`text-xs font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
+                                  {formatUsageRatio(memory.stats)}
+                                </span>
+                              </div>
+                            )
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
