@@ -168,7 +168,7 @@ export default function Sessions() {
             return (
               <div
                 key={session.sessionId}
-                className={`rounded-lg border transition-base ${
+                className={`rounded-xl border transition-base ${
                   active ? 'border-green-500/30 bg-green-500/5' : 'border-border bg-card'
                 }`}
               >

@@ -1,7 +1,8 @@
 import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
-import { LayoutGrid, Database, FlaskConical, Activity } from 'lucide-react'
+import { LayoutGrid, Database, FlaskConical, Activity, Wrench } from 'lucide-react'
 import ContextPreview from '@/pages/ContextPreview'
 import MemoryPool from '@/pages/MemoryPool'
+import Maintenance from '@/pages/Maintenance'
 import Overview from '@/pages/Overview'
 import Sessions from '@/pages/Sessions'
 
@@ -10,31 +11,32 @@ const navigation = [
   { name: 'Memories', href: '/memories', icon: Database },
   { name: 'Simulator', href: '/preview', icon: FlaskConical },
   { name: 'Sessions', href: '/sessions', icon: Activity },
+  { name: 'Maintenance', href: '/maintenance', icon: Wrench },
 ]
 
 function Sidebar() {
   const location = useLocation()
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-50 w-56 border-r border-border bg-card flex flex-col">
+    <aside className="fixed inset-y-0 left-0 z-50 w-56 border-r border-border/50 bg-background flex flex-col">
       {/* Logo */}
-      <div className="h-14 flex items-center px-5 border-b border-border">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-foreground" />
-          <span className="font-semibold text-sm">Memory</span>
+      <div className="h-16 flex items-center px-5">
+        <div className="flex items-center gap-2.5">
+          <div className="w-2 h-2 rounded-full bg-type-discovery" />
+          <span className="font-semibold text-sm tracking-tight">Memory</span>
         </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-4">
-        <ul className="space-y-1">
+      <nav className="flex-1 px-3 py-2">
+        <ul className="space-y-0.5">
           {navigation.map((item) => {
             const isActive = location.pathname === item.href
             return (
               <li key={item.name}>
                 <NavLink
                   to={item.href}
-                  className={`flex items-center gap-3 px-3 py-2 text-sm rounded-md transition-base ${
+                  className={`flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg transition-base ${
                     isActive
                       ? 'bg-secondary text-foreground font-medium'
                       : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
@@ -50,9 +52,9 @@ function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="p-4 border-t border-border">
-        <div className="text-2xs text-muted-foreground">
-          Claude Memory Dashboard
+      <div className="px-5 py-4">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60">
+          Claude Memory
         </div>
       </div>
     </aside>
@@ -84,6 +86,7 @@ export default function App() {
               <Route path="/memories" element={<MemoryPool />} />
               <Route path="/preview" element={<ContextPreview />} />
               <Route path="/sessions" element={<Sessions />} />
+              <Route path="/maintenance" element={<Maintenance />} />
             </Routes>
           </div>
         </main>

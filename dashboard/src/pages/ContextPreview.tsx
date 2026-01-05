@@ -76,7 +76,7 @@ export default function ContextPreview() {
       />
 
       {/* Input form */}
-      <div className="p-6 rounded-lg border border-border bg-card space-y-4">
+      <div className="p-6 rounded-xl border border-border bg-card space-y-4">
         <div>
           <label className="block text-xs text-muted-foreground mb-1.5">Prompt</label>
           <textarea
@@ -122,8 +122,8 @@ export default function ContextPreview() {
           {/* Left column: Signals & Matches */}
           <div className="space-y-6">
             {/* Signals */}
-            <div className="p-6 rounded-lg border border-border bg-card">
-              <h3 className="text-sm font-medium mb-4">Extracted signals</h3>
+            <div className="p-6 rounded-xl border border-border bg-card">
+              <h3 className="section-header mb-4">Extracted signals</h3>
               <div className="space-y-3 text-sm">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Project</span>
@@ -161,10 +161,10 @@ export default function ContextPreview() {
             </div>
 
             {/* Matches */}
-            <div className="p-6 rounded-lg border border-border bg-card">
+            <div className="p-6 rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-medium">Search results</h3>
-                <span className="text-xs text-muted-foreground">{result.results.length} matches</span>
+                <h3 className="section-header">Search results</h3>
+                <span className="text-xs text-muted-foreground tabular-nums">{result.results.length} matches</span>
               </div>
               {result.results.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No matches found</p>
@@ -195,10 +195,10 @@ export default function ContextPreview() {
 
           {/* Right column: Injected context */}
           <div className="space-y-6">
-            <div className="p-6 rounded-lg border border-border bg-card">
+            <div className="p-6 rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-medium">Injected context</h3>
-                <span className="text-xs text-muted-foreground">
+                <h3 className="section-header">Injected context</h3>
+                <span className="text-xs text-muted-foreground tabular-nums">
                   {result.injectedRecords.length} memories
                 </span>
               </div>
@@ -213,8 +213,8 @@ export default function ContextPreview() {
             </div>
 
             {result.injectedRecords.length > 0 && (
-              <div className="p-6 rounded-lg border border-border bg-card">
-                <h3 className="text-sm font-medium mb-4">Injected memories</h3>
+              <div className="p-6 rounded-xl border border-border bg-card">
+                <h3 className="section-header mb-4">Injected memories</h3>
                 <div className="space-y-2">
                   {result.injectedRecords.map(record => (
                     <button

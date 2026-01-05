@@ -49,17 +49,17 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
   }
 
   return (
-    <div className="border border-border rounded-lg overflow-hidden">
+    <div className="border border-border rounded-xl overflow-hidden">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-border bg-card">
-            <th className="text-left font-medium text-muted-foreground px-4 py-3 w-8"></th>
-            <th className="text-left font-medium text-muted-foreground px-4 py-3">Summary</th>
-            <th className="text-left font-medium text-muted-foreground px-4 py-3 w-32">Project</th>
-            <th className="text-left font-medium text-muted-foreground px-4 py-3 w-32">Domain</th>
-            <th className="text-right font-medium text-muted-foreground px-4 py-3 w-20">Retr.</th>
-            <th className="text-right font-medium text-muted-foreground px-4 py-3 w-20">Usage</th>
-            <th className="text-right font-medium text-muted-foreground px-4 py-3 w-16">Age</th>
+          <tr className="border-b border-border bg-secondary/30">
+            <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-8"></th>
+            <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3">Summary</th>
+            <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-32">Project</th>
+            <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-32">Domain</th>
+            <th className="text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-20">Retr.</th>
+            <th className="text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-20">Usage</th>
+            <th className="text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-16">Age</th>
           </tr>
         </thead>
         <tbody>

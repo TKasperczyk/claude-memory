@@ -137,6 +137,25 @@ export interface SessionsResponse {
   count: number
 }
 
+export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
+
+export interface MaintenanceAction {
+  type: MaintenanceActionType
+  recordId?: string
+  snippet: string
+  reason: string
+  details?: Record<string, unknown>
+}
+
+export interface OperationResult {
+  operation: string
+  dryRun: boolean
+  actions: MaintenanceAction[]
+  summary: Record<string, number>
+  duration: number
+  error?: string
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     headers: {
@@ -205,4 +224,18 @@ export function previewContext(payload: { prompt: string; cwd?: string }): Promi
 
 export function fetchSessions(): Promise<SessionsResponse> {
   return request('/sessions')
+}
+
+export function runMaintenance(operation: string, dryRun: boolean): Promise<OperationResult> {
+  return request('/maintenance/run', {
+    method: 'POST',
+    body: JSON.stringify({ operation, dryRun })
+  })
+}
+
+export function runAllMaintenance(dryRun: boolean): Promise<OperationResult[]> {
+  return request('/maintenance/run-all', {
+    method: 'POST',
+    body: JSON.stringify({ dryRun })
+  })
 }

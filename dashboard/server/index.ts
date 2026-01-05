@@ -18,6 +18,12 @@ import { listAllSessions } from '../../src/lib/session-tracking.js'
 import { buildContext, extractSignals } from '../../src/lib/context.js'
 import { embed } from '../../src/lib/embed.js'
 import { DEFAULT_CONFIG, type MemoryRecord, type RecordType } from '../../src/lib/types.js'
+import {
+  MAINTENANCE_OPERATIONS,
+  runAllMaintenance,
+  runMaintenanceOperation,
+  type MaintenanceOperation
+} from '../../src/lib/maintenance-api.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -253,6 +259,91 @@ app.get('/api/sessions', async (_req, res) => {
   } catch (error) {
     console.error('Sessions error:', error)
     res.status(500).json({ error: 'Failed to list sessions' })
+  }
+})
+
+// Run a single maintenance operation
+app.post('/api/maintenance/run', async (req, res) => {
+  try {
+    await ensureInitialized()
+    const { operation, dryRun } = req.body ?? {}
+    if (!operation || typeof operation !== 'string') {
+      return res.status(400).json({ error: 'Operation required' })
+    }
+
+    if (!MAINTENANCE_OPERATIONS.includes(operation as MaintenanceOperation)) {
+      return res.status(400).json({ error: 'Unknown operation' })
+    }
+
+    const result = await runMaintenanceOperation(
+      operation as MaintenanceOperation,
+      Boolean(dryRun),
+      DEFAULT_CONFIG
+    )
+    res.json(result)
+  } catch (error) {
+    console.error('Maintenance run error:', error)
+    res.status(500).json({ error: 'Failed to run maintenance operation' })
+  }
+})
+
+// Run all maintenance operations
+app.post('/api/maintenance/run-all', async (req, res) => {
+  try {
+    await ensureInitialized()
+    const { dryRun } = req.body ?? {}
+    const results = await runAllMaintenance(Boolean(dryRun), DEFAULT_CONFIG)
+    res.json(results)
+  } catch (error) {
+    console.error('Maintenance run-all error:', error)
+    res.status(500).json({ error: 'Failed to run maintenance operations' })
+  }
+})
+
+// Stream all maintenance operations with progress updates (SSE)
+app.get('/api/maintenance/stream', async (req, res) => {
+  const dryRun = req.query.dryRun === 'true'
+
+  // Set up SSE headers
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+
+  const sendEvent = (event: string, data: unknown) => {
+    res.write(`event: ${event}\n`)
+    res.write(`data: ${JSON.stringify(data)}\n\n`)
+  }
+
+  try {
+    await ensureInitialized()
+
+    // Send start event with operation list
+    sendEvent('start', {
+      operations: MAINTENANCE_OPERATIONS,
+      dryRun
+    })
+
+    // Run each operation and stream progress
+    for (const operation of MAINTENANCE_OPERATIONS) {
+      sendEvent('progress', { operation, status: 'running' })
+
+      try {
+        const effectiveDryRun = operation === 'promotion-suggestions' ? true : dryRun
+        const result = await runMaintenanceOperation(operation, effectiveDryRun, DEFAULT_CONFIG)
+        sendEvent('result', result)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        sendEvent('error', { operation, error: message })
+      }
+    }
+
+    sendEvent('complete', { success: true })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    sendEvent('error', { error: message })
+  } finally {
+    res.end()
   }
 })
 

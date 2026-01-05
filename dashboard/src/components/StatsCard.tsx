@@ -8,11 +8,13 @@ interface StatsCardProps {
 
 export default function StatsCard({ label, value, subtext }: StatsCardProps) {
   return (
-    <div className="space-y-1">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="text-2xl font-semibold tabular-nums">{value}</div>
+    <div className="relative">
+      <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
+        {label}
+      </div>
+      <div className="text-3xl font-semibold tabular-nums tracking-tight">{value}</div>
       {subtext && (
-        <div className="text-xs text-muted-foreground">{subtext}</div>
+        <div className="text-xs text-muted-foreground mt-1">{subtext}</div>
       )}
     </div>
   )

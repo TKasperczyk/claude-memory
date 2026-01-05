@@ -6,36 +6,40 @@
 
 @layer base {
   :root {
-    /* Neutral zinc palette */
-    --background: 0 0% 4%;
+    /* Refined dark palette */
+    --background: 240 6% 6%;
     --foreground: 0 0% 95%;
 
-    --card: 0 0% 7%;
+    --card: 240 5% 8.5%;
     --card-foreground: 0 0% 95%;
 
-    --popover: 0 0% 7%;
+    --popover: 240 5% 8.5%;
     --popover-foreground: 0 0% 95%;
 
     --primary: 0 0% 95%;
-    --primary-foreground: 0 0% 9%;
+    --primary-foreground: 240 6% 6%;
 
-    --secondary: 0 0% 12%;
+    --secondary: 240 4% 13%;
     --secondary-foreground: 0 0% 95%;
 
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 55%;
+    --muted: 240 4% 16%;
+    --muted-foreground: 240 4% 50%;
 
-    --accent: 0 0% 15%;
+    --accent: 240 4% 16%;
     --accent-foreground: 0 0% 95%;
 
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 98%;
 
-    --border: 0 0% 14%;
-    --input: 0 0% 14%;
-    --ring: 0 0% 30%;
+    --border: 240 4% 16%;
+    --input: 240 4% 14%;
+    --ring: 240 4% 30%;
 
     --radius: 0.5rem;
+
+    /* Elevated surfaces */
+    --surface-1: 240 5% 10%;
+    --surface-2: 240 5% 12%;
 
     /* Semantic colors for memory types */
     --type-command: 167 85% 45%;
@@ -88,7 +92,44 @@
   .transition-base {
     @apply transition-colors duration-150 ease-out;
   }
+
+  .surface-1 {
+    background-color: hsl(var(--surface-1));
+  }
+
+  .surface-2 {
+    background-color: hsl(var(--surface-2));
+  }
 }
+
+/* Section styling */
+.section-card {
+  @apply rounded-xl border border-border bg-card;
+}
+
+.section-header {
+  @apply text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70;
+}
+
+/* Interactive card hover */
+.card-interactive {
+  @apply transition-all duration-200;
+}
+
+.card-interactive:hover {
+  border-color: hsl(var(--border) / 0.8);
+  background-color: hsl(var(--card) / 0.8);
+}
+
+/* Type color utilities */
+.bg-type-command { background-color: hsl(var(--type-command)); }
+.bg-type-error { background-color: hsl(var(--type-error)); }
+.bg-type-discovery { background-color: hsl(var(--type-discovery)); }
+.bg-type-procedure { background-color: hsl(var(--type-procedure)); }
+.text-type-command { color: hsl(var(--type-command)); }
+.text-type-error { color: hsl(var(--type-error)); }
+.text-type-discovery { color: hsl(var(--type-discovery)); }
+.text-type-procedure { color: hsl(var(--type-procedure)); }
 
 /* Panel slide animation */
 .panel-backdrop {
