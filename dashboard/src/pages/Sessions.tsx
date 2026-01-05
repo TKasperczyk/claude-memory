@@ -73,24 +73,28 @@ function formatRetrievalTrigger(memory: SessionRecord['memories'][0]): { label: 
 
   if (!hasKeyword && !hasSemantic) return null
 
+  const promptSnippet = memory.prompt
+    ? `\n\nTriggered by: "${memory.prompt.length > 60 ? memory.prompt.slice(0, 60) + '…' : memory.prompt}"`
+    : ''
+
   if (hasKeyword && hasSemantic) {
     return {
       label: 'K+S',
       color: 'text-purple-400',
-      title: `Keyword + Semantic (${(memory.similarity! * 100).toFixed(0)}% similarity, score: ${memory.score?.toFixed(2) ?? '?'})`
+      title: `Keyword + Semantic (${(memory.similarity! * 100).toFixed(0)}% similarity, score: ${memory.score?.toFixed(2) ?? '?'})${promptSnippet}`
     }
   }
   if (hasKeyword) {
     return {
       label: 'K',
       color: 'text-amber-400',
-      title: `Keyword match (score: ${memory.score?.toFixed(2) ?? '?'})`
+      title: `Keyword match (score: ${memory.score?.toFixed(2) ?? '?'})${promptSnippet}`
     }
   }
   return {
     label: 'S',
     color: 'text-cyan-400',
-    title: `Semantic (${(memory.similarity! * 100).toFixed(0)}% similarity, score: ${memory.score?.toFixed(2) ?? '?'})`
+    title: `Semantic (${(memory.similarity! * 100).toFixed(0)}% similarity, score: ${memory.score?.toFixed(2) ?? '?'})${promptSnippet}`
   }
 }
 
