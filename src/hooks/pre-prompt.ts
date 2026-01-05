@@ -125,22 +125,12 @@ async function searchWithScope(
 ): Promise<HybridSearchResult[]> {
   const limit = config.injection.maxRecords
   const keywordQueries = buildKeywordQueries(signals)
-  const results: HybridSearchResult[] = []
-  const seen = new Set<string>()
+  const resultsById = new Map<string, HybridSearchResult>()
 
   console.error(`[claude-memory] Signals: errors=${signals.errors.length}, commands=${signals.commands.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
 
-  const addResults = (items: HybridSearchResult[]): void => {
-    for (const item of items) {
-      if (results.length >= limit) break
-      if (seen.has(item.record.id)) continue
-      seen.add(item.record.id)
-      results.push(item)
-    }
-  }
-
   for (const query of keywordQueries) {
-    if (results.length >= limit) break
+    if (resultsById.size >= limit) break
     const keywordResults = await hybridSearch({
       query,
       limit,
@@ -151,24 +141,38 @@ async function searchWithScope(
       keywordLimit: limit,
       includeEmbeddings: true
     }, config)
-    addResults(keywordResults)
+    for (const item of keywordResults) {
+      if (resultsById.size >= limit) break
+      if (!resultsById.has(item.record.id)) {
+        resultsById.set(item.record.id, item)
+      }
+    }
   }
 
-  if (results.length < limit && precomputedEmbedding) {
+  if (precomputedEmbedding) {
     const semanticResults = await hybridSearch({
       query: '', // Not used when embedding provided
       embedding: precomputedEmbedding,
-      limit: limit - results.length,
+      limit,
       project: scope.project,
       domain: scope.domain,
       vectorWeight: 1,
       keywordWeight: 0,
       includeEmbeddings: true
     }, config)
-    addResults(semanticResults)
+    for (const item of semanticResults) {
+      const existing = resultsById.get(item.record.id)
+      if (existing) {
+        // Merge: record was found by both keyword and semantic search
+        existing.similarity = Math.max(existing.similarity, item.similarity)
+        existing.score = Math.max(existing.score, item.score)
+      } else if (resultsById.size < limit) {
+        resultsById.set(item.record.id, item)
+      }
+    }
   }
 
-  return results
+  return Array.from(resultsById.values())
 }
 
 /**
