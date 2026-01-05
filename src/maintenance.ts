@@ -1,5 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { initMilvus } from './lib/milvus.js'
 import {
   checkValidity,
@@ -416,7 +418,8 @@ function summarizeCluster(cluster: { id: string; successCount?: number; lastUsed
   return { keptId: keeper.id, deprecatedIds }
 }
 
-const isMainModule = import.meta.url === `file://${process.argv[1]}`
+const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : ''
+const isMainModule = fileURLToPath(import.meta.url) === entryPath
 if (isMainModule) {
   main()
     .then(() => {

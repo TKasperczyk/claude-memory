@@ -7,22 +7,45 @@ const DEFAULT_TIMEOUT_MS = 30000
 
 const config: Config = DEFAULT_CONFIG
 
-export async function embed(text: string, cfg: Config = config): Promise<number[]> {
-  const [embedding] = await requestEmbeddings(text, cfg)
+export async function embed(
+  text: string,
+  cfg: Config = config,
+  options?: { signal?: AbortSignal }
+): Promise<number[]> {
+  const [embedding] = await requestEmbeddings(text, cfg, options?.signal)
   return embedding
 }
 
-export async function embedBatch(texts: string[], cfg: Config = config): Promise<number[][]> {
+export async function embedBatch(
+  texts: string[],
+  cfg: Config = config,
+  options?: { signal?: AbortSignal }
+): Promise<number[][]> {
   if (texts.length === 0) return []
-  return requestEmbeddings(texts, cfg)
+  return requestEmbeddings(texts, cfg, options?.signal)
 }
 
 async function requestEmbeddings(
   input: string | string[],
-  cfg: Config
+  cfg: Config,
+  signal?: AbortSignal
 ): Promise<number[][]> {
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+  let timedOut = false
+  const timeoutId = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, DEFAULT_TIMEOUT_MS)
+  const onAbort = (): void => {
+    controller.abort()
+  }
+  if (signal) {
+    if (signal.aborted) {
+      onAbort()
+    } else {
+      signal.addEventListener('abort', onAbort)
+    }
+  }
 
   try {
     const response = await fetch(cfg.embeddings.baseUrl + '/embeddings', {
@@ -59,11 +82,17 @@ async function requestEmbeddings(
     return embeddings
   } catch (error: unknown) {
     if (isAbortError(error)) {
-      throw new Error(`Embedding request timed out after ${DEFAULT_TIMEOUT_MS}ms`)
+      if (timedOut) {
+        throw new Error(`Embedding request timed out after ${DEFAULT_TIMEOUT_MS}ms`)
+      }
+      throw new Error('Embedding request aborted')
     }
     throw error
   } finally {
     clearTimeout(timeoutId)
+    if (signal) {
+      signal.removeEventListener('abort', onAbort)
+    }
   }
 }
 

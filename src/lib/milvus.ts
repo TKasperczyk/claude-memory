@@ -18,6 +18,11 @@ import {
 
 export { escapeFilterValue }
 
+export type FlushMode = 'never' | 'end-of-batch' | 'always'
+export interface WriteOptions {
+  flush?: FlushMode
+}
+
 const CONTENT_MAX_LENGTH = 16384
 const EXACT_TEXT_MAX_LENGTH = 4096
 const SEARCH_NPROBE = 64
@@ -81,7 +86,8 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
 
 export async function insertRecord(
   record: MemoryRecord,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  options: WriteOptions = {}
 ): Promise<void> {
   try {
     await ensureClient(config)
@@ -93,7 +99,10 @@ export async function insertRecord(
       data: [row]
     })
 
-    await flushAndWait(config.milvus.collection)
+    const flushMode = options.flush ?? 'always'
+    if (flushMode === 'always') {
+      await flushAndWait(config.milvus.collection)
+    }
   } catch (error) {
     console.error('[claude-memory] insertRecord failed:', error)
     throw error
@@ -103,7 +112,8 @@ export async function insertRecord(
 export async function updateRecord(
   id: string,
   updates: Partial<MemoryRecord>,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  options: WriteOptions = {}
 ): Promise<boolean> {
   try {
     await ensureClient(config)
@@ -130,7 +140,10 @@ export async function updateRecord(
       data: [row]
     })
 
-    await flushAndWait(config.milvus.collection)
+    const flushMode = options.flush ?? 'always'
+    if (flushMode === 'always') {
+      await flushAndWait(config.milvus.collection)
+    }
 
     return true
   } catch (error) {
@@ -177,8 +190,6 @@ export async function incrementRecordCounters(
       collection_name: config.milvus.collection,
       data: [row]
     })
-
-    await flushAndWait(config.milvus.collection)
 
     return true
   } catch (error) {
@@ -263,6 +274,11 @@ export async function getRecordStats(
     console.error('[claude-memory] getRecordStats failed:', error)
     return new Map()
   }
+}
+
+export async function flushCollection(config: Config = DEFAULT_CONFIG): Promise<void> {
+  await ensureClient(config)
+  await flushAndWait(config.milvus.collection)
 }
 
 export interface DomainExample {
@@ -439,6 +455,11 @@ export async function hybridSearch(
   try {
     await ensureClient(config)
 
+    const abortSignal = params.signal
+    if (abortSignal?.aborted) {
+      throw new Error('Search aborted')
+    }
+
     const trimmedQuery = params.query.trim()
     const limit = params.limit ?? 10
     const vectorWeight = params.vectorWeight ?? 0.7
@@ -464,6 +485,9 @@ export async function hybridSearch(
     const combined = new Map<string, { record: MemoryRecord; similarity: number; keywordMatch: boolean }>()
 
     if (trimmedQuery.length > 0 && keywordWeight > 0) {
+      if (abortSignal?.aborted) {
+        throw new Error('Search aborted')
+      }
       const keywordFilter = buildKeywordFilter(trimmedQuery, baseFilter)
       const keywordResults = await client!.query({
         collection_name: config.milvus.collection,
@@ -480,7 +504,10 @@ export async function hybridSearch(
     }
 
     if (vectorWeight > 0 && (params.embedding || trimmedQuery.length > 0)) {
-      const vector = params.embedding ?? await embed(trimmedQuery, config)
+      if (abortSignal?.aborted) {
+        throw new Error('Search aborted')
+      }
+      const vector = params.embedding ?? await embed(trimmedQuery, config, { signal: abortSignal })
       ensureEmbeddingDim(vector)
 
       const searchResults = await client!.search({
@@ -1078,21 +1105,17 @@ function mergeRecords(existing: MemoryRecord, updates: Partial<MemoryRecord>): M
 }
 
 function needsEmbeddingRefresh(updates: Partial<MemoryRecord>): boolean {
-  const metaFields = new Set([
-    'successCount',
-    'failureCount',
-    'retrievalCount',
-    'usageCount',
-    'lastUsed',
-    'deprecated',
-    'generalized',
-    'lastGeneralizationCheck',
-    'lastGlobalCheck',
-    'scope',
-    'embedding'
+  const embeddingFields = new Set([
+    'type',
+    'command',
+    'errorText',
+    'what',
+    'where',
+    'name',
+    'steps'
   ])
 
-  return Object.keys(updates).some(key => !metaFields.has(key))
+  return Object.keys(updates).some(key => embeddingFields.has(key))
 }
 
 function escapeLikeValue(value: string): string {

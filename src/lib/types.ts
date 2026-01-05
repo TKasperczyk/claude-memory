@@ -109,6 +109,7 @@ export interface HybridSearchParams {
   vectorLimit?: number
   keywordLimit?: number
   includeEmbeddings?: boolean
+  signal?: AbortSignal
 }
 
 export interface HybridSearchResult {

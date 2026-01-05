@@ -6,13 +6,14 @@
 
 import fs, { appendFileSync } from 'fs'
 import { homedir } from 'os'
-import { initMilvus, incrementRecordCounters } from '../lib/milvus.js'
+import { flushCollection, initMilvus, incrementRecordCounters } from '../lib/milvus.js'
 import { rateInjectedMemories } from '../lib/extract.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry } from '../lib/types.js'
 import { handlePostSession } from './post-session.js'
+import { findGitRoot } from '../lib/context.js'
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
 const DEBUG_LOG_FILE = `${homedir()}/.claude-memory/debug.log`
@@ -103,19 +104,27 @@ async function main(): Promise<void> {
   }
 
   debugLog('Initializing Milvus...')
-  const config = loadConfig(payload.cwd)
+  const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
+  const config = loadConfig(configRoot)
   await initMilvus(config)
   debugLog('Milvus initialized')
 
   let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
+  let shouldFlush = false
   try {
     debugLog('Running extraction...')
-    result = await handlePostSession(payload, config)
+    result = await handlePostSession(payload, config, { flush: 'end-of-batch' })
     debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
+    shouldFlush = (result.inserted + result.updated) > 0
   } finally {
     debugLog('Running usefulness rating...')
-    await processUsefulnessRating(payload, config, result?.transcript)
+    shouldFlush = (await processUsefulnessRating(payload, config, result?.transcript)) || shouldFlush
     debugLog('Usefulness rating done')
+  }
+
+  if (shouldFlush) {
+    debugLog('Flushing Milvus writes...')
+    await flushCollection(config)
   }
 
   if (!result) return
@@ -140,19 +149,40 @@ async function processUsefulnessRating(
   payload: ExtractionHookInput,
   config: Config,
   transcript?: Transcript
-): Promise<void> {
-  if (payload.hook_event_name !== 'SessionEnd') return
+): Promise<boolean> {
+  if (payload.hook_event_name !== 'SessionEnd') return false
 
   const session = loadSessionTracking(payload.session_id)
   if (!session || session.memories.length === 0) {
     removeSessionTracking(payload.session_id)
-    return
+    return false
   }
 
-  const memories = dedupeInjectedMemories(session.memories)
+  const memories = session.memories
   if (memories.length === 0) {
     removeSessionTracking(payload.session_id)
-    return
+    return false
+  }
+
+  let updated = false
+  try {
+    const retrievalDeltas = countRetrievalDeltas(memories)
+    if (retrievalDeltas.size > 0) {
+      await Promise.all(
+        Array.from(retrievalDeltas.entries()).map(([id, count]) =>
+          incrementRecordCounters(id, { retrievalCount: count }, config)
+        )
+      )
+      updated = true
+    }
+  } catch (error) {
+    console.error('[claude-memory] Failed to update retrieval counts:', error)
+  }
+
+  const deduped = dedupeInjectedMemories(memories)
+  if (deduped.length === 0) {
+    removeSessionTracking(payload.session_id)
+    return updated
   }
 
   let shouldRemove = false
@@ -162,18 +192,19 @@ async function processUsefulnessRating(
     if (!resolvedTranscript) {
       if (!payload.transcript_path || !fs.existsSync(payload.transcript_path)) {
         console.error('[claude-memory] Transcript missing for usefulness rating; keeping session tracking file.')
-        return
+        return updated
       }
       resolvedTranscript = await parseTranscript(payload.transcript_path)
     }
 
-    const helpfulIds = await rateInjectedMemories(resolvedTranscript, memories, config)
+    const helpfulIds = await rateInjectedMemories(resolvedTranscript, deduped, config)
 
     if (helpfulIds.length > 0) {
       // NOTE: Best-effort counters; concurrent sessions can drop increments.
       await Promise.all(helpfulIds.map(id =>
         incrementRecordCounters(id, { usageCount: 1 }, config)
       ))
+      updated = true
     }
 
     shouldRemove = true
@@ -184,6 +215,17 @@ async function processUsefulnessRating(
       removeSessionTracking(payload.session_id)
     }
   }
+
+  return updated
+}
+
+function countRetrievalDeltas(memories: InjectedMemoryEntry[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const entry of memories) {
+    if (!entry.id) continue
+    counts.set(entry.id, (counts.get(entry.id) ?? 0) + 1)
+  }
+  return counts
 }
 
 main()

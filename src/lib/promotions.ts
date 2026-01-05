@@ -27,26 +27,26 @@ export interface SuggestionSummary {
 export async function findSkillCandidates(
   config: Config = DEFAULT_CONFIG
 ): Promise<ProcedureRecord[]> {
-  const filter = `type == "procedure" && success_count >= ${SKILL_SUCCESS_THRESHOLD} && deprecated == false`
+  const filter = `type == "procedure" && usage_count >= ${SKILL_SUCCESS_THRESHOLD} && deprecated == false`
   const records = await fetchRecords(filter, config)
 
   return records
     .filter(isProcedureRecord)
     .filter(record => !record.deprecated)
-    .filter(record => (record.successCount ?? 0) >= SKILL_SUCCESS_THRESHOLD)
+    .filter(record => (record.usageCount ?? 0) >= SKILL_SUCCESS_THRESHOLD)
     .sort(compareByUsage)
 }
 
 export async function findClaudeMdCandidates(
   config: Config = DEFAULT_CONFIG
 ): Promise<ClaudeMdCandidateGroups> {
-  const filter = `type == "discovery" && success_count >= ${CLAUDE_MD_SUCCESS_THRESHOLD} && deprecated == false`
+  const filter = `type == "discovery" && usage_count >= ${CLAUDE_MD_SUCCESS_THRESHOLD} && deprecated == false`
   const records = await fetchRecords(filter, config)
   const verified = records
     .filter(isDiscoveryRecord)
     .filter(record => !record.deprecated)
     .filter(record => record.confidence === 'verified')
-    .filter(record => (record.successCount ?? 0) >= CLAUDE_MD_SUCCESS_THRESHOLD)
+    .filter(record => (record.usageCount ?? 0) >= CLAUDE_MD_SUCCESS_THRESHOLD)
     .sort(compareByUsage)
 
   const grouped: ClaudeMdCandidateGroups = { global: [], byProject: {} }
@@ -281,8 +281,8 @@ function isDiscoveryRecord(record: MemoryRecord): record is DiscoveryRecord {
 }
 
 function compareByUsage(a: MemoryRecord, b: MemoryRecord): number {
-  const successDiff = (b.successCount ?? 0) - (a.successCount ?? 0)
-  if (successDiff !== 0) return successDiff
+  const usageDiff = (b.usageCount ?? 0) - (a.usageCount ?? 0)
+  if (usageDiff !== 0) return usageDiff
   const lastUsedDiff = (b.lastUsed ?? 0) - (a.lastUsed ?? 0)
   if (lastUsedDiff !== 0) return lastUsedDiff
   return (b.timestamp ?? 0) - (a.timestamp ?? 0)

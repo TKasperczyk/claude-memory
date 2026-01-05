@@ -1,8 +1,9 @@
 #!/usr/bin/env -S npx tsx
 
-import { initMilvus, incrementRecordCounters } from '../lib/milvus.js'
-import { buildContext, extractSignals, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
-import { hybridSearch } from '../lib/milvus.js'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import { initMilvus, hybridSearch } from '../lib/milvus.js'
+import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { embed } from '../lib/embed.js'
 import { loadConfig } from '../lib/config.js'
 import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type MemoryRecord, type UserPromptSubmitInput } from '../lib/types.js'
@@ -44,9 +45,9 @@ export async function handlePrePrompt(
 
   const signals = extractSignals(input.prompt, input.cwd)
 
-  const result = await runWithTimeout(async () => {
+  const result = await runWithTimeout(async (signal) => {
     await initMilvus(config)
-    const results = await searchMemories(input.prompt, signals, config, input.cwd)
+    const results = await searchMemories(input.prompt, signals, config, input.cwd, signal)
     if (results.length === 0) {
       return { context: null, results, injectedRecords: [] }
     }
@@ -78,7 +79,8 @@ async function searchMemories(
   prompt: string,
   signals: ContextSignals,
   config: Config,
-  cwd: string
+  cwd: string,
+  signal?: AbortSignal
 ): Promise<HybridSearchResult[]> {
   const cleanPrompt = stripNoiseWords(prompt)
   const scope = {
@@ -91,17 +93,20 @@ async function searchMemories(
   let embedding: number[] | undefined
   if (semanticQuery) {
     try {
-      embedding = await embed(semanticQuery, config)
+      embedding = await embed(semanticQuery, config, { signal })
     } catch (error) {
+      if (signal?.aborted) {
+        throw error
+      }
       console.error('[claude-memory] Embedding failed; falling back to keyword-only search:', error)
     }
   }
 
-  let results = await searchWithScope(cleanPrompt, signals, config, scope, embedding)
+  let results = await searchWithScope(cleanPrompt, signals, config, scope, embedding, signal)
   if (results.length === 0 && scope.project) {
     // Fallback: remove project filter but preserve domain to avoid cross-domain noise
     console.error('[claude-memory] No project-scoped hits; retrying with domain filter only.')
-    results = await searchWithScope(cleanPrompt, signals, config, { domain: scope.domain }, embedding)
+    results = await searchWithScope(cleanPrompt, signals, config, { domain: scope.domain }, embedding, signal)
   }
 
   // Apply MMR for diversity if we have multiple results with embeddings
@@ -121,7 +126,8 @@ async function searchWithScope(
   signals: ContextSignals,
   config: Config,
   scope: { project?: string; domain?: string },
-  precomputedEmbedding?: number[]
+  precomputedEmbedding?: number[],
+  signal?: AbortSignal
 ): Promise<HybridSearchResult[]> {
   const limit = config.injection.maxRecords
   const keywordQueries = buildKeywordQueries(signals)
@@ -139,7 +145,8 @@ async function searchWithScope(
       vectorWeight: 0,
       keywordWeight: 1,
       keywordLimit: limit,
-      includeEmbeddings: true
+      includeEmbeddings: true,
+      signal
     }, config)
     for (const item of keywordResults) {
       if (resultsById.size >= limit) break
@@ -158,7 +165,8 @@ async function searchWithScope(
       domain: scope.domain,
       vectorWeight: 1,
       keywordWeight: 0,
-      includeEmbeddings: true
+      includeEmbeddings: true,
+      signal
     }, config)
     for (const item of semanticResults) {
       const existing = resultsById.get(item.record.id)
@@ -278,15 +286,19 @@ function truncateText(value: string, maxLength: number): string {
 }
 
 async function runWithTimeout<T>(
-  task: () => Promise<T>,
+  task: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number
 ): Promise<{ completed: boolean; value?: T }> {
   let timeoutId: NodeJS.Timeout | null = null
+  const controller = new AbortController()
   try {
     const timeoutPromise = new Promise<{ completed: boolean }>(resolve => {
-      timeoutId = setTimeout(() => resolve({ completed: false }), timeoutMs)
+      timeoutId = setTimeout(() => {
+        controller.abort()
+        resolve({ completed: false })
+      }, timeoutMs)
     })
-    const taskPromise = task()
+    const taskPromise = task(controller.signal)
       .then(value => ({ completed: true as const, value }))
       .catch(error => ({ completed: true as const, error }))
     const result = await Promise.race([taskPromise, timeoutPromise])
@@ -338,7 +350,8 @@ async function main(): Promise<void> {
     return
   }
 
-  const config = loadConfig(extractSignals(payload.prompt, payload.cwd).projectRoot ?? payload.cwd)
+  const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
+  const config = loadConfig(configRoot)
 
   const result = await handlePrePrompt(payload, config)
 
@@ -357,21 +370,23 @@ async function main(): Promise<void> {
     return
   }
 
-  process.stdout.write(result.context)
-  void trackInjectedMemories(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt, config)
-    .catch(error => {
-      console.error('[claude-memory] Failed to track injected memories:', error)
-    })
+  try {
+    await writeStdout(result.context)
+  } catch (error) {
+    console.error('[claude-memory] Failed to write injected context:', error)
+  }
+
+  trackInjectedMemories(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt)
+  scheduleHardExit()
 }
 
-async function trackInjectedMemories(
+function trackInjectedMemories(
   sessionId: string,
   records: MemoryRecord[],
   searchResults: HybridSearchResult[],
   cwd: string,
-  prompt: string,
-  config: Config
-): Promise<void> {
+  prompt: string
+): void {
   if (!sessionId || records.length === 0) return
 
   // Build lookup map for retrieval metadata
@@ -393,23 +408,32 @@ async function trackInjectedMemories(
   })
 
   appendSessionTracking(sessionId, entries, cwd, prompt)
-
-  try {
-    // NOTE: Best-effort counters; concurrent sessions can drop increments.
-    await Promise.all(entries.map(entry =>
-      incrementRecordCounters(entry.id, { retrievalCount: 1 }, config)
-    ))
-  } catch (error) {
-    console.error('[claude-memory] Failed to update retrieval counts:', error)
-  }
 }
 
 function normalizeSnippet(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
 
+function writeStdout(value: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(value, error => {
+      if (error) {
+        reject(error)
+      } else {
+        resolve()
+      }
+    })
+  })
+}
+
+function scheduleHardExit(): void {
+  const timer = setTimeout(() => process.exit(0), 50)
+  timer.unref()
+}
+
 // Only run main when executed directly (not imported)
-const isMainModule = import.meta.url === `file://${process.argv[1]}`
+const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : ''
+const isMainModule = fileURLToPath(import.meta.url) === entryPath
 if (isMainModule) {
   main()
     .then(() => {

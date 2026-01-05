@@ -7,12 +7,12 @@
 
 import fs, { appendFileSync } from 'fs'
 import { spawn } from 'child_process'
-import { dirname, join } from 'path'
+import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { extractRecords } from '../lib/extract.js'
 import { findGitRoot } from '../lib/context.js'
-import { initMilvus, findSimilar, insertRecord, updateRecord } from '../lib/milvus.js'
+import { initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord, type ExtractionHookInput } from '../lib/types.js'
 
@@ -36,7 +36,8 @@ export interface PostSessionResult {
  */
 export async function handlePostSession(
   input: ExtractionHookInput,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  options: { flush?: FlushMode } = {}
 ): Promise<PostSessionResult> {
   // Accept both SessionEnd and PreCompact events
   if (input.hook_event_name !== 'SessionEnd' && input.hook_event_name !== 'PreCompact') {
@@ -74,6 +75,8 @@ export async function handlePostSession(
   let skipped = 0
   let failed = 0
 
+  const flushMode = options.flush ?? 'always'
+
   for (const record of records) {
     try {
       const matches = await findSimilar(record, 0.9, 1, config)
@@ -81,7 +84,7 @@ export async function handlePostSession(
         const existing = matches[0].record
         const updates = buildUpdates(existing, record)
         if (Object.keys(updates).length > 0) {
-          await updateRecord(existing.id, updates, config)
+          await updateRecord(existing.id, updates, config, { flush: flushMode })
           updated += 1
         } else {
           skipped += 1
@@ -90,7 +93,7 @@ export async function handlePostSession(
       }
 
       const prepared = applyUsageCounters(record)
-      await insertRecord(prepared, config)
+      await insertRecord(prepared, config, { flush: flushMode })
       inserted += 1
     } catch (error) {
       failed += 1
@@ -102,9 +105,7 @@ export async function handlePostSession(
 }
 
 export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Partial<MemoryRecord> {
-  const updates: Partial<MemoryRecord> = {
-    lastUsed: Date.now()
-  }
+  const updates: Partial<MemoryRecord> = {}
 
   const { successDelta, failureDelta } = deriveUsageDelta(incoming)
   if (successDelta !== 0) {
@@ -160,6 +161,10 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
     const discoveryUpdates = updates as Partial<typeof existing>
     if (!existing.where && incoming.where) discoveryUpdates.where = incoming.where
     if (!existing.evidence && incoming.evidence) discoveryUpdates.evidence = incoming.evidence
+  }
+
+  if (Object.keys(updates).length > 0) {
+    updates.lastUsed = Date.now()
   }
 
   return updates
@@ -275,7 +280,8 @@ function launcherMain(): void {
 }
 
 // Only run launcher when executed directly (not imported)
-const isMainModule = import.meta.url === `file://${process.argv[1]}`
+const entryPath = process.argv[1] ? resolve(process.argv[1]) : ''
+const isMainModule = fileURLToPath(import.meta.url) === entryPath
 if (isMainModule) {
   try {
     launcherMain()
