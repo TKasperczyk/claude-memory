@@ -2,7 +2,17 @@ import { execFileSync } from 'child_process'
 import fs from 'fs'
 import { homedir } from 'os'
 import path from 'path'
-import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config, type MemoryRecord } from './types.js'
+import {
+  DEFAULT_CONFIG,
+  EMBEDDING_DIM,
+  type CommandRecord,
+  type Config,
+  type DiscoveryRecord,
+  type ErrorRecord,
+  type MemoryRecord,
+  type ProcedureRecord
+} from './types.js'
+import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
 import { buildExactText, escapeFilterValue, normalizeExactText, normalizeStep } from './shared.js'
 
@@ -17,6 +27,7 @@ const LOW_USAGE_MIN_RETRIEVALS = 5
 const LOW_USAGE_RATIO_THRESHOLD = 0.1
 const CONTRADICTION_SIMILARITY_THRESHOLD = 0.75
 const CONTRADICTION_SEARCH_LIMIT = 8
+const GENERALIZATION_MAX_TOKENS = 800
 const GLOBAL_TOOL_KEYWORDS = [
   'npm',
   'pnpm',
@@ -100,6 +111,28 @@ const PATH_TEXT_REGEX = /(^|\s)(\.{1,2}[\\/]|~\/|[A-Za-z]:[\\/]|\/[A-Za-z0-9._-]
 const GLOBAL_TOOL_REGEXES = GLOBAL_TOOL_KEYWORDS.map(buildKeywordRegex)
 const GLOBAL_DISCOVERY_REGEXES = GLOBAL_DISCOVERY_KEYWORDS.map(buildKeywordRegex)
 
+const GENERALIZATION_PROMPT = `Evaluate this memory record for reusability across different contexts.
+
+A memory is too specific if it contains details that are:
+- Tied to a particular instance/session that won't exist later
+- Specific identifiers that change between runs
+- User/machine-specific paths or configurations
+- Timestamps or dates that make the memory time-bound
+
+If the memory is too specific, provide a generalized version that:
+- Preserves the useful pattern or knowledge
+- Removes or abstracts away ephemeral details
+- Remains accurate and helpful
+
+Return JSON:
+{
+  "shouldGeneralize": boolean,
+  "reason": "why it needs generalization (or why it's fine)",
+  "generalized": { /* only if shouldGeneralize, partial record with updated fields */ }
+}`
+
+let cachedAnthropicClient: Awaited<ReturnType<typeof createAnthropicClient>> | undefined
+
 export interface ValidityResult {
   valid: boolean
   reason?: string
@@ -119,6 +152,12 @@ export interface ContradictionPair {
   newer: MemoryRecord
   older: MemoryRecord
   similarity: number
+}
+
+export interface GeneralizationResult {
+  shouldGeneralize: boolean
+  generalizedRecord?: Partial<MemoryRecord>
+  reason?: string
 }
 
 export async function findStaleRecords(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
@@ -418,6 +457,68 @@ export async function resolveContradiction(
   config: Config = DEFAULT_CONFIG
 ): Promise<boolean> {
   return markDeprecated(pair.older.id, config)
+}
+
+export async function checkGeneralization(
+  record: MemoryRecord,
+  config: Config
+): Promise<GeneralizationResult> {
+  const client = await getAnthropicClient()
+  if (!client) {
+    throw new Error('No authentication available for generalization. Set ANTHROPIC_API_KEY or run kira login.')
+  }
+
+  const payload = JSON.stringify(buildGeneralizationInput(record), null, 2)
+
+  const response = await client.messages.create({
+    model: config.extraction.model,
+    max_tokens: Math.min(GENERALIZATION_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: GENERALIZATION_PROMPT }
+    ],
+    messages: [{ role: 'user', content: `Record:\n${payload}` }]
+  })
+
+  const rawText = extractResponseText(response.content)
+  const parsed = parseGeneralizationResponse(rawText)
+
+  if (!parsed.shouldGeneralize || !parsed.generalizedRecord) {
+    return parsed
+  }
+
+  const filtered = filterGeneralizationUpdates(record, parsed.generalizedRecord)
+  if (Object.keys(filtered).length === 0) {
+    return {
+      shouldGeneralize: false,
+      reason: parsed.reason ? `${parsed.reason} (no usable updates)` : 'no-usable-updates'
+    }
+  }
+
+  return {
+    shouldGeneralize: true,
+    generalizedRecord: filtered,
+    reason: parsed.reason
+  }
+}
+
+export async function generalizeRecord(
+  id: string,
+  updates: Partial<MemoryRecord>,
+  config: Config
+): Promise<boolean> {
+  if (!updates || Object.keys(updates).length === 0) return false
+
+  return updateRecord(
+    id,
+    {
+      ...updates,
+      generalized: true,
+      lastGeneralizationCheck: Date.now()
+    },
+    config
+  )
 }
 
 function buildContradictionFilter(record: MemoryRecord): string {
@@ -830,4 +931,230 @@ function resolveCommandPath(command: string, cwd?: string): string {
     : command
   if (path.isAbsolute(expanded)) return expanded
   return path.resolve(cwd ?? process.cwd(), expanded)
+}
+
+async function getAnthropicClient(): Promise<Awaited<ReturnType<typeof createAnthropicClient>>> {
+  if (cachedAnthropicClient !== undefined) {
+    return cachedAnthropicClient
+  }
+
+  cachedAnthropicClient = await createAnthropicClient()
+  return cachedAnthropicClient
+}
+
+function buildGeneralizationInput(record: MemoryRecord): Record<string, unknown> {
+  const base = {
+    type: record.type,
+    scope: record.scope,
+    project: record.project,
+    domain: record.domain
+  }
+
+  switch (record.type) {
+    case 'command':
+      return {
+        ...base,
+        command: record.command,
+        exitCode: record.exitCode,
+        outcome: record.outcome,
+        resolution: record.resolution,
+        truncatedOutput: record.truncatedOutput,
+        context: record.context
+      }
+    case 'error':
+      return {
+        ...base,
+        errorText: record.errorText,
+        errorType: record.errorType,
+        cause: record.cause,
+        resolution: record.resolution,
+        context: record.context
+      }
+    case 'discovery':
+      return {
+        ...base,
+        what: record.what,
+        where: record.where,
+        evidence: record.evidence,
+        confidence: record.confidence
+      }
+    case 'procedure':
+      return {
+        ...base,
+        name: record.name,
+        steps: record.steps,
+        prerequisites: record.prerequisites,
+        verification: record.verification,
+        context: record.context
+      }
+  }
+}
+
+function extractResponseText(
+  content: Array<{ type: string; text?: string }>
+): string {
+  return content
+    .filter(block => block.type === 'text')
+    .map(block => block.text ?? '')
+    .join('\n')
+    .trim()
+}
+
+function parseGeneralizationResponse(rawText: string): GeneralizationResult {
+  const parsed = extractJsonObject(rawText)
+  if (!isPlainObject(parsed)) {
+    return { shouldGeneralize: false, reason: 'invalid-json' }
+  }
+
+  const shouldGeneralize = coerceBoolean(parsed.shouldGeneralize)
+  const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : undefined
+
+  if (!shouldGeneralize) {
+    return { shouldGeneralize: false, ...(reason ? { reason } : {}) }
+  }
+
+  if (!isPlainObject(parsed.generalized)) {
+    return { shouldGeneralize: false, reason: reason ? `${reason} (missing generalized)` : 'missing-generalized' }
+  }
+
+  return {
+    shouldGeneralize: true,
+    generalizedRecord: parsed.generalized as Partial<MemoryRecord>,
+    ...(reason ? { reason } : {})
+  }
+}
+
+function filterGeneralizationUpdates(
+  record: MemoryRecord,
+  updates: Partial<MemoryRecord>
+): Partial<MemoryRecord> {
+  switch (record.type) {
+    case 'command': {
+      const filtered: Partial<CommandRecord> = {}
+      const candidate = updates as Partial<CommandRecord>
+      const command = maybeUpdateString(record.command, candidate.command)
+      if (command) filtered.command = command
+
+      const resolution = maybeUpdateString(record.resolution, candidate.resolution)
+      if (resolution) filtered.resolution = resolution
+
+      const truncatedOutput = maybeUpdateString(record.truncatedOutput, candidate.truncatedOutput)
+      if (truncatedOutput) filtered.truncatedOutput = truncatedOutput
+
+      return filtered as Partial<MemoryRecord>
+    }
+    case 'error': {
+      const filtered: Partial<ErrorRecord> = {}
+      const candidate = updates as Partial<ErrorRecord>
+      const errorText = maybeUpdateString(record.errorText, candidate.errorText)
+      if (errorText) filtered.errorText = errorText
+
+      const cause = maybeUpdateString(record.cause, candidate.cause)
+      if (cause) filtered.cause = cause
+
+      const resolution = maybeUpdateString(record.resolution, candidate.resolution)
+      if (resolution) filtered.resolution = resolution
+
+      return filtered as Partial<MemoryRecord>
+    }
+    case 'discovery': {
+      const filtered: Partial<DiscoveryRecord> = {}
+      const candidate = updates as Partial<DiscoveryRecord>
+      const what = maybeUpdateString(record.what, candidate.what)
+      if (what) filtered.what = what
+
+      const where = maybeUpdateString(record.where, candidate.where)
+      if (where) filtered.where = where
+
+      const evidence = maybeUpdateString(record.evidence, candidate.evidence)
+      if (evidence) filtered.evidence = evidence
+
+      return filtered as Partial<MemoryRecord>
+    }
+    case 'procedure': {
+      const filtered: Partial<ProcedureRecord> = {}
+      const candidate = updates as Partial<ProcedureRecord>
+      const name = maybeUpdateString(record.name, candidate.name)
+      if (name) filtered.name = name
+
+      const steps = maybeUpdateStringArray(record.steps, candidate.steps)
+      if (steps) filtered.steps = steps
+
+      const prerequisites = maybeUpdateStringArray(record.prerequisites ?? [], candidate.prerequisites)
+      if (prerequisites) filtered.prerequisites = prerequisites
+
+      const verification = maybeUpdateString(record.verification, candidate.verification)
+      if (verification) filtered.verification = verification
+
+      return filtered as Partial<MemoryRecord>
+    }
+  }
+}
+
+function maybeUpdateString(existing: string | undefined, candidate: unknown): string | undefined {
+  if (typeof candidate !== 'string') return undefined
+  const trimmed = candidate.trim()
+  if (!trimmed) return undefined
+  if (existing && trimmed === existing.trim()) return undefined
+  return trimmed
+}
+
+function maybeUpdateStringArray(existing: string[], candidate: unknown): string[] | undefined {
+  if (!Array.isArray(candidate)) return undefined
+  const cleaned = candidate
+    .map(entry => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter(entry => entry.length > 0)
+  if (cleaned.length === 0) return undefined
+
+  const existingCleaned = existing
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0)
+  if (areStringArraysEqual(existingCleaned, cleaned)) return undefined
+
+  return cleaned
+}
+
+function areStringArraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+function coerceBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'true') return true
+    if (normalized === 'false') return false
+  }
+  return false
+}
+
+function extractJsonObject(rawText: string): unknown {
+  const start = rawText.indexOf('{')
+  if (start === -1) return null
+
+  let depth = 0
+  for (let i = start; i < rawText.length; i += 1) {
+    const char = rawText[i]
+    if (char === '{') depth += 1
+    if (char === '}') depth -= 1
+    if (depth === 0) {
+      const candidate = rawText.slice(start, i + 1)
+      try {
+        return JSON.parse(candidate) as unknown
+      } catch {
+        break
+      }
+    }
+  }
+
+  return null
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

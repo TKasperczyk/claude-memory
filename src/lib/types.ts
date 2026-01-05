@@ -19,6 +19,8 @@ export interface BaseRecord {
   usageCount?: number
   lastUsed?: number
   deprecated?: boolean
+  generalized?: boolean
+  lastGeneralizationCheck?: number
   embedding?: number[]
 }
 

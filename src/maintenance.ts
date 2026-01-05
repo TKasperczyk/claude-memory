@@ -3,11 +3,13 @@
 import { initMilvus } from './lib/milvus.js'
 import {
   checkValidity,
+  checkGeneralization,
   consolidateCluster,
   findContradictionPairs,
   findGlobalCandidates,
   findLowUsageRecords,
   findSimilarClusters,
+  generalizeRecord,
   findStaleRecords,
   markDeprecated,
   promoteToGlobal,
@@ -15,9 +17,13 @@ import {
 } from './lib/maintenance.js'
 import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from './lib/promotions.js'
 import { loadConfig } from './lib/config.js'
-import { type Config } from './lib/types.js'
+import { type Config, type MemoryRecord } from './lib/types.js'
+import { queryRecords, updateRecord } from './lib/milvus.js'
 
 const SIMILARITY_THRESHOLD = 0.85
+const GENERALIZATION_BATCH_SIZE = 20
+const GENERALIZATION_SAMPLE_LIMIT = 200
+const GENERALIZATION_RECHECK_DAYS = 30
 
 async function main(): Promise<void> {
   const config = loadConfig(process.cwd())
@@ -27,6 +33,7 @@ async function main(): Promise<void> {
   console.error('[claude-memory] Maintenance started.')
 
   await runStaleCheck(config, dryRun)
+  await runGeneralization(config, dryRun)
   await runLowUsageCheck(config, dryRun)
   await runConsolidation(config, dryRun)
   await runContradictionCheck(config, dryRun)
@@ -78,6 +85,9 @@ async function runStaleCheck(config: Config, dryRun: boolean): Promise<void> {
 async function runLowUsageCheck(config: Config, dryRun: boolean): Promise<void> {
   let candidates = 0
   let deprecated = 0
+  let skippedRecentGeneralization = 0
+
+  const generalizationCutoff = Date.now() - GENERALIZATION_RECHECK_DAYS * 24 * 60 * 60 * 1000
 
   try {
     const records = await findLowUsageRecords(config)
@@ -85,6 +95,12 @@ async function runLowUsageCheck(config: Config, dryRun: boolean): Promise<void> 
     console.error(`[claude-memory] Low usage candidates: ${candidates}`)
 
     for (const record of records) {
+      const lastCheck = record.lastGeneralizationCheck ?? 0
+      if (lastCheck >= generalizationCutoff) {
+        skippedRecentGeneralization += 1
+        continue
+      }
+
       const ratio = (record.usageCount ?? 0) / (record.retrievalCount ?? 1)
       if (dryRun) {
         deprecated += 1
@@ -101,7 +117,102 @@ async function runLowUsageCheck(config: Config, dryRun: boolean): Promise<void> 
     console.error('[claude-memory] Failed to check low usage records:', error)
   }
 
-  console.error(`[claude-memory] Low usage check summary: candidates=${candidates} deprecated=${deprecated}`)
+  console.error(`[claude-memory] Low usage check summary: candidates=${candidates} deprecated=${deprecated} skipped_recent_generalization=${skippedRecentGeneralization}`)
+}
+
+async function runGeneralization(config: Config, dryRun: boolean): Promise<void> {
+  let eligible = 0
+  let checked = 0
+  let generalized = 0
+  let skippedRecent = 0
+  let skippedGeneralized = 0
+
+  const cutoff = Date.now() - GENERALIZATION_RECHECK_DAYS * 24 * 60 * 60 * 1000
+
+  try {
+    const [lowUsage, sampled] = await Promise.all([
+      findLowUsageRecords(config),
+      queryRecords({ filter: 'deprecated == false', limit: GENERALIZATION_SAMPLE_LIMIT }, config)
+    ])
+
+    const combined = new Map<string, MemoryRecord>()
+    for (const record of [...lowUsage, ...sampled]) {
+      combined.set(record.id, record)
+    }
+
+    const candidates = Array.from(combined.values())
+    const filtered = candidates.filter(record => {
+      if (record.deprecated) return false
+      if (record.generalized) {
+        skippedGeneralized += 1
+        return false
+      }
+      const lastCheck = record.lastGeneralizationCheck ?? 0
+      if (lastCheck >= cutoff) {
+        skippedRecent += 1
+        return false
+      }
+      return true
+    })
+
+    filtered.sort((a, b) => {
+      const scoreDiff = computeGeneralizationPriority(b) - computeGeneralizationPriority(a)
+      if (scoreDiff !== 0) return scoreDiff
+      return (b.retrievalCount ?? 0) - (a.retrievalCount ?? 0)
+    })
+
+    const batch = filtered.slice(0, GENERALIZATION_BATCH_SIZE)
+    eligible = batch.length
+
+    console.error(`[claude-memory] Generalization candidates: ${eligible} (sampled=${candidates.length})`)
+
+    for (const record of batch) {
+      checked += 1
+      const checkedAt = Date.now()
+
+      try {
+        const result = await checkGeneralization(record, config)
+        let applied = false
+
+        if (result.shouldGeneralize && result.generalizedRecord) {
+          const updates: Partial<MemoryRecord> = { ...result.generalizedRecord }
+          if (record.timestamp) {
+            updates.timestamp = record.timestamp
+          }
+
+          const before = truncateForLog(buildRecordSnippet(record))
+          const afterRecord = { ...record, ...updates } as MemoryRecord
+          const after = truncateForLog(buildRecordSnippet(afterRecord))
+          const reason = result.reason ? ` reason=${result.reason}` : ''
+
+          if (dryRun) {
+            generalized += 1
+            applied = true
+            console.error(`[claude-memory] [DRY RUN] Would generalize ${record.id}${reason} before="${before}" after="${after}"`)
+          } else {
+            const updated = await generalizeRecord(record.id, updates, config)
+            if (updated) {
+              applied = true
+              generalized += 1
+              console.error(`[claude-memory] Generalized ${record.id}${reason} before="${before}" after="${after}"`)
+            }
+          }
+        }
+
+        if (!dryRun && !applied) {
+          await updateRecord(record.id, { lastGeneralizationCheck: checkedAt }, config)
+        }
+      } catch (error) {
+        console.error(`[claude-memory] Generalization check failed for ${record.id}:`, error)
+      }
+    }
+  } catch (error) {
+    console.error('[claude-memory] Failed to run generalization check:', error)
+  }
+
+  console.error(
+    `[claude-memory] Generalization summary: checked=${checked} generalized=${generalized} skipped_recent=${skippedRecent} skipped_generalized=${skippedGeneralized}`
+  )
 }
 
 async function runConsolidation(config: Config, dryRun: boolean): Promise<void> {
@@ -271,6 +382,14 @@ function summarizeCluster(cluster: { id: string; successCount?: number; lastUsed
   const deprecatedIds = sorted.slice(1).map(record => record.id)
 
   return { keptId: keeper.id, deprecatedIds }
+}
+
+function computeGeneralizationPriority(record: MemoryRecord): number {
+  const retrievalCount = record.retrievalCount ?? 0
+  if (retrievalCount <= 0) return 0
+  const usageCount = record.usageCount ?? 0
+  const ratio = usageCount / Math.max(retrievalCount, 1)
+  return retrievalCount * (1 - ratio)
 }
 
 main()

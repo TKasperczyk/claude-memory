@@ -39,7 +39,9 @@ const OUTPUT_FIELDS = [
   'retrieval_count',
   'usage_count',
   'last_used',
-  'deprecated'
+  'deprecated',
+  'generalized',
+  'last_generalization_check'
 ]
 
 let client: MilvusClient | null = null
@@ -58,6 +60,7 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
   } else {
     await ensureUsageFields(config)
     await ensureScopeField(config)
+    await ensureGeneralizationFields(config)
   }
 
   // Release first in case collection is in an inconsistent state
@@ -642,6 +645,8 @@ async function createCollection(config: Config): Promise<void> {
       { name: 'usage_count', data_type: DataType.Int64 },
       { name: 'last_used', data_type: DataType.Int64 },
       { name: 'deprecated', data_type: DataType.Bool },
+      { name: 'generalized', data_type: DataType.Bool },
+      { name: 'last_generalization_check', data_type: DataType.Int64 },
       { name: 'embedding', data_type: DataType.FloatVector, dim: EMBEDDING_DIM }
     ]
   })
@@ -718,6 +723,39 @@ async function ensureScopeField(config: Config): Promise<void> {
   }
 }
 
+async function ensureGeneralizationFields(config: Config): Promise<void> {
+  if (!client) throw new Error('Milvus client not initialized')
+
+  try {
+    const description = await client.describeCollection({
+      collection_name: config.milvus.collection
+    })
+
+    const fields = description.schema?.fields ?? []
+    const fieldNames = new Set(fields.map(field => field.name))
+    const missing = [
+      { name: 'generalized', data_type: DataType.Bool, nullable: true },
+      { name: 'last_generalization_check', data_type: DataType.Int64, nullable: true }
+    ].filter(field => !fieldNames.has(field.name))
+
+    if (missing.length === 0) return
+
+    const result = await client.addCollectionFields({
+      collection_name: config.milvus.collection,
+      fields: missing
+    })
+
+    if (result.error_code !== 'Success') {
+      console.error(`[claude-memory] Failed to add generalization fields: ${result.reason}`)
+      return
+    }
+
+    console.error(`[claude-memory] Added fields to ${config.milvus.collection}: ${missing.map(field => field.name).join(', ')}`)
+  } catch (error) {
+    console.error('[claude-memory] Failed to ensure generalization fields:', error)
+  }
+}
+
 async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<RowData> {
   const normalized = normalizeRecord(record)
   const content = serializeRecord(normalized)
@@ -747,6 +785,8 @@ async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<Row
     usage_count: toInt64(normalized.usageCount, 0),
     last_used: toInt64(normalized.lastUsed, normalized.timestamp ?? Date.now()),
     deprecated: Boolean(normalized.deprecated),
+    generalized: Boolean(normalized.generalized),
+    last_generalization_check: toInt64(normalized.lastGeneralizationCheck, 0),
     embedding
   }
 }
@@ -762,6 +802,8 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const usageCount = toInt64(record.usageCount, 0)
   const lastUsed = toInt64(record.lastUsed, timestamp)
   const deprecated = Boolean(record.deprecated ?? false)
+  const generalized = toBoolean(record.generalized, false)
+  const lastGeneralizationCheck = toInt64(record.lastGeneralizationCheck, 0)
 
   return {
     ...record,
@@ -774,7 +816,9 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     retrievalCount,
     usageCount,
     lastUsed,
-    deprecated
+    deprecated,
+    generalized,
+    lastGeneralizationCheck
   }
 }
 
@@ -949,7 +993,12 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord | null {
     retrievalCount: toInt64((row.retrieval_count as number | string | undefined) ?? parsed.retrievalCount, 0),
     usageCount: toInt64((row.usage_count as number | string | undefined) ?? parsed.usageCount, 0),
     lastUsed: toInt64((row.last_used as number | string | undefined) ?? parsed.lastUsed, 0),
-    deprecated: toBoolean(row.deprecated ?? parsed.deprecated, false)
+    deprecated: toBoolean(row.deprecated ?? parsed.deprecated, false),
+    generalized: toBoolean(row.generalized ?? parsed.generalized, false),
+    lastGeneralizationCheck: toInt64(
+      (row.last_generalization_check as number | string | undefined) ?? parsed.lastGeneralizationCheck,
+      0
+    )
   } as MemoryRecord
 
   if (!isValidRecord(record)) {
@@ -998,6 +1047,8 @@ function needsEmbeddingRefresh(updates: Partial<MemoryRecord>): boolean {
     'usageCount',
     'lastUsed',
     'deprecated',
+    'generalized',
+    'lastGeneralizationCheck',
     'scope',
     'embedding'
   ])
