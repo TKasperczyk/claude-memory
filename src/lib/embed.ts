@@ -5,11 +5,7 @@
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config } from './types.js'
 const DEFAULT_TIMEOUT_MS = 30000
 
-let config: Config = DEFAULT_CONFIG
-
-export function initEmbeddings(cfg: Config = DEFAULT_CONFIG): void {
-  config = cfg
-}
+const config: Config = DEFAULT_CONFIG
 
 export async function embed(text: string, cfg: Config = config): Promise<number[]> {
   const [embedding] = await requestEmbeddings(text, cfg)

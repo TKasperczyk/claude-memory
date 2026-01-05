@@ -1,7 +1,5 @@
 #!/usr/bin/env -S npx tsx
 
-import fs from 'fs'
-import path from 'path'
 import { initMilvus } from './lib/milvus.js'
 import {
   checkValidity,
@@ -14,7 +12,8 @@ import {
   resolveContradiction
 } from './lib/maintenance.js'
 import { writeSuggestions } from './lib/promotions.js'
-import { DEFAULT_CONFIG, type Config } from './lib/types.js'
+import { loadConfig } from './lib/config.js'
+import { type Config } from './lib/types.js'
 
 const SIMILARITY_THRESHOLD = 0.85
 
@@ -180,26 +179,6 @@ async function runPromotions(config: Config): Promise<void> {
     }
   } catch (error) {
     console.error('[claude-memory] Failed to generate promotion suggestions:', error)
-  }
-}
-
-function loadConfig(root: string): Config {
-  const configPath = path.join(root, 'config.json')
-  if (!fs.existsSync(configPath)) return DEFAULT_CONFIG
-
-  try {
-    const raw = fs.readFileSync(configPath, 'utf-8')
-    const parsed = JSON.parse(raw) as Partial<Config>
-    return {
-      ...DEFAULT_CONFIG,
-      milvus: { ...DEFAULT_CONFIG.milvus, ...parsed.milvus },
-      embeddings: { ...DEFAULT_CONFIG.embeddings, ...parsed.embeddings },
-      extraction: { ...DEFAULT_CONFIG.extraction, ...parsed.extraction },
-      injection: { ...DEFAULT_CONFIG.injection, ...parsed.injection }
-    }
-  } catch (error) {
-    console.error('[claude-memory] Failed to load config.json:', error)
-    return DEFAULT_CONFIG
   }
 }
 

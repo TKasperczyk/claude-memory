@@ -10,7 +10,8 @@ import { initMilvus, incrementRecordCounters } from '../lib/milvus.js'
 import { rateInjectedMemories } from '../lib/extract.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
 import { loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
-import { DEFAULT_CONFIG, type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry } from '../lib/types.js'
+import { loadConfig } from '../lib/config.js'
+import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry } from '../lib/types.js'
 import { handlePostSession } from './post-session.js'
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
@@ -28,10 +29,6 @@ function debugLog(msg: string): void {
   } catch {
     // ignore
   }
-}
-
-function loadConfig(root: string): Config {
-  return DEFAULT_CONFIG
 }
 
 function readInputFile(filePath: string): string {

@@ -1,11 +1,10 @@
 #!/usr/bin/env -S npx tsx
 
-import fs from 'fs'
-import path from 'path'
 import { initMilvus, incrementRecordCounters } from '../lib/milvus.js'
 import { buildContext, extractSignals, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { hybridSearch } from '../lib/milvus.js'
 import { embed } from '../lib/embed.js'
+import { loadConfig } from '../lib/config.js'
 import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type MemoryRecord, type UserPromptSubmitInput } from '../lib/types.js'
 import { appendSessionTracking } from '../lib/session-tracking.js'
 
@@ -46,6 +45,7 @@ export async function handlePrePrompt(
   const signals = extractSignals(input.prompt, input.cwd)
 
   const result = await runWithTimeout(async () => {
+    await initMilvus(config)
     const results = await searchMemories(input.prompt, signals, config, input.cwd)
     if (results.length === 0) {
       return { context: null, results, injectedRecords: [] }
@@ -260,27 +260,6 @@ function buildSemanticQuery(prompt: string, signals: ContextSignals): string {
   return truncateText(parts.join('\n'), MAX_SEMANTIC_QUERY_CHARS)
 }
 
-function loadConfig(root: string): Config {
-  if (!root) return DEFAULT_CONFIG
-  const configPath = path.join(root, 'config.json')
-  if (!fs.existsSync(configPath)) return DEFAULT_CONFIG
-
-  try {
-    const raw = fs.readFileSync(configPath, 'utf-8')
-    const parsed = JSON.parse(raw) as Partial<Config>
-    return {
-      ...DEFAULT_CONFIG,
-      milvus: { ...DEFAULT_CONFIG.milvus, ...parsed.milvus },
-      embeddings: { ...DEFAULT_CONFIG.embeddings, ...parsed.embeddings },
-      extraction: { ...DEFAULT_CONFIG.extraction, ...parsed.extraction },
-      injection: { ...DEFAULT_CONFIG.injection, ...parsed.injection }
-    }
-  } catch (error) {
-    console.error('[claude-memory] Failed to load config.json:', error)
-    return DEFAULT_CONFIG
-  }
-}
-
 function truncateText(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value
   return value.slice(0, maxLength - 3) + '...'
@@ -348,7 +327,6 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig(extractSignals(payload.prompt, payload.cwd).projectRoot ?? payload.cwd)
-  await initMilvus(config)
 
   const result = await handlePrePrompt(payload, config)
 

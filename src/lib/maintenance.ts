@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import path from 'path'
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config, type MemoryRecord } from './types.js'
 import { queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
+import { buildExactText, escapeFilterValue, normalizeExactText, normalizeStep } from './shared.js'
 
 const STALE_DAYS = 90
 const DISCOVERY_MAX_AGE_DAYS = 180
@@ -359,23 +360,6 @@ function isValidEmbedding(embedding: number[] | undefined): embedding is number[
   return Array.isArray(embedding) && embedding.length === EMBEDDING_DIM
 }
 
-function buildExactText(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command':
-      return record.command
-    case 'error':
-      return record.errorText
-    case 'discovery':
-      return [record.what, record.where].filter(Boolean).join('\n')
-    case 'procedure':
-      return [record.name, ...record.steps].filter(Boolean).join('\n')
-  }
-}
-
-function normalizeExactText(value: string): string {
-  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
-}
-
 function isExactTextSimilar(seed: string, candidate: string): boolean {
   if (!seed || !candidate) return false
   if (seed === candidate) return true
@@ -399,10 +383,6 @@ function buildConsolidationFilter(record: MemoryRecord): string {
     `domain == "${escapeFilterValue(domain)}"`,
     `id != "${escapeFilterValue(record.id)}"`
   ].join(' && ')
-}
-
-function escapeFilterValue(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
 function levenshteinDistance(a: string, b: string, maxDistance?: number): number {
@@ -455,15 +435,6 @@ function pickProcedureSteps(steps: string[], maxSteps: number): string[] {
     .map(step => normalizeStep(step))
     .filter(step => step.length > 0)
   return normalized.slice(0, maxSteps)
-}
-
-function normalizeStep(step: string): string {
-  return step
-    .replace(/^\s*[-*]\s+/, '')
-    .replace(/^\s*\d+\.\s+/, '')
-    .replace(/^\s*\d+\)\s+/, '')
-    .replace(/^\s*[$>#]\s+/, '')
-    .trim()
 }
 
 function extractExecutable(commandLine: string): string | null {

@@ -3,6 +3,7 @@ import path from 'path'
 import { createHash } from 'crypto'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
 import { queryRecords } from './milvus.js'
+import { KNOWN_COMMANDS, normalizeStep } from './shared.js'
 
 const QUERY_PAGE_SIZE = 500
 const SKILL_SUCCESS_THRESHOLD = 5
@@ -10,57 +11,6 @@ const CLAUDE_MD_SUCCESS_THRESHOLD = 3
 const SKILL_NAME_MAX_LENGTH = 64
 const PROJECT_SLUG_MAX_LENGTH = 80
 
-const KNOWN_COMMANDS = new Set([
-  'npm',
-  'pnpm',
-  'yarn',
-  'bun',
-  'npx',
-  'node',
-  'deno',
-  'python',
-  'python3',
-  'pip',
-  'pip3',
-  'uv',
-  'poetry',
-  'cargo',
-  'go',
-  'dotnet',
-  'mvn',
-  'gradle',
-  'java',
-  'javac',
-  'git',
-  'docker',
-  'kubectl',
-  'helm',
-  'terraform',
-  'ansible',
-  'make',
-  'cmake',
-  'ninja',
-  'rg',
-  'grep',
-  'sed',
-  'awk',
-  'curl',
-  'wget',
-  'sudo',
-  'env',
-  'ssh',
-  'scp',
-  'systemctl',
-  'journalctl',
-  'ls',
-  'cat',
-  'cp',
-  'mv',
-  'rm',
-  'find',
-  'chmod',
-  'chown'
-])
 
 export interface ClaudeMdCandidateGroups {
   global: DiscoveryRecord[]
@@ -388,15 +338,6 @@ function formatProcedureSteps(steps: string[]): string[] {
   }
 
   return lines
-}
-
-function normalizeStep(step: string): string {
-  return step
-    .replace(/^\s*[-*]\s+/, '')
-    .replace(/^\s*\d+\.\s+/, '')
-    .replace(/^\s*\d+\)\s+/, '')
-    .replace(/^\s*[$>#]\s+/, '')
-    .trim()
 }
 
 function looksLikeCommand(step: string): boolean {

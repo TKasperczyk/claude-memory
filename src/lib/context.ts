@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { execFileSync } from 'child_process'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
+import { KNOWN_COMMANDS } from './shared.js'
 
 export interface ContextSignals {
   errors: string[]
@@ -29,7 +30,8 @@ export function stripNoiseWords(text: string): string {
   for (const pattern of NOISE_PATTERNS) {
     result = result.replace(pattern, '')
   }
-  return result.replace(/\s+/g, ' ').trim()
+  // Only collapse horizontal whitespace (spaces/tabs), preserve newlines for code fence detection
+  return result.replace(/[^\S\r\n]+/g, ' ').replace(/^ | $/gm, '').trim()
 }
 
 const STACK_START_REGEXES = [
@@ -49,58 +51,6 @@ const STACK_CONT_REGEXES = [
 
 const ERROR_LINE_REGEX = /(error|exception|traceback|panic|fatal|segmentation fault|stack trace|assertion failed|undefined reference|permission denied|no such file or directory|not found|ERR!)/i
 
-const KNOWN_COMMANDS = new Set([
-  'npm',
-  'pnpm',
-  'yarn',
-  'bun',
-  'npx',
-  'node',
-  'deno',
-  'python',
-  'python3',
-  'pip',
-  'pip3',
-  'uv',
-  'poetry',
-  'cargo',
-  'rustc',
-  'go',
-  'dotnet',
-  'mvn',
-  'gradle',
-  'javac',
-  'java',
-  'git',
-  'docker',
-  'kubectl',
-  'helm',
-  'terraform',
-  'ansible',
-  'make',
-  'cmake',
-  'ninja',
-  'rg',
-  'grep',
-  'sed',
-  'awk',
-  'curl',
-  'wget',
-  'ssh',
-  'scp',
-  'systemctl',
-  'journalctl',
-  'ps',
-  'kill',
-  'chmod',
-  'chown',
-  'ls',
-  'cat',
-  'cp',
-  'mv',
-  'rm',
-  'find'
-])
 
 export function extractSignals(prompt: string, cwd: string): ContextSignals {
   const cleanPrompt = stripNoiseWords(prompt)
@@ -117,13 +67,6 @@ export function extractSignals(prompt: string, cwd: string): ContextSignals {
     projectName,
     domain
   }
-}
-
-export function formatContext(
-  records: MemoryRecord[],
-  config: Config = DEFAULT_CONFIG
-): string {
-  return buildContext(records, config).context
 }
 
 export interface ContextBuildResult {

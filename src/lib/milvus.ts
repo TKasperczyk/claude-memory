@@ -4,6 +4,7 @@
 
 import { DataType, MilvusClient, type RowData } from '@zilliz/milvus2-sdk-node'
 import { embed } from './embed.js'
+import { buildExactText, escapeFilterValue } from './shared.js'
 import {
   DEFAULT_CONFIG,
   EMBEDDING_DIM,
@@ -13,6 +14,8 @@ import {
   type MemoryRecord,
   type RecordType
 } from './types.js'
+
+export { escapeFilterValue }
 
 const CONTENT_MAX_LENGTH = 16384
 const EXACT_TEXT_MAX_LENGTH = 4096
@@ -370,7 +373,8 @@ export async function queryRecords(
       for await (const batch of iterator) {
         if (!Array.isArray(batch)) continue
         for (const row of batch) {
-          rows.push(parseRecordFromRow(row as Record<string, unknown>))
+          const record = parseRecordFromRow(row as Record<string, unknown>)
+          if (record) rows.push(record)
         }
       }
 
@@ -391,7 +395,9 @@ export async function queryRecords(
       offset
     })
 
-    return (result.data ?? []).map(row => parseRecordFromRow(row as Record<string, unknown>))
+    return (result.data ?? [])
+      .map(row => parseRecordFromRow(row as Record<string, unknown>))
+      .filter((record): record is MemoryRecord => Boolean(record))
   } catch (error) {
     console.error('[claude-memory] queryRecords failed:', error)
     throw error
@@ -459,6 +465,7 @@ export async function hybridSearch(
 
       for (const row of keywordResults.data ?? []) {
         const record = parseRecordFromRow(row)
+        if (!record) continue
         combined.set(record.id, { record, similarity: 0, keywordMatch: true })
       }
     }
@@ -480,6 +487,7 @@ export async function hybridSearch(
         const similarity = row.score ?? 0
         if (similarity < minSimilarity) continue
         const record = parseRecordFromRow(row)
+        if (!record) continue
         const existing = combined.get(record.id)
         if (existing) {
           existing.similarity = Math.max(existing.similarity, similarity)
@@ -544,7 +552,11 @@ export async function findSimilar(
     })
 
     const matches = (searchResults.results ?? [])
-      .map(row => ({ record: parseRecordFromRow(row), similarity: row.score ?? 0 }))
+      .map(row => {
+        const record = parseRecordFromRow(row)
+        return record ? { record, similarity: row.score ?? 0 } : null
+      })
+      .filter((match): match is { record: MemoryRecord; similarity: number } => Boolean(match))
       .filter(result => result.similarity >= similarityThreshold)
 
     matches.sort((a, b) => b.similarity - a.similarity)
@@ -581,7 +593,11 @@ export async function vectorSearchSimilar(
     })
 
     const matches = (searchResults.results ?? [])
-      .map(row => ({ record: parseRecordFromRow(row), similarity: row.score ?? 0 }))
+      .map(row => {
+        const record = parseRecordFromRow(row)
+        return record ? { record, similarity: row.score ?? 0 } : null
+      })
+      .filter((match): match is { record: MemoryRecord; similarity: number } => Boolean(match))
       .filter(result => result.similarity >= similarityThreshold)
 
     matches.sort((a, b) => b.similarity - a.similarity)
@@ -740,30 +756,6 @@ function resolveDomain(record: MemoryRecord): string | undefined {
   return undefined
 }
 
-function buildExactText(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command':
-      return record.command
-    case 'error':
-      return record.errorText
-    case 'discovery':
-      return [record.what, record.where].filter(Boolean).join('\n')
-    case 'procedure':
-      return [record.name, ...record.steps].filter(Boolean).join('\n')
-  }
-}
-
-function normalizeExactText(value: string): string {
-  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
-}
-
-function isExactTextMatch(exactText: string, record: MemoryRecord): boolean {
-  if (!exactText) return false
-  const candidate = normalizeExactText(buildExactText(record))
-  if (!candidate) return false
-  return exactText === candidate
-}
-
 function buildEmbeddingInput(
   record: MemoryRecord,
   exactTextRaw?: string,
@@ -813,7 +805,64 @@ function toBoolean(value: unknown, fallback: boolean): boolean {
   return fallback
 }
 
-function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord {
+function isRecordType(value: unknown): value is RecordType {
+  return value === 'command'
+    || value === 'error'
+    || value === 'discovery'
+    || value === 'procedure'
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(entry => typeof entry === 'string')
+}
+
+function isValidOutcome(value: unknown): value is 'success' | 'failure' | 'partial' {
+  return value === 'success' || value === 'failure' || value === 'partial'
+}
+
+function isValidConfidence(value: unknown): value is 'verified' | 'inferred' | 'tentative' {
+  return value === 'verified' || value === 'inferred' || value === 'tentative'
+}
+
+function isValidRecord(record: MemoryRecord): boolean {
+  if (!isNonEmptyString(record.id)) return false
+
+  switch (record.type) {
+    case 'command':
+      return isNonEmptyString(record.command)
+        && typeof record.exitCode === 'number'
+        && !Number.isNaN(record.exitCode)
+        && isValidOutcome(record.outcome)
+        && isPlainObject(record.context)
+    case 'error':
+      return isNonEmptyString(record.errorText)
+        && isNonEmptyString(record.errorType)
+        && isNonEmptyString(record.resolution)
+        && isPlainObject(record.context)
+    case 'discovery':
+      return isNonEmptyString(record.what)
+        && isNonEmptyString(record.where)
+        && isNonEmptyString(record.evidence)
+        && isValidConfidence(record.confidence)
+    case 'procedure':
+      return isNonEmptyString(record.name)
+        && isStringArray(record.steps)
+        && record.steps.some(step => step.trim().length > 0)
+        && isPlainObject(record.context)
+  }
+
+  return false
+}
+
+function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord | null {
   let parsed: Partial<MemoryRecord> = {}
 
   if (typeof row.content === 'string') {
@@ -824,15 +873,22 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord {
     }
   }
 
-  const type = (row.type as RecordType) ?? (parsed.type as RecordType)
-  if (!type) {
-    throw new Error('Record type missing in stored row')
+  const rawType = row.type ?? parsed.type
+  if (!isRecordType(rawType)) {
+    console.error('[claude-memory] Record type missing or invalid in stored row.')
+    return null
+  }
+
+  const idValue = row.id ?? parsed.id
+  if (!isNonEmptyString(idValue)) {
+    console.error('[claude-memory] Record id missing in stored row.')
+    return null
   }
 
   const record = {
     ...parsed,
-    id: String(row.id ?? parsed.id ?? ''),
-    type,
+    id: idValue,
+    type: rawType,
     project: (row.project as string | undefined) ?? parsed.project,
     domain: (row.domain as string | undefined) ?? parsed.domain,
     timestamp: toInt64((row.timestamp as number | string | undefined) ?? parsed.timestamp, 0),
@@ -843,6 +899,11 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord {
     lastUsed: toInt64((row.last_used as number | string | undefined) ?? parsed.lastUsed, 0),
     deprecated: toBoolean(row.deprecated ?? parsed.deprecated, false)
   } as MemoryRecord
+
+  if (!isValidRecord(record)) {
+    console.error(`[claude-memory] Invalid record; skipping id=${record.id} type=${record.type}`)
+    return null
+  }
 
   if (Array.isArray(row.embedding)) {
     record.embedding = row.embedding as number[]
@@ -895,10 +956,6 @@ function ensureEmbeddingDim(embedding: number[]): void {
   if (embedding.length !== EMBEDDING_DIM) {
     throw new Error(`Embedding dimension mismatch: expected ${EMBEDDING_DIM}, got ${embedding.length}`)
   }
-}
-
-export function escapeFilterValue(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
 function escapeLikeValue(value: string): string {

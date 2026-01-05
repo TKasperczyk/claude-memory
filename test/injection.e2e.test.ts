@@ -15,7 +15,7 @@ import {
   cleanupTempFiles
 } from './helpers.js'
 import { initMilvus, insertRecord, hybridSearch } from '../src/lib/milvus.js'
-import { extractSignals, formatContext } from '../src/lib/context.js'
+import { buildContext, extractSignals } from '../src/lib/context.js'
 import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
 import type { UserPromptSubmitInput } from '../src/lib/types.js'
 
@@ -92,7 +92,7 @@ And it failed. What should I do?`
         })
       ]
 
-      const context = formatContext(records, TEST_CONFIG)
+      const context = buildContext(records, TEST_CONFIG).context
 
       expect(context).toContain('<prior-knowledge>')
       expect(context).toContain('</prior-knowledge>')
@@ -108,7 +108,7 @@ And it failed. What should I do?`
         })
       ]
 
-      const context = formatContext(records, TEST_CONFIG)
+      const context = buildContext(records, TEST_CONFIG).context
 
       expect(context).toContain('ENOENT')
       expect(context).toContain('Create the file first')
@@ -122,7 +122,7 @@ And it failed. What should I do?`
         })
       ]
 
-      const context = formatContext(records, TEST_CONFIG)
+      const context = buildContext(records, TEST_CONFIG).context
 
       expect(context).toContain('JWT tokens')
       expect(context).toContain('discovery')
@@ -136,7 +136,7 @@ And it failed. What should I do?`
         })
       ]
 
-      const context = formatContext(records, TEST_CONFIG)
+      const context = buildContext(records, TEST_CONFIG).context
 
       expect(context).toContain('Deploy to staging')
       expect(context).toContain('pnpm build')
@@ -156,7 +156,7 @@ And it failed. What should I do?`
         injection: { ...TEST_CONFIG.injection, maxRecords: 3 }
       }
 
-      const context = formatContext(records, limitedConfig)
+      const context = buildContext(records, limitedConfig).context
 
       // Should only include 3 commands
       const matches = context.match(/command-\d/g) ?? []
@@ -175,7 +175,7 @@ And it failed. What should I do?`
         })
       ]
 
-      const context = formatContext(records, TEST_CONFIG)
+      const context = buildContext(records, TEST_CONFIG).context
 
       expect(context).not.toContain('old-command')
       expect(context).toContain('new-command')
@@ -257,7 +257,8 @@ And it failed. What should I do?`
         query: 'kubernetes pods',
         limit: 5,
         vectorWeight: 0.5,
-        keywordWeight: 0.5
+        keywordWeight: 0.5,
+        minScore: 0  // Disable minScore filter for this test since we're testing hybrid mechanics
       }, TEST_CONFIG)
 
       expect(results.length).toBeGreaterThan(0)
