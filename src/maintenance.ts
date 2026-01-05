@@ -5,13 +5,15 @@ import {
   checkValidity,
   consolidateCluster,
   findContradictionPairs,
+  findGlobalCandidates,
   findLowUsageRecords,
   findSimilarClusters,
   findStaleRecords,
   markDeprecated,
+  promoteToGlobal,
   resolveContradiction
 } from './lib/maintenance.js'
-import { writeSuggestions } from './lib/promotions.js'
+import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from './lib/promotions.js'
 import { loadConfig } from './lib/config.js'
 import { type Config } from './lib/types.js'
 
@@ -19,20 +21,26 @@ const SIMILARITY_THRESHOLD = 0.85
 
 async function main(): Promise<void> {
   const config = loadConfig(process.cwd())
+  const dryRun = process.argv.slice(2).includes('--dry-run')
   await initMilvus(config)
 
   console.error('[claude-memory] Maintenance started.')
 
-  await runStaleCheck(config)
-  await runLowUsageCheck(config)
-  await runConsolidation(config)
-  await runContradictionCheck(config)
-  await runPromotions(config)
+  await runStaleCheck(config, dryRun)
+  await runLowUsageCheck(config, dryRun)
+  await runConsolidation(config, dryRun)
+  await runContradictionCheck(config, dryRun)
+  await runGlobalPromotion(config, dryRun)
+  await runPromotions(config, dryRun)
 
-  console.error('[claude-memory] Maintenance complete.')
+  if (dryRun) {
+    console.error('[claude-memory] Maintenance complete (DRY RUN - no changes made)')
+  } else {
+    console.error('[claude-memory] Maintenance complete.')
+  }
 }
 
-async function runStaleCheck(config: Config): Promise<void> {
+async function runStaleCheck(config: Config, dryRun: boolean): Promise<void> {
   let staleRecords = 0
   let deprecated = 0
 
@@ -45,10 +53,15 @@ async function runStaleCheck(config: Config): Promise<void> {
       try {
         const validity = await checkValidity(record)
         if (!validity.valid) {
-          const updated = await markDeprecated(record.id, config)
-          if (updated) {
+          if (dryRun) {
             deprecated += 1
-            console.error(`[claude-memory] Deprecated ${record.id} (${validity.reason ?? 'invalid'})`)
+            console.error(`[claude-memory] [DRY RUN] Would deprecate record ${record.id} (${validity.reason ?? 'invalid'})`)
+          } else {
+            const updated = await markDeprecated(record.id, config)
+            if (updated) {
+              deprecated += 1
+              console.error(`[claude-memory] Deprecated ${record.id} (${validity.reason ?? 'invalid'})`)
+            }
           }
         }
       } catch (error) {
@@ -62,7 +75,7 @@ async function runStaleCheck(config: Config): Promise<void> {
   console.error(`[claude-memory] Stale check summary: checked=${staleRecords} deprecated=${deprecated}`)
 }
 
-async function runLowUsageCheck(config: Config): Promise<void> {
+async function runLowUsageCheck(config: Config, dryRun: boolean): Promise<void> {
   let candidates = 0
   let deprecated = 0
 
@@ -73,10 +86,15 @@ async function runLowUsageCheck(config: Config): Promise<void> {
 
     for (const record of records) {
       const ratio = (record.usageCount ?? 0) / (record.retrievalCount ?? 1)
-      const updated = await markDeprecated(record.id, config)
-      if (updated) {
+      if (dryRun) {
         deprecated += 1
-        console.error(`[claude-memory] Deprecated ${record.id} (low-usage:${(ratio * 100).toFixed(0)}% over ${record.retrievalCount} retrievals)`)
+        console.error(`[claude-memory] [DRY RUN] Would deprecate record ${record.id} (low-usage:${(ratio * 100).toFixed(0)}% over ${record.retrievalCount} retrievals)`)
+      } else {
+        const updated = await markDeprecated(record.id, config)
+        if (updated) {
+          deprecated += 1
+          console.error(`[claude-memory] Deprecated ${record.id} (low-usage:${(ratio * 100).toFixed(0)}% over ${record.retrievalCount} retrievals)`)
+        }
       }
     }
   } catch (error) {
@@ -86,7 +104,7 @@ async function runLowUsageCheck(config: Config): Promise<void> {
   console.error(`[claude-memory] Low usage check summary: candidates=${candidates} deprecated=${deprecated}`)
 }
 
-async function runConsolidation(config: Config): Promise<void> {
+async function runConsolidation(config: Config, dryRun: boolean): Promise<void> {
   let clustersFound = 0
   let clustersMerged = 0
   let deprecated = 0
@@ -98,11 +116,19 @@ async function runConsolidation(config: Config): Promise<void> {
 
     for (const cluster of clusters) {
       try {
-        const result = await consolidateCluster(cluster, config)
-        if (!result || result.deprecatedIds.length === 0) continue
-        clustersMerged += 1
-        deprecated += result.deprecatedIds.length
-        console.error(`[claude-memory] Consolidated keep=${result.keptId} deprecated=${result.deprecatedIds.join(',')}`)
+        if (dryRun) {
+          const preview = summarizeCluster(cluster)
+          if (!preview || preview.deprecatedIds.length === 0) continue
+          clustersMerged += 1
+          deprecated += preview.deprecatedIds.length
+          console.error(`[claude-memory] [DRY RUN] Would consolidate keep=${preview.keptId} deprecated=${preview.deprecatedIds.join(',')}`)
+        } else {
+          const result = await consolidateCluster(cluster, config)
+          if (!result || result.deprecatedIds.length === 0) continue
+          clustersMerged += 1
+          deprecated += result.deprecatedIds.length
+          console.error(`[claude-memory] Consolidated keep=${result.keptId} deprecated=${result.deprecatedIds.join(',')}`)
+        }
       } catch (error) {
         console.error('[claude-memory] consolidateCluster failed:', error)
       }
@@ -114,7 +140,7 @@ async function runConsolidation(config: Config): Promise<void> {
   console.error(`[claude-memory] Consolidation summary: clusters=${clustersFound} merged=${clustersMerged} deprecated=${deprecated}`)
 }
 
-async function runContradictionCheck(config: Config): Promise<void> {
+async function runContradictionCheck(config: Config, dryRun: boolean): Promise<void> {
   let pairsFound = 0
   let deprecated = 0
 
@@ -125,12 +151,17 @@ async function runContradictionCheck(config: Config): Promise<void> {
 
     for (const pair of pairs) {
       try {
-        const updated = await resolveContradiction(pair, config)
-        if (updated) {
+        if (dryRun) {
           deprecated += 1
-          const newerSnippet = truncateForLog(buildRecordSnippet(pair.newer))
-          const olderSnippet = truncateForLog(buildRecordSnippet(pair.older))
-          console.error(`[claude-memory] Contradiction resolved: kept="${newerSnippet}" deprecated="${olderSnippet}" (sim=${pair.similarity.toFixed(2)})`)
+          console.error(`[claude-memory] [DRY RUN] Would deprecate record ${pair.older.id} (contradiction sim=${pair.similarity.toFixed(2)})`)
+        } else {
+          const updated = await resolveContradiction(pair, config)
+          if (updated) {
+            deprecated += 1
+            const newerSnippet = truncateForLog(buildRecordSnippet(pair.newer))
+            const olderSnippet = truncateForLog(buildRecordSnippet(pair.older))
+            console.error(`[claude-memory] Contradiction resolved: kept="${newerSnippet}" deprecated="${olderSnippet}" (sim=${pair.similarity.toFixed(2)})`)
+          }
         }
       } catch (error) {
         console.error(`[claude-memory] Failed to resolve contradiction:`, error)
@@ -141,6 +172,34 @@ async function runContradictionCheck(config: Config): Promise<void> {
   }
 
   console.error(`[claude-memory] Contradiction check summary: pairs=${pairsFound} deprecated=${deprecated}`)
+}
+
+async function runGlobalPromotion(config: Config, dryRun: boolean): Promise<void> {
+  let candidates = 0
+  let promoted = 0
+
+  try {
+    const records = await findGlobalCandidates(config)
+    candidates = records.length
+    console.error(`[claude-memory] Global promotion candidates: ${candidates}`)
+
+    for (const record of records) {
+      if (dryRun) {
+        promoted += 1
+        console.error(`[claude-memory] [DRY RUN] Would promote record ${record.id} to global scope`)
+      } else {
+        const updated = await promoteToGlobal(record.id, config)
+        if (updated) {
+          promoted += 1
+          console.error(`[claude-memory] Promoted ${record.id} to global scope`)
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[claude-memory] Failed to promote global candidates:', error)
+  }
+
+  console.error(`[claude-memory] Global promotion summary: candidates=${candidates} promoted=${promoted}`)
 }
 
 function buildRecordSnippet(record: { type: string; command?: string; errorText?: string; what?: string; name?: string }): string {
@@ -164,8 +223,20 @@ function truncateForLog(value: string, maxLength: number = 60): string {
   return cleaned.slice(0, maxLength - 3) + '...'
 }
 
-async function runPromotions(config: Config): Promise<void> {
+async function runPromotions(config: Config, dryRun: boolean): Promise<void> {
   try {
+    if (dryRun) {
+      const [skillCandidates, claudeCandidates] = await Promise.all([
+        findSkillCandidates(config),
+        findClaudeMdCandidates(config)
+      ])
+      const skills = skillCandidates.length
+      const claudeMd = claudeCandidates.global.length
+        + Object.values(claudeCandidates.byProject).reduce((total, group) => total + group.length, 0)
+      console.error(`[claude-memory] [DRY RUN] Would generate promotion suggestions: skills=${skills} claude-md=${claudeMd}`)
+      return
+    }
+
     const result = await writeSuggestions(config, process.cwd())
     const skills = result.skillFiles.length
     const claudeMd = result.claudeMdFiles.length
@@ -180,6 +251,26 @@ async function runPromotions(config: Config): Promise<void> {
   } catch (error) {
     console.error('[claude-memory] Failed to generate promotion suggestions:', error)
   }
+}
+
+function summarizeCluster(cluster: { id: string; successCount?: number; lastUsed?: number; timestamp?: number }[]): {
+  keptId: string
+  deprecatedIds: string[]
+} | null {
+  if (cluster.length < 2) return null
+
+  const sorted = [...cluster].sort((a, b) => {
+    const successDiff = (b.successCount ?? 0) - (a.successCount ?? 0)
+    if (successDiff !== 0) return successDiff
+    const lastUsedDiff = (b.lastUsed ?? 0) - (a.lastUsed ?? 0)
+    if (lastUsedDiff !== 0) return lastUsedDiff
+    return (b.timestamp ?? 0) - (a.timestamp ?? 0)
+  })
+
+  const keeper = sorted[0]
+  const deprecatedIds = sorted.slice(1).map(record => record.id)
+
+  return { keptId: keeper.id, deprecatedIds }
 }
 
 main()

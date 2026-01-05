@@ -17,6 +17,88 @@ const LOW_USAGE_MIN_RETRIEVALS = 5
 const LOW_USAGE_RATIO_THRESHOLD = 0.1
 const CONTRADICTION_SIMILARITY_THRESHOLD = 0.75
 const CONTRADICTION_SEARCH_LIMIT = 8
+const GLOBAL_TOOL_KEYWORDS = [
+  'npm',
+  'pnpm',
+  'yarn',
+  'bun',
+  'npx',
+  'node',
+  'nodejs',
+  'deno',
+  'python',
+  'python3',
+  'pip',
+  'pip3',
+  'pipx',
+  'uv',
+  'poetry',
+  'cargo',
+  'rustc',
+  'git',
+  'docker',
+  'docker-compose',
+  'kubectl',
+  'helm',
+  'terraform',
+  'ansible',
+  'dotnet',
+  'mvn',
+  'gradle',
+  'javac',
+  'java'
+]
+const GLOBAL_COMMAND_TOOLS = new Set(GLOBAL_TOOL_KEYWORDS)
+const GLOBAL_DISCOVERY_KEYWORDS = [
+  'javascript',
+  'typescript',
+  'node',
+  'nodejs',
+  'python',
+  'rust',
+  'golang',
+  'java',
+  'kotlin',
+  'c#',
+  'c++',
+  'ruby',
+  'php',
+  'swift',
+  'scala',
+  'elixir',
+  'erlang',
+  'bash',
+  'shell',
+  'zsh',
+  'sql',
+  'postgres',
+  'postgresql',
+  'mysql',
+  'sqlite',
+  'react',
+  'vue',
+  'angular',
+  'svelte',
+  'next.js',
+  'nuxt',
+  'express',
+  'fastify',
+  'django',
+  'flask',
+  'rails',
+  'laravel',
+  'spring',
+  'grpc',
+  'graphql'
+]
+const GENERIC_COMMAND_FLAGS = new Set(['--help', '-h', '--version', '-v', '-V', '--info', '--list'])
+const GENERIC_SUBCOMMANDS = new Set(['help', 'version', 'info', 'list'])
+const PACKAGE_MANAGER_TOOLS = new Set(['npm', 'pnpm', 'yarn', 'bun'])
+const PACKAGE_MANAGER_SCRIPT_SUBCOMMANDS = new Set(['run', 'test', 'build', 'lint', 'start', 'dev', 'serve', 'check', 'format'])
+const FILE_EXTENSION_REGEX = /\.(json|yml|yaml|toml|lock|md|txt|ini|cfg|conf|sh|py|rs|go|java|js|ts|tsx|jsx|c|cc|cpp|h|hpp)$/i
+const PATH_TEXT_REGEX = /(^|\s)(\.{1,2}[\\/]|~\/|[A-Za-z]:[\\/]|\/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/
+const GLOBAL_TOOL_REGEXES = GLOBAL_TOOL_KEYWORDS.map(buildKeywordRegex)
+const GLOBAL_DISCOVERY_REGEXES = GLOBAL_DISCOVERY_KEYWORDS.map(buildKeywordRegex)
 
 export interface ValidityResult {
   valid: boolean
@@ -43,6 +125,24 @@ export async function findStaleRecords(config: Config = DEFAULT_CONFIG): Promise
   const cutoff = Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000
   const filter = `deprecated == false && last_used < ${Math.trunc(cutoff)}`
   return fetchRecords(filter, config, false)
+}
+
+export async function findGlobalCandidates(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
+  const candidates: MemoryRecord[] = []
+  const types = ['error', 'command', 'discovery'] as const
+
+  for (const type of types) {
+    const records = await fetchRecords(`deprecated == false && type == "${type}"`, config, false)
+    for (const record of records) {
+      if (record.scope === 'global') continue
+      if (record.deprecated) continue
+      if (isGlobalCandidate(record)) {
+        candidates.push(record)
+      }
+    }
+  }
+
+  return candidates
 }
 
 export async function findLowUsageRecords(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
@@ -97,6 +197,10 @@ export async function checkValidity(record: MemoryRecord): Promise<ValidityResul
 
 export async function markDeprecated(id: string, config: Config = DEFAULT_CONFIG): Promise<boolean> {
   return updateRecord(id, { deprecated: true }, config)
+}
+
+export async function promoteToGlobal(id: string, config: Config = DEFAULT_CONFIG): Promise<boolean> {
+  return updateRecord(id, { scope: 'global' }, config)
 }
 
 export async function findSimilarClusters(
@@ -385,6 +489,100 @@ function buildConsolidationFilter(record: MemoryRecord): string {
   ].join(' && ')
 }
 
+function isGlobalCandidate(record: MemoryRecord): boolean {
+  switch (record.type) {
+    case 'error':
+      return isGlobalErrorCandidate(record)
+    case 'command':
+      return isGlobalCommandCandidate(record)
+    case 'discovery':
+      return isGlobalDiscoveryCandidate(record)
+    default:
+      return false
+  }
+}
+
+function isGlobalErrorCandidate(record: Extract<MemoryRecord, { type: 'error' }>): boolean {
+  const resolution = normalizeMatchText(record.resolution ?? '')
+  const errorText = normalizeMatchText(record.errorText ?? '')
+  const tool = normalizeMatchText(record.context.tool ?? '')
+  if (resolution && matchesAnyRegex(resolution, GLOBAL_TOOL_REGEXES)) return true
+  if (errorText && matchesAnyRegex(errorText, GLOBAL_TOOL_REGEXES)) return true
+  if (tool && matchesAnyRegex(tool, GLOBAL_TOOL_REGEXES)) return true
+  return false
+}
+
+function isGlobalCommandCandidate(record: Extract<MemoryRecord, { type: 'command' }>): boolean {
+  const parsed = parseCommandLine(record.command)
+  if (!parsed.executable) return false
+
+  const executable = parsed.executable.toLowerCase()
+  if (looksLikePath(executable) || executable.includes('\\')) return false
+  if (!GLOBAL_COMMAND_TOOLS.has(executable)) return false
+
+  const args = parsed.args
+  if (args.some(isPathLikeToken)) return false
+  if (isPackageManagerScript(executable, args)) return false
+
+  const nonFlagArgs = args.filter(arg => !arg.startsWith('-'))
+  if (hasGenericFlag(args)) return true
+  if (nonFlagArgs.length <= 1) return true
+
+  return false
+}
+
+function isGlobalDiscoveryCandidate(record: Extract<MemoryRecord, { type: 'discovery' }>): boolean {
+  const combined = normalizeMatchText([record.what, record.where, record.evidence].filter(Boolean).join(' '))
+  if (!combined) return false
+  if (PATH_TEXT_REGEX.test(combined)) return false
+  return matchesAnyRegex(combined, GLOBAL_DISCOVERY_REGEXES)
+}
+
+function normalizeMatchText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function matchesAnyRegex(value: string, regexes: RegExp[]): boolean {
+  return regexes.some(regex => regex.test(value))
+}
+
+function buildKeywordRegex(keyword: string): RegExp {
+  const escaped = escapeRegExp(keyword)
+  return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, 'i')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function hasGenericFlag(args: string[]): boolean {
+  for (const arg of args) {
+    if (GENERIC_COMMAND_FLAGS.has(arg)) return true
+    if (!arg.startsWith('-') && GENERIC_SUBCOMMANDS.has(arg)) return true
+  }
+  return false
+}
+
+function isPackageManagerScript(executable: string, args: string[]): boolean {
+  if (!PACKAGE_MANAGER_TOOLS.has(executable)) return false
+  const nonFlagArgs = args.filter(arg => !arg.startsWith('-'))
+  return nonFlagArgs.some(arg => PACKAGE_MANAGER_SCRIPT_SUBCOMMANDS.has(arg))
+}
+
+function isPathLikeToken(token: string): boolean {
+  const raw = stripQuotes(token)
+  if (!raw) return false
+  if (raw.startsWith('-') && !raw.includes('=')) return false
+
+  const candidate = raw.includes('=') ? raw.split('=', 2)[1] : raw
+  if (!candidate) return false
+
+  if (candidate.startsWith('./') || candidate.startsWith('../') || candidate.startsWith('~/')) return true
+  if (candidate.includes('/') || candidate.includes('\\')) return true
+  if (FILE_EXTENSION_REGEX.test(candidate)) return true
+  return false
+}
+
 function levenshteinDistance(a: string, b: string, maxDistance?: number): number {
   if (a === b) return 0
   const aLength = a.length
@@ -438,9 +636,13 @@ function pickProcedureSteps(steps: string[], maxSteps: number): string[] {
 }
 
 function extractExecutable(commandLine: string): string | null {
+  return parseCommandLine(commandLine).executable
+}
+
+function parseCommandLine(commandLine: string): { executable: string | null; args: string[] } {
   const segment = firstCommandSegment(commandLine)
   const tokens = tokenizeCommand(segment)
-  if (tokens.length === 0) return null
+  if (tokens.length === 0) return { executable: null, args: [] }
 
   let index = 0
   while (index < tokens.length) {
@@ -465,10 +667,11 @@ function extractExecutable(commandLine: string): string | null {
       continue
     }
 
-    return token
+    const args = tokens.slice(index + 1).map(stripQuotes).filter(Boolean)
+    return { executable: token, args }
   }
 
-  return null
+  return { executable: null, args: [] }
 }
 
 function firstCommandSegment(commandLine: string): string {
