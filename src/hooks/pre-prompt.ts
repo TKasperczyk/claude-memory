@@ -98,9 +98,10 @@ async function searchMemories(
   }
 
   let results = await searchWithScope(cleanPrompt, signals, config, scope, embedding)
-  if (results.length === 0 && (scope.project || scope.domain)) {
-    console.error('[claude-memory] No project-scoped hits; retrying without scope.')
-    results = await searchWithScope(cleanPrompt, signals, config, {}, embedding)
+  if (results.length === 0 && scope.project) {
+    // Fallback: remove project filter but preserve domain to avoid cross-domain noise
+    console.error('[claude-memory] No project-scoped hits; retrying with domain filter only.')
+    results = await searchWithScope(cleanPrompt, signals, config, { domain: scope.domain }, embedding)
   }
 
   // Apply MMR for diversity if we have multiple results with embeddings
