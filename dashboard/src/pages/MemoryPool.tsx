@@ -13,7 +13,7 @@ import {
 } from '@/lib/api'
 
 const PAGE_SIZE = 50
-const SEARCH_LIMIT = 200
+const SEARCH_LIMIT = 100
 
 const TYPE_OPTIONS: Array<{ label: string; value: RecordType | 'all' }> = [
   { label: 'All types', value: 'all' },

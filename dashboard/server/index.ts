@@ -14,13 +14,14 @@ import {
   escapeFilterValue,
   getRecordStats
 } from '../../src/lib/milvus.js'
-import { listAllSessions } from '../../src/lib/session-tracking.js'
+import { dedupeInjectedMemories, listAllSessions } from '../../src/lib/session-tracking.js'
 import { findGitRoot } from '../../src/lib/context.js'
 import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
 import { type RecordType } from '../../src/lib/types.js'
 import {
   MAINTENANCE_OPERATIONS,
+  MAINTENANCE_OPERATION_DEFINITIONS,
   runAllMaintenance,
   runMaintenanceOperation,
   type MaintenanceOperation
@@ -239,7 +240,10 @@ app.get('/api/search', async (req, res) => {
 // List active sessions with their injected memories and stats
 app.get('/api/sessions', async (_req, res) => {
   try {
-    const sessions = listAllSessions()
+    const sessions = listAllSessions().map(session => ({
+      ...session,
+      memories: dedupeInjectedMemories(session.memories)
+    }))
 
     // Collect all memory IDs to fetch stats
     const allIds = sessions.flatMap(s => s.memories.map(m => m.id))
@@ -262,6 +266,11 @@ app.get('/api/sessions', async (_req, res) => {
     console.error('Sessions error:', error)
     res.status(500).json({ error: 'Failed to list sessions' })
   }
+})
+
+// List maintenance operations for the dashboard
+app.get('/api/maintenance/operations', (_req, res) => {
+  res.json({ operations: MAINTENANCE_OPERATION_DEFINITIONS })
 })
 
 // Run a single maintenance operation

@@ -24,11 +24,6 @@ function formatRelative(ts: number): string {
   return 'now'
 }
 
-function parseSnippetType(snippet: string): RecordType | null {
-  const match = snippet.match(/^(command|error|discovery|procedure):/)
-  return match ? (match[1] as RecordType) : null
-}
-
 function parseSnippetTitle(snippet: string): string {
   const withoutType = snippet.replace(/^(command|error|discovery|procedure):\s*/, '')
   const mainPart = withoutType.split('|')[0].trim()
@@ -43,15 +38,6 @@ function extractProjectName(cwd: string | undefined): string {
 
 function isSessionActive(session: SessionRecord): boolean {
   return Date.now() - session.lastActivity < 5 * 60 * 1000
-}
-
-function dedupeMemories(memories: SessionRecord['memories']) {
-  // Keep the LATEST occurrence of each memory (has most recent metadata)
-  const byId = new Map<string, SessionRecord['memories'][0]>()
-  for (const m of memories) {
-    byId.set(m.id, m)
-  }
-  return Array.from(byId.values())
 }
 
 function formatUsageRatio(stats: MemoryStats | null | undefined): string {
@@ -107,7 +93,7 @@ function groupByType(memories: SessionRecord['memories']): TypeGroup[] {
   const groups: Map<RecordType, SessionRecord['memories']> = new Map()
 
   for (const m of memories) {
-    const type = parseSnippetType(m.snippet)
+    const type = m.type ?? null
     if (type) {
       const existing = groups.get(type) || []
       existing.push(m)
@@ -200,7 +186,7 @@ export default function Sessions() {
           {sessions.map(session => {
             const active = isSessionActive(session)
             const isOpen = expanded === session.sessionId
-            const memories = dedupeMemories(session.memories)
+            const memories = session.memories
             const typeGroups = groupByType(memories)
 
             return (

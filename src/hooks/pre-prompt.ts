@@ -383,6 +383,7 @@ async function trackInjectedMemories(
     return {
       id: record.id,
       snippet: normalizeSnippet(formatRecordSnippet(record) ?? `type: ${record.type}`),
+      type: record.type,
       injectedAt,
       // Include retrieval trigger metadata
       similarity: searchResult?.similarity,

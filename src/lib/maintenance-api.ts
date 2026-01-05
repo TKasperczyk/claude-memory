@@ -1,5 +1,6 @@
 import { DEFAULT_CONFIG, type Config } from './types.js'
 import { findClaudeMdCandidates, findSkillCandidates } from './promotions.js'
+import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import {
   runStaleCheck,
   runLowUsageDeprecation,
@@ -10,6 +11,48 @@ import {
   type MaintenanceRunResult
 } from '../maintenance.js'
 
+export const MAINTENANCE_OPERATION_DEFINITIONS = [
+  {
+    key: 'stale-check',
+    label: 'Stale Check',
+    description: 'Find records unused for 90+ days',
+    allowExecute: true
+  },
+  {
+    key: 'low-usage-deprecation',
+    label: 'Zero Usage Deprecation',
+    description: 'Deprecate records with 10+ retrievals and zero usage',
+    allowExecute: true
+  },
+  {
+    key: 'low-usage',
+    label: 'Low Usage',
+    description: 'Deprecate records with <10% usefulness',
+    allowExecute: true
+  },
+  {
+    key: 'consolidation',
+    label: 'Consolidation',
+    description: 'Merge duplicate records (>85% similar)',
+    allowExecute: true
+  },
+  {
+    key: 'global-promotion',
+    label: 'Global Promotion',
+    description: 'Elevate project-scoped to global',
+    allowExecute: true
+  },
+  {
+    key: 'promotion-suggestions',
+    label: 'Promotion Suggestions',
+    description: 'Generate CLAUDE.md and skill recommendations',
+    allowExecute: false
+  }
+] as const
+
+export type MaintenanceOperation = typeof MAINTENANCE_OPERATION_DEFINITIONS[number]['key']
+export type MaintenanceOperationDefinition = typeof MAINTENANCE_OPERATION_DEFINITIONS[number]
+
 export interface OperationResult {
   operation: string
   dryRun: boolean
@@ -19,22 +62,8 @@ export interface OperationResult {
   error?: string
 }
 
-export type MaintenanceOperation =
-  | 'stale-check'
-  | 'low-usage-deprecation'
-  | 'low-usage'
-  | 'consolidation'
-  | 'global-promotion'
-  | 'promotion-suggestions'
-
-export const MAINTENANCE_OPERATIONS: MaintenanceOperation[] = [
-  'stale-check',
-  'low-usage-deprecation',
-  'low-usage',
-  'consolidation',
-  'global-promotion',
-  'promotion-suggestions'
-]
+export const MAINTENANCE_OPERATIONS: MaintenanceOperation[] =
+  MAINTENANCE_OPERATION_DEFINITIONS.map(definition => definition.key) as MaintenanceOperation[]
 
 export async function runMaintenanceOperation(
   operation: MaintenanceOperation,
@@ -156,25 +185,4 @@ async function runPromotionSuggestions(config: Config): Promise<MaintenanceRunRe
   }
 
   return { actions, summary: { skillCandidates, claudeMdCandidates, errors } }
-}
-
-function buildRecordSnippet(record: { type: string; command?: string; errorText?: string; what?: string; name?: string }): string {
-  switch (record.type) {
-    case 'command':
-      return record.command ?? 'unknown command'
-    case 'error':
-      return record.errorText ?? 'unknown error'
-    case 'discovery':
-      return record.what ?? 'unknown discovery'
-    case 'procedure':
-      return record.name ?? 'unknown procedure'
-    default:
-      return `${record.type} record`
-  }
-}
-
-function truncateSnippet(value: string, maxLength: number = 120): string {
-  const cleaned = value.replace(/\s+/g, ' ').trim()
-  if (cleaned.length <= maxLength) return cleaned
-  return `${cleaned.slice(0, maxLength - 3)}...`
 }

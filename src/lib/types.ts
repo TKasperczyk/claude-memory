@@ -77,6 +77,7 @@ export type MemoryRecord = CommandRecord | ErrorRecord | DiscoveryRecord | Proce
 export interface InjectedMemoryEntry {
   id: string
   snippet: string
+  type?: RecordType
   injectedAt: number
   prompt?: string
   // Retrieval trigger info

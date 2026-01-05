@@ -84,3 +84,30 @@ export function normalizeExactText(value: string): string {
 export function escapeFilterValue(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
+
+export function buildRecordSnippet(record: {
+  type: string
+  command?: string
+  errorText?: string
+  what?: string
+  name?: string
+}): string {
+  switch (record.type) {
+    case 'command':
+      return record.command ?? 'unknown command'
+    case 'error':
+      return record.errorText ?? 'unknown error'
+    case 'discovery':
+      return record.what ?? 'unknown discovery'
+    case 'procedure':
+      return record.name ?? 'unknown procedure'
+    default:
+      return `${record.type} record`
+  }
+}
+
+export function truncateSnippet(value: string, maxLength: number = 120): string {
+  const cleaned = value.replace(/\s+/g, ' ').trim()
+  if (cleaned.length <= maxLength) return cleaned
+  return `${cleaned.slice(0, maxLength - 3)}...`
+}

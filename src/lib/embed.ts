@@ -67,7 +67,7 @@ async function requestEmbeddings(
   }
 }
 
-function ensureEmbeddingDim(embedding: number[]): void {
+export function ensureEmbeddingDim(embedding: number[]): void {
   if (embedding.length !== EMBEDDING_DIM) {
     throw new Error(`Embedding dimension mismatch: expected ${EMBEDDING_DIM}, got ${embedding.length}`)
   }

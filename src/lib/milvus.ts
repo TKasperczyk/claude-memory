@@ -3,7 +3,7 @@
  */
 
 import { DataType, MilvusClient, type RowData } from '@zilliz/milvus2-sdk-node'
-import { embed } from './embed.js'
+import { embed, ensureEmbeddingDim } from './embed.js'
 import { buildExactText, escapeFilterValue } from './shared.js'
 import {
   DEFAULT_CONFIG,
@@ -1093,12 +1093,6 @@ function needsEmbeddingRefresh(updates: Partial<MemoryRecord>): boolean {
   ])
 
   return Object.keys(updates).some(key => !metaFields.has(key))
-}
-
-function ensureEmbeddingDim(embedding: number[]): void {
-  if (embedding.length !== EMBEDDING_DIM) {
-    throw new Error(`Embedding dimension mismatch: expected ${EMBEDDING_DIM}, got ${embedding.length}`)
-  }
 }
 
 function escapeLikeValue(value: string): string {

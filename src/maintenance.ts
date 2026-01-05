@@ -21,6 +21,7 @@ import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from '.
 import { loadConfig } from './lib/config.js'
 import { DEFAULT_CONFIG, type Config } from './lib/types.js'
 import { updateRecord } from './lib/milvus.js'
+import { buildRecordSnippet, truncateSnippet } from './lib/shared.js'
 
 const SIMILARITY_THRESHOLD = 0.85
 
@@ -363,27 +364,6 @@ export async function runGlobalPromotion(
   }
 
   return { actions, summary: { candidates, checked, promoted, skippedRecent, errors } }
-}
-
-function buildRecordSnippet(record: { type: string; command?: string; errorText?: string; what?: string; name?: string }): string {
-  switch (record.type) {
-    case 'command':
-      return record.command ?? 'unknown command'
-    case 'error':
-      return record.errorText ?? 'unknown error'
-    case 'discovery':
-      return record.what ?? 'unknown discovery'
-    case 'procedure':
-      return record.name ?? 'unknown procedure'
-    default:
-      return `${record.type} record`
-  }
-}
-
-function truncateSnippet(value: string, maxLength: number = 120): string {
-  const cleaned = value.replace(/\s+/g, ' ').trim()
-  if (cleaned.length <= maxLength) return cleaned
-  return cleaned.slice(0, maxLength - 3) + '...'
 }
 
 async function runPromotions(config: Config, dryRun: boolean): Promise<void> {

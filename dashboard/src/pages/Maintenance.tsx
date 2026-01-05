@@ -1,54 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Check, Circle, Eye, Loader2, Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import {
+  fetchMaintenanceOperations,
   runMaintenance,
   type MaintenanceAction,
   type MaintenanceActionType,
+  type MaintenanceOperationInfo,
   type OperationResult
 } from '@/lib/api'
+import { useApi } from '@/hooks/useApi'
 
-// Order matches backend execution order in MAINTENANCE_OPERATIONS
-const OPERATIONS = [
-  {
-    key: 'stale-check',
-    label: 'Stale Check',
-    description: 'Find records unused for 90+ days',
-    allowExecute: true
-  },
-  {
-    key: 'low-usage-deprecation',
-    label: 'Zero Usage Deprecation',
-    description: 'Deprecate records with 10+ retrievals and zero usage',
-    allowExecute: true
-  },
-  {
-    key: 'low-usage',
-    label: 'Low Usage',
-    description: 'Deprecate records with <10% usefulness',
-    allowExecute: true
-  },
-  {
-    key: 'consolidation',
-    label: 'Consolidation',
-    description: 'Merge duplicate records (>85% similar)',
-    allowExecute: true
-  },
-  {
-    key: 'global-promotion',
-    label: 'Global Promotion',
-    description: 'Elevate project-scoped to global',
-    allowExecute: true
-  },
-  {
-    key: 'promotion-suggestions',
-    label: 'Promotion Suggestions',
-    description: 'Generate CLAUDE.md and skill recommendations',
-    allowExecute: false
-  }
-] as const
-
-type MaintenanceOperation = typeof OPERATIONS[number]['key']
+type MaintenanceOperation = MaintenanceOperationInfo['key']
 
 type ConfirmState =
   | { mode: 'single'; operation: MaintenanceOperation }
@@ -96,6 +59,16 @@ function formatSummaryKey(key: string): string {
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/[_-]/g, ' ')
     .toLowerCase()
+}
+
+function buildOperationState<T>(
+  operations: MaintenanceOperationInfo[],
+  fallback: T,
+  existing: Record<string, T> = {}
+): Record<MaintenanceOperation, T> {
+  return Object.fromEntries(
+    operations.map(operation => [operation.key, existing[operation.key] ?? fallback])
+  ) as Record<MaintenanceOperation, T>
 }
 
 function renderDetails(details?: Record<string, unknown>) {
@@ -198,21 +171,21 @@ function ResultPanel({ result }: { result: OperationResult }) {
 }
 
 export default function Maintenance() {
-  const initialState = useMemo(
-    () => Object.fromEntries(OPERATIONS.map(op => [op.key, null])) as Record<MaintenanceOperation, OperationResult | null>,
-    []
-  )
-  const initialRunning = useMemo(
-    () => Object.fromEntries(OPERATIONS.map(op => [op.key, false])) as Record<MaintenanceOperation, boolean>,
-    []
-  )
+  const { data: operationsData, error: operationsError, loading: operationsLoading } = useApi(fetchMaintenanceOperations, [])
+  const operations = operationsData?.operations ?? []
 
-  const [results, setResults] = useState<Record<MaintenanceOperation, OperationResult | null>>(initialState)
-  const [running, setRunning] = useState<Record<MaintenanceOperation, boolean>>(initialRunning)
+  const [results, setResults] = useState<Record<MaintenanceOperation, OperationResult | null>>({})
+  const [running, setRunning] = useState<Record<MaintenanceOperation, boolean>>({})
   const [bulkRunning, setBulkRunning] = useState(false)
   const [bulkProgress, setBulkProgress] = useState<Record<MaintenanceOperation, BulkProgressState> | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState>(null)
+
+  useEffect(() => {
+    if (operations.length === 0) return
+    setResults(prev => buildOperationState(operations, null, prev))
+    setRunning(prev => buildOperationState(operations, false, prev))
+  }, [operations])
 
   const setOperationRunning = (operation: MaintenanceOperation, isRunning: boolean) => {
     setRunning(prev => ({ ...prev, [operation]: isRunning }))
@@ -242,11 +215,12 @@ export default function Maintenance() {
   }
 
   const handleRunAll = (dryRun: boolean) => {
+    if (operations.length === 0) return
     setBulkRunning(true)
     setBulkError(null)
     // Initialize all operations as pending
     setBulkProgress(
-      Object.fromEntries(OPERATIONS.map(op => [op.key, 'pending'])) as Record<MaintenanceOperation, BulkProgressState>
+      Object.fromEntries(operations.map(op => [op.key, 'pending'])) as Record<MaintenanceOperation, BulkProgressState>
     )
 
     // Use SSE streaming endpoint for real-time progress
@@ -310,6 +284,42 @@ export default function Maintenance() {
     setConfirmState(null)
   }
 
+  if (operationsLoading) {
+    return (
+      <div className="space-y-8">
+        <PageHeader
+          title="Maintenance"
+          description="Run maintenance operations manually with dry-run previews"
+        />
+        <div className="text-sm text-muted-foreground">Loading maintenance operations...</div>
+      </div>
+    )
+  }
+
+  if (operationsError) {
+    return (
+      <div className="space-y-8">
+        <PageHeader
+          title="Maintenance"
+          description="Run maintenance operations manually with dry-run previews"
+        />
+        <div className="text-sm text-destructive">{operationsError.message}</div>
+      </div>
+    )
+  }
+
+  if (operations.length === 0) {
+    return (
+      <div className="space-y-8">
+        <PageHeader
+          title="Maintenance"
+          description="Run maintenance operations manually with dry-run previews"
+        />
+        <div className="text-sm text-muted-foreground">No maintenance operations available.</div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-8">
       <PageHeader
@@ -344,7 +354,7 @@ export default function Maintenance() {
         </div>
         {bulkProgress && (
           <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
-            {OPERATIONS.map(op => {
+            {operations.map(op => {
               const status = bulkProgress[op.key]
               const result = results[op.key]
               return (
@@ -375,7 +385,7 @@ export default function Maintenance() {
       </section>
 
       <div className="space-y-6">
-        {OPERATIONS.map(operation => {
+        {operations.map(operation => {
           const result = results[operation.key]
           const isRunning = running[operation.key] || bulkRunning
           const bulkStatus = bulkProgress?.[operation.key]
@@ -433,7 +443,7 @@ export default function Maintenance() {
                 <p className="text-sm text-muted-foreground">
                   {confirmState.mode === 'all'
                     ? 'Run all maintenance operations now?'
-                    : `Run ${OPERATIONS.find(op => op.key === confirmState.operation)?.label} now?`}
+                    : `Run ${operations.find(op => op.key === confirmState.operation)?.label} now?`}
                 </p>
               </div>
               <div className="flex items-center justify-end gap-3">

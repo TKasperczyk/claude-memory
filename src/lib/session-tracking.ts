@@ -1,9 +1,10 @@
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
-import { type InjectedMemoryEntry, type InjectionSessionRecord } from './types.js'
+import { type InjectedMemoryEntry, type InjectionSessionRecord, type RecordType } from './types.js'
 
 const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
+const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure):/i
 
 export function getSessionTrackingPath(sessionId: string): string {
   const safeId = sanitizeSessionId(sessionId)
@@ -79,6 +80,20 @@ export function listAllSessions(): InjectionSessionRecord[] {
   }
 }
 
+export function dedupeInjectedMemories(memories: InjectedMemoryEntry[]): InjectedMemoryEntry[] {
+  const byId = new Map<string, InjectedMemoryEntry>()
+
+  for (const entry of memories) {
+    if (!entry.id) continue
+    const existing = byId.get(entry.id)
+    if (!existing || entry.injectedAt >= existing.injectedAt) {
+      byId.set(entry.id, entry)
+    }
+  }
+
+  return Array.from(byId.values())
+}
+
 export function removeSessionTracking(sessionId: string): void {
   const filePath = getSessionTrackingPath(sessionId)
   if (!fs.existsSync(filePath)) return
@@ -121,11 +136,13 @@ function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
     const id = asString(record.id)
     const snippet = asString(record.snippet)
     const injectedAt = asNumber(record.injectedAt)
-    const prompt = asString(record.prompt)
     if (!id || !snippet || injectedAt === null) continue
+    const prompt = asString(record.prompt)
+    const type = asRecordType(record.type) ?? parseSnippetType(snippet)
 
     const entry: InjectedMemoryEntry = { id, snippet, injectedAt }
     if (prompt) entry.prompt = prompt
+    if (type) entry.type = type
 
     // Parse retrieval trigger metadata
     const similarity = asFloat(record.similarity)
@@ -143,6 +160,13 @@ function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+function asRecordType(value: unknown): RecordType | undefined {
+  if (value === 'command' || value === 'error' || value === 'discovery' || value === 'procedure') {
+    return value
+  }
+  return undefined
 }
 
 function asNumber(value: unknown): number | null {
@@ -170,4 +194,11 @@ function asBoolean(value: unknown): boolean | null {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function parseSnippetType(snippet: string): RecordType | null {
+  const match = snippet.match(SNIPPET_TYPE_REGEX)
+  if (!match) return null
+  const type = match[1].toLowerCase()
+  return asRecordType(type) ?? null
 }

@@ -119,6 +119,7 @@ export interface MemoryStats {
 export interface InjectedMemoryEntry {
   id: string
   snippet: string
+  type?: RecordType
   injectedAt: number
   prompt?: string
   stats?: MemoryStats | null
@@ -149,6 +150,17 @@ export interface MaintenanceAction {
   snippet: string
   reason: string
   details?: Record<string, unknown>
+}
+
+export interface MaintenanceOperationInfo {
+  key: string
+  label: string
+  description: string
+  allowExecute: boolean
+}
+
+export interface MaintenanceOperationsResponse {
+  operations: MaintenanceOperationInfo[]
 }
 
 export interface OperationResult {
@@ -228,6 +240,10 @@ export function previewContext(payload: { prompt: string; cwd?: string }): Promi
 
 export function fetchSessions(): Promise<SessionsResponse> {
   return request('/sessions')
+}
+
+export function fetchMaintenanceOperations(): Promise<MaintenanceOperationsResponse> {
+  return request('/maintenance/operations')
 }
 
 export function runMaintenance(operation: string, dryRun: boolean): Promise<OperationResult> {

@@ -9,7 +9,7 @@ import { homedir } from 'os'
 import { initMilvus, incrementRecordCounters } from '../lib/milvus.js'
 import { rateInjectedMemories } from '../lib/extract.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
-import { loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
+import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry } from '../lib/types.js'
 import { handlePostSession } from './post-session.js'
@@ -184,20 +184,6 @@ async function processUsefulnessRating(
       removeSessionTracking(payload.session_id)
     }
   }
-}
-
-function dedupeInjectedMemories(memories: InjectedMemoryEntry[]): InjectedMemoryEntry[] {
-  const byId = new Map<string, InjectedMemoryEntry>()
-
-  for (const entry of memories) {
-    if (!entry.id) continue
-    const existing = byId.get(entry.id)
-    if (!existing || entry.injectedAt >= existing.injectedAt) {
-      byId.set(entry.id, entry)
-    }
-  }
-
-  return Array.from(byId.values())
 }
 
 main()
