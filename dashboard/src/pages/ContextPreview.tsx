@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Play } from 'lucide-react'
 import { PageHeader } from '@/App'
+import MemoryDetail from '@/components/MemoryDetail'
 import { previewContext, type MemoryRecord, type PreviewResponse } from '@/lib/api'
 
 const TYPE_COLORS: Record<string, string> = {
@@ -45,6 +46,7 @@ export default function ContextPreview() {
   const [result, setResult] = useState<PreviewResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<MemoryRecord | null>(null)
 
   const handlePreview = async () => {
     const trimmed = prompt.trim()
@@ -169,9 +171,10 @@ export default function ContextPreview() {
               ) : (
                 <div className="space-y-2">
                   {result.results.map(match => (
-                    <div
+                    <button
                       key={match.record.id}
-                      className="p-3 rounded-md bg-secondary/50 text-sm"
+                      onClick={() => setSelected(match.record)}
+                      className="w-full text-left p-3 rounded-md bg-secondary/50 text-sm hover:bg-secondary transition-base"
                     >
                       <div className="flex items-center gap-2 mb-1">
                         <span
@@ -183,7 +186,7 @@ export default function ContextPreview() {
                         </span>
                       </div>
                       <div className="truncate">{getSummary(match.record)}</div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -214,7 +217,11 @@ export default function ContextPreview() {
                 <h3 className="text-sm font-medium mb-4">Injected memories</h3>
                 <div className="space-y-2">
                   {result.injectedRecords.map(record => (
-                    <div key={record.id} className="flex items-start gap-2 text-sm">
+                    <button
+                      key={record.id}
+                      onClick={() => setSelected(record)}
+                      className="w-full text-left flex items-start gap-2 text-sm p-2 -mx-2 rounded hover:bg-secondary/50 transition-base"
+                    >
                       <span
                         className="w-2 h-2 rounded-full mt-1.5 shrink-0"
                         style={{ backgroundColor: TYPE_COLORS[record.type] }}
@@ -225,7 +232,7 @@ export default function ContextPreview() {
                           {record.project ?? '—'} · {record.domain ?? '—'}
                         </div>
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -233,6 +240,8 @@ export default function ContextPreview() {
           </div>
         </div>
       )}
+
+      <MemoryDetail record={selected} onClose={() => setSelected(null)} />
     </div>
   )
 }

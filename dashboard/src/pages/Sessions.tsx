@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { PageHeader } from '@/App'
-import { fetchSessions, type SessionRecord, type RecordType, type MemoryStats } from '@/lib/api'
+import MemoryDetail from '@/components/MemoryDetail'
+import { fetchMemory, fetchSessions, type MemoryRecord, type SessionRecord, type RecordType, type MemoryStats } from '@/lib/api'
 
 const TYPE_COLORS: Record<string, string> = {
   command: '#2dd4bf',
@@ -95,6 +96,21 @@ export default function Sessions() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [selected, setSelected] = useState<MemoryRecord | null>(null)
+  const [loadingMemory, setLoadingMemory] = useState<string | null>(null)
+
+  const handleMemoryClick = async (memoryId: string) => {
+    if (loadingMemory) return
+    setLoadingMemory(memoryId)
+    try {
+      const record = await fetchMemory(memoryId)
+      setSelected(record)
+    } catch {
+      // Silently fail - memory might have been deleted
+    } finally {
+      setLoadingMemory(null)
+    }
+  }
 
   async function loadSessions() {
     try {
@@ -188,53 +204,60 @@ export default function Sessions() {
                   </div>
                 </button>
 
-                {/* Expanded content */}
-                {isOpen && (
-                  <div className="px-4 pb-4 pt-2 border-t border-border/50 space-y-4">
-                    {groupByPrompt(memories).map((group, gi) => (
-                      <div key={gi}>
-                        <div className="flex items-start gap-2 mb-2">
-                          <span className="text-2xs text-muted-foreground shrink-0">Trigger:</span>
-                          <span className="text-xs text-muted-foreground italic truncate" title={group.prompt}>
-                            {truncatePrompt(group.prompt)}
-                          </span>
-                          <span className="text-2xs text-muted-foreground shrink-0 ml-auto">
-                            {formatRelative(group.injectedAt)}
-                          </span>
-                        </div>
-                        <div className="space-y-1 pl-3 border-l border-border">
-                          {group.memories.map((memory, mi) => {
-                            const type = parseSnippetType(memory.snippet)
-                            const title = parseSnippetTitle(memory.snippet)
+                {/* Expanded content with accordion animation */}
+                <div className={`accordion-content ${isOpen ? 'open' : ''}`}>
+                  <div className="accordion-inner">
+                    <div className="px-4 pb-4 pt-2 border-t border-border/50 space-y-4">
+                      {groupByPrompt(memories).map((group, gi) => (
+                        <div key={gi}>
+                          <div className="flex items-start gap-2 mb-2">
+                            <span className="text-2xs text-muted-foreground shrink-0">Trigger:</span>
+                            <span className="text-xs text-muted-foreground italic truncate" title={group.prompt}>
+                              {truncatePrompt(group.prompt)}
+                            </span>
+                            <span className="text-2xs text-muted-foreground shrink-0 ml-auto">
+                              {formatRelative(group.injectedAt)}
+                            </span>
+                          </div>
+                          <div className="space-y-1 pl-3 border-l border-border">
+                            {group.memories.map((memory, mi) => {
+                              const type = parseSnippetType(memory.snippet)
+                              const title = parseSnippetTitle(memory.snippet)
+                              const isLoading = loadingMemory === memory.id
 
-                            return (
-                              <div
-                                key={`${memory.id}-${mi}`}
-                                className="flex items-center gap-2 py-1.5 px-2 rounded bg-secondary/30 text-sm"
-                              >
-                                {type && (
-                                  <span
-                                    className="w-2 h-2 rounded-full shrink-0"
-                                    style={{ backgroundColor: TYPE_COLORS[type] }}
-                                  />
-                                )}
-                                <span className="flex-1 truncate">{title}</span>
-                                <span className={`text-xs font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
-                                  {formatUsageRatio(memory.stats)}
-                                </span>
-                              </div>
-                            )
-                          })}
+                              return (
+                                <button
+                                  key={`${memory.id}-${mi}`}
+                                  onClick={() => handleMemoryClick(memory.id)}
+                                  disabled={isLoading}
+                                  className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded bg-secondary/30 text-sm hover:bg-secondary transition-base disabled:opacity-50"
+                                >
+                                  {type && (
+                                    <span
+                                      className="w-2 h-2 rounded-full shrink-0"
+                                      style={{ backgroundColor: TYPE_COLORS[type] }}
+                                    />
+                                  )}
+                                  <span className="flex-1 truncate">{title}</span>
+                                  <span className={`text-xs font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
+                                    {formatUsageRatio(memory.stats)}
+                                  </span>
+                                </button>
+                              )
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                )}
+                </div>
               </div>
             )
           })}
         </div>
       )}
+
+      <MemoryDetail record={selected} onClose={() => setSelected(null)} />
     </div>
   )
 }

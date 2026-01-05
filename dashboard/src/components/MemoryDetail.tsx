@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { MemoryRecord } from '@/lib/api'
 
@@ -6,6 +6,8 @@ interface MemoryDetailProps {
   record: MemoryRecord | null
   onClose: () => void
 }
+
+const ANIMATION_DURATION = 200
 
 const TYPE_COLORS: Record<string, string> = {
   command: '#2dd4bf',
@@ -137,7 +139,21 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
 export default function MemoryDetail({ record, onClose }: MemoryDetailProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+  const [isOpen, setIsOpen] = useState(false)
+  const [isVisible, setIsVisible] = useState(false)
 
+  // Handle open animation
+  useEffect(() => {
+    if (record) {
+      setIsVisible(true)
+      // Trigger animation on next frame
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setIsOpen(true))
+      })
+    }
+  }, [record])
+
+  // Handle keyboard and focus
   useEffect(() => {
     if (!record) return
 
@@ -145,7 +161,7 @@ export default function MemoryDetail({ record, onClose }: MemoryDetailProps) {
     closeRef.current?.focus()
 
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') handleClose()
     }
 
     window.addEventListener('keydown', handleKey)
@@ -153,9 +169,17 @@ export default function MemoryDetail({ record, onClose }: MemoryDetailProps) {
       window.removeEventListener('keydown', handleKey)
       prevFocus?.focus()
     }
-  }, [record, onClose])
+  }, [record])
 
-  if (!record) return null
+  const handleClose = () => {
+    setIsOpen(false)
+    setTimeout(() => {
+      setIsVisible(false)
+      onClose()
+    }, ANIMATION_DURATION)
+  }
+
+  if (!isVisible || !record) return null
 
   const retrievals = record.retrievalCount ?? 0
   const usage = record.usageCount ?? 0
@@ -164,14 +188,17 @@ export default function MemoryDetail({ record, onClose }: MemoryDetailProps) {
   return (
     <div className="fixed inset-0 z-50">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div
+        className={`absolute inset-0 bg-black/60 panel-backdrop ${isOpen ? 'open' : ''}`}
+        onClick={handleClose}
+      />
 
       {/* Panel */}
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        className="absolute inset-y-0 right-0 w-full max-w-2xl bg-background border-l border-border flex flex-col"
+        className={`absolute inset-y-0 right-0 w-full max-w-2xl bg-background border-l border-border flex flex-col panel-slide ${isOpen ? 'open' : ''}`}
       >
         {/* Header */}
         <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-border">
@@ -191,7 +218,7 @@ export default function MemoryDetail({ record, onClose }: MemoryDetailProps) {
           </div>
           <button
             ref={closeRef}
-            onClick={onClose}
+            onClick={handleClose}
             className="p-2 rounded-md hover:bg-secondary transition-base"
           >
             <X className="w-4 h-4" />
