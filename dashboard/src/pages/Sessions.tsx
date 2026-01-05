@@ -46,12 +46,12 @@ function isSessionActive(session: SessionRecord): boolean {
 }
 
 function dedupeMemories(memories: SessionRecord['memories']) {
-  const seen = new Set<string>()
-  return memories.filter(m => {
-    if (seen.has(m.id)) return false
-    seen.add(m.id)
-    return true
-  })
+  // Keep the LATEST occurrence of each memory (has most recent metadata)
+  const byId = new Map<string, SessionRecord['memories'][0]>()
+  for (const m of memories) {
+    byId.set(m.id, m)
+  }
+  return Array.from(byId.values())
 }
 
 function formatUsageRatio(stats: MemoryStats | null | undefined): string {
