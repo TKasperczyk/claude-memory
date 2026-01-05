@@ -20,41 +20,18 @@ Prioritized list of features to enhance continuous learning capabilities.
 
 ---
 
-### 2. Retrieval Diversity (MMR)
+### 2. Retrieval Diversity (MMR) ✅ IMPLEMENTED
 
 **Problem**: If prompt matches 3 similar error memories, you inject redundant context wasting tokens.
 
 **Solution**: Use Maximal Marginal Relevance - after picking top result, penalize subsequent results that are similar to already-selected ones.
 
-**Implementation**:
-```typescript
-// After hybrid search returns candidates
-function applyMMR(candidates: HybridSearchResult[], lambda: number = 0.7): HybridSearchResult[] {
-  const selected: HybridSearchResult[] = []
-  const remaining = [...candidates]
+**Implementation**: `applyMMR()` and `cosineSimilarity()` in `pre-prompt.ts`, applied after `searchMemories()`.
 
-  while (remaining.length > 0 && selected.length < limit) {
-    let bestIdx = 0
-    let bestScore = -Infinity
-
-    for (let i = 0; i < remaining.length; i++) {
-      const relevance = remaining[i].score
-      const maxSimilarity = selected.length === 0 ? 0
-        : Math.max(...selected.map(s => cosineSimilarity(s.record.embedding, remaining[i].record.embedding)))
-      const mmrScore = lambda * relevance - (1 - lambda) * maxSimilarity
-
-      if (mmrScore > bestScore) {
-        bestScore = mmrScore
-        bestIdx = i
-      }
-    }
-
-    selected.push(remaining.splice(bestIdx, 1)[0])
-  }
-
-  return selected
-}
-```
+**Key details**:
+- Lambda = 0.7 (70% relevance, 30% diversity penalty)
+- `hybridSearch` supports `includeEmbeddings: true` to return vectors
+- Records without embeddings gracefully degrade (appended at end)
 
 ---
 

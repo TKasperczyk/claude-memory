@@ -98,6 +98,7 @@ export interface HybridSearchParams {
   minScore?: number
   vectorLimit?: number
   keywordLimit?: number
+  includeEmbeddings?: boolean
 }
 
 export interface HybridSearchResult {

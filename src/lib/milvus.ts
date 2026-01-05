@@ -442,6 +442,10 @@ export async function hybridSearch(
       excludeDeprecated: params.excludeDeprecated
     })
 
+    const outputFields = params.includeEmbeddings
+      ? [...OUTPUT_FIELDS, 'embedding']
+      : OUTPUT_FIELDS
+
     const combined = new Map<string, { record: MemoryRecord; similarity: number; keywordMatch: boolean }>()
 
     if (trimmedQuery.length > 0 && keywordWeight > 0) {
@@ -449,7 +453,7 @@ export async function hybridSearch(
       const keywordResults = await client!.query({
         collection_name: config.milvus.collection,
         filter: keywordFilter,
-        output_fields: OUTPUT_FIELDS,
+        output_fields: outputFields,
         limit: keywordLimit
       })
 
@@ -468,7 +472,7 @@ export async function hybridSearch(
         data: [vector],
         limit: vectorLimit,
         filter: baseFilter,
-        output_fields: OUTPUT_FIELDS,
+        output_fields: outputFields,
         params: { nprobe: SEARCH_NPROBE }
       })
 

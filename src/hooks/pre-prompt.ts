@@ -14,6 +14,7 @@ const MAX_KEYWORD_ERRORS = 2
 const MAX_KEYWORD_COMMANDS = 2
 const PREPROMPT_TIMEOUT_MS = 4000
 const MAX_SEMANTIC_QUERY_CHARS = 1200
+const MMR_LAMBDA = 0.7  // Balance: 1.0 = pure relevance, 0.0 = pure diversity
 
 export interface PrePromptResult {
   context: string | null
@@ -95,6 +96,15 @@ async function searchMemories(
     results = await searchWithScope(cleanPrompt, signals, config, {}, embedding)
   }
 
+  // Apply MMR for diversity if we have multiple results with embeddings
+  if (results.length > 1) {
+    const diverseResults = applyMMR(results, MMR_LAMBDA, config.injection.maxRecords)
+    if (diverseResults.length !== results.length) {
+      console.error(`[claude-memory] MMR reranked ${results.length} -> ${diverseResults.length} results`)
+    }
+    return diverseResults
+  }
+
   return results
 }
 
@@ -130,7 +140,8 @@ async function searchWithScope(
       domain: scope.domain,
       vectorWeight: 0,
       keywordWeight: 1,
-      keywordLimit: limit
+      keywordLimit: limit,
+      includeEmbeddings: true
     }, config)
     addResults(keywordResults)
   }
@@ -143,12 +154,90 @@ async function searchWithScope(
       project: scope.project,
       domain: scope.domain,
       vectorWeight: 1,
-      keywordWeight: 0
+      keywordWeight: 0,
+      includeEmbeddings: true
     }, config)
     addResults(semanticResults)
   }
 
   return results
+}
+
+/**
+ * Apply Maximal Marginal Relevance to diversify results.
+ * Penalizes candidates that are too similar to already-selected items.
+ */
+function applyMMR(
+  candidates: HybridSearchResult[],
+  lambda: number,
+  limit: number
+): HybridSearchResult[] {
+  if (candidates.length <= 1) return candidates
+
+  // Filter to candidates with embeddings
+  const withEmbeddings = candidates.filter(c => c.record.embedding && c.record.embedding.length > 0)
+  const withoutEmbeddings = candidates.filter(c => !c.record.embedding || c.record.embedding.length === 0)
+
+  // If no embeddings available, return original order
+  if (withEmbeddings.length === 0) return candidates
+
+  const selected: HybridSearchResult[] = []
+  const remaining = [...withEmbeddings]
+
+  // First pick is always highest relevance
+  remaining.sort((a, b) => b.score - a.score)
+  selected.push(remaining.shift()!)
+
+  while (remaining.length > 0 && selected.length < limit) {
+    let bestIdx = 0
+    let bestMMR = -Infinity
+
+    for (let i = 0; i < remaining.length; i++) {
+      const relevance = remaining[i].score
+
+      // Max similarity to any already-selected item
+      const maxSim = Math.max(...selected.map(s =>
+        cosineSimilarity(s.record.embedding!, remaining[i].record.embedding!)
+      ))
+
+      // MMR = λ * relevance - (1-λ) * maxSimilarity
+      const mmr = lambda * relevance - (1 - lambda) * maxSim
+
+      if (mmr > bestMMR) {
+        bestMMR = mmr
+        bestIdx = i
+      }
+    }
+
+    selected.push(remaining.splice(bestIdx, 1)[0])
+  }
+
+  // Append any records without embeddings at the end (they couldn't be compared)
+  for (const item of withoutEmbeddings) {
+    if (selected.length >= limit) break
+    selected.push(item)
+  }
+
+  return selected.slice(0, limit)
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0
+
+  let dotProduct = 0
+  let normA = 0
+  let normB = 0
+
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i]
+    normA += a[i] * a[i]
+    normB += b[i] * b[i]
+  }
+
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB)
+  if (denominator === 0) return 0
+
+  return dotProduct / denominator
 }
 
 function buildKeywordQueries(signals: ContextSignals): string[] {
