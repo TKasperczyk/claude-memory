@@ -31,7 +31,8 @@ export interface PrePromptResult {
  */
 export async function handlePrePrompt(
   input: UserPromptSubmitInput,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  options: { projectRoot?: string } = {}
 ): Promise<PrePromptResult> {
   if (!input.prompt || !input.prompt.trim()) {
     return {
@@ -43,7 +44,7 @@ export async function handlePrePrompt(
     }
   }
 
-  const signals = extractSignals(input.prompt, input.cwd)
+  const signals = extractSignals(input.prompt, input.cwd, options.projectRoot)
 
   const result = await runWithTimeout(async (signal) => {
     await initMilvus(config)
@@ -142,6 +143,7 @@ async function searchWithScope(
       limit,
       project: scope.project,
       domain: scope.domain,
+      excludeDeprecated: true,
       vectorWeight: 0,
       keywordWeight: 1,
       keywordLimit: limit,
@@ -163,6 +165,7 @@ async function searchWithScope(
       limit,
       project: scope.project,
       domain: scope.domain,
+      excludeDeprecated: true,
       vectorWeight: 1,
       keywordWeight: 0,
       includeEmbeddings: true,
@@ -300,7 +303,12 @@ async function runWithTimeout<T>(
     })
     const taskPromise = task(controller.signal)
       .then(value => ({ completed: true as const, value }))
-      .catch(error => ({ completed: true as const, error }))
+      .catch(error => {
+        if (controller.signal.aborted) {
+          return { completed: false as const }
+        }
+        return { completed: true as const, error }
+      })
     const result = await Promise.race([taskPromise, timeoutPromise])
     if (result.completed && 'error' in result) throw result.error
     return result
@@ -350,10 +358,11 @@ async function main(): Promise<void> {
     return
   }
 
-  const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
+  const projectRoot = findGitRoot(payload.cwd)
+  const configRoot = projectRoot ?? payload.cwd
   const config = loadConfig(configRoot)
 
-  const result = await handlePrePrompt(payload, config)
+  const result = await handlePrePrompt(payload, config, { projectRoot })
 
   if (result.timedOut) {
     console.error(`[claude-memory] Pre-prompt timed out after ${PREPROMPT_TIMEOUT_MS}ms; skipping injection.`)
@@ -370,14 +379,18 @@ async function main(): Promise<void> {
     return
   }
 
+  let injected = false
   try {
     await writeStdout(result.context)
+    injected = true
   } catch (error) {
     console.error('[claude-memory] Failed to write injected context:', error)
   }
 
-  trackInjectedMemories(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt)
-  scheduleHardExit()
+  if (injected) {
+    trackInjectedMemories(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt)
+    scheduleHardExit()
+  }
 }
 
 function trackInjectedMemories(

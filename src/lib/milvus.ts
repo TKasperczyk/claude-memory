@@ -172,6 +172,7 @@ export async function incrementRecordCounters(
     }
 
     if (Object.keys(updates).length === 0) return true
+    updates.lastUsed = Date.now()
 
     const merged = mergeRecords(existing, updates)
     merged.id = id
@@ -575,7 +576,8 @@ export async function findSimilar(
       project: resolveProject(record),
       domain: resolveDomain(record),
       type: record.type,
-      excludeId: record.id
+      excludeId: record.id,
+      excludeDeprecated: true
     })
 
     const searchResults = await client!.search({
@@ -897,7 +899,7 @@ function resolveDomain(record: MemoryRecord): string | undefined {
   return undefined
 }
 
-function buildEmbeddingInput(
+export function buildEmbeddingInput(
   record: MemoryRecord,
   exactTextRaw?: string,
   content?: string

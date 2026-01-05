@@ -23,6 +23,13 @@ const MAX_INTENT_CHARS = 240
 const MAX_TRUNCATED_OUTPUT_CHARS = 6000
 const MAX_TOOL_INPUT_CHARS = 4000
 const USEFULNESS_MAX_TOKENS = 800
+const DOMAIN_EXAMPLES_TTL_MS = 5 * 60 * 1000
+
+let cachedDomainExamples: {
+  fetchedAt: number
+  limit: number
+  examples: DomainExample[]
+} | null = null
 
 const SYSTEM_PROMPT_BASE = `You extract durable technical knowledge from Claude Code transcripts.
 
@@ -224,7 +231,7 @@ export async function extractRecords(
     }
 
     // Fetch existing domains to guide consistent domain assignment
-    const domainExamples = await getDomainExamples(2, config)
+    const domainExamples = await getCachedDomainExamples(2, config)
     const systemPrompt = buildSystemPrompt(domainExamples)
 
     const userPrompt = buildUserPrompt(transcript, resolvedContext)
@@ -249,6 +256,19 @@ export async function extractRecords(
     console.error('[claude-memory] extractRecords failed:', error)
     return []
   }
+}
+
+async function getCachedDomainExamples(limit: number, config: Config): Promise<DomainExample[]> {
+  const now = Date.now()
+  if (cachedDomainExamples
+    && cachedDomainExamples.limit === limit
+    && now - cachedDomainExamples.fetchedAt < DOMAIN_EXAMPLES_TTL_MS) {
+    return cachedDomainExamples.examples
+  }
+
+  const examples = await getDomainExamples(limit, config)
+  cachedDomainExamples = { fetchedAt: now, limit, examples }
+  return examples
 }
 
 export async function rateInjectedMemories(

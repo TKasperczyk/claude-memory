@@ -52,18 +52,18 @@ const STACK_CONT_REGEXES = [
 const ERROR_LINE_REGEX = /(error|exception|traceback|panic|fatal|segmentation fault|stack trace|assertion failed|undefined reference|permission denied|no such file or directory|not found|ERR!)/i
 
 
-export function extractSignals(prompt: string, cwd: string): ContextSignals {
+export function extractSignals(prompt: string, cwd: string, projectRoot?: string): ContextSignals {
   const cleanPrompt = stripNoiseWords(prompt)
-  const projectRoot = findGitRoot(cwd)
-  const projectName = projectRoot ? path.basename(projectRoot) : path.basename(cwd)
-  const domain = inferDomain(projectRoot ?? cwd)
+  const resolvedProjectRoot = projectRoot ?? findGitRoot(cwd)
+  const projectName = resolvedProjectRoot ? path.basename(resolvedProjectRoot) : path.basename(cwd)
+  const domain = inferDomain(resolvedProjectRoot ?? cwd)
   const errors = extractErrorSignals(cleanPrompt)
   const commands = extractCommandSignals(cleanPrompt)
 
   return {
     errors,
     commands,
-    projectRoot,
+    projectRoot: resolvedProjectRoot,
     projectName,
     domain
   }
@@ -359,7 +359,8 @@ export function findGitRoot(cwd: string): string | undefined {
     const output = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd,
       stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf-8'
+      encoding: 'utf-8',
+      timeout: 500
     }).trim()
     return output || undefined
   } catch {

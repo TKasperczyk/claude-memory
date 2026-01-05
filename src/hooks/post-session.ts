@@ -12,7 +12,8 @@ import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { extractRecords } from '../lib/extract.js'
 import { findGitRoot } from '../lib/context.js'
-import { initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
+import { embedBatch } from '../lib/embed.js'
+import { buildEmbeddingInput, initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord, type ExtractionHookInput } from '../lib/types.js'
 
@@ -70,6 +71,8 @@ export async function handlePostSession(
     return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'no_records', transcript }
   }
 
+  await precomputeEmbeddings(records, config)
+
   let inserted = 0
   let updated = 0
   let skipped = 0
@@ -102,6 +105,31 @@ export async function handlePostSession(
   }
 
   return { inserted, updated, skipped, failed, records, transcript }
+}
+
+async function precomputeEmbeddings(records: MemoryRecord[], config: Config): Promise<void> {
+  const inputs: string[] = []
+  const targets: MemoryRecord[] = []
+
+  for (const record of records) {
+    if (record.embedding && record.embedding.length > 0) continue
+    inputs.push(buildEmbeddingInput(record))
+    targets.push(record)
+  }
+
+  if (inputs.length === 0) return
+
+  try {
+    const embeddings = await embedBatch(inputs, config)
+    if (embeddings.length !== targets.length) {
+      throw new Error(`Embedding batch size mismatch: expected ${targets.length}, got ${embeddings.length}`)
+    }
+    embeddings.forEach((embedding, index) => {
+      targets[index].embedding = embedding
+    })
+  } catch (error) {
+    console.error('[claude-memory] Failed to precompute embeddings:', error)
+  }
 }
 
 export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Partial<MemoryRecord> {
