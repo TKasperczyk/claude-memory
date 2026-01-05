@@ -14,6 +14,8 @@ const CONSOLIDATION_MAX_CLUSTER_SIZE = 8
 const TEXT_SIMILARITY_RATIO = 0.2
 const LOW_USAGE_MIN_RETRIEVALS = 5
 const LOW_USAGE_RATIO_THRESHOLD = 0.1
+const CONTRADICTION_SIMILARITY_THRESHOLD = 0.75
+const CONTRADICTION_SEARCH_LIMIT = 8
 
 export interface ValidityResult {
   valid: boolean
@@ -28,6 +30,12 @@ export interface ConsolidationResult {
   retrievalCount: number
   usageCount: number
   lastUsed: number
+}
+
+export interface ContradictionPair {
+  newer: MemoryRecord
+  older: MemoryRecord
+  similarity: number
 }
 
 export async function findStaleRecords(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
@@ -212,6 +220,111 @@ export async function consolidateCluster(
     usageCount: totals.usage,
     lastUsed: totals.lastUsed
   }
+}
+
+/**
+ * Find contradiction pairs: semantically similar records of same type/project
+ * but with different content (newer likely supersedes older).
+ *
+ * Unlike consolidation which finds near-duplicates (high text similarity),
+ * this finds records that cover the same topic but say different things.
+ */
+export async function findContradictionPairs(
+  config: Config = DEFAULT_CONFIG
+): Promise<ContradictionPair[]> {
+  const pairs: ContradictionPair[] = []
+  const processedIds = new Set<string>()
+  let offset = 0
+
+  while (true) {
+    const batch = await queryRecords(
+      {
+        filter: 'deprecated == false',
+        limit: QUERY_PAGE_SIZE,
+        offset,
+        includeEmbeddings: true
+      },
+      config
+    )
+
+    if (batch.length === 0) break
+
+    for (const record of batch) {
+      if (processedIds.has(record.id)) continue
+      if (!isValidEmbedding(record.embedding)) continue
+
+      const recordText = normalizeExactText(buildExactText(record))
+      if (!recordText) continue
+
+      // Find semantically similar records of same type/project
+      const matches = await vectorSearchSimilar(
+        record.embedding,
+        {
+          filter: buildContradictionFilter(record),
+          limit: CONTRADICTION_SEARCH_LIMIT,
+          similarityThreshold: CONTRADICTION_SIMILARITY_THRESHOLD
+        },
+        config
+      )
+
+      for (const match of matches) {
+        const candidate = match.record
+        if (processedIds.has(candidate.id)) continue
+        if (candidate.deprecated) continue
+
+        const candidateText = normalizeExactText(buildExactText(candidate))
+        if (!candidateText) continue
+
+        // Skip if texts are too similar (that's consolidation territory)
+        if (isExactTextSimilar(recordText, candidateText)) continue
+
+        // Determine which is newer
+        const recordTime = record.timestamp ?? 0
+        const candidateTime = candidate.timestamp ?? 0
+
+        if (recordTime > candidateTime) {
+          pairs.push({ newer: record, older: candidate, similarity: match.similarity })
+        } else if (candidateTime > recordTime) {
+          pairs.push({ newer: candidate, older: record, similarity: match.similarity })
+        }
+        // If same timestamp, skip (ambiguous)
+
+        // Mark the older one as processed to avoid duplicate pairs
+        const olderId = recordTime > candidateTime ? candidate.id : record.id
+        processedIds.add(olderId)
+      }
+
+      processedIds.add(record.id)
+    }
+
+    if (batch.length < QUERY_PAGE_SIZE) break
+    offset += batch.length
+  }
+
+  return pairs
+}
+
+/**
+ * Resolve a contradiction by deprecating the older record.
+ * The newer record is assumed to supersede it.
+ */
+export async function resolveContradiction(
+  pair: ContradictionPair,
+  config: Config = DEFAULT_CONFIG
+): Promise<boolean> {
+  return markDeprecated(pair.older.id, config)
+}
+
+function buildContradictionFilter(record: MemoryRecord): string {
+  const project = record.project ?? ''
+  const domain = record.domain ?? ''
+  return [
+    'deprecated == false',
+    `type == "${escapeFilterValue(record.type)}"`,
+    `project == "${escapeFilterValue(project)}"`,
+    `domain == "${escapeFilterValue(domain)}"`,
+    `id != "${escapeFilterValue(record.id)}"`
+  ].join(' && ')
 }
 
 async function fetchRecords(

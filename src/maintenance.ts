@@ -6,10 +6,12 @@ import { initMilvus } from './lib/milvus.js'
 import {
   checkValidity,
   consolidateCluster,
+  findContradictionPairs,
   findLowUsageRecords,
   findSimilarClusters,
   findStaleRecords,
-  markDeprecated
+  markDeprecated,
+  resolveContradiction
 } from './lib/maintenance.js'
 import { writeSuggestions } from './lib/promotions.js'
 import { DEFAULT_CONFIG, type Config } from './lib/types.js'
@@ -25,6 +27,7 @@ async function main(): Promise<void> {
   await runStaleCheck(config)
   await runLowUsageCheck(config)
   await runConsolidation(config)
+  await runContradictionCheck(config)
   await runPromotions(config)
 
   console.error('[claude-memory] Maintenance complete.')
@@ -110,6 +113,56 @@ async function runConsolidation(config: Config): Promise<void> {
   }
 
   console.error(`[claude-memory] Consolidation summary: clusters=${clustersFound} merged=${clustersMerged} deprecated=${deprecated}`)
+}
+
+async function runContradictionCheck(config: Config): Promise<void> {
+  let pairsFound = 0
+  let deprecated = 0
+
+  try {
+    const pairs = await findContradictionPairs(config)
+    pairsFound = pairs.length
+    console.error(`[claude-memory] Contradiction pairs: ${pairsFound}`)
+
+    for (const pair of pairs) {
+      try {
+        const updated = await resolveContradiction(pair, config)
+        if (updated) {
+          deprecated += 1
+          const newerSnippet = truncateForLog(buildRecordSnippet(pair.newer))
+          const olderSnippet = truncateForLog(buildRecordSnippet(pair.older))
+          console.error(`[claude-memory] Contradiction resolved: kept="${newerSnippet}" deprecated="${olderSnippet}" (sim=${pair.similarity.toFixed(2)})`)
+        }
+      } catch (error) {
+        console.error(`[claude-memory] Failed to resolve contradiction:`, error)
+      }
+    }
+  } catch (error) {
+    console.error('[claude-memory] Failed to find contradiction pairs:', error)
+  }
+
+  console.error(`[claude-memory] Contradiction check summary: pairs=${pairsFound} deprecated=${deprecated}`)
+}
+
+function buildRecordSnippet(record: { type: string; command?: string; errorText?: string; what?: string; name?: string }): string {
+  switch (record.type) {
+    case 'command':
+      return record.command ?? 'unknown command'
+    case 'error':
+      return record.errorText ?? 'unknown error'
+    case 'discovery':
+      return record.what ?? 'unknown discovery'
+    case 'procedure':
+      return record.name ?? 'unknown procedure'
+    default:
+      return `${record.type} record`
+  }
+}
+
+function truncateForLog(value: string, maxLength: number = 60): string {
+  const cleaned = value.replace(/\s+/g, ' ').trim()
+  if (cleaned.length <= maxLength) return cleaned
+  return cleaned.slice(0, maxLength - 3) + '...'
 }
 
 async function runPromotions(config: Config): Promise<void> {
