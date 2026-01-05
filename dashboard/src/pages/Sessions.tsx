@@ -11,6 +11,8 @@ const TYPE_COLORS: Record<string, string> = {
   procedure: '#a78bfa',
 }
 
+const TYPE_ORDER: RecordType[] = ['error', 'command', 'discovery', 'procedure']
+
 function formatRelative(ts: number): string {
   const diff = Date.now() - ts
   const mins = Math.floor(diff / 60000)
@@ -30,7 +32,7 @@ function parseSnippetType(snippet: string): RecordType | null {
 function parseSnippetTitle(snippet: string): string {
   const withoutType = snippet.replace(/^(command|error|discovery|procedure):\s*/, '')
   const mainPart = withoutType.split('|')[0].trim()
-  return mainPart.length > 60 ? mainPart.slice(0, 57) + '…' : mainPart
+  return mainPart.length > 80 ? mainPart.slice(0, 77) + '…' : mainPart
 }
 
 function extractProjectName(cwd: string | undefined): string {
@@ -65,30 +67,26 @@ function getUsageColor(stats: MemoryStats | null | undefined): string {
   return 'text-red-400'
 }
 
-interface PromptGroup {
-  prompt: string
-  injectedAt: number
+interface TypeGroup {
+  type: RecordType
   memories: SessionRecord['memories']
 }
 
-function groupByPrompt(memories: SessionRecord['memories']): PromptGroup[] {
-  const groups: PromptGroup[] = []
-  let current: PromptGroup | null = null
+function groupByType(memories: SessionRecord['memories']): TypeGroup[] {
+  const groups: Map<RecordType, SessionRecord['memories']> = new Map()
 
   for (const m of memories) {
-    const prompt = m.prompt || '(unknown trigger)'
-    if (!current || current.prompt !== prompt) {
-      current = { prompt, injectedAt: m.injectedAt, memories: [] }
-      groups.push(current)
+    const type = parseSnippetType(m.snippet)
+    if (type) {
+      const existing = groups.get(type) || []
+      existing.push(m)
+      groups.set(type, existing)
     }
-    current.memories.push(m)
   }
 
-  return groups
-}
-
-function truncatePrompt(prompt: string, max = 100): string {
-  return prompt.length <= max ? prompt : prompt.slice(0, max - 1) + '…'
+  return TYPE_ORDER
+    .filter(t => groups.has(t))
+    .map(t => ({ type: t, memories: groups.get(t)! }))
 }
 
 export default function Sessions() {
@@ -165,6 +163,7 @@ export default function Sessions() {
             const active = isSessionActive(session)
             const isOpen = expanded === session.sessionId
             const memories = dedupeMemories(session.memories)
+            const typeGroups = groupByType(memories)
 
             return (
               <div
@@ -187,12 +186,7 @@ export default function Sessions() {
                   <span className={`w-2 h-2 rounded-full shrink-0 ${active ? 'bg-green-400' : 'bg-muted-foreground'}`} />
 
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium truncate">{extractProjectName(session.cwd)}</span>
-                      {active && (
-                        <span className="text-2xs text-green-400 font-medium">ACTIVE</span>
-                      )}
-                    </div>
+                    <span className="font-medium truncate block">{extractProjectName(session.cwd)}</span>
                     {session.cwd && (
                       <div className="text-xs text-muted-foreground truncate">{session.cwd}</div>
                     )}
@@ -204,24 +198,42 @@ export default function Sessions() {
                   </div>
                 </button>
 
-                {/* Expanded content with accordion animation */}
+                {/* Expanded content */}
                 <div className={`accordion-content ${isOpen ? 'open' : ''}`}>
                   <div className="accordion-inner">
-                    <div className="px-4 pb-4 pt-2 border-t border-border/50 space-y-4">
-                      {groupByPrompt(memories).map((group, gi) => (
-                        <div key={gi}>
-                          <div className="flex items-start gap-2 mb-2">
-                            <span className="text-2xs text-muted-foreground shrink-0">Trigger:</span>
-                            <span className="text-xs text-muted-foreground italic truncate" title={group.prompt}>
-                              {truncatePrompt(group.prompt)}
-                            </span>
-                            <span className="text-2xs text-muted-foreground shrink-0 ml-auto">
-                              {formatRelative(group.injectedAt)}
+                    <div className="p-3 pt-0 max-h-80 overflow-y-auto space-y-2">
+                      {typeGroups.map(group => (
+                        <div
+                          key={group.type}
+                          className="rounded-md bg-secondary/40 overflow-hidden"
+                        >
+                          {/* Type header */}
+                          <div
+                            className="px-3 py-1.5 flex items-center justify-between border-b"
+                            style={{
+                              backgroundColor: `${TYPE_COLORS[group.type]}10`,
+                              borderColor: `${TYPE_COLORS[group.type]}20`,
+                            }}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-1.5 h-1.5 rounded-full"
+                                style={{ backgroundColor: TYPE_COLORS[group.type] }}
+                              />
+                              <span
+                                className="text-xs font-medium capitalize"
+                                style={{ color: TYPE_COLORS[group.type] }}
+                              >
+                                {group.type}s
+                              </span>
+                            </div>
+                            <span className="text-xs text-muted-foreground tabular-nums">
+                              {group.memories.length}
                             </span>
                           </div>
-                          <div className="space-y-1 pl-3 border-l border-border">
+                          {/* Memory list */}
+                          <div className="p-1.5 space-y-0.5">
                             {group.memories.map((memory, mi) => {
-                              const type = parseSnippetType(memory.snippet)
                               const title = parseSnippetTitle(memory.snippet)
                               const isLoading = loadingMemory === memory.id
 
@@ -230,15 +242,9 @@ export default function Sessions() {
                                   key={`${memory.id}-${mi}`}
                                   onClick={() => handleMemoryClick(memory.id)}
                                   disabled={isLoading}
-                                  className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded bg-secondary/30 text-sm hover:bg-secondary transition-base disabled:opacity-50"
+                                  className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm hover:bg-background/60 transition-base disabled:opacity-50 group"
                                 >
-                                  {type && (
-                                    <span
-                                      className="w-2 h-2 rounded-full shrink-0"
-                                      style={{ backgroundColor: TYPE_COLORS[type] }}
-                                    />
-                                  )}
-                                  <span className="flex-1 truncate">{title}</span>
+                                  <span className="flex-1 truncate text-foreground/70 group-hover:text-foreground/90">{title}</span>
                                   <span className={`text-xs font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
                                     {formatUsageRatio(memory.stats)}
                                   </span>
