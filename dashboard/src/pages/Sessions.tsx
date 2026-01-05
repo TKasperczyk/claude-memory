@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { PageHeader } from '@/App'
-import MemoryDetail from '@/components/MemoryDetail'
+import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
 import { fetchMemory, fetchSessions, type MemoryRecord, type SessionRecord, type RecordType, type MemoryStats } from '@/lib/api'
 
 const TYPE_COLORS: Record<string, string> = {
@@ -126,14 +126,21 @@ export default function Sessions() {
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
+  const [retrievalContext, setRetrievalContext] = useState<RetrievalContext | null>(null)
   const [loadingMemory, setLoadingMemory] = useState<string | null>(null)
 
-  const handleMemoryClick = async (memoryId: string) => {
+  const handleMemoryClick = async (memory: SessionRecord['memories'][0]) => {
     if (loadingMemory) return
-    setLoadingMemory(memoryId)
+    setLoadingMemory(memory.id)
     try {
-      const record = await fetchMemory(memoryId)
+      const record = await fetchMemory(memory.id)
       setSelected(record)
+      setRetrievalContext({
+        prompt: memory.prompt,
+        similarity: memory.similarity,
+        keywordMatch: memory.keywordMatch,
+        score: memory.score
+      })
     } catch {
       // Silently fail - memory might have been deleted
     } finally {
@@ -272,7 +279,7 @@ export default function Sessions() {
                               return (
                                 <button
                                   key={`${memory.id}-${mi}`}
-                                  onClick={() => handleMemoryClick(memory.id)}
+                                  onClick={() => handleMemoryClick(memory)}
                                   disabled={isLoading}
                                   className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm hover:bg-background/60 transition-base disabled:opacity-50 group"
                                 >
@@ -303,7 +310,11 @@ export default function Sessions() {
         </div>
       )}
 
-      <MemoryDetail record={selected} onClose={() => setSelected(null)} />
+      <MemoryDetail
+        record={selected}
+        retrievalContext={retrievalContext}
+        onClose={() => { setSelected(null); setRetrievalContext(null) }}
+      />
     </div>
   )
 }

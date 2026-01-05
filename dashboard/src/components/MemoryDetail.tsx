@@ -2,8 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { MemoryRecord } from '@/lib/api'
 
+export interface RetrievalContext {
+  prompt?: string
+  similarity?: number
+  keywordMatch?: boolean
+  score?: number
+}
+
 interface MemoryDetailProps {
   record: MemoryRecord | null
+  retrievalContext?: RetrievalContext | null
   onClose: () => void
 }
 
@@ -136,7 +144,7 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
   }
 }
 
-export default function MemoryDetail({ record, onClose }: MemoryDetailProps) {
+export default function MemoryDetail({ record, retrievalContext, onClose }: MemoryDetailProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const [isOpen, setIsOpen] = useState(false)
@@ -259,6 +267,45 @@ export default function MemoryDetail({ record, onClose }: MemoryDetailProps) {
               </div>
             </div>
           </div>
+
+          {/* Retrieval context (from session) */}
+          {retrievalContext && (retrievalContext.prompt || retrievalContext.similarity != null) && (
+            <div className="p-4 rounded-lg border border-border bg-card">
+              <div className="text-xs text-muted-foreground mb-3">Last retrieval trigger</div>
+              <div className="space-y-3">
+                {retrievalContext.prompt && (
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">Triggered by prompt</div>
+                    <div className="text-sm p-2 rounded bg-secondary/50 font-mono text-foreground/80">
+                      "{retrievalContext.prompt}"
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-4 text-sm">
+                  {retrievalContext.similarity != null && (
+                    <div>
+                      <span className="text-muted-foreground">Similarity: </span>
+                      <span className="text-cyan-400 font-mono">{(retrievalContext.similarity * 100).toFixed(1)}%</span>
+                    </div>
+                  )}
+                  {retrievalContext.keywordMatch != null && (
+                    <div>
+                      <span className="text-muted-foreground">Keyword match: </span>
+                      <span className={retrievalContext.keywordMatch ? 'text-amber-400' : 'text-muted-foreground'}>
+                        {retrievalContext.keywordMatch ? 'Yes' : 'No'}
+                      </span>
+                    </div>
+                  )}
+                  {retrievalContext.score != null && (
+                    <div>
+                      <span className="text-muted-foreground">Score: </span>
+                      <span className="font-mono">{retrievalContext.score.toFixed(3)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Type-specific details */}
           <TypeDetails record={record} />
