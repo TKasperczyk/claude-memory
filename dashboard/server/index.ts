@@ -15,8 +15,8 @@ import {
   getRecordStats
 } from '../../src/lib/milvus.js'
 import { listAllSessions } from '../../src/lib/session-tracking.js'
-import { buildContext, extractSignals, findGitRoot } from '../../src/lib/context.js'
-import { embed } from '../../src/lib/embed.js'
+import { findGitRoot } from '../../src/lib/context.js'
+import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
 import { type RecordType } from '../../src/lib/types.js'
 import {
@@ -163,55 +163,33 @@ app.get('/api/memories/:id', async (req, res) => {
   }
 })
 
-// Preview context injection for a prompt
+// Preview context injection for a prompt (uses same logic as pre-prompt hook)
 app.post('/api/preview', async (req, res) => {
   try {
-    await ensureInitialized()
-
     const { prompt, cwd = '/tmp' } = req.body
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt required' })
     }
 
-    const signals = extractSignals(prompt, cwd)
-
-    const embedding = await embed(prompt, CONFIG)
-
-    // First try with project + domain scope
-    let results = await hybridSearch({
-      query: prompt,
-      embedding,
-      limit: CONFIG.injection.maxRecords,
-      project: signals.projectRoot,
-      domain: signals.domain
+    // Use the same handlePrePrompt function as the actual hook
+    const result = await handlePrePrompt({
+      hook_event_name: 'UserPromptSubmit',
+      prompt,
+      cwd,
+      session_id: 'preview'
     }, CONFIG)
 
-    // Fallback: if no project-scoped hits, retry with domain filter only
-    // (matches pre-prompt hook behavior)
-    if (results.length === 0 && signals.projectRoot) {
-      results = await hybridSearch({
-        query: prompt,
-        embedding,
-        limit: CONFIG.injection.maxRecords,
-        domain: signals.domain
-      }, CONFIG)
-    }
-
-    const { context, records } = buildContext(
-      results.map(r => r.record),
-      CONFIG
-    )
-
     res.json({
-      signals,
-      results: results.map(r => ({
+      signals: result.signals,
+      results: result.results.map(r => ({
         record: r.record,
         score: r.score,
         similarity: r.similarity,
         keywordMatch: r.keywordMatch
       })),
-      injectedRecords: records,
-      context
+      injectedRecords: result.injectedRecords,
+      context: result.context,
+      timedOut: result.timedOut
     })
   } catch (error) {
     console.error('Preview error:', error)
