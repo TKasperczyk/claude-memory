@@ -88,7 +88,14 @@ async function searchMemories(
 
   // Pre-compute embedding once to avoid duplicate API calls on retry
   const semanticQuery = buildSemanticQuery(cleanPrompt, signals)
-  const embedding = semanticQuery ? await embed(semanticQuery, config) : undefined
+  let embedding: number[] | undefined
+  if (semanticQuery) {
+    try {
+      embedding = await embed(semanticQuery, config)
+    } catch (error) {
+      console.error('[claude-memory] Embedding failed; falling back to keyword-only search:', error)
+    }
+  }
 
   let results = await searchWithScope(cleanPrompt, signals, config, scope, embedding)
   if (results.length === 0 && (scope.project || scope.domain)) {

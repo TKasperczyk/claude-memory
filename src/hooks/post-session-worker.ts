@@ -111,7 +111,7 @@ async function main(): Promise<void> {
   try {
     debugLog('Running extraction...')
     result = await handlePostSession(payload, config)
-    debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}`)
+    debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
   } finally {
     debugLog('Running usefulness rating...')
     await processUsefulnessRating(payload, config, result?.transcript)
@@ -130,7 +130,9 @@ async function main(): Promise<void> {
     return
   }
 
-  console.error(`[claude-memory] Extraction complete: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}`)
+  console.error(
+    `[claude-memory] Extraction complete: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`
+  )
   debugLog('COMPLETE')
 }
 

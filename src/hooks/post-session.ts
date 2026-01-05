@@ -23,6 +23,7 @@ export interface PostSessionResult {
   inserted: number
   updated: number
   skipped: number
+  failed: number
   records: MemoryRecord[]
   transcript?: Transcript
   reason?: 'clear' | 'no_transcript' | 'no_records' | 'wrong_event'
@@ -39,16 +40,16 @@ export async function handlePostSession(
 ): Promise<PostSessionResult> {
   // Accept both SessionEnd and PreCompact events
   if (input.hook_event_name !== 'SessionEnd' && input.hook_event_name !== 'PreCompact') {
-    return { inserted: 0, updated: 0, skipped: 0, records: [], reason: 'wrong_event' }
+    return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'wrong_event' }
   }
 
   // Skip extraction if session was cleared (only applies to SessionEnd)
   if (input.hook_event_name === 'SessionEnd' && input.reason === 'clear') {
-    return { inserted: 0, updated: 0, skipped: 0, records: [], reason: 'clear' }
+    return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'clear' }
   }
 
   if (!input.transcript_path || !fs.existsSync(input.transcript_path)) {
-    return { inserted: 0, updated: 0, skipped: 0, records: [], reason: 'no_transcript' }
+    return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'no_transcript' }
   }
 
   const transcript = await parseTranscript(input.transcript_path)
@@ -65,33 +66,39 @@ export async function handlePostSession(
   })
 
   if (records.length === 0) {
-    return { inserted: 0, updated: 0, skipped: 0, records: [], reason: 'no_records', transcript }
+    return { inserted: 0, updated: 0, skipped: 0, failed: 0, records: [], reason: 'no_records', transcript }
   }
 
   let inserted = 0
   let updated = 0
   let skipped = 0
+  let failed = 0
 
   for (const record of records) {
-    const matches = await findSimilar(record, 0.9, 1, config)
-    if (matches.length > 0) {
-      const existing = matches[0].record
-      const updates = buildUpdates(existing, record)
-      if (Object.keys(updates).length > 0) {
-        await updateRecord(existing.id, updates, config)
-        updated += 1
-      } else {
-        skipped += 1
+    try {
+      const matches = await findSimilar(record, 0.9, 1, config)
+      if (matches.length > 0) {
+        const existing = matches[0].record
+        const updates = buildUpdates(existing, record)
+        if (Object.keys(updates).length > 0) {
+          await updateRecord(existing.id, updates, config)
+          updated += 1
+        } else {
+          skipped += 1
+        }
+        continue
       }
-      continue
-    }
 
-    const prepared = applyUsageCounters(record)
-    await insertRecord(prepared, config)
-    inserted += 1
+      const prepared = applyUsageCounters(record)
+      await insertRecord(prepared, config)
+      inserted += 1
+    } catch (error) {
+      failed += 1
+      console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}:`, error)
+    }
   }
 
-  return { inserted, updated, skipped, records, transcript }
+  return { inserted, updated, skipped, failed, records, transcript }
 }
 
 export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Partial<MemoryRecord> {
@@ -105,6 +112,10 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
   }
   if (failureDelta !== 0) {
     updates.failureCount = (existing.failureCount ?? 0) + failureDelta
+  }
+
+  if (incoming.scope === 'global' && existing.scope !== 'global') {
+    updates.scope = 'global'
   }
 
   if (!existing.project && incoming.project) updates.project = incoming.project
@@ -243,12 +254,15 @@ function launcherMain(): void {
   const workerPath = __filename.endsWith('.ts')
     ? join(__dirname, 'post-session-worker.ts')
     : join(__dirname, 'post-session-worker.js')
+  const usesTsWorker = workerPath.endsWith('.ts')
 
   debugLog(`Spawning worker: ${workerPath}`)
 
   // Spawn worker with temp file path as argument
   // ALL stdio must be 'ignore' - any inherited fd keeps Claude Code waiting
-  const child = spawn('node', [workerPath, tempFile], {
+  const command = usesTsWorker ? 'npx' : 'node'
+  const args = usesTsWorker ? ['tsx', workerPath, tempFile] : [workerPath, tempFile]
+  const child = spawn(command, args, {
     detached: true,
     stdio: ['ignore', 'ignore', 'ignore']
   })

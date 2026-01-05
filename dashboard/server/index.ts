@@ -15,9 +15,10 @@ import {
   getRecordStats
 } from '../../src/lib/milvus.js'
 import { listAllSessions } from '../../src/lib/session-tracking.js'
-import { buildContext, extractSignals } from '../../src/lib/context.js'
+import { buildContext, extractSignals, findGitRoot } from '../../src/lib/context.js'
 import { embed } from '../../src/lib/embed.js'
-import { DEFAULT_CONFIG, type MemoryRecord, type RecordType } from '../../src/lib/types.js'
+import { loadConfig } from '../../src/lib/config.js'
+import { type RecordType } from '../../src/lib/types.js'
 import {
   MAINTENANCE_OPERATIONS,
   runAllMaintenance,
@@ -27,8 +28,10 @@ import {
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
+const CONFIG_ROOT = findGitRoot(process.cwd()) ?? process.cwd()
+const CONFIG = loadConfig(CONFIG_ROOT)
 
-app.use(cors())
+app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] }))
 app.use(express.json())
 
 // Initialize Milvus on startup
@@ -36,9 +39,17 @@ let initialized = false
 
 async function ensureInitialized(): Promise<void> {
   if (!initialized) {
-    await initMilvus(DEFAULT_CONFIG)
+    await initMilvus(CONFIG)
     initialized = true
   }
+}
+
+function parseNonNegativeInt(value: unknown, fallback: number): number {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (raw === undefined || raw === null) return fallback
+  const parsed = typeof raw === 'string' && raw.trim() === '' ? Number.NaN : Number(raw)
+  if (!Number.isInteger(parsed) || parsed < 0) return fallback
+  return parsed
 }
 
 // Get aggregate stats
@@ -46,7 +57,7 @@ app.get('/api/stats', async (_req, res) => {
   try {
     await ensureInitialized()
     // Use orderBy to trigger iterator path which handles >16384 records
-    const records = await queryRecords({ limit: 100000, orderBy: 'timestamp_desc' }, DEFAULT_CONFIG)
+    const records = await queryRecords({ limit: 100000, orderBy: 'timestamp_desc' }, CONFIG)
 
     const stats = {
       total: records.length,
@@ -106,8 +117,8 @@ app.get('/api/memories', async (req, res) => {
   try {
     await ensureInitialized()
 
-    const limit = Math.min(Number(req.query.limit) || 100, 1000)
-    const offset = Number(req.query.offset) || 0
+    const limit = Math.min(parseNonNegativeInt(req.query.limit, 100), 1000)
+    const offset = parseNonNegativeInt(req.query.offset, 0)
     const type = req.query.type as RecordType | undefined
     const project = req.query.project as string | undefined
     const deprecated = req.query.deprecated === 'true'
@@ -120,8 +131,8 @@ app.get('/api/memories', async (req, res) => {
     const filter = filterParts.length > 0 ? filterParts.join(' && ') : undefined
 
     const [records, total] = await Promise.all([
-      queryRecords({ filter, limit, offset, orderBy: 'timestamp_desc' }, DEFAULT_CONFIG),
-      countRecords({ filter }, DEFAULT_CONFIG)
+      queryRecords({ filter, limit, offset, orderBy: 'timestamp_desc' }, CONFIG),
+      countRecords({ filter }, CONFIG)
     ])
 
     res.json({
@@ -141,7 +152,7 @@ app.get('/api/memories', async (req, res) => {
 app.get('/api/memories/:id', async (req, res) => {
   try {
     await ensureInitialized()
-    const record = await getRecord(req.params.id, DEFAULT_CONFIG)
+    const record = await getRecord(req.params.id, CONFIG)
     if (!record) {
       return res.status(404).json({ error: 'Memory not found' })
     }
@@ -164,18 +175,18 @@ app.post('/api/preview', async (req, res) => {
 
     const signals = extractSignals(prompt, cwd)
 
-    const embedding = await embed(prompt, DEFAULT_CONFIG)
+    const embedding = await embed(prompt, CONFIG)
     const results = await hybridSearch({
       query: prompt,
       embedding,
-      limit: DEFAULT_CONFIG.injection.maxRecords,
+      limit: CONFIG.injection.maxRecords,
       project: signals.projectRoot,
       domain: signals.domain
-    }, DEFAULT_CONFIG)
+    }, CONFIG)
 
     const { context, records } = buildContext(
       results.map(r => r.record),
-      DEFAULT_CONFIG
+      CONFIG
     )
 
     res.json({
@@ -205,7 +216,7 @@ app.get('/api/search', async (req, res) => {
       return res.status(400).json({ error: 'Query required' })
     }
 
-    const limit = Math.min(Number(req.query.limit) || 20, 100)
+    const limit = Math.min(parseNonNegativeInt(req.query.limit, 20), 100)
     const type = req.query.type as RecordType | undefined
     const project = req.query.project as string | undefined
     const deprecated = req.query.deprecated === 'true'
@@ -216,7 +227,7 @@ app.get('/api/search', async (req, res) => {
       type,
       project,
       excludeDeprecated: !deprecated
-    }, DEFAULT_CONFIG)
+    }, CONFIG)
 
     res.json({
       query,
@@ -278,7 +289,7 @@ app.post('/api/maintenance/run', async (req, res) => {
     const result = await runMaintenanceOperation(
       operation as MaintenanceOperation,
       Boolean(dryRun),
-      DEFAULT_CONFIG
+      CONFIG
     )
     res.json(result)
   } catch (error) {
@@ -292,7 +303,7 @@ app.post('/api/maintenance/run-all', async (req, res) => {
   try {
     await ensureInitialized()
     const { dryRun } = req.body ?? {}
-    const results = await runAllMaintenance(Boolean(dryRun), DEFAULT_CONFIG)
+    const results = await runAllMaintenance(Boolean(dryRun), CONFIG)
     res.json(results)
   } catch (error) {
     console.error('Maintenance run-all error:', error)
@@ -330,7 +341,7 @@ app.get('/api/maintenance/stream', async (req, res) => {
 
       try {
         const effectiveDryRun = operation === 'promotion-suggestions' ? true : dryRun
-        const result = await runMaintenanceOperation(operation, effectiveDryRun, DEFAULT_CONFIG)
+        const result = await runMaintenanceOperation(operation, effectiveDryRun, CONFIG)
         sendEvent('result', result)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -348,5 +359,5 @@ app.get('/api/maintenance/stream', async (req, res) => {
 })
 
 app.listen(PORT, () => {
-  console.log(`Dashboard API server running on http://localhost:${PORT}`)
+  console.error(`Dashboard API server running on http://localhost:${PORT}`)
 })
