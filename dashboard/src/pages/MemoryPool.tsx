@@ -1,49 +1,33 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/App'
 import MemoryDetail from '@/components/MemoryDetail'
 import MemoryTable from '@/components/MemoryTable'
-import { useApi } from '@/hooks/useApi'
+import { SEARCH_LIMIT, useMemories, useMemoryTypes, useStats } from '@/hooks/queries'
 import {
   fetchMemory,
-  fetchMemories,
-  fetchStats,
-  searchMemories,
   type MemoryRecord,
   type RecordType
 } from '@/lib/api'
 
 const PAGE_SIZE = 50
-const SEARCH_LIMIT = 100
-
-const TYPE_OPTIONS: Array<{ label: string; value: RecordType | 'all' }> = [
-  { label: 'All types', value: 'all' },
-  { label: 'Command', value: 'command' },
-  { label: 'Error', value: 'error' },
-  { label: 'Discovery', value: 'discovery' },
-  { label: 'Procedure', value: 'procedure' }
-]
-
 export default function MemoryPool() {
   const [typeFilter, setTypeFilter] = useState<RecordType | 'all'>('all')
   const [projectFilter, setProjectFilter] = useState('all')
   const [showDeprecated, setShowDeprecated] = useState(false)
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
-  const [offset, setOffset] = useState(0)
-  const [refreshKey, setRefreshKey] = useState(0)
+  const [page, setPage] = useState(0)
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
-  const [records, setRecords] = useState<MemoryRecord[]>([])
-  const [totalCount, setTotalCount] = useState<number | null>(null)
-  const [hasMore, setHasMore] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<Error | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedId = searchParams.get('id')
+  const queryClient = useQueryClient()
 
-  const { data: stats, reload: reloadStats } = useApi(fetchStats, [])
+  const { data: stats } = useStats()
+  const { data: memoryTypes } = useMemoryTypes()
 
   const projectOptions = useMemo(() => {
     if (!stats?.byProject) return []
@@ -51,6 +35,27 @@ export default function MemoryPool() {
       .sort((a, b) => b[1] - a[1])
       .map(([name]) => name)
   }, [stats])
+
+  const typeOptions = useMemo(() => {
+    const types = memoryTypes?.length ? memoryTypes : ['command', 'error', 'discovery', 'procedure']
+    return [
+      { label: 'All types', value: 'all' as const },
+      ...types.map(type => ({ label: type[0].toUpperCase() + type.slice(1), value: type }))
+    ]
+  }, [memoryTypes])
+
+  const pageOffset = page * PAGE_SIZE
+  const { data: memoriesData, error: memoriesError, isPending, isFetching } = useMemories({
+    page,
+    limit: PAGE_SIZE,
+    type: typeFilter === 'all' ? undefined : typeFilter,
+    search: searchQuery || undefined,
+    project: projectFilter === 'all' ? undefined : projectFilter,
+    deprecated: showDeprecated
+  })
+  const records = memoriesData?.records ?? []
+  const totalCount = memoriesData?.total ?? null
+  const hasMore = totalCount !== null && pageOffset + PAGE_SIZE < totalCount
 
   // Debounce search
   useEffect(() => {
@@ -64,58 +69,10 @@ export default function MemoryPool() {
     return () => clearTimeout(timer)
   }, [notice])
 
-  // Reset offset on filter change
+  // Reset page on filter change
   useEffect(() => {
-    setOffset(0)
+    setPage(0)
   }, [typeFilter, projectFilter, showDeprecated, searchQuery])
-
-  // Fetch data
-  useEffect(() => {
-    let active = true
-
-    const run = async () => {
-      setLoading(true)
-      setError(null)
-
-      try {
-        if (searchQuery) {
-          const response = await searchMemories({
-            query: searchQuery,
-            limit: SEARCH_LIMIT,
-            type: typeFilter === 'all' ? undefined : typeFilter,
-            project: projectFilter === 'all' ? undefined : projectFilter,
-            deprecated: showDeprecated
-          })
-          if (!active) return
-          const results = response.results.map(r => r.record)
-          const total = response.total ?? results.length
-          setTotalCount(total)
-          setHasMore(offset + PAGE_SIZE < total)
-          setRecords(results.slice(offset, offset + PAGE_SIZE))
-        } else {
-          const response = await fetchMemories({
-            limit: PAGE_SIZE,
-            offset,
-            type: typeFilter === 'all' ? undefined : typeFilter,
-            project: projectFilter === 'all' ? undefined : projectFilter,
-            deprecated: showDeprecated
-          })
-          if (!active) return
-          setRecords(response.records)
-          setTotalCount(response.total)
-          setHasMore(offset + PAGE_SIZE < response.total)
-        }
-      } catch (err) {
-        if (!active) return
-        setError(err as Error)
-      } finally {
-        if (active) setLoading(false)
-      }
-    }
-
-    run()
-    return () => { active = false }
-  }, [typeFilter, projectFilter, showDeprecated, searchQuery, offset, refreshKey])
 
   useEffect(() => {
     let active = true
@@ -158,16 +115,16 @@ export default function MemoryPool() {
 
   const handleDeleted = (id: string) => {
     setNotice({ type: 'success', message: `Deleted memory ${id}` })
-    setRefreshKey(key => key + 1)
-    reloadStats()
+    queryClient.invalidateQueries({ queryKey: ['memories'] })
+    queryClient.invalidateQueries({ queryKey: ['stats'] })
   }
 
   const pageInfo = () => {
-    if (loading) return 'Loading…'
-    if (error) return 'Error'
+    if (isPending || isFetching) return 'Loading…'
+    if (memoriesError && !memoriesData) return 'Error'
     if (!records.length) return 'No results'
-    const start = offset + 1
-    const end = offset + records.length
+    const start = pageOffset + 1
+    const end = pageOffset + records.length
     return totalCount ? `${start}–${end} of ${totalCount}` : `${start}–${end}`
   }
 
@@ -177,6 +134,12 @@ export default function MemoryPool() {
         title="Memories"
         description="Browse and search stored memory records"
       />
+
+      {memoriesError && memoriesData && (
+        <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
+          Failed to refresh data. Showing cached results.
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-4">
@@ -203,7 +166,7 @@ export default function MemoryPool() {
             onChange={e => setTypeFilter(e.target.value as RecordType | 'all')}
             className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           >
-            {TYPE_OPTIONS.map(opt => (
+            {typeOptions.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
@@ -253,9 +216,9 @@ export default function MemoryPool() {
       )}
 
       {/* Table */}
-      {loading ? (
+      {isPending ? (
         <div className="py-12 text-center text-sm text-muted-foreground">Loading…</div>
-      ) : error ? (
+      ) : memoriesError && !memoriesData ? (
         <div className="py-12 text-center text-sm text-destructive">Failed to load memories</div>
       ) : (
         <MemoryTable
@@ -268,8 +231,8 @@ export default function MemoryPool() {
       {/* Pagination */}
       <div className="flex items-center justify-between">
         <button
-          onClick={() => setOffset(o => Math.max(0, o - PAGE_SIZE))}
-          disabled={offset === 0}
+          onClick={() => setPage(p => Math.max(0, p - 1))}
+          disabled={page === 0}
           className="flex items-center gap-1 h-8 px-3 text-sm rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
         >
           <ChevronLeft className="w-4 h-4" />
@@ -277,7 +240,7 @@ export default function MemoryPool() {
         </button>
         <span className="text-sm text-muted-foreground">{pageInfo()}</span>
         <button
-          onClick={() => setOffset(o => o + PAGE_SIZE)}
+          onClick={() => setPage(p => p + 1)}
           disabled={!hasMore}
           className="flex items-center gap-1 h-8 px-3 text-sm rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
         >

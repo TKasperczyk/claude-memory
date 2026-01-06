@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { ChevronDown, ChevronRight, Check, Copy, ExternalLink, Loader2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '@/App'
+import { useExtractions } from '@/hooks/queries'
 import {
   fetchExtractionReview,
   fetchExtractionRun,
-  fetchExtractions,
   runExtractionReview,
   type ExtractionReview,
   type ExtractionReviewIssue,
@@ -72,11 +72,7 @@ function truncate(value: string, max: number): string {
 }
 
 export default function Extractions() {
-  const [runs, setRuns] = useState<ExtractionRun[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [offset, setOffset] = useState(0)
-  const [total, setTotal] = useState<number | null>(null)
+  const [page, setPage] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [recordsByRun, setRecordsByRun] = useState<Record<string, MemoryRecord[]>>({})
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null)
@@ -87,28 +83,10 @@ export default function Extractions() {
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState<Record<string, boolean>>({})
 
-  useEffect(() => {
-    let active = true
-
-    const loadRuns = async () => {
-      setLoading(true)
-      setError(null)
-      try {
-        const response = await fetchExtractions({ limit: PAGE_SIZE, offset })
-        if (!active) return
-        setRuns(response.runs)
-        setTotal(response.total)
-      } catch (err) {
-        if (!active) return
-        setError(err instanceof Error ? err.message : 'Failed to load extractions')
-      } finally {
-        if (active) setLoading(false)
-      }
-    }
-
-    loadRuns()
-    return () => { active = false }
-  }, [offset])
+  const { data, error, isPending, isFetching } = useExtractions({ page, limit: PAGE_SIZE })
+  const runs = data?.runs ?? []
+  const total = data?.total ?? null
+  const errorMessage = error instanceof Error ? error.message : 'Failed to load extractions'
 
   const handleToggle = async (run: ExtractionRun) => {
     const isOpen = expanded === run.runId
@@ -167,11 +145,11 @@ export default function Extractions() {
   }
 
   const pageInfo = () => {
-    if (loading) return 'Loading...'
-    if (error) return 'Error'
+    if (isPending || isFetching) return 'Loading...'
+    if (error && !data) return 'Error'
     if (!runs.length) return 'No results'
-    const start = offset + 1
-    const end = offset + runs.length
+    const start = page * PAGE_SIZE + 1
+    const end = page * PAGE_SIZE + runs.length
     return total ? `${start}-${end} of ${total}` : `${start}-${end}`
   }
 
@@ -182,10 +160,16 @@ export default function Extractions() {
         description="Monitor extraction runs and review extracted records"
       />
 
-      {loading && runs.length === 0 ? (
+      {error && data && (
+        <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
+          Failed to refresh data. Showing cached results.
+        </div>
+      )}
+
+      {isPending && runs.length === 0 ? (
         <div className="text-sm text-muted-foreground">Loading...</div>
-      ) : error ? (
-        <div className="text-sm text-destructive">{error}</div>
+      ) : error && !data ? (
+        <div className="text-sm text-destructive">{errorMessage}</div>
       ) : runs.length === 0 ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
           No extraction runs logged yet.
@@ -399,16 +383,16 @@ export default function Extractions() {
 
       <div className="flex items-center justify-between">
         <button
-          onClick={() => setOffset(o => Math.max(0, o - PAGE_SIZE))}
-          disabled={offset === 0}
+          onClick={() => setPage(p => Math.max(0, p - 1))}
+          disabled={page === 0}
           className="flex items-center gap-1 h-8 px-3 text-sm rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
         >
           Previous
         </button>
         <span className="text-sm text-muted-foreground">{pageInfo()}</span>
         <button
-          onClick={() => setOffset(o => o + PAGE_SIZE)}
-          disabled={total !== null && offset + PAGE_SIZE >= total}
+          onClick={() => setPage(p => p + 1)}
+          disabled={total !== null && (page + 1) * PAGE_SIZE >= total}
           className="flex items-center gap-1 h-8 px-3 text-sm rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
         >
           Next

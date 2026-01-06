@@ -37,9 +37,14 @@ const app = express()
 const PORT = process.env.PORT ?? 3001
 const CONFIG_ROOT = findGitRoot(process.cwd()) ?? process.cwd()
 const CONFIG = loadConfig(CONFIG_ROOT)
+const MEMORY_TYPES: RecordType[] = ['command', 'error', 'discovery', 'procedure']
 
 app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] }))
 app.use(express.json())
+
+app.get('/api/memory-types', (_req, res) => {
+  res.json({ types: MEMORY_TYPES })
+})
 
 // Initialize Milvus on startup
 let initialized = false

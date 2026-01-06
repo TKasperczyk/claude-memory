@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { PageHeader } from '@/App'
 import StatsCard from '@/components/StatsCard'
-import { useApi } from '@/hooks/useApi'
-import { fetchStats, resetCollection, type RecordType } from '@/lib/api'
+import { useStats } from '@/hooks/queries'
+import { resetCollection, type RecordType } from '@/lib/api'
 
 const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   command: { label: 'Commands', color: '#2dd4bf' },
@@ -102,7 +102,7 @@ function TopList({
 }
 
 export default function Overview() {
-  const { data, error, loading, reload } = useApi(fetchStats, [])
+  const { data, error, isPending, refetch } = useStats()
   const [resetOpen, setResetOpen] = useState(false)
   const [resetInput, setResetInput] = useState('')
   const [resetError, setResetError] = useState<string | null>(null)
@@ -131,7 +131,7 @@ export default function Overview() {
       await resetCollection()
       setResetNotice('Collection reset successfully.')
       setResetOpen(false)
-      reload()
+      refetch()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to reset collection'
       setResetError(message)
@@ -140,7 +140,7 @@ export default function Overview() {
     }
   }
 
-  if (loading) {
+  if (isPending) {
     return (
       <div>
         <PageHeader title="Overview" />
@@ -149,7 +149,16 @@ export default function Overview() {
     )
   }
 
-  if (error || !data) {
+  if (error && !data) {
+    return (
+      <div>
+        <PageHeader title="Overview" />
+        <div className="text-sm text-destructive">Failed to load statistics</div>
+      </div>
+    )
+  }
+
+  if (!data) {
     return (
       <div>
         <PageHeader title="Overview" />
@@ -179,6 +188,12 @@ export default function Overview() {
         title="Overview"
         description="Memory system statistics and distribution"
       />
+
+      {error && data && (
+        <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
+          Failed to refresh data. Showing cached results.
+        </div>
+      )}
 
       {/* Key Metrics */}
       <section className="p-6 rounded-xl border border-border bg-card">

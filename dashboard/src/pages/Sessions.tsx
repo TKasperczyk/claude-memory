@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Check, ChevronDown, ChevronRight, Copy, Loader2 } from 'lucide-react'
 import { PageHeader } from '@/App'
+import { useSessions } from '@/hooks/queries'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
 import { formatDateTime } from '@/lib/format'
 import {
   fetchInjectionReview,
   fetchMemory,
-  fetchSessions,
   runInjectionReview,
   type InjectedMemoryVerdict,
   type InjectionReview,
@@ -158,9 +158,6 @@ function groupByType(memories: SessionRecord['memories']): TypeGroup[] {
 }
 
 export default function Sessions() {
-  const [sessions, setSessions] = useState<SessionRecord[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
   const [retrievalContext, setRetrievalContext] = useState<RetrievalContext | null>(null)
@@ -170,6 +167,9 @@ export default function Sessions() {
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState<Record<string, boolean>>({})
+  const { data, error, isPending } = useSessions()
+  const sessions = data?.sessions ?? []
+  const errorMessage = error instanceof Error ? error.message : 'Failed to load sessions'
 
   const handleMemoryClick = async (memory: SessionRecord['memories'][0]) => {
     if (loadingMemory) return
@@ -190,25 +190,7 @@ export default function Sessions() {
     }
   }
 
-  async function loadSessions() {
-    try {
-      const data = await fetchSessions()
-      setSessions(data.sessions)
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load sessions')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    loadSessions()
-    const interval = setInterval(loadSessions, 5000)
-    return () => clearInterval(interval)
-  }, [])
-
-  if (loading && sessions.length === 0) {
+  if (isPending && sessions.length === 0) {
     return (
       <div>
         <PageHeader title="Sessions" />
@@ -217,11 +199,11 @@ export default function Sessions() {
     )
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div>
         <PageHeader title="Sessions" />
-        <div className="text-sm text-destructive">{error}</div>
+        <div className="text-sm text-destructive">{errorMessage}</div>
       </div>
     )
   }
@@ -274,6 +256,12 @@ export default function Sessions() {
         title="Sessions"
         description={`${sessions.length} tracked session${sessions.length !== 1 ? 's' : ''}`}
       />
+
+      {error && data && (
+        <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
+          Failed to refresh data. Showing cached results.
+        </div>
+      )}
 
       {sessions.length === 0 ? (
         <div className="py-12 text-center text-sm text-muted-foreground">

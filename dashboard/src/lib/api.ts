@@ -148,6 +148,10 @@ export interface SessionsResponse {
   count: number
 }
 
+export interface MemoryTypesResponse {
+  types: RecordType[]
+}
+
 export interface ExtractionRun {
   runId: string
   sessionId: string
@@ -324,6 +328,11 @@ export function previewContext(payload: { prompt: string; cwd?: string }): Promi
 
 export function fetchSessions(): Promise<SessionsResponse> {
   return request('/sessions')
+}
+
+export async function fetchMemoryTypes(): Promise<RecordType[]> {
+  const response = await request<MemoryTypesResponse>('/memory-types')
+  return response.types
 }
 
 export function fetchExtractions(params: {
