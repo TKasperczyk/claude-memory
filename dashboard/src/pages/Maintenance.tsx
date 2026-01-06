@@ -178,13 +178,25 @@ function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: s
   )
 }
 
-function ActionRow({ action, onSelect }: { action: MaintenanceAction; onSelect?: (id: string) => void }) {
+function ActionRow({
+  action,
+  onSelect,
+  executed = false
+}: {
+  action: MaintenanceAction
+  onSelect?: (id: string) => void
+  executed?: boolean
+}) {
   const style = ACTION_STYLES[action.type]
   const recordId = action.recordId
   const isSelectable = Boolean(recordId && onSelect)
   const containerClasses = `p-3 rounded-md border border-border bg-secondary/30 transition-base ${
-    isSelectable ? 'cursor-pointer hover:bg-secondary/50' : ''
-  }`
+    isSelectable
+      ? executed
+        ? 'cursor-pointer hover:bg-emerald-500/10 hover:opacity-100'
+        : 'cursor-pointer hover:bg-secondary/50'
+      : ''
+  } ${executed ? 'border-emerald-500/30 bg-emerald-500/5 opacity-80' : ''}`
   const handleSelect = () => {
     if (recordId) {
       onSelect?.(recordId)
@@ -206,6 +218,12 @@ function ActionRow({ action, onSelect }: { action: MaintenanceAction; onSelect?:
           <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${style.badge}`}>
             {style.label}
           </span>
+          {executed && (
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300">
+              <Check className="w-3 h-3" aria-hidden="true" />
+              Done
+            </span>
+          )}
           {recordId && (
             <span className="text-[11px] text-muted-foreground font-mono">
               {recordId}
@@ -273,6 +291,7 @@ function ResultPanel({ result, onSelect }: { result: OperationResult; onSelect?:
               key={`${action.recordId ?? action.reason}-${index}`}
               action={action}
               onSelect={onSelect}
+              executed={!result.dryRun}
             />
           ))}
         </div>
