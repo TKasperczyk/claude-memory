@@ -66,3 +66,31 @@ export function asString(value: unknown): string | undefined {
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
+
+export type InjectionOverallRelevance = 'excellent' | 'good' | 'mixed' | 'poor'
+export type InjectionVerdict = 'relevant' | 'partially_relevant' | 'irrelevant' | 'unknown'
+
+export function parseOverallRelevance(value: unknown): InjectionOverallRelevance | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'excellent' || normalized === 'good' || normalized === 'mixed' || normalized === 'poor') {
+      return normalized
+    }
+  }
+  return null
+}
+
+export function parseInjectionVerdict(value: unknown): InjectionVerdict | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (
+      normalized === 'relevant'
+      || normalized === 'partially_relevant'
+      || normalized === 'irrelevant'
+      || normalized === 'unknown'
+    ) {
+      return normalized
+    }
+  }
+  return null
+}

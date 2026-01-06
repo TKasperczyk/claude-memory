@@ -14,14 +14,15 @@ import {
   escapeFilterValue,
   getRecordStats
 } from '../../src/lib/milvus.js'
-import { dedupeInjectedMemories, listAllSessions } from '../../src/lib/session-tracking.js'
+import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../../src/lib/session-tracking.js'
 import { findGitRoot } from '../../src/lib/context.js'
 import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
 import { type MemoryRecord, type RecordType } from '../../src/lib/types.js'
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
 import { reviewExtraction } from '../../src/lib/extraction-review.js'
-import { getReview, saveReview } from '../../src/lib/review-storage.js'
+import { reviewInjection } from '../../src/lib/injection-review.js'
+import { getInjectionReview, getReview, saveInjectionReview, saveReview } from '../../src/lib/review-storage.js'
 import {
   MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATION_DEFINITIONS,
@@ -268,6 +269,40 @@ app.get('/api/sessions', async (_req, res) => {
   } catch (error) {
     console.error('Sessions error:', error)
     res.status(500).json({ error: 'Failed to list sessions' })
+  }
+})
+
+// Get cached injection review if available
+app.get('/api/sessions/:sessionId/review', (req, res) => {
+  try {
+    const review = getInjectionReview(req.params.sessionId)
+    if (!review) {
+      return res.status(404).json({ error: 'Review not found' })
+    }
+    res.json(review)
+  } catch (error) {
+    console.error('Injection review error:', error)
+    res.status(500).json({ error: 'Failed to get injection review' })
+  }
+})
+
+// Trigger Opus review for a session injection
+app.post('/api/sessions/:sessionId/review', async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId
+    const session = loadSessionTracking(sessionId)
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' })
+    }
+
+    await ensureInitialized()
+    const review = await reviewInjection(sessionId, CONFIG)
+    saveInjectionReview(review)
+    res.json(review)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('Injection review error:', error)
+    res.status(500).json({ error: message || 'Failed to run injection review' })
   }
 })
 

@@ -188,6 +188,32 @@ export interface ExtractionReview {
   durationMs: number
 }
 
+export interface InjectedMemoryVerdict {
+  id: string
+  snippet: string
+  verdict: 'relevant' | 'partially_relevant' | 'irrelevant' | 'unknown'
+  reason: string
+}
+
+export interface MissedMemory {
+  id: string
+  snippet: string
+  reason: string
+}
+
+export interface InjectionReview {
+  sessionId: string
+  prompt: string
+  reviewedAt: number
+  overallRelevance: 'excellent' | 'good' | 'mixed' | 'poor'
+  relevanceScore: number
+  injectedVerdicts: InjectedMemoryVerdict[]
+  missedMemories: MissedMemory[]
+  summary: string
+  model: string
+  durationMs: number
+}
+
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 
 export interface MaintenanceAction {
@@ -315,6 +341,20 @@ export async function fetchExtractionReview(runId: string): Promise<ExtractionRe
 
 export function runExtractionReview(runId: string): Promise<ExtractionReview> {
   return request(`/extractions/${runId}/review`, { method: 'POST' })
+}
+
+export async function fetchInjectionReview(sessionId: string): Promise<InjectionReview | null> {
+  const response = await fetch(`/api/sessions/${sessionId}/review`)
+  if (response.status === 404) return null
+  if (!response.ok) {
+    const message = await response.text()
+    throw new Error(message || `Request failed (${response.status})`)
+  }
+  return response.json() as Promise<InjectionReview>
+}
+
+export function runInjectionReview(sessionId: string): Promise<InjectionReview> {
+  return request(`/sessions/${sessionId}/review`, { method: 'POST' })
 }
 
 export function fetchMaintenanceOperations(): Promise<MaintenanceOperationsResponse> {

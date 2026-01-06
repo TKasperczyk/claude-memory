@@ -1,8 +1,20 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { PageHeader } from '@/App'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
-import { fetchMemory, fetchSessions, type MemoryRecord, type SessionRecord, type RecordType, type MemoryStats } from '@/lib/api'
+import { formatDateTime } from '@/lib/format'
+import {
+  fetchInjectionReview,
+  fetchMemory,
+  fetchSessions,
+  runInjectionReview,
+  type InjectedMemoryVerdict,
+  type InjectionReview,
+  type MemoryRecord,
+  type MemoryStats,
+  type RecordType,
+  type SessionRecord
+} from '@/lib/api'
 
 const TYPE_COLORS: Record<string, string> = {
   command: '#2dd4bf',
@@ -12,6 +24,44 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 const TYPE_ORDER: RecordType[] = ['error', 'command', 'discovery', 'procedure']
+
+const RELEVANCE_STYLES: Record<InjectionReview['overallRelevance'], { badge: string; label: string }> = {
+  excellent: {
+    badge: 'bg-emerald-500/15 text-emerald-300',
+    label: 'Excellent'
+  },
+  good: {
+    badge: 'bg-sky-500/15 text-sky-300',
+    label: 'Good'
+  },
+  mixed: {
+    badge: 'bg-amber-500/15 text-amber-300',
+    label: 'Mixed'
+  },
+  poor: {
+    badge: 'bg-destructive/15 text-destructive',
+    label: 'Poor'
+  }
+}
+
+const VERDICT_STYLES: Record<InjectedMemoryVerdict['verdict'], { badge: string; label: string }> = {
+  relevant: {
+    badge: 'bg-emerald-500/15 text-emerald-300',
+    label: 'Relevant'
+  },
+  partially_relevant: {
+    badge: 'bg-amber-500/15 text-amber-300',
+    label: 'Partial'
+  },
+  irrelevant: {
+    badge: 'bg-destructive/15 text-destructive',
+    label: 'Irrelevant'
+  },
+  unknown: {
+    badge: 'bg-muted-foreground/15 text-muted-foreground',
+    label: 'Unknown'
+  }
+}
 
 function formatRelative(ts: number): string {
   const diff = Date.now() - ts
@@ -114,6 +164,10 @@ export default function Sessions() {
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
   const [retrievalContext, setRetrievalContext] = useState<RetrievalContext | null>(null)
   const [loadingMemory, setLoadingMemory] = useState<string | null>(null)
+  const [reviewsBySession, setReviewsBySession] = useState<Record<string, InjectionReview | null>>({})
+  const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
+  const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
+  const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
 
   const handleMemoryClick = async (memory: SessionRecord['memories'][0]) => {
     if (loadingMemory) return
@@ -170,6 +224,39 @@ export default function Sessions() {
     )
   }
 
+  const handleToggle = async (session: SessionRecord) => {
+    const isOpen = expanded === session.sessionId
+    setExpanded(isOpen ? null : session.sessionId)
+
+    if (!isOpen && session.memories.length > 0 && !Object.prototype.hasOwnProperty.call(reviewsBySession, session.sessionId)) {
+      setReviewLoading(prev => ({ ...prev, [session.sessionId]: true }))
+      setReviewErrors(prev => ({ ...prev, [session.sessionId]: '' }))
+      try {
+        const review = await fetchInjectionReview(session.sessionId)
+        setReviewsBySession(prev => ({ ...prev, [session.sessionId]: review }))
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to load review'
+        setReviewErrors(prev => ({ ...prev, [session.sessionId]: message }))
+      } finally {
+        setReviewLoading(prev => ({ ...prev, [session.sessionId]: false }))
+      }
+    }
+  }
+
+  const handleReview = async (sessionId: string) => {
+    setReviewRunning(prev => ({ ...prev, [sessionId]: true }))
+    setReviewErrors(prev => ({ ...prev, [sessionId]: '' }))
+    try {
+      const review = await runInjectionReview(sessionId)
+      setReviewsBySession(prev => ({ ...prev, [sessionId]: review }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to run review'
+      setReviewErrors(prev => ({ ...prev, [sessionId]: message }))
+    } finally {
+      setReviewRunning(prev => ({ ...prev, [sessionId]: false }))
+    }
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -188,6 +275,11 @@ export default function Sessions() {
             const isOpen = expanded === session.sessionId
             const memories = session.memories
             const typeGroups = groupByType(memories)
+            const review = reviewsBySession[session.sessionId]
+            const reviewLoadingState = reviewLoading[session.sessionId] ?? false
+            const reviewRunningState = reviewRunning[session.sessionId] ?? false
+            const reviewError = reviewErrors[session.sessionId]
+            const hasReviewLoaded = Object.prototype.hasOwnProperty.call(reviewsBySession, session.sessionId)
 
             return (
               <div
@@ -198,7 +290,7 @@ export default function Sessions() {
               >
                 {/* Header */}
                 <button
-                  onClick={() => setExpanded(isOpen ? null : session.sessionId)}
+                  onClick={() => handleToggle(session)}
                   className="w-full px-4 py-3 flex items-center gap-3 text-left"
                 >
                   {isOpen ? (
@@ -225,68 +317,167 @@ export default function Sessions() {
                 {/* Expanded content */}
                 <div className={`accordion-content ${isOpen ? 'open' : ''}`}>
                   <div className="accordion-inner">
-                    <div className="p-3 pt-0 max-h-80 overflow-y-auto space-y-2">
-                      {typeGroups.map(group => (
-                        <div
-                          key={group.type}
-                          className="rounded-md bg-secondary/40 overflow-hidden"
-                        >
-                          {/* Type header */}
+                    <div className="px-4 pb-4 pt-0 space-y-3">
+                      {memories.length > 0 && (
+                        <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="text-xs text-muted-foreground">
+                              Opus review
+                            </div>
+                            <button
+                              onClick={() => handleReview(session.sessionId)}
+                              disabled={reviewRunningState}
+                              className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
+                            >
+                              {reviewRunningState && <Loader2 className="w-3 h-3 animate-spin" />}
+                              {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
+                            </button>
+                          </div>
+
+                          {reviewError && (
+                            <div className="text-xs text-destructive">{reviewError}</div>
+                          )}
+
+                          {review ? (
+                            <div className="space-y-3">
+                              <div className="flex flex-wrap items-center gap-3">
+                                <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RELEVANCE_STYLES[review.overallRelevance].badge}`}>
+                                  {RELEVANCE_STYLES[review.overallRelevance].label}
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                  Relevance score <span className="font-semibold tabular-nums text-foreground">{review.relevanceScore}</span>
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                  Reviewed {formatDateTime(review.reviewedAt)}
+                                </span>
+                              </div>
+                              <div className="text-sm text-foreground">{review.summary}</div>
+
+                              <div className="space-y-2">
+                                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                                  Injected verdicts
+                                </div>
+                                {review.injectedVerdicts.length === 0 ? (
+                                  <div className="text-xs text-muted-foreground">No verdicts returned.</div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {review.injectedVerdicts.map((verdict, index) => (
+                                      <div
+                                        key={`${verdict.id}-${index}`}
+                                        className="rounded-md border border-border bg-secondary/30 p-3"
+                                      >
+                                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                                          <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${VERDICT_STYLES[verdict.verdict].badge}`}>
+                                            {VERDICT_STYLES[verdict.verdict].label}
+                                          </span>
+                                          <span className="text-[11px] text-muted-foreground font-mono">{verdict.id}</span>
+                                        </div>
+                                        <div className="text-sm text-foreground">{verdict.snippet}</div>
+                                        <div className="text-xs text-muted-foreground mt-1">{verdict.reason}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              {review.missedMemories.length > 0 ? (
+                                <div className="space-y-2">
+                                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                                    Missed memories
+                                  </div>
+                                  <div className="space-y-2">
+                                    {review.missedMemories.map((missed, index) => (
+                                      <div
+                                        key={`${missed.id}-${index}`}
+                                        className="rounded-md border border-border bg-secondary/30 p-3"
+                                      >
+                                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                            Missed
+                                          </span>
+                                          <span className="text-[11px] text-muted-foreground font-mono">{missed.id}</span>
+                                        </div>
+                                        <div className="text-sm text-foreground">{missed.snippet}</div>
+                                        <div className="text-xs text-muted-foreground mt-1">{missed.reason}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-xs text-muted-foreground">No missed memories flagged.</div>
+                              )}
+                            </div>
+                          ) : hasReviewLoaded ? (
+                            <div className="text-xs text-muted-foreground">No review yet.</div>
+                          ) : reviewLoadingState ? (
+                            <div className="text-xs text-muted-foreground">Loading review...</div>
+                          ) : null}
+                        </div>
+                      )}
+
+                      <div className="max-h-80 overflow-y-auto space-y-2">
+                        {typeGroups.map(group => (
                           <div
-                            className="px-3 py-1.5 flex items-center justify-between border-b"
-                            style={{
-                              backgroundColor: `${TYPE_COLORS[group.type]}10`,
-                              borderColor: `${TYPE_COLORS[group.type]}20`,
-                            }}
+                            key={group.type}
+                            className="rounded-md bg-secondary/40 overflow-hidden"
                           >
-                            <div className="flex items-center gap-2">
-                              <span
-                                className="w-1.5 h-1.5 rounded-full"
-                                style={{ backgroundColor: TYPE_COLORS[group.type] }}
-                              />
-                              <span
-                                className="text-xs font-medium capitalize"
-                                style={{ color: TYPE_COLORS[group.type] }}
-                              >
-                                {group.type}s
+                            {/* Type header */}
+                            <div
+                              className="px-3 py-1.5 flex items-center justify-between border-b"
+                              style={{
+                                backgroundColor: `${TYPE_COLORS[group.type]}10`,
+                                borderColor: `${TYPE_COLORS[group.type]}20`,
+                              }}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className="w-1.5 h-1.5 rounded-full"
+                                  style={{ backgroundColor: TYPE_COLORS[group.type] }}
+                                />
+                                <span
+                                  className="text-xs font-medium capitalize"
+                                  style={{ color: TYPE_COLORS[group.type] }}
+                                >
+                                  {group.type}s
+                                </span>
+                              </div>
+                              <span className="text-xs text-muted-foreground tabular-nums">
+                                {group.memories.length}
                               </span>
                             </div>
-                            <span className="text-xs text-muted-foreground tabular-nums">
-                              {group.memories.length}
-                            </span>
-                          </div>
-                          {/* Memory list */}
-                          <div className="p-1.5 space-y-0.5">
-                            {group.memories.map((memory, mi) => {
-                              const title = parseSnippetTitle(memory.snippet)
-                              const isLoading = loadingMemory === memory.id
-                              const trigger = formatRetrievalTrigger(memory)
+                            {/* Memory list */}
+                            <div className="p-1.5 space-y-0.5">
+                              {group.memories.map((memory, mi) => {
+                                const title = parseSnippetTitle(memory.snippet)
+                                const isLoading = loadingMemory === memory.id
+                                const trigger = formatRetrievalTrigger(memory)
 
-                              return (
-                                <button
-                                  key={`${memory.id}-${mi}`}
-                                  onClick={() => handleMemoryClick(memory)}
-                                  disabled={isLoading}
-                                  className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm hover:bg-background/60 transition-base disabled:opacity-50 group"
-                                >
-                                  <span className="flex-1 truncate text-foreground/70 group-hover:text-foreground/90">{title}</span>
-                                  {trigger && (
-                                    <span
-                                      className={`text-[10px] font-mono px-1 py-0.5 rounded bg-background/50 shrink-0 ${trigger.color}`}
-                                      title={trigger.title}
-                                    >
-                                      {trigger.label}
+                                return (
+                                  <button
+                                    key={`${memory.id}-${mi}`}
+                                    onClick={() => handleMemoryClick(memory)}
+                                    disabled={isLoading}
+                                    className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm hover:bg-background/60 transition-base disabled:opacity-50 group"
+                                  >
+                                    <span className="flex-1 truncate text-foreground/70 group-hover:text-foreground/90">{title}</span>
+                                    {trigger && (
+                                      <span
+                                        className={`text-[10px] font-mono px-1 py-0.5 rounded bg-background/50 shrink-0 ${trigger.color}`}
+                                        title={trigger.title}
+                                      >
+                                        {trigger.label}
+                                      </span>
+                                    )}
+                                    <span className={`text-xs font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
+                                      {formatUsageRatio(memory.stats)}
                                     </span>
-                                  )}
-                                  <span className={`text-xs font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
-                                    {formatUsageRatio(memory.stats)}
-                                  </span>
-                                </button>
-                              )
-                            })}
+                                  </button>
+                                )
+                              })}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
                   </div>
                 </div>
