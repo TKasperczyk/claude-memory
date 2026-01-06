@@ -27,7 +27,7 @@ const DOMAIN_EXAMPLES_TTL_MS = 5 * 60 * 1000
 
 let cachedDomainExamples: {
   fetchedAt: number
-  limit: number
+  cacheKey: string
   examples: DomainExample[]
 } | null = null
 
@@ -260,14 +260,15 @@ export async function extractRecords(
 
 async function getCachedDomainExamples(limit: number, config: Config): Promise<DomainExample[]> {
   const now = Date.now()
+  const cacheKey = `${config.milvus.address}|${config.milvus.collection}|${limit}`
   if (cachedDomainExamples
-    && cachedDomainExamples.limit === limit
+    && cachedDomainExamples.cacheKey === cacheKey
     && now - cachedDomainExamples.fetchedAt < DOMAIN_EXAMPLES_TTL_MS) {
     return cachedDomainExamples.examples
   }
 
   const examples = await getDomainExamples(limit, config)
-  cachedDomainExamples = { fetchedAt: now, limit, examples }
+  cachedDomainExamples = { fetchedAt: now, cacheKey, examples }
   return examples
 }
 

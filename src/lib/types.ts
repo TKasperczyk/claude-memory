@@ -142,6 +142,11 @@ export interface UserPromptSubmitInput extends HookInput {
   prompt: string
 }
 
+export type PrePromptInput = Omit<UserPromptSubmitInput, 'transcript_path' | 'permission_mode'> & {
+  transcript_path?: string
+  permission_mode?: string
+}
+
 export interface SessionEndInput extends HookInput {
   hook_event_name: 'SessionEnd'
   reason: 'clear' | 'logout' | 'prompt_input_exit' | 'other'

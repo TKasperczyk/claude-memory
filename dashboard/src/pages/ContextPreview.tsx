@@ -4,13 +4,7 @@ import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import { previewContext, type MemoryRecord, type PreviewResponse } from '@/lib/api'
-
-const TYPE_COLORS: Record<string, string> = {
-  command: '#2dd4bf',
-  error: '#f43f5e',
-  discovery: '#60a5fa',
-  procedure: '#a78bfa',
-}
+import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 
 function escapeHtml(str: string): string {
   return str
@@ -30,15 +24,6 @@ function highlightContext(str: string): string {
     '<span class="text-muted-foreground">$1</span>'
   )
   return out
-}
-
-function getSummary(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command': return record.command
-    case 'error': return record.errorText
-    case 'discovery': return record.what
-    case 'procedure': return record.name
-  }
 }
 
 export default function ContextPreview() {
@@ -186,7 +171,7 @@ export default function ContextPreview() {
                           Score {match.score.toFixed(2)} · Sim {match.similarity.toFixed(2)}
                         </span>
                       </div>
-                      <div className="truncate">{getSummary(match.record)}</div>
+                      <div className="truncate">{getMemorySummary(match.record)}</div>
                     </button>
                   ))}
                 </div>
@@ -228,7 +213,7 @@ export default function ContextPreview() {
                         style={{ backgroundColor: TYPE_COLORS[record.type] }}
                       />
                       <div className="min-w-0">
-                        <div className="truncate">{getSummary(record)}</div>
+                        <div className="truncate">{getMemorySummary(record)}</div>
                         <div className="text-xs text-muted-foreground">
                           {record.project ?? '—'} · {record.domain ?? '—'}
                         </div>

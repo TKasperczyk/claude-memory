@@ -1,7 +1,15 @@
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
-import { type MemoryRecord } from './types.js'
+import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
+import { type RecordType } from './types.js'
+
+export interface ExtractionRecordSummary {
+  id: string
+  type: RecordType
+  summary: string
+  timestamp?: number
+}
 
 export interface ExtractionRun {
   runId: string
@@ -11,7 +19,7 @@ export interface ExtractionRun {
   recordCount: number
   parseErrorCount: number
   extractedRecordIds: string[]
-  extractedRecords?: MemoryRecord[]
+  extractedRecords?: ExtractionRecordSummary[]
   duration: number
 }
 
@@ -99,16 +107,16 @@ function sanitizeRunId(runId: string): string {
 
 function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | null {
   if (!isPlainObject(value)) return null
-  const record = value as Record<string, unknown>
+  const record = value
 
   const sessionId = asString(record.sessionId) ?? 'unknown'
   const transcriptPath = asString(record.transcriptPath) ?? ''
-  const timestamp = asNumber(record.timestamp) ?? Date.now()
-  const recordCount = asNumber(record.recordCount) ?? 0
-  const parseErrorCount = asNumber(record.parseErrorCount) ?? 0
+  const timestamp = asInteger(record.timestamp) ?? Date.now()
+  const recordCount = asInteger(record.recordCount) ?? 0
+  const parseErrorCount = asInteger(record.parseErrorCount) ?? 0
   const extractedRecordIds = asStringArray(record.extractedRecordIds)
-  const extractedRecords = asRecordArray(record.extractedRecords)
-  const duration = asNumber(record.duration) ?? 0
+  const extractedRecords = coerceRecordSummaries(record.extractedRecords)
+  const duration = asInteger(record.duration) ?? 0
 
   return {
     runId: asString(record.runId) ?? runId,
@@ -123,30 +131,45 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   }
 }
 
-function asString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
-}
-
-function asNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value)
-    if (Number.isFinite(parsed)) return Math.trunc(parsed)
-  }
-  return null
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((entry): entry is string => typeof entry === 'string')
-}
-
-function asRecordArray(value: unknown): MemoryRecord[] | undefined {
+function coerceRecordSummaries(value: unknown): ExtractionRecordSummary[] | undefined {
   if (!Array.isArray(value)) return undefined
-  const records = value.filter((entry): entry is Record<string, unknown> => isPlainObject(entry))
-  return records as unknown as MemoryRecord[]
+  const summaries = value
+    .map(entry => coerceRecordSummary(entry))
+    .filter((entry): entry is ExtractionRecordSummary => Boolean(entry))
+  return summaries.length > 0 ? summaries : undefined
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
+function coerceRecordSummary(value: unknown): ExtractionRecordSummary | null {
+  if (!isPlainObject(value)) return null
+  const record = value
+
+  const id = asString(record.id)
+  const type = asRecordType(record.type)
+  const timestamp = asInteger(record.timestamp) ?? undefined
+  const summary = asTrimmedString(record.summary)
+    ?? asTrimmedString(record.snippet)
+    ?? deriveSummaryFromRecord(type, record)
+
+  if (!id || !type || !summary) return null
+
+  return {
+    id,
+    type,
+    summary,
+    timestamp
+  }
+}
+
+function deriveSummaryFromRecord(type: RecordType | undefined, record: Record<string, unknown>): string | undefined {
+  if (!type) return undefined
+  switch (type) {
+    case 'command':
+      return asTrimmedString(record.command)
+    case 'error':
+      return asTrimmedString(record.errorText)
+    case 'discovery':
+      return asTrimmedString(record.what)
+    case 'procedure':
+      return asTrimmedString(record.name)
+  }
 }

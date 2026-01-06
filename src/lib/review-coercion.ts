@@ -1,8 +1,9 @@
 import type { ExtractionReview, ExtractionReviewIssue } from './extraction-review.js'
+import { asString, isPlainObject } from './parsing.js'
 
 export function coerceReviewIssue(value: unknown): ExtractionReviewIssue | null {
   if (!isPlainObject(value)) return null
-  const record = value as Record<string, unknown>
+  const record = value
 
   const type = parseIssueType(record.type)
   const severity = parseSeverity(record.severity)
@@ -57,14 +58,6 @@ export function parseSeverity(value: unknown): ExtractionReviewIssue['severity']
 
 export function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)))
-}
-
-export function asString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
-}
-
-export function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
 export type InjectionOverallRelevance = 'excellent' | 'good' | 'mixed' | 'poor'

@@ -121,7 +121,8 @@ export interface PreviewResponse {
   }
   results: SearchResult[]
   injectedRecords: MemoryRecord[]
-  context: string
+  context: string | null
+  timedOut?: boolean
 }
 
 export interface MemoryStats {
@@ -337,12 +338,14 @@ export function resetCollection(): Promise<ActionResponse> {
 export function searchMemories(params: {
   query: string
   limit?: number
+  offset?: number
   type?: RecordType
   project?: string
   deprecated?: boolean
 }): Promise<SearchResponse> {
   const search = new URLSearchParams({ q: params.query })
   if (typeof params.limit === 'number') search.set('limit', String(params.limit))
+  if (typeof params.offset === 'number') search.set('offset', String(params.offset))
   if (params.type) search.set('type', params.type)
   if (params.project) search.set('project', params.project)
   if (params.deprecated) search.set('deprecated', 'true')

@@ -41,7 +41,8 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: DependencyList = []):
     return () => {
       active = false
     }
-  }, [...deps, reloadKey])
+  // fetcher should be memoized or stable to avoid refetch loops.
+  }, [fetcher, reloadKey, ...deps])
 
   return { data, error, loading, reload }
 }

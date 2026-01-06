@@ -126,7 +126,7 @@ export async function updateRecord(
     await ensureClient(config)
 
     // NOTE: Read-modify-write can drop increments under concurrency; acceptable for ranking hints.
-    const existing = await getRecordById(id, config)
+    const existing = await getRecordById(id, config, { includeEmbedding: true })
     if (!existing) return false
 
     const merged = mergeRecords(existing, updates)
@@ -167,7 +167,7 @@ export async function incrementRecordCounters(
   try {
     await ensureClient(config)
 
-    const existing = await getRecordById(id, config)
+    const existing = await getRecordById(id, config, { includeEmbedding: true })
     if (!existing) return false
 
     const updates: Partial<MemoryRecord> = {}
@@ -282,11 +282,12 @@ function clearFilesystemStorage(): void {
 
 export async function getRecord(
   id: string,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  options: { includeEmbedding?: boolean } = {}
 ): Promise<MemoryRecord | null> {
   try {
     await ensureClient(config)
-    return await getRecordById(id, config)
+    return await getRecordById(id, config, { includeEmbedding: options.includeEmbedding ?? false })
   } catch (error) {
     console.error('[claude-memory] getRecord failed:', error)
     throw error
@@ -488,6 +489,38 @@ export async function queryRecords(
   } catch (error) {
     console.error('[claude-memory] queryRecords failed:', error)
     throw error
+  }
+}
+
+export async function* iterateRecords(
+  options: {
+    filter?: string
+    includeEmbeddings?: boolean
+  } = {},
+  config: Config = DEFAULT_CONFIG
+): AsyncGenerator<MemoryRecord> {
+  await ensureClient(config)
+
+  const filter = options.filter ?? 'id != ""'
+  const outputFields = options.includeEmbeddings
+    ? [...OUTPUT_FIELDS, 'embedding']
+    : OUTPUT_FIELDS
+
+  const iterator = await client!.queryIterator({
+    collection_name: config.milvus.collection,
+    filter,
+    output_fields: outputFields,
+    batchSize: QUERY_ITERATOR_BATCH_SIZE
+  })
+
+  for await (const batch of iterator) {
+    if (!Array.isArray(batch)) continue
+    for (const row of batch) {
+      const record = parseRecordFromRow(row as Record<string, unknown>)
+      if (record) {
+        yield record
+      }
+    }
   }
 }
 
@@ -1196,11 +1229,19 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord | null {
   return record
 }
 
-async function getRecordById(id: string, config: Config): Promise<MemoryRecord | null> {
+async function getRecordById(
+  id: string,
+  config: Config,
+  options: { includeEmbedding?: boolean } = {}
+): Promise<MemoryRecord | null> {
+  const outputFields = options.includeEmbedding
+    ? [...OUTPUT_FIELDS, 'embedding']
+    : OUTPUT_FIELDS
+
   const result = await client!.query({
     collection_name: config.milvus.collection,
     filter: `id == "${escapeFilterValue(id)}"`,
-    output_fields: [...OUTPUT_FIELDS, 'embedding']
+    output_fields: outputFields
   })
 
   if (!result.data || result.data.length === 0) return null

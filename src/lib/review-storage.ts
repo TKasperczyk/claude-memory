@@ -3,11 +3,10 @@ import path from 'path'
 import { homedir } from 'os'
 import { type ExtractionReview, type ExtractionReviewIssue } from './extraction-review.js'
 import { type InjectedMemoryVerdict, type InjectionReview, type MissedMemory } from './injection-review.js'
+import { asInteger, asNumber, asString, isPlainObject } from './parsing.js'
 import {
-  asString,
   clampScore,
   coerceReviewIssue,
-  isPlainObject,
   parseInjectionVerdict,
   parseOverallAccuracy,
   parseOverallRelevance
@@ -83,14 +82,14 @@ function sanitizeSessionId(sessionId: string): string {
 
 function coerceReview(value: unknown, runId: string): ExtractionReview | null {
   if (!isPlainObject(value)) return null
-  const record = value as Record<string, unknown>
+  const record = value
 
   const summary = asString(record.summary)?.trim() ?? ''
   const overallAccuracy = parseOverallAccuracy(record.overallAccuracy)
-  const accuracyScore = parseNumber(record.accuracyScore) ?? 0
-  const reviewedAt = parseNumber(record.reviewedAt) ?? 0
+  const accuracyScore = asNumber(record.accuracyScore) ?? 0
+  const reviewedAt = asInteger(record.reviewedAt) ?? 0
   const model = asString(record.model) ?? 'unknown'
-  const durationMs = parseNumber(record.durationMs) ?? 0
+  const durationMs = asInteger(record.durationMs) ?? 0
 
   const issues = Array.isArray(record.issues)
     ? record.issues.map(coerceReviewIssue).filter((issue): issue is ExtractionReviewIssue => Boolean(issue))
@@ -112,14 +111,14 @@ function coerceReview(value: unknown, runId: string): ExtractionReview | null {
 
 function coerceInjectionReview(value: unknown, sessionId: string): InjectionReview | null {
   if (!isPlainObject(value)) return null
-  const record = value as Record<string, unknown>
+  const record = value
 
   const summary = asString(record.summary)?.trim() ?? ''
   const overallRelevance = parseOverallRelevance(record.overallRelevance)
-  const relevanceScore = parseNumber(record.relevanceScore) ?? 0
-  const reviewedAt = parseNumber(record.reviewedAt) ?? 0
+  const relevanceScore = asNumber(record.relevanceScore) ?? 0
+  const reviewedAt = asInteger(record.reviewedAt) ?? 0
   const model = asString(record.model) ?? 'unknown'
-  const durationMs = parseNumber(record.durationMs) ?? 0
+  const durationMs = asInteger(record.durationMs) ?? 0
   const prompt = asString(record.prompt) ?? ''
 
   const injectedVerdicts = Array.isArray(record.injectedVerdicts)
@@ -148,7 +147,7 @@ function coerceInjectionReview(value: unknown, sessionId: string): InjectionRevi
 
 function coerceInjectedVerdict(value: unknown): InjectedMemoryVerdict | null {
   if (!isPlainObject(value)) return null
-  const record = value as Record<string, unknown>
+  const record = value
 
   const id = asString(record.id)?.trim()
   const snippet = asString(record.snippet)?.trim()
@@ -167,7 +166,7 @@ function coerceInjectedVerdict(value: unknown): InjectedMemoryVerdict | null {
 
 function coerceMissedMemory(value: unknown): MissedMemory | null {
   if (!isPlainObject(value)) return null
-  const record = value as Record<string, unknown>
+  const record = value
 
   const id = asString(record.id)?.trim()
   const snippet = asString(record.snippet)?.trim()
@@ -180,13 +179,4 @@ function coerceMissedMemory(value: unknown): MissedMemory | null {
     snippet,
     reason
   }
-}
-
-function parseNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value)
-    if (Number.isFinite(parsed)) return Math.trunc(parsed)
-  }
-  return null
 }

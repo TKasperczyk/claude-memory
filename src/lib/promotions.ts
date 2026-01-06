@@ -5,7 +5,7 @@ import { homedir } from 'os'
 import path from 'path'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { queryRecords } from './milvus.js'
-import { asString, isPlainObject } from './review-coercion.js'
+import { asString, isPlainObject } from './parsing.js'
 import { KNOWN_COMMANDS, normalizeStep, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
 

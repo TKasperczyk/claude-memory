@@ -1,15 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Check, Copy } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import { useExtractions } from '@/hooks/queries'
+import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import Skeleton from '@/components/Skeleton'
 import {
   fetchExtractionReview,
   fetchExtractionRun,
-  fetchMemory,
   runExtractionReview,
   type ExtractionReview,
   type ExtractionReviewIssue,
@@ -17,16 +16,10 @@ import {
   type MemoryRecord
 } from '@/lib/api'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import { TYPE_COLORS } from '@/lib/memory-ui'
 import { formatExtractionReview } from '@/lib/review-format'
 
 const PAGE_SIZE = 25
-
-const TYPE_COLORS: Record<string, string> = {
-  command: '#2dd4bf',
-  error: '#f43f5e',
-  discovery: '#60a5fa',
-  procedure: '#a78bfa',
-}
 
 const ACCURACY_STYLES: Record<ExtractionReview['overallAccuracy'], { badge: string; label: string }> = {
   good: {
@@ -137,11 +130,7 @@ function RecordsSkeleton() {
 export default function Extractions() {
   const [page, setPage] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
-  const [selected, setSelected] = useState<MemoryRecord | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
-  const [searchParams, setSearchParams] = useSearchParams()
-  const selectedId = searchParams.get('id')
+  const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose } = useSelectedMemory()
   const [recordsByRun, setRecordsByRun] = useState<Record<string, MemoryRecord[]>>({})
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null)
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
@@ -157,40 +146,6 @@ export default function Extractions() {
   const total = data?.total ?? null
   const displayOffset = data?.offset ?? page * PAGE_SIZE
   const errorMessage = error instanceof Error ? error.message : 'Failed to load extractions'
-
-  useEffect(() => {
-    let active = true
-
-    const loadSelected = async () => {
-      if (!selectedId) {
-        if (active) {
-          setSelected(null)
-          setDetailError(null)
-          setDetailLoading(false)
-        }
-        return
-      }
-
-      setDetailLoading(true)
-      setDetailError(null)
-      setSelected(null)
-
-      try {
-        const record = await fetchMemory(selectedId)
-        if (active) setSelected(record)
-      } catch {
-        if (active) {
-          setSelected(null)
-          setDetailError('Failed to load memory')
-        }
-      } finally {
-        if (active) setDetailLoading(false)
-      }
-    }
-
-    loadSelected()
-    return () => { active = false }
-  }, [selectedId])
 
   const handleToggle = async (run: ExtractionRun) => {
     const isOpen = expanded === run.runId
@@ -252,25 +207,6 @@ export default function Extractions() {
     setTimeout(() => {
       setCopied(prev => ({ ...prev, [run.runId]: false }))
     }, 2000)
-  }
-
-  const handleSelect = (id: string) => {
-    setSelected(null)
-    setDetailError(null)
-    const next = new URLSearchParams(searchParams)
-    next.set('id', id)
-    setSearchParams(next)
-  }
-
-  const handleClose = () => {
-    setSelected(null)
-    setDetailError(null)
-    setDetailLoading(false)
-    if (selectedId) {
-      const next = new URLSearchParams(searchParams)
-      next.delete('id')
-      setSearchParams(next)
-    }
   }
 
   const pageInfo = () => {

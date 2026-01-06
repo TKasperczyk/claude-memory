@@ -8,6 +8,7 @@ import cors from 'cors'
 import {
   initMilvus,
   queryRecords,
+  iterateRecords,
   hybridSearch,
   getRecord,
   deleteRecord,
@@ -103,15 +104,32 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function escapeLikeValue(value: string): string {
+  const escapedWildcards = value.replace(/[%_]/g, '\\$&')
+  return escapeFilterValue(escapedWildcards)
+}
+
+function buildSearchFilter(filters: { type?: RecordType; project?: string; deprecated?: boolean }): string | undefined {
+  const parts: string[] = []
+  if (filters.type) parts.push(`type == "${escapeFilterValue(filters.type)}"`)
+  if (filters.project) parts.push(`project == "${escapeFilterValue(filters.project)}"`)
+  if (!filters.deprecated) parts.push('deprecated == false')
+  return parts.length > 0 ? parts.join(' && ') : undefined
+}
+
+function buildKeywordFilter(query: string, baseFilter?: string): string {
+  const escaped = escapeLikeValue(query)
+  const likeClause = `exact_text like "%${escaped}%"`
+  return baseFilter ? `${baseFilter} && ${likeClause}` : likeClause
+}
+
 // Get aggregate stats
 app.get('/api/stats', async (_req, res) => {
   try {
     await ensureInitialized()
-    // Use orderBy to trigger iterator path which handles >16384 records
-    const records = await queryRecords({ limit: 100000, orderBy: 'timestamp_desc' }, CONFIG)
-
+    const total = await countRecords({}, CONFIG)
     const stats = {
-      total: records.length,
+      total,
       byType: {} as Record<string, number>,
       byProject: {} as Record<string, number>,
       byDomain: {} as Record<string, number>,
@@ -125,7 +143,7 @@ app.get('/api/stats', async (_req, res) => {
     let totalUsage = 0
     let recordsWithRetrieval = 0
 
-    for (const record of records) {
+    for await (const record of iterateRecords({}, CONFIG)) {
       // By type
       stats.byType[record.type] = (stats.byType[record.type] ?? 0) + 1
 
@@ -267,7 +285,7 @@ app.post('/api/preview', async (req, res) => {
         keywordMatch: r.keywordMatch
       })),
       injectedRecords: result.injectedRecords,
-      context: result.context,
+      context: result.context ?? null,
       timedOut: result.timedOut
     })
   } catch (error) {
@@ -281,28 +299,44 @@ app.get('/api/search', async (req, res) => {
   try {
     await ensureInitialized()
 
-    const query = req.query.q as string
+    const rawQuery = req.query.q as string
+    const query = rawQuery?.trim()
     if (!query) {
       return res.status(400).json({ error: 'Query required' })
     }
 
-    const limit = Math.min(parseNonNegativeInt(req.query.limit, 20), 100)
+    const limit = Math.min(parseNonNegativeInt(req.query.limit, 20), 200)
+    const offset = parseNonNegativeInt(req.query.offset, 0)
     const type = req.query.type as RecordType | undefined
     const project = req.query.project as string | undefined
     const deprecated = req.query.deprecated === 'true'
 
-    const results = await hybridSearch({
-      query,
-      limit,
-      type,
-      project,
-      excludeDeprecated: !deprecated
-    }, CONFIG)
+    const baseFilter = buildSearchFilter({ type, project, deprecated })
+    const keywordFilter = buildKeywordFilter(query, baseFilter)
+    const windowLimit = offset + limit
+
+    const [total, results] = await Promise.all([
+      countRecords({ filter: keywordFilter }, CONFIG),
+      hybridSearch({
+        query,
+        limit: windowLimit,
+        type,
+        project,
+        excludeDeprecated: !deprecated
+      }, CONFIG)
+    ])
+
+    const page = results.slice(offset, offset + limit)
+    // total is keyword match count; results may include semantic-only matches
+    // hasMore indicates if there are more results beyond this page
+    const hasMore = results.length > offset + limit || total > offset + limit
 
     res.json({
       query,
-      total: results.length,
-      results: results.map(r => ({
+      total: Math.max(total, results.length),
+      offset,
+      hasMore,
+      results: page.map(r => ({
         record: r.record,
         score: r.score,
         similarity: r.similarity,

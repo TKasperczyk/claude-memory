@@ -12,7 +12,7 @@ import { rateInjectedMemories } from '../lib/extract.js'
 import { parseTranscript, type Transcript, type TranscriptEvent } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
-import { saveExtractionRun } from '../lib/extraction-log.js'
+import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord } from '../lib/types.js'
 import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
@@ -168,6 +168,9 @@ function saveRunLog(
   const extractedIds = [...(result.insertedIds ?? []), ...(result.updatedIds ?? [])]
   const uniqueIds = Array.from(new Set(extractedIds))
   const runId = randomUUID()
+  const extractedRecords = result.records
+    .map(record => buildRecordSummary(record))
+    .filter((record): record is ExtractionRecordSummary => Boolean(record))
 
   saveExtractionRun({
     runId,
@@ -177,9 +180,33 @@ function saveRunLog(
     recordCount: uniqueIds.length,
     parseErrorCount: result.transcript?.parseErrors ?? 0,
     extractedRecordIds: uniqueIds,
-    extractedRecords: result.records,
+    extractedRecords,
     duration
   })
+}
+
+function buildRecordSummary(record: MemoryRecord): ExtractionRecordSummary | null {
+  const summary = getRecordSummary(record)
+  if (!record.id || !summary) return null
+  return {
+    id: record.id,
+    type: record.type,
+    summary,
+    timestamp: record.timestamp
+  }
+}
+
+function getRecordSummary(record: MemoryRecord): string {
+  switch (record.type) {
+    case 'command':
+      return record.command
+    case 'error':
+      return record.errorText
+    case 'discovery':
+      return record.what
+    case 'procedure':
+      return record.name
+  }
 }
 
 async function processUsefulnessRating(

@@ -1,4 +1,5 @@
 import type { MemoryRecord } from '@/lib/api'
+import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 
 interface MemoryTableProps {
   records: MemoryRecord[]
@@ -6,24 +7,8 @@ interface MemoryTableProps {
   emptyMessage?: string
 }
 
-const TYPE_COLORS: Record<string, string> = {
-  command: '#2dd4bf',
-  error: '#f43f5e',
-  discovery: '#60a5fa',
-  procedure: '#a78bfa',
-}
-
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`
-}
-
-function getSummary(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command': return record.command
-    case 'error': return record.errorText
-    case 'discovery': return record.what
-    case 'procedure': return record.name
-  }
 }
 
 function formatRelativeTime(timestamp?: number): string {
@@ -64,7 +49,7 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
         </thead>
         <tbody>
           {records.map(record => {
-            const summary = truncate(getSummary(record), 80)
+            const summary = truncate(getMemorySummary(record), 80)
             return (
               <tr
                 key={record.id}

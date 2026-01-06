@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
 import { Check, Circle, Eye, Loader2, Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
@@ -7,16 +6,15 @@ import MemoryDetail from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
 import { formatDuration } from '@/lib/format'
 import {
-  fetchMemory,
   fetchMaintenanceOperations,
   runMaintenance,
-  type MemoryRecord,
   type MaintenanceAction,
   type MaintenanceActionType,
   type MaintenanceOperationInfo,
   type OperationResult
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
+import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 
 type MaintenanceOperation = MaintenanceOperationInfo['key']
 
@@ -210,11 +208,15 @@ export default function Maintenance() {
   const [bulkProgress, setBulkProgress] = useState<Record<MaintenanceOperation, BulkProgressState> | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState>(null)
-  const [selected, setSelected] = useState<MemoryRecord | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
-  const [searchParams, setSearchParams] = useSearchParams()
-  const selectedId = searchParams.get('id')
+  const {
+    selectedId,
+    selected,
+    detailLoading,
+    detailError,
+    handleSelect: selectMemory,
+    handleClose: closeMemory
+  } = useSelectedMemory()
+  const eventSourceRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
     if (operations.length === 0) return
@@ -224,38 +226,11 @@ export default function Maintenance() {
   }, [operations])
 
   useEffect(() => {
-    let active = true
-
-    const loadSelected = async () => {
-      if (!selectedId) {
-        if (active) {
-          setSelected(null)
-          setDetailError(null)
-          setDetailLoading(false)
-        }
-        return
-      }
-
-      setDetailLoading(true)
-      setDetailError(null)
-      setSelected(null)
-
-      try {
-        const record = await fetchMemory(selectedId)
-        if (active) setSelected(record)
-      } catch {
-        if (active) {
-          setSelected(null)
-          setDetailError('Failed to load memory')
-        }
-      } finally {
-        if (active) setDetailLoading(false)
-      }
+    return () => {
+      eventSourceRef.current?.close()
+      eventSourceRef.current = null
     }
-
-    loadSelected()
-    return () => { active = false }
-  }, [selectedId])
+  }, [])
 
   const setOperationRunning = (operation: MaintenanceOperation, isRunning: boolean) => {
     setRunning(prev => ({ ...prev, [operation]: isRunning }))
@@ -286,25 +261,6 @@ export default function Maintenance() {
     }
   }
 
-  const handleSelect = (recordId: string) => {
-    setSelected(null)
-    setDetailError(null)
-    const next = new URLSearchParams(searchParams)
-    next.set('id', recordId)
-    setSearchParams(next)
-  }
-
-  const handleClose = () => {
-    setSelected(null)
-    setDetailError(null)
-    setDetailLoading(false)
-    if (selectedId) {
-      const next = new URLSearchParams(searchParams)
-      next.delete('id')
-      setSearchParams(next)
-    }
-  }
-
   const handleRunAll = (dryRun: boolean) => {
     if (operations.length === 0) return
     setBulkRunning(true)
@@ -316,7 +272,13 @@ export default function Maintenance() {
     )
 
     // Use SSE streaming endpoint for real-time progress
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+
     const eventSource = new EventSource(`/api/maintenance/stream?dryRun=${dryRun}`)
+    eventSourceRef.current = eventSource
 
     eventSource.addEventListener('progress', (event) => {
       const data = JSON.parse(event.data)
@@ -350,6 +312,7 @@ export default function Maintenance() {
       setBulkProgress(null)
       setBulkMode(null)
       eventSource.close()
+      eventSourceRef.current = null
     })
 
     eventSource.onerror = () => {
@@ -357,6 +320,7 @@ export default function Maintenance() {
       setBulkProgress(null)
       setBulkMode(null)
       eventSource.close()
+      eventSourceRef.current = null
     }
   }
 
@@ -563,7 +527,7 @@ export default function Maintenance() {
                 </div>
               </div>
 
-              {result && <ResultPanel result={result} onSelect={handleSelect} />}
+              {result && <ResultPanel result={result} onSelect={selectMemory} />}
             </section>
           )
         })}
@@ -609,7 +573,7 @@ export default function Maintenance() {
         open={Boolean(selectedId)}
         loading={detailLoading}
         error={detailError}
-        onClose={handleClose}
+        onClose={closeMemory}
       />
     </div>
   )

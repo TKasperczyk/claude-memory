@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
+import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, isPlainObject } from './parsing.js'
 import { type InjectedMemoryEntry, type InjectionSessionRecord, type InjectionStatus, type RecordType } from './types.js'
 
 const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
@@ -121,28 +122,21 @@ function sanitizeSessionId(sessionId: string): string {
 function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessionRecord | null {
   if (!isPlainObject(value)) return null
 
-  const record = value as Record<string, unknown>
+  const record = value
   const memories = coerceMemoryEntries(record.memories)
   const now = Date.now()
-  const createdAt = asNumber(record.createdAt) ?? now
+  const createdAt = asInteger(record.createdAt) ?? now
 
   return {
     sessionId: asString(record.sessionId) ?? sessionId,
     createdAt,
-    lastActivity: asNumber(record.lastActivity) ?? createdAt,
+    lastActivity: asInteger(record.lastActivity) ?? createdAt,
     cwd: asString(record.cwd),
     memories,
-    promptCount: asNumber(record.promptCount) ?? undefined,
-    injectionCount: asNumber(record.injectionCount) ?? undefined,
+    promptCount: asInteger(record.promptCount) ?? undefined,
+    injectionCount: asInteger(record.injectionCount) ?? undefined,
     lastStatus: asInjectionStatus(record.lastStatus)
   }
-}
-
-function asInjectionStatus(value: unknown): InjectionStatus | undefined {
-  if (value === 'injected' || value === 'no_matches' || value === 'empty_prompt' || value === 'timeout' || value === 'error') {
-    return value
-  }
-  return undefined
 }
 
 function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
@@ -151,10 +145,10 @@ function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
   const entries: InjectedMemoryEntry[] = []
   for (const item of value) {
     if (!isPlainObject(item)) continue
-    const record = item as Record<string, unknown>
+    const record = item
     const id = asString(record.id)
     const snippet = asString(record.snippet)
-    const injectedAt = asNumber(record.injectedAt)
+    const injectedAt = asInteger(record.injectedAt)
     if (!id || !snippet || injectedAt === null) continue
     const prompt = asString(record.prompt)
     const type = asRecordType(record.type) ?? parseSnippetType(snippet)
@@ -164,9 +158,9 @@ function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
     if (type) entry.type = type
 
     // Parse retrieval trigger metadata
-    const similarity = asFloat(record.similarity)
+    const similarity = asNumber(record.similarity)
     const keywordMatch = asBoolean(record.keywordMatch)
-    const score = asFloat(record.score)
+    const score = asNumber(record.score)
     if (similarity !== null) entry.similarity = similarity
     if (keywordMatch !== null) entry.keywordMatch = keywordMatch
     if (score !== null) entry.score = score
@@ -175,44 +169,6 @@ function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
   }
 
   return entries
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
-}
-
-function asRecordType(value: unknown): RecordType | undefined {
-  if (value === 'command' || value === 'error' || value === 'discovery' || value === 'procedure') {
-    return value
-  }
-  return undefined
-}
-
-function asNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value)
-    if (Number.isFinite(parsed)) return Math.trunc(parsed)
-  }
-  return null
-}
-
-function asFloat(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return null
-}
-
-function asBoolean(value: unknown): boolean | null {
-  if (typeof value === 'boolean') return value
-  return null
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
 function parseSnippetType(snippet: string): RecordType | null {

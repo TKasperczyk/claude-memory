@@ -5,7 +5,8 @@ import { embedBatch } from './embed.js'
 import { escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.js'
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
-import { asString, clampScore, isPlainObject, parseInjectionVerdict, parseOverallRelevance } from './review-coercion.js'
+import { asString, isPlainObject } from './parsing.js'
+import { clampScore, parseInjectionVerdict, parseOverallRelevance } from './review-coercion.js'
 import { DEFAULT_CONFIG, type Config, type InjectedMemoryEntry, type MemoryRecord } from './types.js'
 
 export interface InjectedMemoryVerdict {
@@ -475,7 +476,7 @@ function normalizeInjectedVerdicts(
 
 function coerceReviewPayload(input: unknown): ReviewPayload | null {
   if (!isPlainObject(input)) return null
-  const record = input as Record<string, unknown>
+  const record = input
 
   const overallRelevance = parseOverallRelevance(record.overallRelevance)
   const relevanceScore = parseRelevanceScore(record.relevanceScore)
@@ -511,7 +512,7 @@ function parseRelevanceScore(value: unknown): number | null {
 
 function coerceInjectedVerdict(value: unknown): InjectedMemoryVerdict | null {
   if (!isPlainObject(value)) return null
-  const record = value as Record<string, unknown>
+  const record = value
 
   const id = asString(record.id)?.trim()
   const snippet = asString(record.snippet)?.trim()
@@ -530,7 +531,7 @@ function coerceInjectedVerdict(value: unknown): InjectedMemoryVerdict | null {
 
 function coerceMissedMemory(value: unknown): MissedMemory | null {
   if (!isPlainObject(value)) return null
-  const record = value as Record<string, unknown>
+  const record = value
 
   const id = asString(record.id)?.trim()
   const snippet = asString(record.snippet)?.trim()

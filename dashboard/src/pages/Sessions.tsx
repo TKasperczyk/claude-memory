@@ -1,32 +1,24 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import { useSessions } from '@/hooks/queries'
+import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
 import { formatDateTime } from '@/lib/format'
 import {
   fetchInjectionReview,
-  fetchMemory,
   runInjectionReview,
   type InjectedMemoryVerdict,
   type InjectionReview,
   type InjectionStatus,
-  type MemoryRecord,
   type MemoryStats,
   type RecordType,
   type SessionRecord
 } from '@/lib/api'
+import { TYPE_COLORS } from '@/lib/memory-ui'
 import { formatInjectionReview } from '@/lib/review-format'
-
-const TYPE_COLORS: Record<string, string> = {
-  command: '#2dd4bf',
-  error: '#f43f5e',
-  discovery: '#60a5fa',
-  procedure: '#a78bfa',
-}
 
 const TYPE_ORDER: RecordType[] = ['error', 'command', 'discovery', 'procedure']
 
@@ -209,12 +201,15 @@ function ReviewSkeleton() {
 
 export default function Sessions() {
   const [expanded, setExpanded] = useState<string | null>(null)
-  const [selected, setSelected] = useState<MemoryRecord | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
   const [retrievalContext, setRetrievalContext] = useState<RetrievalContext | null>(null)
-  const [searchParams, setSearchParams] = useSearchParams()
-  const selectedId = searchParams.get('id')
+  const {
+    selectedId,
+    selected,
+    detailLoading,
+    detailError,
+    handleSelect: selectMemory,
+    handleClose: closeMemory
+  } = useSelectedMemory()
   const [reviewsBySession, setReviewsBySession] = useState<Record<string, InjectionReview | null>>({})
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
@@ -223,40 +218,6 @@ export default function Sessions() {
   const { data, error, isPending } = useSessions()
   const sessions = data?.sessions ?? []
   const errorMessage = error instanceof Error ? error.message : 'Failed to load sessions'
-
-  useEffect(() => {
-    let active = true
-
-    const loadSelected = async () => {
-      if (!selectedId) {
-        if (active) {
-          setSelected(null)
-          setDetailError(null)
-          setDetailLoading(false)
-        }
-        return
-      }
-
-      setDetailLoading(true)
-      setDetailError(null)
-      setSelected(null)
-
-      try {
-        const record = await fetchMemory(selectedId)
-        if (active) setSelected(record)
-      } catch {
-        if (active) {
-          setSelected(null)
-          setDetailError('Failed to load memory')
-        }
-      } finally {
-        if (active) setDetailLoading(false)
-      }
-    }
-
-    loadSelected()
-    return () => { active = false }
-  }, [selectedId])
 
   useEffect(() => {
     if (!selectedId) {
@@ -281,24 +242,13 @@ export default function Sessions() {
   }, [selectedId, sessions])
 
   const handleSelect = (id: string, context?: RetrievalContext | null) => {
-    setSelected(null)
-    setDetailError(null)
     setRetrievalContext(context ?? null)
-    const next = new URLSearchParams(searchParams)
-    next.set('id', id)
-    setSearchParams(next)
+    selectMemory(id)
   }
 
   const handleClose = () => {
-    setSelected(null)
-    setDetailError(null)
-    setDetailLoading(false)
     setRetrievalContext(null)
-    if (selectedId) {
-      const next = new URLSearchParams(searchParams)
-      next.delete('id')
-      setSearchParams(next)
-    }
+    closeMemory()
   }
 
   const isInitialLoading = isPending && sessions.length === 0

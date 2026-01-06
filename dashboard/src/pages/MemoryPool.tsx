@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/App'
@@ -7,10 +6,9 @@ import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import MemoryTable from '@/components/MemoryTable'
 import Skeleton from '@/components/Skeleton'
-import { SEARCH_LIMIT, useMemories, useMemoryTypes, useStats } from '@/hooks/queries'
+import { useMemories, useMemoryTypes, useStats } from '@/hooks/queries'
+import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import {
-  fetchMemory,
-  type MemoryRecord,
   type RecordType
 } from '@/lib/api'
 
@@ -58,11 +56,7 @@ export default function MemoryPool() {
   const [searchQuery, setSearchQuery] = useState('')
   const [page, setPage] = useState(0)
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
-  const [selected, setSelected] = useState<MemoryRecord | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
-  const [searchParams, setSearchParams] = useSearchParams()
-  const selectedId = searchParams.get('id')
+  const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose } = useSelectedMemory()
   const queryClient = useQueryClient()
 
   const { data: stats } = useStats()
@@ -113,59 +107,6 @@ export default function MemoryPool() {
   useEffect(() => {
     setPage(0)
   }, [typeFilter, projectFilter, showDeprecated, searchQuery])
-
-  useEffect(() => {
-    let active = true
-
-    const loadSelected = async () => {
-      if (!selectedId) {
-        if (active) {
-          setSelected(null)
-          setDetailError(null)
-          setDetailLoading(false)
-        }
-        return
-      }
-
-      setDetailLoading(true)
-      setDetailError(null)
-      setSelected(null)
-
-      try {
-        const record = await fetchMemory(selectedId)
-        if (active) setSelected(record)
-      } catch {
-        if (active) {
-          setSelected(null)
-          setDetailError('Failed to load memory')
-        }
-      } finally {
-        if (active) setDetailLoading(false)
-      }
-    }
-
-    loadSelected()
-    return () => { active = false }
-  }, [selectedId])
-
-  const handleSelect = (record: MemoryRecord) => {
-    setSelected(null)
-    setDetailError(null)
-    const next = new URLSearchParams(searchParams)
-    next.set('id', record.id)
-    setSearchParams(next)
-  }
-
-  const handleClose = () => {
-    setSelected(null)
-    setDetailError(null)
-    setDetailLoading(false)
-    if (selectedId) {
-      const next = new URLSearchParams(searchParams)
-      next.delete('id')
-      setSearchParams(next)
-    }
-  }
 
   const handleDeleted = (id: string) => {
     setNotice({ type: 'success', message: `Deleted memory ${id}` })
@@ -260,8 +201,8 @@ export default function MemoryPool() {
       {searchQuery && (
         <div className="text-sm text-muted-foreground">
           Searching for "<span className="text-foreground">{searchQuery}</span>"
-          {totalCount !== null && totalCount >= SEARCH_LIMIT && (
-            <span className="ml-2">(showing top {SEARCH_LIMIT})</span>
+          {totalCount !== null && (
+            <span className="ml-2">({totalCount} match{totalCount === 1 ? '' : 'es'})</span>
           )}
         </div>
       )}

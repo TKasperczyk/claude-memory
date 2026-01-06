@@ -4,6 +4,7 @@ import ButtonSpinner from '@/components/ButtonSpinner'
 import Skeleton from '@/components/Skeleton'
 import { deleteMemory, type MemoryRecord } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
+import { TYPE_COLORS, getMemoryTitle } from '@/lib/memory-ui'
 
 export interface RetrievalContext {
   prompt?: string
@@ -24,13 +25,6 @@ interface MemoryDetailProps {
 
 const ANIMATION_DURATION = 200
 
-const TYPE_COLORS: Record<string, string> = {
-  command: '#2dd4bf',
-  error: '#f43f5e',
-  discovery: '#60a5fa',
-  procedure: '#a78bfa',
-}
-
 function formatRelative(ts?: number): string {
   if (!ts) return '—'
   const diff = Date.now() - ts
@@ -41,15 +35,6 @@ function formatRelative(ts?: number): string {
   if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`
   if (mins > 0) return `${mins} minute${mins > 1 ? 's' : ''} ago`
   return 'just now'
-}
-
-function getTitle(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command': return record.command
-    case 'error': return record.errorText
-    case 'discovery': return record.what
-    case 'procedure': return record.name
-  }
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -319,7 +304,7 @@ export default function MemoryDetail({
             </div>
             {record ? (
               <>
-                <h2 className="text-lg font-semibold truncate">{getTitle(record)}</h2>
+                <h2 className="text-lg font-semibold truncate">{getMemoryTitle(record)}</h2>
                 <p className="text-xs text-muted-foreground font-mono mt-1">{record.id}</p>
               </>
             ) : (

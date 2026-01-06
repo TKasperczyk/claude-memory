@@ -315,7 +315,7 @@ export async function runGlobalPromotion(
     const eligible = records.filter(record => (record.lastGlobalCheck ?? 0) < cutoff)
     skippedRecent = candidates - eligible.length
 
-    const batch = eligible.slice(0, GLOBAL_PROMOTION_BATCH_SIZE)
+    const batch = selectPromotionBatch(eligible, GLOBAL_PROMOTION_BATCH_SIZE)
 
     for (const record of batch) {
       checked += 1
@@ -366,6 +366,16 @@ export async function runGlobalPromotion(
   }
 
   return { actions, summary: { candidates, checked, promoted, skippedRecent, errors } }
+}
+
+function selectPromotionBatch<T>(records: T[], batchSize: number): T[] {
+  if (records.length <= batchSize) return records
+  const shuffled = [...records]
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+  }
+  return shuffled.slice(0, batchSize)
 }
 
 async function runPromotions(config: Config, dryRun: boolean): Promise<void> {

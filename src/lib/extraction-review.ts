@@ -3,7 +3,8 @@ import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js
 import { embedBatch } from './embed.js'
 import { getExtractionRun } from './extraction-log.js'
 import { escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.js'
-import { asString, clampScore, coerceReviewIssue, isPlainObject, parseOverallAccuracy } from './review-coercion.js'
+import { asString, isPlainObject } from './parsing.js'
+import { clampScore, coerceReviewIssue, parseOverallAccuracy } from './review-coercion.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 
@@ -108,11 +109,12 @@ export async function reviewExtraction(
   }
 
   const extractedIds = run.extractedRecordIds ?? []
-  const records = run.extractedRecords && run.extractedRecords.length > 0
-    ? run.extractedRecords
-    : await fetchRecordsByIds(extractedIds, config)
+  if (extractedIds.length === 0) {
+    throw new Error('No extracted record IDs in this run. This may be an older extraction log or a run with only duplicates.')
+  }
+  const records = await fetchRecordsByIds(extractedIds, config)
   if (records.length === 0) {
-    throw new Error('No extracted records found for review.')
+    throw new Error('Could not fetch extracted records from Milvus. They may have been deleted.')
   }
 
   let similarMemories: Array<{ record: MemoryRecord; similarity: number }> = []
@@ -358,7 +360,7 @@ function formatSimilarRecord(record: MemoryRecord, similarity: number): Record<s
 
 function coerceReviewPayload(input: unknown): ReviewPayload | null {
   if (!isPlainObject(input)) return null
-  const record = input as Record<string, unknown>
+  const record = input
 
   const overallAccuracy = parseOverallAccuracy(record.overallAccuracy)
   const accuracyScore = parseAccuracyScore(record.accuracyScore)

@@ -7,7 +7,7 @@ import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNo
 import { embed } from '../lib/embed.js'
 import { loadConfig } from '../lib/config.js'
 import { loadSettings, type RetrievalSettings } from '../lib/settings.js'
-import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type InjectionStatus, type MemoryRecord, type UserPromptSubmitInput } from '../lib/types.js'
+import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type InjectionStatus, type MemoryRecord, type PrePromptInput, type UserPromptSubmitInput } from '../lib/types.js'
 import { appendSessionTracking } from '../lib/session-tracking.js'
 
 const MAX_KEYWORD_QUERIES = 4
@@ -41,7 +41,7 @@ export interface PrePromptResult {
  * Searches memories based on the prompt and returns formatted context.
  */
 export async function handlePrePrompt(
-  input: UserPromptSubmitInput,
+  input: PrePromptInput,
   config: Config = DEFAULT_CONFIG,
   options: { projectRoot?: string } = {}
 ): Promise<PrePromptResult> {

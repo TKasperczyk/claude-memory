@@ -15,8 +15,6 @@ import {
   type StatsResponse
 } from '@/lib/api'
 
-export const SEARCH_LIMIT = 100
-
 type MemoriesQueryParams = {
   page?: number
   limit?: number
@@ -56,7 +54,8 @@ export function useMemories(params: MemoriesQueryParams) {
       if (search && search.trim().length > 0) {
         const response = await searchMemories({
           query: search.trim(),
-          limit: SEARCH_LIMIT,
+          limit,
+          offset,
           type,
           project,
           deprecated
@@ -64,8 +63,8 @@ export function useMemories(params: MemoriesQueryParams) {
         const records = response.results.map(result => result.record)
         const total = response.total ?? records.length
         return {
-          records: records.slice(offset, offset + limit),
-          count: Math.max(0, Math.min(limit, records.length - offset)),
+          records,
+          count: records.length,
           total,
           offset,
           limit
@@ -103,7 +102,7 @@ export function useSessions() {
   return useQuery<SessionsResponse>({
     queryKey: ['sessions'],
     queryFn: fetchSessions,
-    refetchInterval: 5000
+    refetchInterval: 30000
   })
 }
 
