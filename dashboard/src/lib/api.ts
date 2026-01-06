@@ -1,5 +1,15 @@
 export type RecordType = 'command' | 'error' | 'discovery' | 'procedure'
 
+export interface RetrievalSettings {
+  minSemanticSimilarity: number
+  minScore: number
+  minSemanticOnlyScore: number
+  maxRecords: number
+  maxTokens: number
+  mmrLambda: number
+  usageRatioWeight: number
+}
+
 export interface BaseRecord {
   id: string
   type: RecordType
@@ -135,12 +145,17 @@ export interface InjectedMemoryEntry {
   score?: number         // Combined relevance score
 }
 
+export type InjectionStatus = 'injected' | 'no_matches' | 'empty_prompt' | 'timeout' | 'error'
+
 export interface SessionRecord {
   sessionId: string
   createdAt: number
   lastActivity: number
   cwd?: string
   memories: InjectedMemoryEntry[]
+  promptCount?: number
+  injectionCount?: number
+  lastStatus?: InjectionStatus
 }
 
 export interface SessionsResponse {
@@ -271,6 +286,21 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export function fetchStats(): Promise<StatsResponse> {
   return request('/stats')
+}
+
+export function fetchSettings(): Promise<RetrievalSettings> {
+  return request('/settings')
+}
+
+export function updateSettings(settings: Partial<RetrievalSettings>): Promise<RetrievalSettings> {
+  return request('/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings)
+  })
+}
+
+export function resetSettings(): Promise<RetrievalSettings> {
+  return request('/settings/reset', { method: 'POST' })
 }
 
 export function fetchMemories(params: {

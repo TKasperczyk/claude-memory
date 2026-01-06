@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
@@ -12,6 +13,7 @@ import {
   runInjectionReview,
   type InjectedMemoryVerdict,
   type InjectionReview,
+  type InjectionStatus,
   type MemoryRecord,
   type MemoryStats,
   type RecordType,
@@ -27,6 +29,14 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 const TYPE_ORDER: RecordType[] = ['error', 'command', 'discovery', 'procedure']
+
+const STATUS_STYLES: Record<InjectionStatus, { badge: string; label: string }> = {
+  injected: { badge: 'bg-emerald-500/15 text-emerald-300', label: 'Injected' },
+  no_matches: { badge: 'bg-amber-500/15 text-amber-300', label: 'No matches' },
+  empty_prompt: { badge: 'bg-muted-foreground/15 text-muted-foreground', label: 'Empty' },
+  timeout: { badge: 'bg-red-500/15 text-red-300', label: 'Timeout' },
+  error: { badge: 'bg-destructive/15 text-destructive', label: 'Error' }
+}
 
 const RELEVANCE_STYLES: Record<InjectionReview['overallRelevance'], { badge: string; label: string }> = {
   excellent: {
@@ -200,11 +210,11 @@ function ReviewSkeleton() {
 export default function Sessions() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const activeMemoryRef = useRef<string | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
   const [retrievalContext, setRetrievalContext] = useState<RetrievalContext | null>(null)
-  const [loadingMemory, setLoadingMemory] = useState<string | null>(null)
-  const [memoryError, setMemoryError] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedId = searchParams.get('id')
   const [reviewsBySession, setReviewsBySession] = useState<Record<string, InjectionReview | null>>({})
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
@@ -214,30 +224,80 @@ export default function Sessions() {
   const sessions = data?.sessions ?? []
   const errorMessage = error instanceof Error ? error.message : 'Failed to load sessions'
 
-  const handleMemoryClick = async (memory: SessionRecord['memories'][0]) => {
-    if (loadingMemory) return
-    setSelectedId(memory.id)
-    activeMemoryRef.current = memory.id
-    setSelected(null)
-    setMemoryError(null)
-    setLoadingMemory(memory.id)
-    setRetrievalContext({
-      prompt: memory.prompt,
-      similarity: memory.similarity,
-      keywordMatch: memory.keywordMatch,
-      score: memory.score
-    })
-    try {
-      const record = await fetchMemory(memory.id)
-      if (activeMemoryRef.current !== memory.id) return
-      setSelected(record)
-    } catch {
-      if (activeMemoryRef.current !== memory.id) return
-      setMemoryError('Failed to load memory')
-    } finally {
-      if (activeMemoryRef.current === memory.id) {
-        setLoadingMemory(null)
+  useEffect(() => {
+    let active = true
+
+    const loadSelected = async () => {
+      if (!selectedId) {
+        if (active) {
+          setSelected(null)
+          setDetailError(null)
+          setDetailLoading(false)
+        }
+        return
       }
+
+      setDetailLoading(true)
+      setDetailError(null)
+      setSelected(null)
+
+      try {
+        const record = await fetchMemory(selectedId)
+        if (active) setSelected(record)
+      } catch {
+        if (active) {
+          setSelected(null)
+          setDetailError('Failed to load memory')
+        }
+      } finally {
+        if (active) setDetailLoading(false)
+      }
+    }
+
+    loadSelected()
+    return () => { active = false }
+  }, [selectedId])
+
+  useEffect(() => {
+    if (!selectedId) {
+      setRetrievalContext(null)
+      return
+    }
+
+    let nextContext: RetrievalContext | null = null
+    for (const session of sessions) {
+      const memory = session.memories.find(item => item.id === selectedId)
+      if (memory) {
+        nextContext = {
+          prompt: memory.prompt,
+          similarity: memory.similarity,
+          keywordMatch: memory.keywordMatch,
+          score: memory.score
+        }
+        break
+      }
+    }
+    setRetrievalContext(nextContext)
+  }, [selectedId, sessions])
+
+  const handleSelect = (id: string, context?: RetrievalContext | null) => {
+    setSelected(null)
+    setDetailError(null)
+    setRetrievalContext(context ?? null)
+    const next = new URLSearchParams(searchParams)
+    next.set('id', id)
+    setSearchParams(next)
+  }
+
+  const handleClose = () => {
+    setSelected(null)
+    setDetailError(null)
+    setDetailLoading(false)
+    setRetrievalContext(null)
+    if (selectedId) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('id')
+      setSearchParams(next)
     }
   }
 
@@ -311,7 +371,7 @@ export default function Sessions() {
         <SessionListSkeleton />
       ) : sessions.length === 0 ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
-          No sessions tracked yet. Sessions appear when Claude Code injects memories.
+          No sessions tracked yet. Sessions appear when Claude Code runs with memory hooks enabled.
         </div>
       ) : (
         <div className="space-y-2">
@@ -354,6 +414,16 @@ export default function Sessions() {
                   </div>
 
                   <div className="flex items-center gap-4 text-xs text-muted-foreground shrink-0">
+                    {session.lastStatus && (
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${STATUS_STYLES[session.lastStatus].badge}`}>
+                        {STATUS_STYLES[session.lastStatus].label}
+                      </span>
+                    )}
+                    {session.promptCount !== undefined && session.promptCount > 0 && (
+                      <span title={`${session.injectionCount ?? 0} injections / ${session.promptCount} prompts`}>
+                        {session.injectionCount ?? 0}/{session.promptCount} inj
+                      </span>
+                    )}
                     <span>{memories.length} memories</span>
                     <span>{formatRelative(session.lastActivity)}</span>
                   </div>
@@ -363,6 +433,22 @@ export default function Sessions() {
                 <div className={`accordion-content ${isOpen ? 'open' : ''}`}>
                   <div className="accordion-inner">
                     <div className="px-4 pb-4 pt-0 space-y-3">
+                      {memories.length === 0 && (
+                        <div className="rounded-lg border border-border bg-background/40 p-4 text-center">
+                          <div className="text-sm text-muted-foreground">
+                            {session.lastStatus === 'no_matches' && 'No matching memories found for this session.'}
+                            {session.lastStatus === 'timeout' && 'Memory search timed out.'}
+                            {session.lastStatus === 'error' && 'An error occurred during memory injection.'}
+                            {session.lastStatus === 'empty_prompt' && 'Empty prompt received.'}
+                            {!session.lastStatus && 'No memories injected in this session.'}
+                          </div>
+                          {session.promptCount !== undefined && session.promptCount > 0 && (
+                            <div className="text-xs text-muted-foreground mt-2">
+                              {session.promptCount} prompt{session.promptCount !== 1 ? 's' : ''} processed
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {memories.length > 0 && (
                         <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
                           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -428,9 +514,11 @@ export default function Sessions() {
                                 ) : (
                                   <div className="space-y-2">
                                     {review.injectedVerdicts.map((verdict, index) => (
-                                      <div
+                                      <button
                                         key={`${verdict.id}-${index}`}
-                                        className="rounded-md border border-border bg-secondary/30 p-3"
+                                        type="button"
+                                        onClick={() => handleSelect(verdict.id)}
+                                        className="w-full text-left rounded-md border border-border bg-secondary/30 p-3 cursor-pointer hover:bg-secondary/50 transition-base"
                                       >
                                         <div className="flex flex-wrap items-center gap-2 mb-1">
                                           <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${VERDICT_STYLES[verdict.verdict].badge}`}>
@@ -440,7 +528,7 @@ export default function Sessions() {
                                         </div>
                                         <div className="text-sm text-foreground">{verdict.snippet}</div>
                                         <div className="text-xs text-muted-foreground mt-1">{verdict.reason}</div>
-                                      </div>
+                                      </button>
                                     ))}
                                   </div>
                                 )}
@@ -453,9 +541,11 @@ export default function Sessions() {
                                   </div>
                                   <div className="space-y-2">
                                     {review.missedMemories.map((missed, index) => (
-                                      <div
+                                      <button
                                         key={`${missed.id}-${index}`}
-                                        className="rounded-md border border-border bg-secondary/30 p-3"
+                                        type="button"
+                                        onClick={() => handleSelect(missed.id)}
+                                        className="w-full text-left rounded-md border border-border bg-secondary/30 p-3 cursor-pointer hover:bg-secondary/50 transition-base"
                                       >
                                         <div className="flex flex-wrap items-center gap-2 mb-1">
                                           <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -465,7 +555,7 @@ export default function Sessions() {
                                         </div>
                                         <div className="text-sm text-foreground">{missed.snippet}</div>
                                         <div className="text-xs text-muted-foreground mt-1">{missed.reason}</div>
-                                      </div>
+                                      </button>
                                     ))}
                                   </div>
                                 </div>
@@ -520,9 +610,14 @@ export default function Sessions() {
                                 return (
                                   <button
                                     key={`${memory.id}-${mi}`}
-                                    onClick={() => handleMemoryClick(memory)}
-                                    disabled={Boolean(loadingMemory)}
-                                    className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm hover:bg-background/60 transition-base disabled:opacity-50 disabled:cursor-not-allowed group"
+                                    type="button"
+                                    onClick={() => handleSelect(memory.id, {
+                                      prompt: memory.prompt,
+                                      similarity: memory.similarity,
+                                      keywordMatch: memory.keywordMatch,
+                                      score: memory.score
+                                    })}
+                                    className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm cursor-pointer hover:bg-secondary/50 transition-base group"
                                   >
                                     <span className="flex-1 truncate text-foreground/70 group-hover:text-foreground/90">{title}</span>
                                     {trigger && (
@@ -556,16 +651,9 @@ export default function Sessions() {
         record={selected}
         retrievalContext={retrievalContext}
         open={Boolean(selectedId)}
-        loading={Boolean(loadingMemory)}
-        error={memoryError}
-        onClose={() => {
-          setSelected(null)
-          setSelectedId(null)
-          activeMemoryRef.current = null
-          setRetrievalContext(null)
-          setMemoryError(null)
-          setLoadingMemory(null)
-        }}
+        loading={detailLoading}
+        error={detailError}
+        onClose={handleClose}
       />
     </div>
   )

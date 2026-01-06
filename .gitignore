@@ -12,3 +12,4 @@ suggestions/claude-md/*.md
 dashboard/node_modules/
 dashboard/dist/
 dashboard/.env.local
+dashboard/.pnpm-store/

@@ -33,7 +33,6 @@ const SOURCE_EXCERPT_MAX_LENGTH = 4000
 const SEARCH_NPROBE = 64
 const QUERY_ITERATOR_BATCH_SIZE = 1000
 const POST_FLUSH_DELAY_MS = 500 // IVF_FLAT index needs time to update after flush
-const USAGE_RATIO_WEIGHT = 0.2
 
 const OUTPUT_FIELDS = [
   'id',
@@ -530,6 +529,7 @@ export async function hybridSearch(
     const keywordWeight = params.keywordWeight ?? 0.3
     const minSimilarity = params.minSimilarity ?? 0
     const minScore = params.minScore ?? 0.45
+    const usageRatioWeight = params.usageRatioWeight ?? 0.2
     const vectorLimit = params.vectorLimit ?? limit
     const keywordLimit = params.keywordLimit ?? limit
     const shouldApplyMinScore = vectorWeight > 0
@@ -600,7 +600,7 @@ export async function hybridSearch(
     const results: HybridSearchResult[] = Array.from(combined.values()).map(entry => {
       const baseScore = (entry.keywordMatch ? keywordWeight : 0) + (entry.similarity * vectorWeight)
       const usageRatio = computeUsageRatio(entry.record)
-      const score = baseScore + (usageRatio * USAGE_RATIO_WEIGHT)
+      const score = baseScore + (usageRatio * usageRatioWeight)
       return {
         record: entry.record,
         similarity: entry.similarity,

@@ -1,13 +1,15 @@
-import { useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Check, Copy, ExternalLink } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, Check, Copy } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
+import MemoryDetail from '@/components/MemoryDetail'
 import { useExtractions } from '@/hooks/queries'
 import Skeleton from '@/components/Skeleton'
 import {
   fetchExtractionReview,
   fetchExtractionRun,
+  fetchMemory,
   runExtractionReview,
   type ExtractionReview,
   type ExtractionReviewIssue,
@@ -135,6 +137,11 @@ function RecordsSkeleton() {
 export default function Extractions() {
   const [page, setPage] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [selected, setSelected] = useState<MemoryRecord | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedId = searchParams.get('id')
   const [recordsByRun, setRecordsByRun] = useState<Record<string, MemoryRecord[]>>({})
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null)
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
@@ -150,6 +157,40 @@ export default function Extractions() {
   const total = data?.total ?? null
   const displayOffset = data?.offset ?? page * PAGE_SIZE
   const errorMessage = error instanceof Error ? error.message : 'Failed to load extractions'
+
+  useEffect(() => {
+    let active = true
+
+    const loadSelected = async () => {
+      if (!selectedId) {
+        if (active) {
+          setSelected(null)
+          setDetailError(null)
+          setDetailLoading(false)
+        }
+        return
+      }
+
+      setDetailLoading(true)
+      setDetailError(null)
+      setSelected(null)
+
+      try {
+        const record = await fetchMemory(selectedId)
+        if (active) setSelected(record)
+      } catch {
+        if (active) {
+          setSelected(null)
+          setDetailError('Failed to load memory')
+        }
+      } finally {
+        if (active) setDetailLoading(false)
+      }
+    }
+
+    loadSelected()
+    return () => { active = false }
+  }, [selectedId])
 
   const handleToggle = async (run: ExtractionRun) => {
     const isOpen = expanded === run.runId
@@ -211,6 +252,25 @@ export default function Extractions() {
     setTimeout(() => {
       setCopied(prev => ({ ...prev, [run.runId]: false }))
     }, 2000)
+  }
+
+  const handleSelect = (id: string) => {
+    setSelected(null)
+    setDetailError(null)
+    const next = new URLSearchParams(searchParams)
+    next.set('id', id)
+    setSearchParams(next)
+  }
+
+  const handleClose = () => {
+    setSelected(null)
+    setDetailError(null)
+    setDetailLoading(false)
+    if (selectedId) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('id')
+      setSearchParams(next)
+    }
   }
 
   const pageInfo = () => {
@@ -369,38 +429,62 @@ export default function Extractions() {
                               <div className="text-xs text-muted-foreground">No issues flagged.</div>
                             ) : (
                               <div className="space-y-2">
-                                {review.issues.map((issue, index) => (
-                                  <div
-                                    key={`${issue.type}-${issue.recordId ?? 'missing'}-${index}`}
-                                    className="rounded-md border border-border bg-secondary/30 p-3"
-                                  >
-                                    <div className="flex flex-wrap items-center gap-2 mb-1">
-                                      <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${SEVERITY_STYLES[issue.severity]}`}>
-                                        {issue.severity}
-                                      </span>
-                                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                                        {ISSUE_LABELS[issue.type]}
-                                      </span>
-                                      {issue.recordId && (
-                                        <span className="text-[11px] text-muted-foreground font-mono">{issue.recordId}</span>
+                                {review.issues.map((issue, index) => {
+                                  const issueSelectable = Boolean(issue.recordId)
+                                  const issueClasses = `rounded-md border border-border bg-secondary/30 p-3 transition-base ${
+                                    issueSelectable ? 'cursor-pointer hover:bg-secondary/50' : ''
+                                  }`
+
+                                  const issueContent = (
+                                    <>
+                                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                                        <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${SEVERITY_STYLES[issue.severity]}`}>
+                                          {issue.severity}
+                                        </span>
+                                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                          {ISSUE_LABELS[issue.type]}
+                                        </span>
+                                        {issue.recordId && (
+                                          <span className="text-[11px] text-muted-foreground font-mono">{issue.recordId}</span>
+                                        )}
+                                      </div>
+                                      <div className="text-sm text-foreground">{issue.description}</div>
+                                      <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap mt-1">
+                                        {issue.evidence}
+                                      </div>
+                                      {issue.type === 'missed' && (
+                                        <div className="text-xs text-emerald-300 font-mono mt-1">
+                                          Suggested extraction: {issue.suggestedFix ?? issue.description}
+                                        </div>
                                       )}
+                                      {issue.type !== 'missed' && issue.suggestedFix && (
+                                        <div className="text-xs text-muted-foreground font-mono mt-1">
+                                          Suggested fix: {issue.suggestedFix}
+                                        </div>
+                                      )}
+                                    </>
+                                  )
+
+                                  const recordId = issue.recordId
+                                  if (issueSelectable && recordId) {
+                                    return (
+                                      <button
+                                        key={`${issue.type}-${recordId}-${index}`}
+                                        type="button"
+                                        onClick={() => handleSelect(recordId)}
+                                        className={`w-full text-left ${issueClasses}`}
+                                      >
+                                        {issueContent}
+                                      </button>
+                                    )
+                                  }
+
+                                  return (
+                                    <div key={`${issue.type}-missing-${index}`} className={issueClasses}>
+                                      {issueContent}
                                     </div>
-                                    <div className="text-sm text-foreground">{issue.description}</div>
-                                    <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap mt-1">
-                                      {issue.evidence}
-                                    </div>
-                                    {issue.type === 'missed' && (
-                                      <div className="text-xs text-emerald-300 font-mono mt-1">
-                                        Suggested extraction: {issue.suggestedFix ?? issue.description}
-                                      </div>
-                                    )}
-                                    {issue.type !== 'missed' && issue.suggestedFix && (
-                                      <div className="text-xs text-muted-foreground font-mono mt-1">
-                                        Suggested fix: {issue.suggestedFix}
-                                      </div>
-                                    )}
-                                  </div>
-                                ))}
+                                  )
+                                })}
                               </div>
                             )}
                           </div>
@@ -426,10 +510,11 @@ export default function Extractions() {
                               : 'No source excerpt available.'
 
                             return (
-                              <Link
+                              <button
                                 key={record.id}
-                                to={`/memories?id=${encodeURIComponent(record.id)}`}
-                                className="block rounded-md border border-border bg-secondary/30 px-3 py-2 hover:bg-secondary/50 transition-base"
+                                type="button"
+                                onClick={() => handleSelect(record.id)}
+                                className="w-full text-left rounded-md border border-border bg-secondary/30 px-3 py-2 cursor-pointer hover:bg-secondary/50 transition-base"
                               >
                                 <div className="flex items-center gap-2 mb-1">
                                   <span
@@ -442,11 +527,10 @@ export default function Extractions() {
                                   <span className="text-xs text-muted-foreground font-mono truncate">
                                     {record.id}
                                   </span>
-                                  <ExternalLink className="w-3 h-3 text-muted-foreground ml-auto" />
                                 </div>
                                 <div className="text-sm text-foreground mb-1 truncate">{summary}</div>
                                 <div className="text-xs text-muted-foreground font-mono">{excerpt}</div>
-                              </Link>
+                              </button>
                             )
                           })}
                         </div>
@@ -477,6 +561,14 @@ export default function Extractions() {
           Next
         </button>
       </div>
+
+      <MemoryDetail
+        record={selected}
+        open={Boolean(selectedId)}
+        loading={detailLoading}
+        error={detailError}
+        onClose={handleClose}
+      />
     </div>
   )
 }

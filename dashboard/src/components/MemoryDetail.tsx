@@ -61,9 +61,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function CodeBlock({ children }: { children: string }) {
+function CodeBlock({ children, wrap }: { children: string; wrap?: boolean }) {
   return (
-    <pre className="p-3 rounded-md bg-secondary text-sm font-mono overflow-x-auto">
+    <pre className={`p-3 rounded-md bg-secondary text-sm font-mono ${wrap ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'}`}>
       {children}
     </pre>
   )
@@ -139,7 +139,7 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
           {record.resolution && <Field label="Resolution">{record.resolution}</Field>}
           {record.truncatedOutput && (
             <Field label="Output">
-              <CodeBlock>{record.truncatedOutput}</CodeBlock>
+              <CodeBlock wrap>{record.truncatedOutput}</CodeBlock>
             </Field>
           )}
         </div>

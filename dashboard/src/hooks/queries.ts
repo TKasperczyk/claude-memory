@@ -3,12 +3,14 @@ import {
   fetchExtractions,
   fetchMemories,
   fetchMemoryTypes,
+  fetchSettings,
   fetchSessions,
   fetchStats,
   searchMemories,
   type ExtractionListResponse,
   type MemoryListResponse,
   type RecordType,
+  type RetrievalSettings,
   type SessionsResponse,
   type StatsResponse
 } from '@/lib/api'
@@ -110,5 +112,12 @@ export function useMemoryTypes() {
     queryKey: ['memoryTypes'],
     queryFn: fetchMemoryTypes,
     staleTime: Infinity
+  })
+}
+
+export function useSettings() {
+  return useQuery<RetrievalSettings>({
+    queryKey: ['settings'],
+    queryFn: fetchSettings
   })
 }

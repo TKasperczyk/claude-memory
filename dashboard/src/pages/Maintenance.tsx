@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Check, Circle, Eye, Loader2, Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
+import MemoryDetail from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
 import { formatDuration } from '@/lib/format'
 import {
+  fetchMemory,
   fetchMaintenanceOperations,
   runMaintenance,
+  type MemoryRecord,
   type MaintenanceAction,
   type MaintenanceActionType,
   type MaintenanceOperationInfo,
@@ -97,32 +101,55 @@ function renderDetails(details?: Record<string, unknown>) {
   )
 }
 
-function ActionRow({ action }: { action: MaintenanceAction }) {
+function ActionRow({ action, onSelect }: { action: MaintenanceAction; onSelect?: (id: string) => void }) {
   const style = ACTION_STYLES[action.type]
+  const recordId = action.recordId
+  const isSelectable = Boolean(recordId && onSelect)
+  const containerClasses = `p-3 rounded-md border border-border bg-secondary/30 transition-base ${
+    isSelectable ? 'cursor-pointer hover:bg-secondary/50' : ''
+  }`
+
+  const content = (
+    <div className="flex items-start gap-3">
+      <span className={`mt-1 w-2 h-2 rounded-full ${style.dot}`} />
+      <div className="flex-1 min-w-0">
+        <div className="flex flex-wrap items-center gap-2 mb-1">
+          <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${style.badge}`}>
+            {style.label}
+          </span>
+          {recordId && (
+            <span className="text-[11px] text-muted-foreground font-mono">
+              {recordId}
+            </span>
+          )}
+        </div>
+        <div className="text-sm text-foreground">{action.snippet}</div>
+        <div className="text-xs text-muted-foreground">{action.reason}</div>
+        {renderDetails(action.details)}
+      </div>
+    </div>
+  )
+
+  if (isSelectable && recordId) {
+    return (
+      <button
+        type="button"
+        onClick={() => onSelect?.(recordId)}
+        className={`w-full text-left ${containerClasses}`}
+      >
+        {content}
+      </button>
+    )
+  }
 
   return (
-    <div className="p-3 rounded-md border border-border bg-secondary/30">
-      <div className="flex items-start gap-3">
-        <span className={`mt-1 w-2 h-2 rounded-full ${style.dot}`} />
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-2 mb-1">
-            <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${style.badge}`}>
-              {style.label}
-            </span>
-            {action.recordId && (
-              <span className="text-[11px] text-muted-foreground font-mono">{action.recordId}</span>
-            )}
-          </div>
-          <div className="text-sm text-foreground">{action.snippet}</div>
-          <div className="text-xs text-muted-foreground">{action.reason}</div>
-          {renderDetails(action.details)}
-        </div>
-      </div>
+    <div className={containerClasses}>
+      {content}
     </div>
   )
 }
 
-function ResultPanel({ result }: { result: OperationResult }) {
+function ResultPanel({ result, onSelect }: { result: OperationResult; onSelect?: (id: string) => void }) {
   const summaryEntries = Object.entries(result.summary)
 
   return (
@@ -159,7 +186,11 @@ function ResultPanel({ result }: { result: OperationResult }) {
       ) : (
         <div className="space-y-2">
           {result.actions.map((action, index) => (
-            <ActionRow key={`${action.recordId ?? action.reason}-${index}`} action={action} />
+            <ActionRow
+              key={`${action.recordId ?? action.reason}-${index}`}
+              action={action}
+              onSelect={onSelect}
+            />
           ))}
         </div>
       )}
@@ -179,6 +210,11 @@ export default function Maintenance() {
   const [bulkProgress, setBulkProgress] = useState<Record<MaintenanceOperation, BulkProgressState> | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState>(null)
+  const [selected, setSelected] = useState<MemoryRecord | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedId = searchParams.get('id')
 
   useEffect(() => {
     if (operations.length === 0) return
@@ -186,6 +222,40 @@ export default function Maintenance() {
     setRunning(prev => buildOperationState(operations, false, prev))
     setRunningMode(prev => buildOperationState(operations, null, prev))
   }, [operations])
+
+  useEffect(() => {
+    let active = true
+
+    const loadSelected = async () => {
+      if (!selectedId) {
+        if (active) {
+          setSelected(null)
+          setDetailError(null)
+          setDetailLoading(false)
+        }
+        return
+      }
+
+      setDetailLoading(true)
+      setDetailError(null)
+      setSelected(null)
+
+      try {
+        const record = await fetchMemory(selectedId)
+        if (active) setSelected(record)
+      } catch {
+        if (active) {
+          setSelected(null)
+          setDetailError('Failed to load memory')
+        }
+      } finally {
+        if (active) setDetailLoading(false)
+      }
+    }
+
+    loadSelected()
+    return () => { active = false }
+  }, [selectedId])
 
   const setOperationRunning = (operation: MaintenanceOperation, isRunning: boolean) => {
     setRunning(prev => ({ ...prev, [operation]: isRunning }))
@@ -213,6 +283,25 @@ export default function Maintenance() {
     } finally {
       setOperationRunning(operation, false)
       setRunningMode(prev => ({ ...prev, [operation]: null }))
+    }
+  }
+
+  const handleSelect = (recordId: string) => {
+    setSelected(null)
+    setDetailError(null)
+    const next = new URLSearchParams(searchParams)
+    next.set('id', recordId)
+    setSearchParams(next)
+  }
+
+  const handleClose = () => {
+    setSelected(null)
+    setDetailError(null)
+    setDetailLoading(false)
+    if (selectedId) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('id')
+      setSearchParams(next)
     }
   }
 
@@ -474,7 +563,7 @@ export default function Maintenance() {
                 </div>
               </div>
 
-              {result && <ResultPanel result={result} />}
+              {result && <ResultPanel result={result} onSelect={handleSelect} />}
             </section>
           )
         })}
@@ -514,6 +603,14 @@ export default function Maintenance() {
           </div>
         </div>
       )}
+
+      <MemoryDetail
+        record={selected}
+        open={Boolean(selectedId)}
+        loading={detailLoading}
+        error={detailError}
+        onClose={handleClose}
+      />
     </div>
   )
 }

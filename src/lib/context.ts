@@ -74,6 +74,8 @@ export interface ContextBuildResult {
   records: MemoryRecord[]
 }
 
+const CONTEXT_PREAMBLE = `These are memories from past sessions. Command results and state information may be outdated - verify current state by running commands rather than assuming these results are still valid.`
+
 export function buildContext(
   records: MemoryRecord[],
   config: Config = DEFAULT_CONFIG
@@ -85,15 +87,16 @@ export function buildContext(
   const maxRecords = config.injection.maxRecords
 
   const header = '<prior-knowledge>'
+  const preamble = CONTEXT_PREAMBLE
   const footer = '</prior-knowledge>'
-  const lines: string[] = [header]
-  let usedTokens = estimateTokens(header)
+  const lines: string[] = [header, preamble]
+  let usedTokens = estimateTokens(header) + estimateTokens(preamble)
   let added = 0
   const selected: MemoryRecord[] = []
 
   for (const record of filtered) {
     if (added >= maxRecords) break
-    const entry = formatRecord(record)
+    const entry = formatRecordWithAge(record)
     if (!entry) continue
 
     const line = `- ${entry}`
@@ -204,6 +207,37 @@ function extractCommandSignals(prompt: string): string[] {
   return dedupeAndTrim(commands, MAX_COMMAND_SIGNALS)
 }
 
+function formatRecordWithAge(record: MemoryRecord): string | null {
+  const base = formatRecord(record)
+  if (!base) return null
+
+  const age = formatRelativeAge(record.timestamp ?? record.lastUsed)
+  if (!age) return base
+
+  return `${base} | recorded: ${age}`
+}
+
+function formatRelativeAge(timestamp: number | undefined): string | null {
+  if (!timestamp) return null
+
+  const now = Date.now()
+  const diff = now - timestamp
+  if (diff < 0) return null
+
+  const minutes = Math.floor(diff / 60000)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
+  const weeks = Math.floor(days / 7)
+  const months = Math.floor(days / 30)
+
+  if (months > 0) return `${months}mo ago`
+  if (weeks > 0) return `${weeks}w ago`
+  if (days > 0) return `${days}d ago`
+  if (hours > 0) return `${hours}h ago`
+  if (minutes > 5) return `${minutes}m ago`
+  return 'just now'
+}
+
 function formatRecord(record: MemoryRecord): string | null {
   switch (record.type) {
     case 'command': {
@@ -212,7 +246,8 @@ function formatRecord(record: MemoryRecord): string | null {
       ]
       if (record.outcome) parts.push(`outcome: ${record.outcome}`)
       if (typeof record.exitCode === 'number') parts.push(`exit: ${record.exitCode}`)
-      if (record.resolution) parts.push(`resolution: ${cleanInline(record.resolution)}`)
+      // Use "last result" instead of "resolution" to emphasize this is historical
+      if (record.resolution) parts.push(`last result: ${cleanInline(record.resolution)}`)
       return truncateText(parts.join(' | '), MAX_ENTRY_CHARS)
     }
     case 'error': {

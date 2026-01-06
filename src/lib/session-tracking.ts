@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
-import { type InjectedMemoryEntry, type InjectionSessionRecord, type RecordType } from './types.js'
+import { type InjectedMemoryEntry, type InjectionSessionRecord, type InjectionStatus, type RecordType } from './types.js'
 
 const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
 const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure):/i
@@ -39,7 +39,8 @@ export function appendSessionTracking(
   sessionId: string,
   entries: InjectedMemoryEntry[],
   cwd?: string,
-  prompt?: string
+  prompt?: string,
+  status: InjectionStatus = 'injected'
 ): InjectionSessionRecord {
   // Add prompt to all entries if provided
   if (prompt) {
@@ -47,12 +48,20 @@ export function appendSessionTracking(
   }
   const existing = loadSessionTracking(sessionId)
   const now = Date.now()
+
+  const prevPromptCount = existing?.promptCount ?? 0
+  const prevInjectionCount = existing?.injectionCount ?? 0
+  const didInject = status === 'injected' && entries.length > 0
+
   const record: InjectionSessionRecord = {
     sessionId,
     createdAt: existing?.createdAt ?? now,
     lastActivity: now,
     cwd: cwd ?? existing?.cwd,
-    memories: [...(existing?.memories ?? []), ...entries]
+    memories: [...(existing?.memories ?? []), ...entries],
+    promptCount: prevPromptCount + 1,
+    injectionCount: prevInjectionCount + (didInject ? 1 : 0),
+    lastStatus: status
   }
   saveSessionTracking(record)
   return record
@@ -122,8 +131,18 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
     createdAt,
     lastActivity: asNumber(record.lastActivity) ?? createdAt,
     cwd: asString(record.cwd),
-    memories
+    memories,
+    promptCount: asNumber(record.promptCount) ?? undefined,
+    injectionCount: asNumber(record.injectionCount) ?? undefined,
+    lastStatus: asInjectionStatus(record.lastStatus)
   }
+}
+
+function asInjectionStatus(value: unknown): InjectionStatus | undefined {
+  if (value === 'injected' || value === 'no_matches' || value === 'empty_prompt' || value === 'timeout' || value === 'error') {
+    return value
+  }
+  return undefined
 }
 
 function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {

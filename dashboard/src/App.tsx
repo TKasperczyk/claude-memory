@@ -1,11 +1,12 @@
 import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
-import { LayoutGrid, Database, FlaskConical, Activity, Wrench, FileText } from 'lucide-react'
+import { LayoutGrid, Database, FlaskConical, Activity, Wrench, FileText, Settings as SettingsIcon } from 'lucide-react'
 import ContextPreview from '@/pages/ContextPreview'
 import Extractions from '@/pages/Extractions'
 import MemoryPool from '@/pages/MemoryPool'
 import Maintenance from '@/pages/Maintenance'
 import Overview from '@/pages/Overview'
 import Sessions from '@/pages/Sessions'
+import Settings from '@/pages/Settings'
 
 const navigation = [
   { name: 'Overview', href: '/', icon: LayoutGrid },
@@ -14,6 +15,7 @@ const navigation = [
   { name: 'Sessions', href: '/sessions', icon: Activity },
   { name: 'Extractions', href: '/extractions', icon: FileText },
   { name: 'Maintenance', href: '/maintenance', icon: Wrench },
+  { name: 'Settings', href: '/settings', icon: SettingsIcon },
 ]
 
 function Sidebar() {
@@ -90,6 +92,7 @@ export default function App() {
               <Route path="/sessions" element={<Sessions />} />
               <Route path="/extractions" element={<Extractions />} />
               <Route path="/maintenance" element={<Maintenance />} />
+              <Route path="/settings" element={<Settings />} />
             </Routes>
           </div>
         </main>

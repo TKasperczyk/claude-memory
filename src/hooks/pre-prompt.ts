@@ -6,7 +6,8 @@ import { initMilvus, hybridSearch } from '../lib/milvus.js'
 import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { embed } from '../lib/embed.js'
 import { loadConfig } from '../lib/config.js'
-import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type MemoryRecord, type UserPromptSubmitInput } from '../lib/types.js'
+import { loadSettings, type RetrievalSettings } from '../lib/settings.js'
+import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type InjectionStatus, type MemoryRecord, type UserPromptSubmitInput } from '../lib/types.js'
 import { appendSessionTracking } from '../lib/session-tracking.js'
 
 const MAX_KEYWORD_QUERIES = 4
@@ -14,8 +15,17 @@ const MAX_KEYWORD_ERRORS = 2
 const MAX_KEYWORD_COMMANDS = 2
 const PREPROMPT_TIMEOUT_MS = 4000
 const MAX_SEMANTIC_QUERY_CHARS = 1200
-const MMR_LAMBDA = 0.7  // Balance: 1.0 = pure relevance, 0.0 = pure diversity
-const MIN_SEMANTIC_SIMILARITY = 0.6  // Filter out low-confidence semantic matches
+
+function applySettingsToConfig(config: Config, settings: RetrievalSettings): Config {
+  return {
+    ...config,
+    injection: {
+      ...config.injection,
+      maxRecords: settings.maxRecords,
+      maxTokens: settings.maxTokens
+    }
+  }
+}
 
 export interface PrePromptResult {
   context: string | null
@@ -46,15 +56,17 @@ export async function handlePrePrompt(
   }
 
   const signals = extractSignals(input.prompt, input.cwd, options.projectRoot)
+  const settings = loadSettings()
+  const runtimeConfig = applySettingsToConfig(config, settings)
 
   const result = await runWithTimeout(async (signal) => {
-    await initMilvus(config)
-    const results = await searchMemories(input.prompt, signals, config, input.cwd, signal)
+    await initMilvus(runtimeConfig)
+    const results = await searchMemories(input.prompt, signals, runtimeConfig, settings, input.cwd, signal)
     if (results.length === 0) {
       return { context: null, results, injectedRecords: [] }
     }
 
-    const { context, records: injectedRecords } = buildContext(results.map(r => r.record), config)
+    const { context, records: injectedRecords } = buildContext(results.map(r => r.record), runtimeConfig)
     return { context: context || null, results, injectedRecords }
   }, PREPROMPT_TIMEOUT_MS)
 
@@ -81,6 +93,7 @@ async function searchMemories(
   prompt: string,
   signals: ContextSignals,
   config: Config,
+  settings: RetrievalSettings,
   cwd: string,
   signal?: AbortSignal
 ): Promise<HybridSearchResult[]> {
@@ -104,16 +117,16 @@ async function searchMemories(
     }
   }
 
-  let results = await searchWithScope(cleanPrompt, signals, config, scope, embedding, signal)
+  let results = await searchWithScope(cleanPrompt, signals, config, settings, scope, embedding, signal)
   if (results.length === 0 && scope.project) {
     // Fallback: remove project filter but preserve domain to avoid cross-domain noise
     console.error('[claude-memory] No project-scoped hits; retrying with domain filter only.')
-    results = await searchWithScope(cleanPrompt, signals, config, { domain: scope.domain }, embedding, signal)
+    results = await searchWithScope(cleanPrompt, signals, config, settings, { domain: scope.domain }, embedding, signal)
   }
 
   // Apply MMR for diversity if we have multiple results with embeddings
   if (results.length > 1) {
-    const diverseResults = applyMMR(results, MMR_LAMBDA, config.injection.maxRecords)
+    const diverseResults = applyMMR(results, settings.mmrLambda, config.injection.maxRecords)
     if (diverseResults.length !== results.length) {
       console.error(`[claude-memory] MMR reranked ${results.length} -> ${diverseResults.length} results`)
     }
@@ -124,15 +137,16 @@ async function searchMemories(
 }
 
 async function searchWithScope(
-  prompt: string,
+  cleanPrompt: string,
   signals: ContextSignals,
   config: Config,
+  settings: RetrievalSettings,
   scope: { project?: string; domain?: string },
   precomputedEmbedding?: number[],
   signal?: AbortSignal
 ): Promise<HybridSearchResult[]> {
   const limit = config.injection.maxRecords
-  const keywordQueries = buildKeywordQueries(signals)
+  const keywordQueries = buildKeywordQueries(signals, cleanPrompt)
   const resultsById = new Map<string, HybridSearchResult>()
 
   console.error(`[claude-memory] Signals: errors=${signals.errors.length}, commands=${signals.commands.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
@@ -148,6 +162,7 @@ async function searchWithScope(
       vectorWeight: 0,
       keywordWeight: 1,
       keywordLimit: limit,
+      usageRatioWeight: settings.usageRatioWeight,
       includeEmbeddings: true,
       signal
     }, config)
@@ -169,7 +184,9 @@ async function searchWithScope(
       excludeDeprecated: true,
       vectorWeight: 1,
       keywordWeight: 0,
-      minSimilarity: MIN_SEMANTIC_SIMILARITY,
+      minSimilarity: settings.minSemanticSimilarity,
+      minScore: settings.minSemanticOnlyScore,
+      usageRatioWeight: settings.usageRatioWeight,
       includeEmbeddings: true,
       signal
     }, config)
@@ -186,6 +203,7 @@ async function searchWithScope(
   }
 
   return Array.from(resultsById.values())
+    .filter(result => result.keywordMatch || result.score >= settings.minScore)
 }
 
 /**
@@ -265,10 +283,15 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / denominator
 }
 
-function buildKeywordQueries(signals: ContextSignals): string[] {
+function buildKeywordQueries(signals: ContextSignals, cleanPrompt: string): string[] {
   const errorQueries = signals.errors.slice(0, MAX_KEYWORD_ERRORS)
   const commandQueries = signals.commands.slice(0, MAX_KEYWORD_COMMANDS)
   const queries = [...errorQueries, ...commandQueries]
+
+  // Fallback: if no specific signals, use the prompt itself for keyword matching.
+  if (queries.length === 0 && cleanPrompt.trim()) {
+    queries.push(cleanPrompt.trim())
+  }
 
   if (queries.length <= MAX_KEYWORD_QUERIES) return queries
   return queries.slice(0, MAX_KEYWORD_QUERIES)
@@ -357,6 +380,7 @@ async function main(): Promise<void> {
 
   if (!payload.prompt || !payload.prompt.trim()) {
     console.error('[claude-memory] Empty prompt; skipping injection.')
+    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'empty_prompt')
     return
   }
 
@@ -368,16 +392,19 @@ async function main(): Promise<void> {
 
   if (result.timedOut) {
     console.error(`[claude-memory] Pre-prompt timed out after ${PREPROMPT_TIMEOUT_MS}ms; skipping injection.`)
+    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout')
     return
   }
 
   if (result.results.length === 0) {
     console.error('[claude-memory] No matching memories found.')
+    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches')
     return
   }
 
   if (!result.context) {
     console.error('[claude-memory] Context empty after formatting.')
+    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches')
     return
   }
 
@@ -390,19 +417,22 @@ async function main(): Promise<void> {
   }
 
   if (injected) {
-    trackInjectedMemories(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt)
+    trackSession(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt, 'injected')
     scheduleHardExit()
+  } else {
+    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error')
   }
 }
 
-function trackInjectedMemories(
+function trackSession(
   sessionId: string,
   records: MemoryRecord[],
   searchResults: HybridSearchResult[],
   cwd: string,
-  prompt: string
+  prompt: string,
+  status: InjectionStatus
 ): void {
-  if (!sessionId || records.length === 0) return
+  if (!sessionId) return
 
   // Build lookup map for retrieval metadata
   const resultById = new Map(searchResults.map(r => [r.record.id, r]))
@@ -422,7 +452,7 @@ function trackInjectedMemories(
     }
   })
 
-  appendSessionTracking(sessionId, entries, cwd, prompt)
+  appendSessionTracking(sessionId, entries, cwd, prompt, status)
 }
 
 function normalizeSnippet(value: string): string {

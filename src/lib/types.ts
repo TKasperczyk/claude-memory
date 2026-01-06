@@ -88,12 +88,18 @@ export interface InjectedMemoryEntry {
   score?: number         // Combined relevance score
 }
 
+export type InjectionStatus = 'injected' | 'no_matches' | 'empty_prompt' | 'timeout' | 'error'
+
 export interface InjectionSessionRecord {
   sessionId: string
   createdAt: number
   lastActivity: number
   cwd?: string
   memories: InjectedMemoryEntry[]
+  // Track injection attempts, not just successes
+  promptCount?: number        // Total prompts in this session
+  injectionCount?: number     // Prompts that got memories injected
+  lastStatus?: InjectionStatus // Status of last injection attempt
 }
 
 export interface HybridSearchParams {
@@ -108,6 +114,7 @@ export interface HybridSearchParams {
   keywordWeight?: number
   minSimilarity?: number
   minScore?: number
+  usageRatioWeight?: number
   vectorLimit?: number
   keywordLimit?: number
   includeEmbeddings?: boolean

@@ -20,6 +20,7 @@ import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '..
 import { findGitRoot } from '../../src/lib/context.js'
 import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
+import { getDefaultSettings, loadSettings, resetSettings, saveSettings, type RetrievalSettings } from '../../src/lib/settings.js'
 import { type MemoryRecord, type RecordType } from '../../src/lib/types.js'
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
 import { reviewExtraction } from '../../src/lib/extraction-review.js'
@@ -46,6 +47,40 @@ app.get('/api/memory-types', (_req, res) => {
   res.json({ types: MEMORY_TYPES })
 })
 
+app.get('/api/settings', (_req, res) => {
+  try {
+    res.json(loadSettings())
+  } catch (error) {
+    console.error('Settings error:', error)
+    res.status(500).json({ error: 'Failed to load settings' })
+  }
+})
+
+app.put('/api/settings', (req, res) => {
+  try {
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ error: 'Settings payload must be an object' })
+    }
+    saveSettings(req.body as Partial<RetrievalSettings>)
+    res.json(loadSettings())
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to update settings'
+    console.error('Settings update error:', error)
+    res.status(500).send(message)
+  }
+})
+
+app.post('/api/settings/reset', (_req, res) => {
+  try {
+    resetSettings()
+    res.json(getDefaultSettings())
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to reset settings'
+    console.error('Settings reset error:', error)
+    res.status(500).send(message)
+  }
+})
+
 // Initialize Milvus on startup
 let initialized = false
 
@@ -62,6 +97,10 @@ function parseNonNegativeInt(value: unknown, fallback: number): number {
   const parsed = typeof raw === 'string' && raw.trim() === '' ? Number.NaN : Number(raw)
   if (!Number.isInteger(parsed) || parsed < 0) return fallback
   return parsed
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 // Get aggregate stats

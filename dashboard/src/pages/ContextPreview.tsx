@@ -175,7 +175,7 @@ export default function ContextPreview() {
                     <button
                       key={match.record.id}
                       onClick={() => setSelected(match.record)}
-                      className="w-full text-left p-3 rounded-md bg-secondary/50 text-sm hover:bg-secondary transition-base"
+                      className="w-full text-left p-3 rounded-md bg-secondary/30 text-sm cursor-pointer hover:bg-secondary/50 transition-base"
                     >
                       <div className="flex items-center gap-2 mb-1">
                         <span
@@ -221,7 +221,7 @@ export default function ContextPreview() {
                     <button
                       key={record.id}
                       onClick={() => setSelected(record)}
-                      className="w-full text-left flex items-start gap-2 text-sm p-2 -mx-2 rounded hover:bg-secondary/50 transition-base"
+                      className="w-full text-left flex items-start gap-2 text-sm p-2 -mx-2 rounded cursor-pointer hover:bg-secondary/50 transition-base"
                     >
                       <span
                         className="w-2 h-2 rounded-full mt-1.5 shrink-0"
