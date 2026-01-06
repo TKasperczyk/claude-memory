@@ -244,6 +244,7 @@ app.get('/api/search', async (req, res) => {
 // List active sessions with their injected memories and stats
 app.get('/api/sessions', async (_req, res) => {
   try {
+    await ensureInitialized()
     const sessions = listAllSessions().map(session => ({
       ...session,
       memories: dedupeInjectedMemories(session.memories)
