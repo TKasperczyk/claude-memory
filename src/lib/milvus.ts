@@ -2,6 +2,9 @@
  * Milvus vector database operations for Claude Memory.
  */
 
+import fs from 'fs'
+import path from 'path'
+import { homedir } from 'os'
 import { DataType, MilvusClient, type RowData } from '@zilliz/milvus2-sdk-node'
 import { embed, ensureEmbeddingDim } from './embed.js'
 import { buildExactText, escapeFilterValue } from './shared.js'
@@ -252,9 +255,29 @@ export async function resetCollection(
     await client!.loadCollection({
       collection_name: collectionName
     })
+
+    // Clear filesystem storage
+    clearFilesystemStorage()
   } catch (error) {
     console.error('[claude-memory] resetCollection failed:', error)
     throw error
+  }
+}
+
+function clearFilesystemStorage(): void {
+  const baseDir = path.join(homedir(), '.claude-memory')
+  const dirsToClean = ['sessions', 'extractions', 'reviews']
+
+  for (const dir of dirsToClean) {
+    const dirPath = path.join(baseDir, dir)
+    try {
+      if (fs.existsSync(dirPath)) {
+        fs.rmSync(dirPath, { recursive: true })
+        fs.mkdirSync(dirPath, { recursive: true })
+      }
+    } catch (error) {
+      console.error(`[claude-memory] Failed to clear ${dir}:`, error)
+    }
   }
 }
 
