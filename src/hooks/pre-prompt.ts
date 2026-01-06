@@ -15,6 +15,7 @@ const MAX_KEYWORD_COMMANDS = 2
 const PREPROMPT_TIMEOUT_MS = 4000
 const MAX_SEMANTIC_QUERY_CHARS = 1200
 const MMR_LAMBDA = 0.7  // Balance: 1.0 = pure relevance, 0.0 = pure diversity
+const MIN_SEMANTIC_SIMILARITY = 0.6  // Filter out low-confidence semantic matches
 
 export interface PrePromptResult {
   context: string | null
@@ -168,6 +169,7 @@ async function searchWithScope(
       excludeDeprecated: true,
       vectorWeight: 1,
       keywordWeight: 0,
+      minSimilarity: MIN_SEMANTIC_SIMILARITY,
       includeEmbeddings: true,
       signal
     }, config)
