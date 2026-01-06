@@ -21,6 +21,7 @@ import {
   findSimilarClusters,
   consolidateCluster
 } from '../src/lib/maintenance.js'
+import { SIMILARITY_THRESHOLDS } from '../src/lib/types.js'
 
 const STALE_CUTOFF_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
 
@@ -220,7 +221,7 @@ describe('Maintenance E2E', () => {
         domain: 'docker'
       }), TEST_CONFIG)
 
-      const clusters = await findSimilarClusters(0.85, TEST_CONFIG)
+      const clusters = await findSimilarClusters(SIMILARITY_THRESHOLDS.CONSOLIDATION, TEST_CONFIG)
 
       // Should find at least one cluster with the similar npm commands
       const npmCluster = clusters.find(c =>
@@ -258,7 +259,7 @@ describe('Maintenance E2E', () => {
       }
 
       // Get the cluster
-      const clusters = await findSimilarClusters(0.85, TEST_CONFIG)
+      const clusters = await findSimilarClusters(SIMILARITY_THRESHOLDS.CONSOLIDATION, TEST_CONFIG)
       expect(clusters.length).toBeGreaterThan(0)
 
       const cluster = clusters[0]
@@ -333,7 +334,7 @@ describe('Maintenance E2E', () => {
       }
 
       // Run consolidation
-      const clusters = await findSimilarClusters(0.85, TEST_CONFIG)
+      const clusters = await findSimilarClusters(SIMILARITY_THRESHOLDS.CONSOLIDATION, TEST_CONFIG)
       for (const cluster of clusters) {
         await consolidateCluster(cluster, TEST_CONFIG)
       }

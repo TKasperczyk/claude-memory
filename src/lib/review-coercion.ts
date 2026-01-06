@@ -39,7 +39,13 @@ export function parseOverallAccuracy(value: unknown): ExtractionReview['overallA
 export function parseIssueType(value: unknown): ExtractionReviewIssue['type'] | null {
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase()
-    if (normalized === 'inaccurate' || normalized === 'partial' || normalized === 'hallucinated' || normalized === 'missed') {
+    if (
+      normalized === 'inaccurate'
+      || normalized === 'partial'
+      || normalized === 'hallucinated'
+      || normalized === 'missed'
+      || normalized === 'duplicate'
+    ) {
       return normalized
     }
   }

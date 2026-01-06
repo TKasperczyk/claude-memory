@@ -6,11 +6,11 @@ import { escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.j
 import { asString, isPlainObject } from './parsing.js'
 import { clampScore, coerceReviewIssue, parseOverallAccuracy } from './review-coercion.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
-import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
+import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config, type MemoryRecord } from './types.js'
 
 export interface ExtractionReviewIssue {
   recordId?: string
-  type: 'inaccurate' | 'partial' | 'hallucinated' | 'missed'
+  type: 'inaccurate' | 'partial' | 'hallucinated' | 'missed' | 'duplicate'
   severity: 'critical' | 'major' | 'minor'
   description: string
   evidence: string
@@ -31,7 +31,6 @@ export interface ExtractionReview {
 const REVIEW_MODEL = 'claude-opus-4-5-20251101'
 const REVIEW_TOOL_NAME = 'emit_review'
 const REVIEW_MAX_TOKENS = 1800
-const REVIEW_SIMILARITY_THRESHOLD = 0.5
 const REVIEW_SIMILAR_LIMIT = 15
 const REVIEW_SIMILAR_COMBINED_MAX_CHARS = 12000
 
@@ -44,6 +43,7 @@ Rules:
 - Every issue must include a short evidence quote from the transcript segments.
 - Identify missed extractions if something important appears but is not captured.
 - For missed issues, use suggestedFix to describe what should have been extracted.
+- Check extracted records against similar existing memories; flag duplicates with type "duplicate".
 - Be precise and concrete in descriptions and suggested fixes.
 `
 
@@ -56,7 +56,7 @@ const EXTRACTION_SCHEMA_DESCRIPTION = `Record types:
 
 const REVIEW_TOOL: Anthropic.Tool = {
   name: REVIEW_TOOL_NAME,
-  description: 'Emit an extraction quality review with issues and accuracy rating.',
+  description: 'Emit an extraction quality review with issues (including duplicates) and accuracy rating.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
@@ -74,7 +74,7 @@ const REVIEW_TOOL: Anthropic.Tool = {
           required: ['type', 'severity', 'description', 'evidence'],
           properties: {
             recordId: { type: 'string' },
-            type: { type: 'string', enum: ['inaccurate', 'partial', 'hallucinated', 'missed'] },
+            type: { type: 'string', enum: ['inaccurate', 'partial', 'hallucinated', 'missed', 'duplicate'] },
             severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
             description: { type: 'string' },
             evidence: { type: 'string' },
@@ -224,7 +224,7 @@ async function collectSimilarMemories(
     const results = await vectorSearchSimilar(embedding, {
       filter,
       limit: REVIEW_SIMILAR_LIMIT,
-      similarityThreshold: REVIEW_SIMILARITY_THRESHOLD
+      similarityThreshold: SIMILARITY_THRESHOLDS.REVIEW_SIMILAR
     }, config)
 
     for (const result of results) {
@@ -273,7 +273,14 @@ function buildReviewPrompt(
     recordId: record.id,
     excerpt: record.sourceExcerpt ?? '(missing source excerpt)'
   }))
-  const similarPayload = similar.map(entry => formatSimilarRecord(entry.record, entry.similarity))
+  const duplicateThreshold = SIMILARITY_THRESHOLDS.REVIEW_DUPLICATE_WARNING
+  const similarThreshold = SIMILARITY_THRESHOLDS.REVIEW_SIMILAR
+  const potentialDuplicates = similar.filter(entry => entry.similarity >= duplicateThreshold)
+  const relatedMemories = similar.filter(entry => entry.similarity < duplicateThreshold)
+  const duplicatePayload = potentialDuplicates.map(entry => formatSimilarRecord(entry.record, entry.similarity))
+  const relatedPayload = relatedMemories.map(entry => formatSimilarRecord(entry.record, entry.similarity))
+  const duplicatePercent = Math.round(duplicateThreshold * 100)
+  const similarPercent = Math.round(similarThreshold * 100)
 
   return `Run metadata:
 - run_id: ${run.runId}
@@ -291,8 +298,12 @@ ${JSON.stringify(recordPayload, null, 2)}
 Transcript segments by recordId (JSON):
 ${JSON.stringify(transcriptPayload, null, 2)}
 
-Similar existing memories (calibration only; may not appear in transcript):
-${JSON.stringify(similarPayload, null, 2)}
+Similar existing memories - check for duplicates and flag them using issue type "duplicate".
+Potential duplicates (>= ${duplicatePercent}% similarity; review carefully):
+${JSON.stringify(duplicatePayload, null, 2)}
+
+Related memories for context (>= ${similarPercent}% similarity; may not appear in transcript):
+${JSON.stringify(relatedPayload, null, 2)}
 `
 }
 

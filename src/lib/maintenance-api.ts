@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, type Config } from './types.js'
+import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config } from './types.js'
 import { findClaudeMdCandidates, findSkillCandidates } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import {
@@ -10,6 +10,8 @@ import {
   type MaintenanceAction,
   type MaintenanceRunResult
 } from '../maintenance.js'
+
+const CONSOLIDATION_SIMILARITY_PERCENT = Math.round(SIMILARITY_THRESHOLDS.CONSOLIDATION * 100)
 
 export const MAINTENANCE_OPERATION_DEFINITIONS = [
   {
@@ -33,7 +35,7 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
   {
     key: 'consolidation',
     label: 'Consolidation',
-    description: 'Merge duplicate records (>85% similar)',
+    description: `Merge duplicate records (>=${CONSOLIDATION_SIMILARITY_PERCENT}% similar)`,
     allowExecute: true
   },
   {

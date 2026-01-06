@@ -21,11 +21,9 @@ import {
 } from './lib/maintenance.js'
 import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from './lib/promotions.js'
 import { loadConfig } from './lib/config.js'
-import { DEFAULT_CONFIG, type Config } from './lib/types.js'
+import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config } from './lib/types.js'
 import { updateRecord } from './lib/milvus.js'
 import { buildRecordSnippet, truncateSnippet } from './lib/shared.js'
-
-const SIMILARITY_THRESHOLD = 0.85
 
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 
@@ -262,7 +260,7 @@ export async function runConsolidation(
   let errors = 0
 
   try {
-    const clusters = await findSimilarClusters(SIMILARITY_THRESHOLD, config)
+    const clusters = await findSimilarClusters(SIMILARITY_THRESHOLDS.CONSOLIDATION, config)
     clustersFound = clusters.length
 
     for (const cluster of clusters) {

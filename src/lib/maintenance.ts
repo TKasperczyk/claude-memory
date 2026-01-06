@@ -5,6 +5,7 @@ import path from 'path'
 import {
   DEFAULT_CONFIG,
   EMBEDDING_DIM,
+  SIMILARITY_THRESHOLDS,
   type CommandRecord,
   type Config,
   type DiscoveryRecord,
@@ -323,7 +324,7 @@ export async function promoteToGlobal(id: string, config: Config = DEFAULT_CONFI
 }
 
 export async function findSimilarClusters(
-  similarityThreshold: number = 0.85,
+  similarityThreshold: number = SIMILARITY_THRESHOLDS.CONSOLIDATION,
   config: Config = DEFAULT_CONFIG
 ): Promise<MemoryRecord[][]> {
   const clusters: MemoryRecord[][] = []

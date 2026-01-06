@@ -46,7 +46,8 @@ const ISSUE_LABELS: Record<ExtractionReviewIssue['type'], string> = {
   inaccurate: 'Inaccurate',
   partial: 'Partial',
   hallucinated: 'Hallucinated',
-  missed: 'Missed'
+  missed: 'Missed',
+  duplicate: 'Duplicate'
 }
 
 function truncateSessionId(sessionId: string): string {

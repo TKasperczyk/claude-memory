@@ -194,7 +194,7 @@ export interface ExtractionRunResponse {
 
 export interface ExtractionReviewIssue {
   recordId?: string
-  type: 'inaccurate' | 'partial' | 'hallucinated' | 'missed'
+  type: 'inaccurate' | 'partial' | 'hallucinated' | 'missed' | 'duplicate'
   severity: 'critical' | 'major' | 'minor'
   description: string
   evidence: string

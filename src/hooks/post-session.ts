@@ -15,7 +15,7 @@ import { findGitRoot } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
-import { DEFAULT_CONFIG, type Config, type MemoryRecord, type ExtractionHookInput } from '../lib/types.js'
+import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config, type MemoryRecord, type ExtractionHookInput } from '../lib/types.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -130,7 +130,7 @@ export async function handlePostSession(
 
   for (const record of records) {
     try {
-      const matches = await findSimilar(record, 0.9, 1, config)
+      const matches = await findSimilar(record, SIMILARITY_THRESHOLDS.EXTRACTION_DEDUP, 1, config)
       if (matches.length > 0) {
         const existing = matches[0].record
         const updates = buildUpdates(existing, record)

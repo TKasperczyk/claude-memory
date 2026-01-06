@@ -11,6 +11,7 @@ import { buildExactText, escapeFilterValue } from './shared.js'
 import {
   DEFAULT_CONFIG,
   EMBEDDING_DIM,
+  SIMILARITY_THRESHOLDS,
   type Config,
   type HybridSearchParams,
   type HybridSearchResult,
@@ -658,7 +659,7 @@ export async function hybridSearch(
 
 export async function findSimilar(
   record: MemoryRecord,
-  similarityThreshold: number = 0.85,
+  similarityThreshold: number = SIMILARITY_THRESHOLDS.EXTRACTION_DEDUP,
   limit: number = 5,
   config: Config = DEFAULT_CONFIG
 ): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
