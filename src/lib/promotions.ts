@@ -1,15 +1,76 @@
-import fs from 'fs'
-import path from 'path'
+import Anthropic from '@anthropic-ai/sdk'
 import { createHash } from 'crypto'
-import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
+import fs from 'fs'
+import { homedir } from 'os'
+import path from 'path'
+import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { queryRecords } from './milvus.js'
-import { KNOWN_COMMANDS, normalizeStep } from './shared.js'
+import { asString, isPlainObject } from './review-coercion.js'
+import { KNOWN_COMMANDS, normalizeStep, truncateWithTail } from './shared.js'
+import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
 
 const QUERY_PAGE_SIZE = 500
 const SKILL_SUCCESS_THRESHOLD = 5
 const CLAUDE_MD_SUCCESS_THRESHOLD = 3
 const SKILL_NAME_MAX_LENGTH = 64
 const PROJECT_SLUG_MAX_LENGTH = 80
+const PROMOTION_MODEL = 'claude-haiku-4-5-20251001'
+const PROMOTION_TOOL_NAME = 'emit_promotion_decisions'
+const PROMOTION_MAX_TOKENS = 1600
+const PROMOTION_BATCH_SIZE = 8
+const CLAUDE_MD_MAX_CHARS = 16000
+const SKILL_CONTEXT_MAX_CHARS = 24000
+const SKILL_FILE_MAX_CHARS = 4000
+
+type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
+
+interface PromotionDecision {
+  id: string
+  shouldPromote: boolean
+  reason: string
+  suggestedContent?: string
+}
+
+type PromotionPayload = {
+  decisions: PromotionDecision[]
+}
+
+const PROMOTION_SYSTEM_PROMPT = `You decide whether to promote candidate records into durable documentation.
+
+Rules:
+- Output ONLY via the tool call "${PROMOTION_TOOL_NAME}" exactly once.
+- Provide a decision for every candidate id.
+- Use existing content to avoid redundancy.
+- Only promote durable, reusable information.
+- Keep the reason concise and specific.
+- suggestedContent is optional; keep it short and in Markdown if provided.
+`
+
+const PROMOTION_TOOL: Anthropic.Tool = {
+  name: PROMOTION_TOOL_NAME,
+  description: 'Emit promotion decisions for candidate records.',
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['decisions'],
+    properties: {
+      decisions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id', 'shouldPromote', 'reason'],
+          properties: {
+            id: { type: 'string' },
+            shouldPromote: { type: 'boolean' },
+            reason: { type: 'string' },
+            suggestedContent: { type: 'string' }
+          }
+        }
+      }
+    }
+  }
+}
 
 
 export interface ClaudeMdCandidateGroups {
@@ -24,7 +85,7 @@ export interface SuggestionSummary {
   claudeMdCandidates: number
 }
 
-export async function findSkillCandidates(
+export async function findSkillCandidatesHeuristic(
   config: Config = DEFAULT_CONFIG
 ): Promise<ProcedureRecord[]> {
   const filter = `type == "procedure" && usage_count >= ${SKILL_SUCCESS_THRESHOLD} && deprecated == false`
@@ -37,7 +98,7 @@ export async function findSkillCandidates(
     .sort(compareByUsage)
 }
 
-export async function findClaudeMdCandidates(
+export async function findClaudeMdCandidatesHeuristic(
   config: Config = DEFAULT_CONFIG
 ): Promise<ClaudeMdCandidateGroups> {
   const filter = `type == "discovery" && usage_count >= ${CLAUDE_MD_SUCCESS_THRESHOLD} && deprecated == false`
@@ -49,19 +110,29 @@ export async function findClaudeMdCandidates(
     .filter(record => (record.usageCount ?? 0) >= CLAUDE_MD_SUCCESS_THRESHOLD)
     .sort(compareByUsage)
 
-  const grouped: ClaudeMdCandidateGroups = { global: [], byProject: {} }
+  return groupClaudeMdCandidates(verified)
+}
 
-  for (const record of verified) {
-    const project = normalizeProjectKey(record.project)
-    if (project) {
-      if (!grouped.byProject[project]) grouped.byProject[project] = []
-      grouped.byProject[project].push(record)
-    } else {
-      grouped.global.push(record)
-    }
-  }
+export async function findSkillCandidates(
+  config: Config = DEFAULT_CONFIG,
+  root: string = process.cwd()
+): Promise<ProcedureRecord[]> {
+  const candidates = await findSkillCandidatesHeuristic(config)
+  if (candidates.length === 0) return candidates
 
-  return grouped
+  return filterSkillCandidatesWithLlm(candidates, root, config)
+}
+
+export async function findClaudeMdCandidates(
+  config: Config = DEFAULT_CONFIG,
+  root: string = process.cwd()
+): Promise<ClaudeMdCandidateGroups> {
+  const candidates = await findClaudeMdCandidatesHeuristic(config)
+  const flattened = flattenClaudeMdCandidates(candidates)
+  if (flattened.length === 0) return candidates
+
+  const filtered = await filterClaudeMdCandidatesWithLlm(flattened, root, config)
+  return groupClaudeMdCandidates(filtered)
 }
 
 export function generateSkillSuggestion(record: ProcedureRecord): string {
@@ -173,8 +244,8 @@ export async function writeSuggestions(
   }
 
   const [skillCandidates, claudeCandidates] = await Promise.all([
-    findSkillCandidates(config),
-    findClaudeMdCandidates(config)
+    findSkillCandidates(config, root),
+    findClaudeMdCandidates(config, root)
   ])
 
   summary.skillCandidates = skillCandidates.length
@@ -218,6 +289,372 @@ export async function writeSuggestions(
   }
 
   return summary
+}
+
+async function filterSkillCandidatesWithLlm(
+  candidates: ProcedureRecord[],
+  _root: string,
+  config: Config
+): Promise<ProcedureRecord[]> {
+  const client = await createAnthropicClient()
+  if (!client) {
+    console.error('[claude-memory] No authentication available for promotion suggestions. Set ANTHROPIC_API_KEY or run kira login.')
+    return candidates
+  }
+
+  const skillContext = loadSkillContext()
+  const batches = chunkArray(candidates, PROMOTION_BATCH_SIZE)
+  const approved: ProcedureRecord[] = []
+
+  for (const batch of batches) {
+    try {
+      const prompt = buildSkillPromotionPrompt(batch, skillContext)
+      const decisions = await requestPromotionDecisions(client, prompt, config)
+      approved.push(...applyPromotionDecisions(batch, decisions))
+    } catch (error) {
+      console.error('[claude-memory] Failed to score skill promotions with LLM; using heuristic results for batch:', error)
+      approved.push(...batch)
+    }
+  }
+
+  return approved
+}
+
+async function filterClaudeMdCandidatesWithLlm(
+  candidates: DiscoveryRecord[],
+  root: string,
+  config: Config
+): Promise<DiscoveryRecord[]> {
+  const client = await createAnthropicClient()
+  if (!client) {
+    console.error('[claude-memory] No authentication available for promotion suggestions. Set ANTHROPIC_API_KEY or run kira login.')
+    return candidates
+  }
+
+  const fallbackClaudeMd = loadClaudeMdContext(root)
+  const grouped = groupClaudeMdCandidates(candidates)
+  const approved: DiscoveryRecord[] = []
+
+  const scoreGroup = async (records: DiscoveryRecord[], claudeMd: string): Promise<void> => {
+    if (records.length === 0) return
+    const batches = chunkArray(records, PROMOTION_BATCH_SIZE)
+    for (const batch of batches) {
+      try {
+        const prompt = buildClaudeMdPromotionPrompt(batch, claudeMd)
+        const decisions = await requestPromotionDecisions(client, prompt, config)
+        approved.push(...applyPromotionDecisions(batch, decisions))
+      } catch (error) {
+        console.error('[claude-memory] Failed to score CLAUDE.md promotions with LLM; using heuristic results for batch:', error)
+        approved.push(...batch)
+      }
+    }
+  }
+
+  await scoreGroup(grouped.global, fallbackClaudeMd)
+  for (const [project, records] of Object.entries(grouped.byProject)) {
+    const claudeMd = loadProjectClaudeMdContext(project, fallbackClaudeMd)
+    await scoreGroup(records, claudeMd)
+  }
+
+  return approved
+}
+
+function buildSkillPromotionPrompt(
+  candidates: ProcedureRecord[],
+  skillContext: { text: string; fileCount: number }
+): string {
+  const payload = buildProcedureCandidatePayload(candidates)
+  const contextText = skillContext.text || '(no existing skills found)'
+
+  return `Given these existing skills, is this procedure worth creating as a new skill?
+Is it redundant?
+
+Existing skills from ~/.claude/skills (count: ${skillContext.fileCount}, truncated):
+${contextText}
+
+Candidates (JSON):
+${JSON.stringify(payload, null, 2)}
+`
+}
+
+function buildClaudeMdPromotionPrompt(
+  candidates: DiscoveryRecord[],
+  claudeMd: string
+): string {
+  const payload = buildDiscoveryCandidatePayload(candidates)
+  const contextText = claudeMd || '(CLAUDE.md not found)'
+
+  return `Given this existing CLAUDE.md, is this discovery worth adding? Is it redundant?
+
+Existing CLAUDE.md (truncated):
+${contextText}
+
+Candidates (JSON):
+${JSON.stringify(payload, null, 2)}
+`
+}
+
+function buildProcedureCandidatePayload(records: ProcedureRecord[]): Array<Record<string, unknown>> {
+  return records.map(record => {
+    const steps = (record.steps ?? [])
+      .map(step => normalizeStep(step))
+      .filter(Boolean)
+      .slice(0, 12)
+    const prerequisites = (record.prerequisites ?? [])
+      .map(entry => cleanInline(entry))
+      .filter(Boolean)
+    const verification = cleanInline(record.verification ?? '')
+    const domain = cleanInline(record.context.domain ?? record.domain ?? '')
+    const project = cleanInline(record.context.project ?? record.project ?? '')
+
+    return {
+      id: record.id,
+      name: cleanInline(record.name ?? ''),
+      steps,
+      ...(prerequisites.length > 0 ? { prerequisites } : {}),
+      ...(verification ? { verification } : {}),
+      ...(project ? { project } : {}),
+      ...(domain ? { domain } : {}),
+      usageCount: record.usageCount ?? 0,
+      successCount: record.successCount ?? 0,
+      failureCount: record.failureCount ?? 0,
+      lastUsed: formatTimestamp(record.lastUsed) ?? undefined
+    }
+  })
+}
+
+function buildDiscoveryCandidatePayload(records: DiscoveryRecord[]): Array<Record<string, unknown>> {
+  return records.map(record => {
+    const where = cleanInline(record.where ?? '')
+    const evidence = cleanInline(record.evidence ?? '')
+    const domain = cleanInline(record.domain ?? '')
+    const project = cleanInline(record.project ?? '')
+
+    return {
+      id: record.id,
+      what: cleanInline(record.what),
+      ...(where ? { where } : {}),
+      ...(evidence ? { evidence } : {}),
+      ...(project ? { project } : {}),
+      ...(domain ? { domain } : {}),
+      confidence: record.confidence,
+      usageCount: record.usageCount ?? 0,
+      lastUsed: formatTimestamp(record.lastUsed) ?? undefined
+    }
+  })
+}
+
+async function requestPromotionDecisions(
+  client: Anthropic,
+  prompt: string,
+  config: Config
+): Promise<PromotionDecision[]> {
+  const response = await client.messages.create({
+    model: PROMOTION_MODEL,
+    max_tokens: Math.min(PROMOTION_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: PROMOTION_SYSTEM_PROMPT }
+    ],
+    messages: [{ role: 'user', content: prompt }],
+    tools: [PROMOTION_TOOL],
+    tool_choice: { type: 'tool', name: PROMOTION_TOOL_NAME }
+  })
+
+  const toolInput = response.content.find((block): block is ToolUseBlock =>
+    isToolUseBlock(block) && block.name === PROMOTION_TOOL_NAME
+  )?.input
+
+  if (!toolInput) {
+    throw new Error('Promotion tool call missing in response.')
+  }
+
+  const payload = coercePromotionPayload(toolInput)
+  if (!payload) {
+    throw new Error('Promotion response invalid or incomplete.')
+  }
+
+  return payload.decisions
+}
+
+function applyPromotionDecisions<T extends { id: string }>(
+  candidates: T[],
+  decisions: PromotionDecision[]
+): T[] {
+  const decisionMap = new Map<string, PromotionDecision>()
+
+  for (const decision of decisions) {
+    if (!decisionMap.has(decision.id)) {
+      decisionMap.set(decision.id, decision)
+    }
+  }
+
+  const approved: T[] = []
+  for (const candidate of candidates) {
+    const decision = decisionMap.get(candidate.id)
+    if (!decision) {
+      console.warn(`[claude-memory] Missing promotion decision for candidate ${candidate.id}; falling back to heuristic.`)
+      approved.push(candidate)
+      continue
+    }
+    if (decision.shouldPromote) {
+      approved.push(candidate)
+    }
+  }
+
+  return approved
+}
+
+function coercePromotionPayload(input: unknown): PromotionPayload | null {
+  if (!isPlainObject(input)) return null
+  const record = input as Record<string, unknown>
+  const decisions = Array.isArray(record.decisions)
+    ? record.decisions.map(coercePromotionDecision).filter((decision): decision is PromotionDecision => Boolean(decision))
+    : []
+
+  if (decisions.length === 0) return null
+  return { decisions }
+}
+
+function coercePromotionDecision(input: unknown): PromotionDecision | null {
+  if (!isPlainObject(input)) return null
+  const record = input as Record<string, unknown>
+
+  const id = asString(record.id)?.trim()
+  const reason = asString(record.reason)?.trim()
+  const suggestedContent = asString(record.suggestedContent)?.trim()
+  const shouldPromote = typeof record.shouldPromote === 'boolean' ? record.shouldPromote : null
+
+  if (!id || !reason || shouldPromote === null) return null
+
+  return {
+    id,
+    shouldPromote,
+    reason,
+    ...(suggestedContent ? { suggestedContent } : {})
+  }
+}
+
+function groupClaudeMdCandidates(records: DiscoveryRecord[]): ClaudeMdCandidateGroups {
+  const grouped: ClaudeMdCandidateGroups = { global: [], byProject: {} }
+
+  for (const record of records) {
+    const project = normalizeProjectKey(record.project)
+    if (project) {
+      if (!grouped.byProject[project]) grouped.byProject[project] = []
+      grouped.byProject[project].push(record)
+    } else {
+      grouped.global.push(record)
+    }
+  }
+
+  return grouped
+}
+
+function flattenClaudeMdCandidates(groups: ClaudeMdCandidateGroups): DiscoveryRecord[] {
+  const flattened: DiscoveryRecord[] = []
+  flattened.push(...groups.global)
+  for (const records of Object.values(groups.byProject)) {
+    flattened.push(...records)
+  }
+  return flattened
+}
+
+function loadClaudeMdContext(root: string): string {
+  const targetPath = path.join(root, 'CLAUDE.md')
+  if (!fs.existsSync(targetPath)) return ''
+
+  try {
+    const content = fs.readFileSync(targetPath, 'utf-8')
+    return truncateWithTail(content, CLAUDE_MD_MAX_CHARS)
+  } catch (error) {
+    console.error('[claude-memory] Failed to read CLAUDE.md for promotion context:', error)
+    return ''
+  }
+}
+
+function loadProjectClaudeMdContext(project: string | undefined, fallback: string): string {
+  if (!project) return fallback
+  const targetPath = path.join(project, 'CLAUDE.md')
+  if (!fs.existsSync(targetPath)) return fallback
+
+  try {
+    const content = fs.readFileSync(targetPath, 'utf-8')
+    return truncateWithTail(content, CLAUDE_MD_MAX_CHARS)
+  } catch (error) {
+    console.error(`[claude-memory] Failed to read project CLAUDE.md for promotion context (${targetPath}):`, error)
+    return fallback
+  }
+}
+
+function loadSkillContext(): { text: string; fileCount: number } {
+  const skillsDir = path.join(homedir(), '.claude', 'skills')
+  if (!fs.existsSync(skillsDir)) {
+    return { text: '', fileCount: 0 }
+  }
+
+  const files = listSkillFiles(skillsDir)
+  const entries: string[] = []
+
+  for (const filePath of files) {
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8').trim()
+      if (!content) continue
+      const relative = path.relative(skillsDir, filePath)
+      const snippet = truncateWithTail(content, SKILL_FILE_MAX_CHARS)
+      entries.push(`File: ${relative}\n${snippet}`)
+    } catch (error) {
+      console.error(`[claude-memory] Failed to read skill file ${filePath}:`, error)
+    }
+  }
+
+  const combined = entries.join('\n\n')
+  return {
+    text: truncateWithTail(combined, SKILL_CONTEXT_MAX_CHARS),
+    fileCount: files.length
+  }
+}
+
+function listSkillFiles(rootDir: string): string[] {
+  const results: string[] = []
+  let entries: fs.Dirent[] = []
+  try {
+    entries = fs.readdirSync(rootDir, { withFileTypes: true })
+  } catch (error) {
+    console.error(`[claude-memory] Failed to list skill files in ${rootDir}:`, error)
+    return results
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(rootDir, entry.name)
+    if (entry.isDirectory()) {
+      results.push(...listSkillFiles(entryPath))
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      results.push(entryPath)
+    }
+  }
+
+  return results.sort()
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (size <= 0) return [items]
+  const batches: T[][] = []
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size))
+  }
+  return batches
+}
+
+function isToolUseBlock(value: unknown): value is ToolUseBlock {
+  return (
+    isPlainObject(value)
+    && value.type === 'tool_use'
+    && typeof value.id === 'string'
+    && typeof value.name === 'string'
+    && 'input' in value
+  )
 }
 
 function ensureDir(dir: string): void {

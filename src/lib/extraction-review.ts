@@ -4,7 +4,7 @@ import { embedBatch } from './embed.js'
 import { getExtractionRun } from './extraction-log.js'
 import { escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.js'
 import { asString, clampScore, coerceReviewIssue, isPlainObject, parseOverallAccuracy } from './review-coercion.js'
-import { buildRecordSnippet, truncateSnippet } from './shared.js'
+import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 
 export interface ExtractionReviewIssue {
@@ -244,21 +244,13 @@ function buildTranscriptEmbeddingInputs(segments: string[]): string[] {
   if (cleaned.length === 0) return []
 
   const uniqueSegments = Array.from(new Set(cleaned))
-  const combined = truncateForEmbedding(uniqueSegments.join('\n\n'), REVIEW_SIMILAR_COMBINED_MAX_CHARS)
+  const combined = truncateWithTail(uniqueSegments.join('\n\n'), REVIEW_SIMILAR_COMBINED_MAX_CHARS)
 
   if (combined && !uniqueSegments.includes(combined)) {
     return [...uniqueSegments, combined]
   }
 
   return uniqueSegments
-}
-
-function truncateForEmbedding(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value
-  if (maxLength <= 3) return value.slice(0, maxLength)
-  const head = value.slice(0, Math.max(0, maxLength - 300))
-  const tail = value.slice(-300)
-  return `${head}\n...\n${tail}`
 }
 
 function buildExcludeFilter(excludeIds: string[]): string {

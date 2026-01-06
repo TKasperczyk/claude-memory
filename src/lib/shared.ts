@@ -111,3 +111,11 @@ export function truncateSnippet(value: string, maxLength: number = 120): string 
   if (cleaned.length <= maxLength) return cleaned
   return `${cleaned.slice(0, maxLength - 3)}...`
 }
+
+export function truncateWithTail(value: string, maxLength: number, tailLength: number = 300): string {
+  if (value.length <= maxLength) return value
+  if (maxLength <= 3) return value.slice(0, maxLength)
+  const head = value.slice(0, Math.max(0, maxLength - tailLength))
+  const tail = value.slice(-tailLength)
+  return `${head}\n...\n${tail}`
+}
