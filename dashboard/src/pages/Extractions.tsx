@@ -1,8 +1,17 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink, Loader2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '@/App'
-import { fetchExtractionRun, fetchExtractions, type ExtractionRun, type MemoryRecord } from '@/lib/api'
+import {
+  fetchExtractionReview,
+  fetchExtractionRun,
+  fetchExtractions,
+  runExtractionReview,
+  type ExtractionReview,
+  type ExtractionReviewIssue,
+  type ExtractionRun,
+  type MemoryRecord
+} from '@/lib/api'
 import { formatDateTime, formatDuration } from '@/lib/format'
 
 const PAGE_SIZE = 25
@@ -12,6 +21,34 @@ const TYPE_COLORS: Record<string, string> = {
   error: '#f43f5e',
   discovery: '#60a5fa',
   procedure: '#a78bfa',
+}
+
+const ACCURACY_STYLES: Record<ExtractionReview['overallAccuracy'], { badge: string; label: string }> = {
+  good: {
+    badge: 'bg-emerald-500/15 text-emerald-300',
+    label: 'Good'
+  },
+  acceptable: {
+    badge: 'bg-amber-500/15 text-amber-300',
+    label: 'Acceptable'
+  },
+  poor: {
+    badge: 'bg-destructive/15 text-destructive',
+    label: 'Poor'
+  }
+}
+
+const SEVERITY_STYLES: Record<ExtractionReviewIssue['severity'], string> = {
+  critical: 'bg-destructive/15 text-destructive',
+  major: 'bg-amber-500/15 text-amber-300',
+  minor: 'bg-sky-500/15 text-sky-300'
+}
+
+const ISSUE_LABELS: Record<ExtractionReviewIssue['type'], string> = {
+  inaccurate: 'Inaccurate',
+  partial: 'Partial',
+  hallucinated: 'Hallucinated',
+  missed: 'Missed'
 }
 
 function truncateSessionId(sessionId: string): string {
@@ -43,6 +80,10 @@ export default function Extractions() {
   const [recordsByRun, setRecordsByRun] = useState<Record<string, MemoryRecord[]>>({})
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null)
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
+  const [reviewsByRun, setReviewsByRun] = useState<Record<string, ExtractionReview | null>>({})
+  const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
+  const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
+  const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
 
   useEffect(() => {
     let active = true
@@ -84,6 +125,34 @@ export default function Extractions() {
         setLoadingRunId(null)
       }
     }
+
+    if (!isOpen && !Object.prototype.hasOwnProperty.call(reviewsByRun, run.runId)) {
+      setReviewLoading(prev => ({ ...prev, [run.runId]: true }))
+      setReviewErrors(prev => ({ ...prev, [run.runId]: '' }))
+      try {
+        const review = await fetchExtractionReview(run.runId)
+        setReviewsByRun(prev => ({ ...prev, [run.runId]: review }))
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to load review'
+        setReviewErrors(prev => ({ ...prev, [run.runId]: message }))
+      } finally {
+        setReviewLoading(prev => ({ ...prev, [run.runId]: false }))
+      }
+    }
+  }
+
+  const handleReview = async (runId: string) => {
+    setReviewRunning(prev => ({ ...prev, [runId]: true }))
+    setReviewErrors(prev => ({ ...prev, [runId]: '' }))
+    try {
+      const review = await runExtractionReview(runId)
+      setReviewsByRun(prev => ({ ...prev, [runId]: review }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to run review'
+      setReviewErrors(prev => ({ ...prev, [runId]: message }))
+    } finally {
+      setReviewRunning(prev => ({ ...prev, [runId]: false }))
+    }
   }
 
   const pageInfo = () => {
@@ -117,6 +186,11 @@ export default function Extractions() {
             const runRecords = recordsByRun[run.runId] ?? []
             const isLoadingRecords = loadingRunId === run.runId
             const runError = runErrors[run.runId]
+            const review = reviewsByRun[run.runId]
+            const reviewLoadingState = reviewLoading[run.runId] ?? false
+            const reviewRunningState = reviewRunning[run.runId] ?? false
+            const reviewError = reviewErrors[run.runId]
+            const hasReviewLoaded = Object.prototype.hasOwnProperty.call(reviewsByRun, run.runId)
 
             return (
               <div
@@ -160,6 +234,86 @@ export default function Extractions() {
                     <div className="px-4 pb-4 pt-0 space-y-3">
                       <div className="text-xs text-muted-foreground">
                         Transcript: <span className="font-mono break-all">{run.transcriptPath}</span>
+                      </div>
+
+                      <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="text-xs text-muted-foreground">
+                            Opus review
+                          </div>
+                          <button
+                            onClick={() => handleReview(run.runId)}
+                            disabled={reviewRunningState}
+                            className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
+                          >
+                            {reviewRunningState && <Loader2 className="w-3 h-3 animate-spin" />}
+                            {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
+                          </button>
+                        </div>
+
+                        {reviewError && (
+                          <div className="text-xs text-destructive">{reviewError}</div>
+                        )}
+
+                        {review ? (
+                          <div className="space-y-3">
+                            <div className="flex flex-wrap items-center gap-3">
+                              <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${ACCURACY_STYLES[review.overallAccuracy].badge}`}>
+                                {ACCURACY_STYLES[review.overallAccuracy].label}
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                Accuracy score <span className="font-semibold tabular-nums text-foreground">{review.accuracyScore}</span>
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                Reviewed {formatDateTime(review.reviewedAt)}
+                              </span>
+                            </div>
+                            <div className="text-sm text-foreground">{review.summary}</div>
+
+                            {review.issues.length === 0 ? (
+                              <div className="text-xs text-muted-foreground">No issues flagged.</div>
+                            ) : (
+                              <div className="space-y-2">
+                                {review.issues.map((issue, index) => (
+                                  <div
+                                    key={`${issue.type}-${issue.recordId ?? 'missing'}-${index}`}
+                                    className="rounded-md border border-border bg-secondary/30 p-3"
+                                  >
+                                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                                      <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${SEVERITY_STYLES[issue.severity]}`}>
+                                        {issue.severity}
+                                      </span>
+                                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                        {ISSUE_LABELS[issue.type]}
+                                      </span>
+                                      {issue.recordId && (
+                                        <span className="text-[11px] text-muted-foreground font-mono">{issue.recordId}</span>
+                                      )}
+                                    </div>
+                                    <div className="text-sm text-foreground">{issue.description}</div>
+                                    <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap mt-1">
+                                      {issue.evidence}
+                                    </div>
+                                    {issue.type === 'missed' && (
+                                      <div className="text-xs text-emerald-300 font-mono mt-1">
+                                        Suggested extraction: {issue.suggestedFix ?? issue.description}
+                                      </div>
+                                    )}
+                                    {issue.type !== 'missed' && issue.suggestedFix && (
+                                      <div className="text-xs text-muted-foreground font-mono mt-1">
+                                        Suggested fix: {issue.suggestedFix}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ) : hasReviewLoaded ? (
+                          <div className="text-xs text-muted-foreground">No review yet.</div>
+                        ) : reviewLoadingState ? (
+                          <div className="text-xs text-muted-foreground">Loading review...</div>
+                        ) : null}
                       </div>
 
                       {isLoadingRecords ? (

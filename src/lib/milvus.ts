@@ -26,7 +26,7 @@ export interface WriteOptions {
 const CONTENT_MAX_LENGTH = 16384
 const EXACT_TEXT_MAX_LENGTH = 4096
 const SOURCE_SESSION_ID_MAX_LENGTH = 128
-const SOURCE_EXCERPT_MAX_LENGTH = 512
+const SOURCE_EXCERPT_MAX_LENGTH = 4000
 const SEARCH_NPROBE = 64
 const QUERY_ITERATOR_BATCH_SIZE = 1000
 const POST_FLUSH_DELAY_MS = 500 // IVF_FLAT index needs time to update after flush

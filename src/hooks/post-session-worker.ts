@@ -177,6 +177,7 @@ function saveRunLog(
     recordCount: uniqueIds.length,
     parseErrorCount: result.transcript?.parseErrors ?? 0,
     extractedRecordIds: uniqueIds,
+    extractedRecords: result.records,
     duration
   })
 }
@@ -264,7 +265,8 @@ function countRetrievalDeltas(memories: InjectedMemoryEntry[]): Map<string, numb
   return counts
 }
 
-const EXCERPT_MAX_CHARS = 240
+const SEGMENT_MAX_CHARS = 3000
+const SEGMENT_EVENT_WINDOW = 2
 
 function buildSourceExcerpt(record: MemoryRecord, transcript: Transcript): string | undefined {
   const candidates = buildExcerptCandidates(record)
@@ -274,15 +276,15 @@ function buildSourceExcerpt(record: MemoryRecord, transcript: Transcript): strin
   if (events.length === 0) return undefined
 
   for (const candidate of candidates) {
-    const normalizedCandidate = normalizeExcerptText(candidate)
+    const normalizedCandidate = normalizeSearchText(candidate)
     if (!normalizedCandidate) continue
     const lowerCandidate = normalizedCandidate.toLowerCase()
 
-    for (const event of events) {
-      const directIndex = event.text.indexOf(normalizedCandidate)
-      const index = directIndex >= 0 ? directIndex : event.lower.indexOf(lowerCandidate)
-      if (index < 0) continue
-      return formatExcerpt(event.label, event.text, index, normalizedCandidate.length)
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index]
+      if (event.searchText.includes(normalizedCandidate) || event.lowerSearch.includes(lowerCandidate)) {
+        return buildTranscriptSegment(events, index)
+      }
     }
   }
 
@@ -290,30 +292,50 @@ function buildSourceExcerpt(record: MemoryRecord, transcript: Transcript): strin
 }
 
 function buildExcerptCandidates(record: MemoryRecord): string[] {
-  switch (record.type) {
-    case 'command':
-      return compactStrings([record.command, record.truncatedOutput, record.resolution])
-    case 'error':
-      return compactStrings([record.errorText, record.resolution, record.cause])
-    case 'discovery':
-      return compactStrings([record.what, record.evidence, record.where])
-    case 'procedure':
-      return compactStrings([record.name, ...record.steps, record.verification, ...(record.prerequisites ?? [])])
-    default:
-      return []
-  }
+  const base = (() => {
+    switch (record.type) {
+      case 'command':
+        return compactStrings([record.command, record.truncatedOutput, record.resolution])
+      case 'error':
+        return compactStrings([record.errorText, record.resolution, record.cause])
+      case 'discovery':
+        return compactStrings([record.what, record.evidence, record.where])
+      case 'procedure':
+        return compactStrings([record.name, ...record.steps, record.verification, ...(record.prerequisites ?? [])])
+      default:
+        return []
+    }
+  })()
+
+  return expandSearchCandidates(base)
 }
 
-function buildSearchableEvents(events: TranscriptEvent[]): Array<{ label: string; text: string; lower: string }> {
-  const searchable: Array<{ label: string; text: string; lower: string }> = []
+type SearchableEvent = {
+  index: number
+  event: TranscriptEvent
+  rawText: string
+  searchText: string
+  lowerSearch: string
+}
 
-  for (const event of events) {
+function buildSearchableEvents(events: TranscriptEvent[]): SearchableEvent[] {
+  const searchable: SearchableEvent[] = []
+
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]
     const rawText = extractEventText(event)
     if (!rawText) continue
-    const normalized = normalizeExcerptText(rawText)
+    const trimmed = rawText.trim()
+    if (!trimmed) continue
+    const normalized = normalizeSearchText(trimmed)
     if (!normalized) continue
-    const label = buildEventLabel(event)
-    searchable.push({ label, text: normalized, lower: normalized.toLowerCase() })
+    searchable.push({
+      index,
+      event,
+      rawText: trimmed,
+      searchText: normalized,
+      lowerSearch: normalized.toLowerCase()
+    })
   }
 
   return searchable
@@ -368,24 +390,101 @@ function safeJsonStringify(value: unknown): string | undefined {
   }
 }
 
-function normalizeExcerptText(value: string): string {
+function normalizeSearchText(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
 
-function formatExcerpt(label: string, text: string, matchIndex: number, matchLength: number): string {
-  const maxContext = Math.max(EXCERPT_MAX_CHARS - label.length - 2, matchLength)
-  const start = Math.max(0, Math.min(matchIndex - Math.floor((maxContext - matchLength) / 2), text.length))
-  const end = Math.min(text.length, start + maxContext)
-  let excerpt = text.slice(start, end).trim()
-  if (start > 0) excerpt = `...${excerpt}`
-  if (end < text.length) excerpt = `${excerpt}...`
-  return `${label}: ${excerpt}`
+function buildTranscriptSegment(events: SearchableEvent[], matchIndex: number): string {
+  const indices = new Set<number>()
+  indices.add(matchIndex)
+
+  const windowStart = Math.max(0, matchIndex - SEGMENT_EVENT_WINDOW)
+  const windowEnd = Math.min(events.length - 1, matchIndex + SEGMENT_EVENT_WINDOW)
+  for (let i = windowStart; i <= windowEnd; i += 1) {
+    indices.add(i)
+  }
+
+  const anchor = events[matchIndex]
+  const pairedIndex = findPairedEventIndex(events, anchor.event)
+  if (pairedIndex !== null) indices.add(pairedIndex)
+
+  const sorted = Array.from(indices).sort((a, b) => a - b)
+  const blocks = sorted.map(index => formatSegmentEvent(events[index].event))
+
+  let start = 0
+  let end = blocks.length - 1
+  let segment = joinBlocks(blocks, start, end)
+
+  while (segment.length > SEGMENT_MAX_CHARS && start < end) {
+    const leftDistance = Math.abs(sorted[start] - matchIndex)
+    const rightDistance = Math.abs(sorted[end] - matchIndex)
+    if (leftDistance >= rightDistance) {
+      start += 1
+    } else {
+      end -= 1
+    }
+    segment = joinBlocks(blocks, start, end)
+  }
+
+  return trimToMax(segment, SEGMENT_MAX_CHARS)
 }
 
 function compactStrings(values: Array<string | undefined>): string[] {
   return values
     .map(value => (typeof value === 'string' ? value.trim() : ''))
     .filter(value => value.length > 0)
+}
+
+function expandSearchCandidates(values: string[]): string[] {
+  const expanded: string[] = []
+
+  for (const value of values) {
+    expanded.push(value)
+
+    const firstLine = value.split('\n')[0]?.trim()
+    if (firstLine && firstLine !== value) expanded.push(firstLine)
+
+    if (value.length > 160) {
+      expanded.push(value.slice(0, 160))
+    }
+  }
+
+  return Array.from(new Set(expanded))
+}
+
+function findPairedEventIndex(events: SearchableEvent[], anchor: TranscriptEvent): number | null {
+  if (anchor.type === 'tool_call' && anchor.id) {
+    const match = events.findIndex(event =>
+      event.event.type === 'tool_result' && event.event.toolUseId === anchor.id
+    )
+    return match >= 0 ? match : null
+  }
+
+  if (anchor.type === 'tool_result' && anchor.toolUseId) {
+    const match = events.findIndex(event =>
+      event.event.type === 'tool_call' && event.event.id === anchor.toolUseId
+    )
+    return match >= 0 ? match : null
+  }
+
+  return null
+}
+
+function formatSegmentEvent(event: TranscriptEvent): string {
+  const label = buildEventLabel(event)
+  const text = extractEventText(event)
+  if (!text) return `[${label}]`
+  return `[${label}]\n${text.trim()}`
+}
+
+function joinBlocks(blocks: string[], start: number, end: number): string {
+  return blocks.slice(start, end + 1).join('\n\n').trim()
+}
+
+function trimToMax(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  if (maxLength <= 3) return value.slice(0, maxLength)
+  return `${value.slice(0, maxLength - 3)}...`
 }
 
 main()

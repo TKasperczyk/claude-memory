@@ -168,6 +168,26 @@ export interface ExtractionRunResponse {
   records: MemoryRecord[]
 }
 
+export interface ExtractionReviewIssue {
+  recordId?: string
+  type: 'inaccurate' | 'partial' | 'hallucinated' | 'missed'
+  severity: 'critical' | 'major' | 'minor'
+  description: string
+  evidence: string
+  suggestedFix?: string
+}
+
+export interface ExtractionReview {
+  runId: string
+  reviewedAt: number
+  overallAccuracy: 'good' | 'acceptable' | 'poor'
+  accuracyScore: number
+  issues: ExtractionReviewIssue[]
+  summary: string
+  model: string
+  durationMs: number
+}
+
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 
 export interface MaintenanceAction {
@@ -281,6 +301,20 @@ export function fetchExtractions(params: {
 
 export function fetchExtractionRun(runId: string): Promise<ExtractionRunResponse> {
   return request(`/extractions/${runId}`)
+}
+
+export async function fetchExtractionReview(runId: string): Promise<ExtractionReview | null> {
+  const response = await fetch(`/api/extractions/${runId}/review`)
+  if (response.status === 404) return null
+  if (!response.ok) {
+    const message = await response.text()
+    throw new Error(message || `Request failed (${response.status})`)
+  }
+  return response.json() as Promise<ExtractionReview>
+}
+
+export function runExtractionReview(runId: string): Promise<ExtractionReview> {
+  return request(`/extractions/${runId}/review`, { method: 'POST' })
 }
 
 export function fetchMaintenanceOperations(): Promise<MaintenanceOperationsResponse> {

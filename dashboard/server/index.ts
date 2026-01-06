@@ -20,6 +20,8 @@ import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
 import { type MemoryRecord, type RecordType } from '../../src/lib/types.js'
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
+import { reviewExtraction } from '../../src/lib/extraction-review.js'
+import { getReview, saveReview } from '../../src/lib/review-storage.js'
 import {
   MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATION_DEFINITIONS,
@@ -326,6 +328,40 @@ app.get('/api/extractions/:runId', async (req, res) => {
   } catch (error) {
     console.error('Extraction run error:', error)
     res.status(500).json({ error: 'Failed to get extraction run' })
+  }
+})
+
+// Get cached extraction review if available
+app.get('/api/extractions/:runId/review', (req, res) => {
+  try {
+    const review = getReview(req.params.runId)
+    if (!review) {
+      return res.status(404).json({ error: 'Review not found' })
+    }
+    res.json(review)
+  } catch (error) {
+    console.error('Extraction review error:', error)
+    res.status(500).json({ error: 'Failed to get extraction review' })
+  }
+})
+
+// Trigger Opus review for an extraction run
+app.post('/api/extractions/:runId/review', async (req, res) => {
+  try {
+    const runId = req.params.runId
+    const run = getExtractionRun(runId)
+    if (!run) {
+      return res.status(404).json({ error: 'Extraction run not found' })
+    }
+
+    await ensureInitialized()
+    const review = await reviewExtraction(runId, CONFIG)
+    saveReview(review)
+    res.json(review)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('Extraction review error:', error)
+    res.status(500).json({ error: message || 'Failed to run extraction review' })
   }
 })
 
