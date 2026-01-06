@@ -1,7 +1,8 @@
+import { useEffect, useState } from 'react'
 import { PageHeader } from '@/App'
 import StatsCard from '@/components/StatsCard'
 import { useApi } from '@/hooks/useApi'
-import { fetchStats, type RecordType } from '@/lib/api'
+import { fetchStats, resetCollection, type RecordType } from '@/lib/api'
 
 const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   command: { label: 'Commands', color: '#2dd4bf' },
@@ -101,7 +102,43 @@ function TopList({
 }
 
 export default function Overview() {
-  const { data, error, loading } = useApi(fetchStats, [])
+  const { data, error, loading, reload } = useApi(fetchStats, [])
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetInput, setResetInput] = useState('')
+  const [resetError, setResetError] = useState<string | null>(null)
+  const [resetNotice, setResetNotice] = useState<string | null>(null)
+  const [resetRunning, setResetRunning] = useState(false)
+
+  useEffect(() => {
+    if (!resetNotice) return
+    const timer = setTimeout(() => setResetNotice(null), 4000)
+    return () => clearTimeout(timer)
+  }, [resetNotice])
+
+  const resetReady = resetInput.trim() === 'RESET'
+
+  const openReset = () => {
+    setResetInput('')
+    setResetError(null)
+    setResetOpen(true)
+  }
+
+  const handleReset = async () => {
+    if (!resetReady || resetRunning) return
+    setResetRunning(true)
+    setResetError(null)
+    try {
+      await resetCollection()
+      setResetNotice('Collection reset successfully.')
+      setResetOpen(false)
+      reload()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to reset collection'
+      setResetError(message)
+    } finally {
+      setResetRunning(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -180,6 +217,71 @@ export default function Overview() {
           <TopList title="Top domains" data={domainData} />
         </section>
       </div>
+
+      <section className="p-6 rounded-xl border border-destructive/30 bg-card space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="section-header text-destructive">Danger zone</h2>
+            <p className="text-sm text-muted-foreground">
+              Resetting the collection will permanently delete all memories.
+            </p>
+          </div>
+          <button
+            onClick={openReset}
+            className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base"
+          >
+            Reset Collection
+          </button>
+        </div>
+        {resetNotice && (
+          <div className="text-sm text-emerald-400">{resetNotice}</div>
+        )}
+      </section>
+
+      {resetOpen && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/60 panel-backdrop open"
+            onClick={() => !resetRunning && setResetOpen(false)}
+          />
+          <div className="absolute inset-0 flex items-center justify-center px-4">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 space-y-4">
+              <div>
+                <h2 className="text-lg font-semibold text-destructive">Reset collection</h2>
+                <p className="text-sm text-muted-foreground">
+                  Type <span className="font-mono text-foreground">RESET</span> to confirm. This cannot be undone.
+                </p>
+              </div>
+              <input
+                type="text"
+                value={resetInput}
+                onChange={e => setResetInput(e.target.value)}
+                placeholder="RESET"
+                className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              {resetError && (
+                <div className="text-sm text-destructive">{resetError}</div>
+              )}
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => setResetOpen(false)}
+                  disabled={resetRunning}
+                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleReset}
+                  disabled={!resetReady || resetRunning}
+                  className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base disabled:opacity-50"
+                >
+                  {resetRunning ? 'Resetting...' : 'Reset'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

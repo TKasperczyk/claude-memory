@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { X } from 'lucide-react'
-import type { MemoryRecord } from '@/lib/api'
+import { Loader2, Trash2, X } from 'lucide-react'
+import { deleteMemory, type MemoryRecord } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
 
 export interface RetrievalContext {
@@ -14,6 +14,7 @@ interface MemoryDetailProps {
   record: MemoryRecord | null
   retrievalContext?: RetrievalContext | null
   onClose: () => void
+  onDeleted?: (id: string) => void
 }
 
 const ANIMATION_DURATION = 200
@@ -140,16 +141,22 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
   }
 }
 
-export default function MemoryDetail({ record, retrievalContext, onClose }: MemoryDetailProps) {
+export default function MemoryDetail({ record, retrievalContext, onClose, onDeleted }: MemoryDetailProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const [isOpen, setIsOpen] = useState(false)
   const [isVisible, setIsVisible] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   // Handle open animation
   useEffect(() => {
     if (record) {
       setIsVisible(true)
+      setConfirmDelete(false)
+      setDeleteError(null)
+      setIsDeleting(false)
       // Trigger animation on next frame
       requestAnimationFrame(() => {
         requestAnimationFrame(() => setIsOpen(true))
@@ -176,11 +183,30 @@ export default function MemoryDetail({ record, retrievalContext, onClose }: Memo
   }, [record])
 
   const handleClose = () => {
+    setDeleteError(null)
+    setConfirmDelete(false)
     setIsOpen(false)
     setTimeout(() => {
       setIsVisible(false)
       onClose()
     }, ANIMATION_DURATION)
+  }
+
+  const handleDelete = async () => {
+    if (!record || isDeleting) return
+    setIsDeleting(true)
+    setDeleteError(null)
+    try {
+      await deleteMemory(record.id)
+      setConfirmDelete(false)
+      onDeleted?.(record.id)
+      handleClose()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete memory'
+      setDeleteError(message)
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   if (!isVisible || !record) return null
@@ -220,13 +246,26 @@ export default function MemoryDetail({ record, retrievalContext, onClose }: Memo
             <h2 className="text-lg font-semibold truncate">{getTitle(record)}</h2>
             <p className="text-xs text-muted-foreground font-mono mt-1">{record.id}</p>
           </div>
-          <button
-            ref={closeRef}
-            onClick={handleClose}
-            className="p-2 rounded-md hover:bg-secondary transition-base"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setDeleteError(null)
+                setConfirmDelete(true)
+              }}
+              disabled={isDeleting}
+              className="flex items-center gap-2 h-8 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-medium disabled:opacity-50 hover:bg-destructive/90 transition-base"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete
+            </button>
+            <button
+              ref={closeRef}
+              onClick={handleClose}
+              className="p-2 rounded-md hover:bg-secondary transition-base"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -307,6 +346,58 @@ export default function MemoryDetail({ record, retrievalContext, onClose }: Memo
           <TypeDetails record={record} />
         </div>
       </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/60 panel-backdrop open"
+            onClick={() => {
+              if (isDeleting) return
+              setDeleteError(null)
+              setConfirmDelete(false)
+            }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center px-4">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 space-y-4">
+              <div>
+                <h2 className="text-lg font-semibold text-destructive">Delete this memory?</h2>
+                <p className="text-sm text-muted-foreground">
+                  This permanently removes the memory from the collection.
+                </p>
+              </div>
+              {deleteError && (
+                <div className="text-sm text-destructive">{deleteError}</div>
+              )}
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => {
+                    setDeleteError(null)
+                    setConfirmDelete(false)
+                  }}
+                  disabled={isDeleting}
+                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDelete}
+                  disabled={isDeleting}
+                  className="flex items-center gap-2 h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base disabled:opacity-50"
+                >
+                  {isDeleting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Deleting...
+                    </>
+                  ) : (
+                    'Delete'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

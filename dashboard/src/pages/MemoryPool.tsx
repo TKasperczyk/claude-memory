@@ -32,6 +32,8 @@ export default function MemoryPool() {
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [offset, setOffset] = useState(0)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [records, setRecords] = useState<MemoryRecord[]>([])
   const [totalCount, setTotalCount] = useState<number | null>(null)
   const [hasMore, setHasMore] = useState(false)
@@ -41,7 +43,7 @@ export default function MemoryPool() {
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedId = searchParams.get('id')
 
-  const { data: stats } = useApi(fetchStats, [])
+  const { data: stats, reload: reloadStats } = useApi(fetchStats, [])
 
   const projectOptions = useMemo(() => {
     if (!stats?.byProject) return []
@@ -55,6 +57,12 @@ export default function MemoryPool() {
     const timer = setTimeout(() => setSearchQuery(searchInput.trim()), 300)
     return () => clearTimeout(timer)
   }, [searchInput])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => setNotice(null), 3500)
+    return () => clearTimeout(timer)
+  }, [notice])
 
   // Reset offset on filter change
   useEffect(() => {
@@ -107,7 +115,7 @@ export default function MemoryPool() {
 
     run()
     return () => { active = false }
-  }, [typeFilter, projectFilter, showDeprecated, searchQuery, offset])
+  }, [typeFilter, projectFilter, showDeprecated, searchQuery, offset, refreshKey])
 
   useEffect(() => {
     let active = true
@@ -146,6 +154,12 @@ export default function MemoryPool() {
       next.delete('id')
       setSearchParams(next)
     }
+  }
+
+  const handleDeleted = (id: string) => {
+    setNotice({ type: 'success', message: `Deleted memory ${id}` })
+    setRefreshKey(key => key + 1)
+    reloadStats()
   }
 
   const pageInfo = () => {
@@ -232,6 +246,12 @@ export default function MemoryPool() {
         </div>
       )}
 
+      {notice && (
+        <div className={`text-sm ${notice.type === 'success' ? 'text-emerald-400' : 'text-destructive'}`}>
+          {notice.message}
+        </div>
+      )}
+
       {/* Table */}
       {loading ? (
         <div className="py-12 text-center text-sm text-muted-foreground">Loading…</div>
@@ -267,7 +287,7 @@ export default function MemoryPool() {
       </div>
 
       {/* Detail modal */}
-      <MemoryDetail record={selected} onClose={handleClose} />
+      <MemoryDetail record={selected} onClose={handleClose} onDeleted={handleDeleted} />
     </div>
   )
 }

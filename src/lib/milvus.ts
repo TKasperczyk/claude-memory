@@ -223,6 +223,41 @@ export async function deleteRecord(
   }
 }
 
+export async function resetCollection(
+  config: Config = DEFAULT_CONFIG
+): Promise<void> {
+  try {
+    await ensureClient(config)
+
+    const collectionName = config.milvus.collection
+    const hasCollection = await client!.hasCollection({
+      collection_name: collectionName
+    })
+
+    if (hasCollection.value) {
+      try {
+        await client!.releaseCollection({
+          collection_name: collectionName
+        })
+      } catch {
+        // Ignore - collection might not be loaded
+      }
+
+      await client!.dropCollection({
+        collection_name: collectionName
+      })
+    }
+
+    await createCollection(config)
+    await client!.loadCollection({
+      collection_name: collectionName
+    })
+  } catch (error) {
+    console.error('[claude-memory] resetCollection failed:', error)
+    throw error
+  }
+}
+
 export async function getRecord(
   id: string,
   config: Config = DEFAULT_CONFIG

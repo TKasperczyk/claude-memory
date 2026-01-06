@@ -10,6 +10,8 @@ import {
   queryRecords,
   hybridSearch,
   getRecord,
+  deleteRecord,
+  resetCollection,
   countRecords,
   escapeFilterValue,
   getRecordStats
@@ -165,6 +167,34 @@ app.get('/api/memories/:id', async (req, res) => {
   } catch (error) {
     console.error('Get memory error:', error)
     res.status(500).json({ error: 'Failed to get memory' })
+  }
+})
+
+// Delete memory by ID
+app.delete('/api/memories/:id', async (req, res) => {
+  try {
+    await ensureInitialized()
+    const record = await getRecord(req.params.id, CONFIG)
+    if (!record) {
+      return res.status(404).json({ error: 'Memory not found' })
+    }
+    await deleteRecord(req.params.id, CONFIG)
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Delete memory error:', error)
+    res.status(500).json({ error: 'Failed to delete memory' })
+  }
+})
+
+// Reset Milvus collection (drop + recreate)
+app.post('/api/reset-collection', async (_req, res) => {
+  try {
+    await ensureInitialized()
+    await resetCollection(CONFIG)
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Reset collection error:', error)
+    res.status(500).json({ error: 'Failed to reset collection' })
   }
 })
 

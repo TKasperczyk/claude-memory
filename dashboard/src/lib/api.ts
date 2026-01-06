@@ -84,6 +84,10 @@ export interface MemoryListResponse {
   limit: number
 }
 
+export interface ActionResponse {
+  success: boolean
+}
+
 export interface SearchResult {
   record: MemoryRecord
   score: number
@@ -286,6 +290,14 @@ export function fetchMemories(params: {
 
 export function fetchMemory(id: string): Promise<MemoryRecord> {
   return request(`/memories/${id}`)
+}
+
+export function deleteMemory(id: string): Promise<ActionResponse> {
+  return request(`/memories/${id}`, { method: 'DELETE' })
+}
+
+export function resetCollection(): Promise<ActionResponse> {
+  return request('/reset-collection', { method: 'POST' })
 }
 
 export function searchMemories(params: {
