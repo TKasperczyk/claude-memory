@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy, Loader2 } from 'lucide-react'
 import { PageHeader } from '@/App'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
 import { formatDateTime } from '@/lib/format'
@@ -15,6 +15,7 @@ import {
   type RecordType,
   type SessionRecord
 } from '@/lib/api'
+import { formatInjectionReview } from '@/lib/review-format'
 
 const TYPE_COLORS: Record<string, string> = {
   command: '#2dd4bf',
@@ -168,6 +169,7 @@ export default function Sessions() {
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
+  const [copied, setCopied] = useState<Record<string, boolean>>({})
 
   const handleMemoryClick = async (memory: SessionRecord['memories'][0]) => {
     if (loadingMemory) return
@@ -257,6 +259,15 @@ export default function Sessions() {
     }
   }
 
+  const handleCopy = async (session: SessionRecord, review: InjectionReview) => {
+    const text = formatInjectionReview(session, review)
+    await navigator.clipboard.writeText(text)
+    setCopied(prev => ({ ...prev, [session.sessionId]: true }))
+    setTimeout(() => {
+      setCopied(prev => ({ ...prev, [session.sessionId]: false }))
+    }, 2000)
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -324,14 +335,35 @@ export default function Sessions() {
                             <div className="text-xs text-muted-foreground">
                               Opus review
                             </div>
-                            <button
-                              onClick={() => handleReview(session.sessionId)}
-                              disabled={reviewRunningState}
-                              className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
-                            >
-                              {reviewRunningState && <Loader2 className="w-3 h-3 animate-spin" />}
-                              {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
-                            </button>
+                            <div className="flex items-center gap-2">
+                              {review && (
+                                <button
+                                  onClick={() => handleCopy(session, review)}
+                                  className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
+                                  title="Copy review for Claude analysis"
+                                >
+                                  {copied[session.sessionId] ? (
+                                    <>
+                                      <Check className="w-3 h-3 text-emerald-400" />
+                                      Copied
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3 h-3" />
+                                      Copy Review
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleReview(session.sessionId)}
+                                disabled={reviewRunningState}
+                                className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
+                              >
+                                {reviewRunningState && <Loader2 className="w-3 h-3 animate-spin" />}
+                                {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
+                              </button>
+                            </div>
                           </div>
 
                           {reviewError && (

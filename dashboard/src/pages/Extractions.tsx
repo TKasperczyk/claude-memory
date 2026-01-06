@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, ExternalLink, Loader2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Check, Copy, ExternalLink, Loader2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '@/App'
 import {
@@ -13,6 +13,7 @@ import {
   type MemoryRecord
 } from '@/lib/api'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import { formatExtractionReview } from '@/lib/review-format'
 
 const PAGE_SIZE = 25
 
@@ -84,6 +85,7 @@ export default function Extractions() {
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
+  const [copied, setCopied] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     let active = true
@@ -153,6 +155,15 @@ export default function Extractions() {
     } finally {
       setReviewRunning(prev => ({ ...prev, [runId]: false }))
     }
+  }
+
+  const handleCopy = async (run: ExtractionRun, runRecords: MemoryRecord[], review: ExtractionReview) => {
+    const text = formatExtractionReview(run, runRecords, review)
+    await navigator.clipboard.writeText(text)
+    setCopied(prev => ({ ...prev, [run.runId]: true }))
+    setTimeout(() => {
+      setCopied(prev => ({ ...prev, [run.runId]: false }))
+    }, 2000)
   }
 
   const pageInfo = () => {
@@ -241,14 +252,35 @@ export default function Extractions() {
                           <div className="text-xs text-muted-foreground">
                             Opus review
                           </div>
-                          <button
-                            onClick={() => handleReview(run.runId)}
-                            disabled={reviewRunningState}
-                            className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
-                          >
-                            {reviewRunningState && <Loader2 className="w-3 h-3 animate-spin" />}
-                            {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
-                          </button>
+                          <div className="flex items-center gap-2">
+                            {review && (
+                              <button
+                                onClick={() => handleCopy(run, runRecords, review)}
+                                className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
+                                title="Copy review for Claude analysis"
+                              >
+                                {copied[run.runId] ? (
+                                  <>
+                                    <Check className="w-3 h-3 text-emerald-400" />
+                                    Copied
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3 h-3" />
+                                    Copy Review
+                                  </>
+                                )}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleReview(run.runId)}
+                              disabled={reviewRunningState}
+                              className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
+                            >
+                              {reviewRunningState && <Loader2 className="w-3 h-3 animate-spin" />}
+                              {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
+                            </button>
+                          </div>
                         </div>
 
                         {reviewError && (
