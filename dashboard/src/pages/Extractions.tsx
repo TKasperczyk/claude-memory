@@ -1,8 +1,10 @@
-import { useState } from 'react'
-import { ChevronDown, ChevronRight, Check, Copy, ExternalLink, Loader2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, Check, Copy, ExternalLink } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '@/App'
+import ButtonSpinner from '@/components/ButtonSpinner'
 import { useExtractions } from '@/hooks/queries'
+import Skeleton from '@/components/Skeleton'
 import {
   fetchExtractionReview,
   fetchExtractionRun,
@@ -71,6 +73,65 @@ function truncate(value: string, max: number): string {
   return `${value.slice(0, max - 3)}...`
 }
 
+function ExtractionListSkeleton() {
+  const cards = Array.from({ length: 3 })
+
+  return (
+    <div className="space-y-2">
+      {cards.map((_, index) => (
+        <div key={index} className="rounded-xl border border-border bg-card p-4 space-y-3">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-4 w-4" />
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-3 w-24 ml-auto" />
+          </div>
+          <Skeleton className="h-3 w-40" />
+          <div className="flex gap-4">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-3 w-20" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ReviewSkeleton() {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <Skeleton className="h-4 w-16" />
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="h-3 w-28" />
+      </div>
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-5/6" />
+      <Skeleton className="h-4 w-4/6" />
+    </div>
+  )
+}
+
+function RecordsSkeleton() {
+  const items = Array.from({ length: 3 })
+
+  return (
+    <div className="space-y-2">
+      {items.map((_, index) => (
+        <div key={index} className="rounded-md border border-border bg-secondary/30 px-3 py-2 space-y-2">
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-2 w-2 rounded-full" />
+            <Skeleton className="h-3 w-12" />
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-3 w-3 ml-auto" />
+          </div>
+          <Skeleton className="h-4 w-4/5" />
+          <Skeleton className="h-3 w-full" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function Extractions() {
   const [page, setPage] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -82,27 +143,35 @@ export default function Extractions() {
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState<Record<string, boolean>>({})
+  const loadSeqRef = useRef(0)
 
   const { data, error, isPending, isFetching } = useExtractions({ page, limit: PAGE_SIZE })
   const runs = data?.runs ?? []
   const total = data?.total ?? null
+  const displayOffset = data?.offset ?? page * PAGE_SIZE
   const errorMessage = error instanceof Error ? error.message : 'Failed to load extractions'
 
   const handleToggle = async (run: ExtractionRun) => {
     const isOpen = expanded === run.runId
     setExpanded(isOpen ? null : run.runId)
 
-    if (!isOpen && !recordsByRun[run.runId] && !loadingRunId) {
+    if (!isOpen && !recordsByRun[run.runId]) {
+      const loadSeq = loadSeqRef.current + 1
+      loadSeqRef.current = loadSeq
       setLoadingRunId(run.runId)
       setRunErrors(prev => ({ ...prev, [run.runId]: '' }))
       try {
         const response = await fetchExtractionRun(run.runId)
+        if (loadSeqRef.current !== loadSeq) return
         setRecordsByRun(prev => ({ ...prev, [run.runId]: response.records }))
       } catch (err) {
+        if (loadSeqRef.current !== loadSeq) return
         const message = err instanceof Error ? err.message : 'Failed to load extraction'
         setRunErrors(prev => ({ ...prev, [run.runId]: message }))
       } finally {
-        setLoadingRunId(null)
+        if (loadSeqRef.current === loadSeq) {
+          setLoadingRunId(null)
+        }
       }
     }
 
@@ -145,13 +214,16 @@ export default function Extractions() {
   }
 
   const pageInfo = () => {
-    if (isPending || isFetching) return 'Loading...'
+    if (isPending && !data) return 'Loading...'
     if (error && !data) return 'Error'
     if (!runs.length) return 'No results'
-    const start = page * PAGE_SIZE + 1
-    const end = page * PAGE_SIZE + runs.length
+    const start = displayOffset + 1
+    const end = displayOffset + runs.length
     return total ? `${start}-${end} of ${total}` : `${start}-${end}`
   }
+
+  const isInitialLoading = isPending && runs.length === 0
+  const isRefreshing = isFetching && !isInitialLoading
 
   return (
     <div className="space-y-6">
@@ -166,8 +238,15 @@ export default function Extractions() {
         </div>
       )}
 
-      {isPending && runs.length === 0 ? (
-        <div className="text-sm text-muted-foreground">Loading...</div>
+      {isRefreshing && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <ButtonSpinner size="xs" className="text-muted-foreground" />
+          Updating runs...
+        </div>
+      )}
+
+      {isInitialLoading ? (
+        <ExtractionListSkeleton />
       ) : error && !data ? (
         <div className="text-sm text-destructive">{errorMessage}</div>
       ) : runs.length === 0 ? (
@@ -261,7 +340,7 @@ export default function Extractions() {
                               disabled={reviewRunningState}
                               className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
                             >
-                              {reviewRunningState && <Loader2 className="w-3 h-3 animate-spin" />}
+                              {reviewRunningState && <ButtonSpinner size="xs" />}
                               {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
                             </button>
                           </div>
@@ -328,12 +407,12 @@ export default function Extractions() {
                         ) : hasReviewLoaded ? (
                           <div className="text-xs text-muted-foreground">No review yet.</div>
                         ) : reviewLoadingState ? (
-                          <div className="text-xs text-muted-foreground">Loading review...</div>
+                          <ReviewSkeleton />
                         ) : null}
                       </div>
 
                       {isLoadingRecords ? (
-                        <div className="text-sm text-muted-foreground">Loading records...</div>
+                        <RecordsSkeleton />
                       ) : runError ? (
                         <div className="text-sm text-destructive">{runError}</div>
                       ) : runRecords.length === 0 ? (

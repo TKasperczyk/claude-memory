@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Play } from 'lucide-react'
 import { PageHeader } from '@/App'
+import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import { previewContext, type MemoryRecord, type PreviewResponse } from '@/lib/api'
 
@@ -106,8 +107,8 @@ export default function ContextPreview() {
             disabled={loading}
             className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
           >
-            <Play className="w-4 h-4" />
-            {loading ? 'Running…' : 'Preview'}
+            {loading ? <ButtonSpinner size="sm" /> : <Play className="w-4 h-4" />}
+            {loading ? 'Running...' : 'Preview'}
           </button>
         </div>
 

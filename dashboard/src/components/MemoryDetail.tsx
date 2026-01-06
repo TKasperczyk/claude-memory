@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Loader2, Trash2, X } from 'lucide-react'
+import { Trash2, X } from 'lucide-react'
+import ButtonSpinner from '@/components/ButtonSpinner'
+import Skeleton from '@/components/Skeleton'
 import { deleteMemory, type MemoryRecord } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
 
@@ -13,6 +15,9 @@ export interface RetrievalContext {
 interface MemoryDetailProps {
   record: MemoryRecord | null
   retrievalContext?: RetrievalContext | null
+  open?: boolean
+  loading?: boolean
+  error?: string | null
   onClose: () => void
   onDeleted?: (id: string) => void
 }
@@ -61,6 +66,57 @@ function CodeBlock({ children }: { children: string }) {
     <pre className="p-3 rounded-md bg-secondary text-sm font-mono overflow-x-auto">
       {children}
     </pre>
+  )
+}
+
+function SkeletonField() {
+  return (
+    <div className="space-y-2">
+      <Skeleton className="h-3 w-16" />
+      <Skeleton className="h-4 w-24" />
+    </div>
+  )
+}
+
+function DetailSkeleton({ showRetrieval }: { showRetrieval: boolean }) {
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+      <div className="grid grid-cols-2 gap-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <SkeletonField key={index} />
+        ))}
+      </div>
+
+      <div className="p-4 rounded-lg border border-border bg-card space-y-3">
+        <Skeleton className="h-3 w-24" />
+        <div className="grid grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="space-y-2 text-center">
+              <Skeleton className="h-6 w-10 mx-auto" />
+              <Skeleton className="h-3 w-14 mx-auto" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {showRetrieval && (
+        <div className="p-4 rounded-lg border border-border bg-card space-y-3">
+          <Skeleton className="h-3 w-32" />
+          <Skeleton className="h-14 w-full" />
+          <div className="flex flex-wrap gap-4">
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-3 w-24" />
+            <Skeleton className="h-3 w-16" />
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        <Skeleton className="h-4 w-32" />
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-10 w-2/3" />
+      </div>
+    </div>
   )
 }
 
@@ -141,7 +197,15 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
   }
 }
 
-export default function MemoryDetail({ record, retrievalContext, onClose, onDeleted }: MemoryDetailProps) {
+export default function MemoryDetail({
+  record,
+  retrievalContext,
+  open,
+  loading = false,
+  error = null,
+  onClose,
+  onDeleted
+}: MemoryDetailProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const [isOpen, setIsOpen] = useState(false)
@@ -149,10 +213,12 @@ export default function MemoryDetail({ record, retrievalContext, onClose, onDele
   const [isDeleting, setIsDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const isActive = open ?? Boolean(record)
+  const isLoading = isActive && loading
 
   // Handle open animation
   useEffect(() => {
-    if (record) {
+    if (isActive) {
       setIsVisible(true)
       setConfirmDelete(false)
       setDeleteError(null)
@@ -161,12 +227,18 @@ export default function MemoryDetail({ record, retrievalContext, onClose, onDele
       requestAnimationFrame(() => {
         requestAnimationFrame(() => setIsOpen(true))
       })
+    } else if (isVisible) {
+      setIsOpen(false)
+      const timer = setTimeout(() => {
+        setIsVisible(false)
+      }, ANIMATION_DURATION)
+      return () => clearTimeout(timer)
     }
-  }, [record])
+  }, [isActive, isVisible])
 
   // Handle keyboard and focus
   useEffect(() => {
-    if (!record) return
+    if (!isActive) return
 
     const prevFocus = document.activeElement as HTMLElement | null
     closeRef.current?.focus()
@@ -180,20 +252,17 @@ export default function MemoryDetail({ record, retrievalContext, onClose, onDele
       window.removeEventListener('keydown', handleKey)
       prevFocus?.focus()
     }
-  }, [record])
+  }, [isActive])
 
   const handleClose = () => {
     setDeleteError(null)
     setConfirmDelete(false)
     setIsOpen(false)
-    setTimeout(() => {
-      setIsVisible(false)
-      onClose()
-    }, ANIMATION_DURATION)
+    onClose()
   }
 
   const handleDelete = async () => {
-    if (!record || isDeleting) return
+    if (!record || isDeleting || loading) return
     setIsDeleting(true)
     setDeleteError(null)
     try {
@@ -209,11 +278,7 @@ export default function MemoryDetail({ record, retrievalContext, onClose, onDele
     }
   }
 
-  if (!isVisible || !record) return null
-
-  const retrievals = record.retrievalCount ?? 0
-  const usage = record.usageCount ?? 0
-  const ratio = retrievals > 0 ? Math.round((usage / retrievals) * 100) : 0
+  if (!isVisible) return null
 
   return (
     <div className="fixed inset-0 z-50">
@@ -234,17 +299,35 @@ export default function MemoryDetail({ record, retrievalContext, onClose, onDele
         <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-border">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-2">
-              <span
-                className="w-2 h-2 rounded-full"
-                style={{ backgroundColor: TYPE_COLORS[record.type] }}
-              />
-              <span className="text-xs text-muted-foreground capitalize">{record.type}</span>
-              {record.deprecated && (
-                <span className="text-xs text-destructive">Deprecated</span>
+              {record ? (
+                <>
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{ backgroundColor: TYPE_COLORS[record.type] }}
+                  />
+                  <span className="text-xs text-muted-foreground capitalize">{record.type}</span>
+                  {record.deprecated && (
+                    <span className="text-xs text-destructive">Deprecated</span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Skeleton className="w-2 h-2 rounded-full" />
+                  <Skeleton className="h-3 w-16" />
+                </>
               )}
             </div>
-            <h2 className="text-lg font-semibold truncate">{getTitle(record)}</h2>
-            <p className="text-xs text-muted-foreground font-mono mt-1">{record.id}</p>
+            {record ? (
+              <>
+                <h2 className="text-lg font-semibold truncate">{getTitle(record)}</h2>
+                <p className="text-xs text-muted-foreground font-mono mt-1">{record.id}</p>
+              </>
+            ) : (
+              <>
+                <Skeleton className="h-6 w-3/4" />
+                <Skeleton className="h-3 w-32 mt-2" />
+              </>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -252,7 +335,7 @@ export default function MemoryDetail({ record, retrievalContext, onClose, onDele
                 setDeleteError(null)
                 setConfirmDelete(true)
               }}
-              disabled={isDeleting}
+              disabled={!record || loading || isDeleting}
               className="flex items-center gap-2 h-8 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-medium disabled:opacity-50 hover:bg-destructive/90 transition-base"
             >
               <Trash2 className="w-4 h-4" />
@@ -268,83 +351,95 @@ export default function MemoryDetail({ record, retrievalContext, onClose, onDele
           </div>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-          {/* Metadata */}
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Project">{record.project ?? '—'}</Field>
-            <Field label="Domain">{record.domain ?? '—'}</Field>
-            <Field label="Created">{formatDateTime(record.timestamp)}</Field>
-            <Field label="Last used">
-              {formatRelative(record.lastUsed ?? record.timestamp)}
-            </Field>
+        {error && !record && !isLoading ? (
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            <div className="text-sm text-destructive">{error}</div>
           </div>
-
-          {/* Usage stats */}
-          <div className="p-4 rounded-lg border border-border bg-card">
-            <div className="text-xs text-muted-foreground mb-3">Usage metrics</div>
-            <div className="grid grid-cols-4 gap-4 text-center">
-              <div>
-                <div className="text-xl font-semibold tabular-nums">{retrievals}</div>
-                <div className="text-xs text-muted-foreground">Retrievals</div>
-              </div>
-              <div>
-                <div className="text-xl font-semibold tabular-nums">{usage}</div>
-                <div className="text-xs text-muted-foreground">Usage</div>
-              </div>
-              <div>
-                <div className="text-xl font-semibold tabular-nums">{record.successCount ?? 0}</div>
-                <div className="text-xs text-muted-foreground">Success</div>
-              </div>
-              <div>
-                <div className="text-xl font-semibold tabular-nums">{ratio}%</div>
-                <div className="text-xs text-muted-foreground">Ratio</div>
-              </div>
+        ) : isLoading ? (
+          <DetailSkeleton showRetrieval={Boolean(retrievalContext)} />
+        ) : record ? (
+          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+            {/* Metadata */}
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Project">{record.project ?? '—'}</Field>
+              <Field label="Domain">{record.domain ?? '—'}</Field>
+              <Field label="Created">{formatDateTime(record.timestamp)}</Field>
+              <Field label="Last used">
+                {formatRelative(record.lastUsed ?? record.timestamp)}
+              </Field>
             </div>
-          </div>
 
-          {/* Retrieval context (from session) */}
-          {retrievalContext && (retrievalContext.prompt || retrievalContext.similarity != null) && (
+            {/* Usage stats */}
             <div className="p-4 rounded-lg border border-border bg-card">
-              <div className="text-xs text-muted-foreground mb-3">Last retrieval trigger</div>
-              <div className="space-y-3">
-                {retrievalContext.prompt && (
-                  <div>
-                    <div className="text-xs text-muted-foreground mb-1">Triggered by prompt</div>
-                    <div className="text-sm p-2 rounded bg-secondary/50 font-mono text-foreground/80">
-                      "{retrievalContext.prompt}"
-                    </div>
+              <div className="text-xs text-muted-foreground mb-3">Usage metrics</div>
+              <div className="grid grid-cols-4 gap-4 text-center">
+                <div>
+                  <div className="text-xl font-semibold tabular-nums">{record.retrievalCount ?? 0}</div>
+                  <div className="text-xs text-muted-foreground">Retrievals</div>
+                </div>
+                <div>
+                  <div className="text-xl font-semibold tabular-nums">{record.usageCount ?? 0}</div>
+                  <div className="text-xs text-muted-foreground">Usage</div>
+                </div>
+                <div>
+                  <div className="text-xl font-semibold tabular-nums">{record.successCount ?? 0}</div>
+                  <div className="text-xs text-muted-foreground">Success</div>
+                </div>
+                <div>
+                  <div className="text-xl font-semibold tabular-nums">
+                    {record.retrievalCount
+                      ? Math.round(((record.usageCount ?? 0) / record.retrievalCount) * 100)
+                      : 0}
+                    %
                   </div>
-                )}
-                <div className="flex gap-4 text-sm">
-                  {retrievalContext.similarity != null && (
-                    <div>
-                      <span className="text-muted-foreground">Similarity: </span>
-                      <span className="text-cyan-400 font-mono">{(retrievalContext.similarity * 100).toFixed(1)}%</span>
-                    </div>
-                  )}
-                  {retrievalContext.keywordMatch != null && (
-                    <div>
-                      <span className="text-muted-foreground">Keyword match: </span>
-                      <span className={retrievalContext.keywordMatch ? 'text-amber-400' : 'text-muted-foreground'}>
-                        {retrievalContext.keywordMatch ? 'Yes' : 'No'}
-                      </span>
-                    </div>
-                  )}
-                  {retrievalContext.score != null && (
-                    <div>
-                      <span className="text-muted-foreground">Score: </span>
-                      <span className="font-mono">{retrievalContext.score.toFixed(3)}</span>
-                    </div>
-                  )}
+                  <div className="text-xs text-muted-foreground">Ratio</div>
                 </div>
               </div>
             </div>
-          )}
 
-          {/* Type-specific details */}
-          <TypeDetails record={record} />
-        </div>
+            {/* Retrieval context (from session) */}
+            {retrievalContext && (retrievalContext.prompt || retrievalContext.similarity != null) && (
+              <div className="p-4 rounded-lg border border-border bg-card">
+                <div className="text-xs text-muted-foreground mb-3">Last retrieval trigger</div>
+                <div className="space-y-3">
+                  {retrievalContext.prompt && (
+                    <div>
+                      <div className="text-xs text-muted-foreground mb-1">Triggered by prompt</div>
+                      <div className="text-sm p-2 rounded bg-secondary/50 font-mono text-foreground/80">
+                        "{retrievalContext.prompt}"
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex gap-4 text-sm">
+                    {retrievalContext.similarity != null && (
+                      <div>
+                        <span className="text-muted-foreground">Similarity: </span>
+                        <span className="text-cyan-400 font-mono">{(retrievalContext.similarity * 100).toFixed(1)}%</span>
+                      </div>
+                    )}
+                    {retrievalContext.keywordMatch != null && (
+                      <div>
+                        <span className="text-muted-foreground">Keyword match: </span>
+                        <span className={retrievalContext.keywordMatch ? 'text-amber-400' : 'text-muted-foreground'}>
+                          {retrievalContext.keywordMatch ? 'Yes' : 'No'}
+                        </span>
+                      </div>
+                    )}
+                    {retrievalContext.score != null && (
+                      <div>
+                        <span className="text-muted-foreground">Score: </span>
+                        <span className="font-mono">{retrievalContext.score.toFixed(3)}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Type-specific details */}
+            <TypeDetails record={record} />
+          </div>
+        ) : null}
       </div>
 
       {confirmDelete && (
@@ -386,7 +481,7 @@ export default function MemoryDetail({ record, retrievalContext, onClose, onDele
                 >
                   {isDeleting ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <ButtonSpinner size="md" />
                       Deleting...
                     </>
                   ) : (

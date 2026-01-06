@@ -1,8 +1,10 @@
-import { useState } from 'react'
-import { Check, ChevronDown, ChevronRight, Copy, Loader2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { PageHeader } from '@/App'
+import ButtonSpinner from '@/components/ButtonSpinner'
 import { useSessions } from '@/hooks/queries'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
+import Skeleton from '@/components/Skeleton'
 import { formatDateTime } from '@/lib/format'
 import {
   fetchInjectionReview,
@@ -157,11 +159,52 @@ function groupByType(memories: SessionRecord['memories']): TypeGroup[] {
     .map(t => ({ type: t, memories: groups.get(t)! }))
 }
 
+function SessionListSkeleton() {
+  const cards = Array.from({ length: 3 })
+
+  return (
+    <div className="space-y-2">
+      {cards.map((_, index) => (
+        <div key={index} className="rounded-xl border border-border bg-card p-4 space-y-3">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-2.5 w-2.5 rounded-full" />
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-3 w-20 ml-auto" />
+          </div>
+          <Skeleton className="h-3 w-64" />
+          <div className="flex gap-4">
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-3 w-16" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ReviewSkeleton() {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <Skeleton className="h-4 w-16" />
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="h-3 w-28" />
+      </div>
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-5/6" />
+      <Skeleton className="h-4 w-4/6" />
+    </div>
+  )
+}
+
 export default function Sessions() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const activeMemoryRef = useRef<string | null>(null)
   const [retrievalContext, setRetrievalContext] = useState<RetrievalContext | null>(null)
   const [loadingMemory, setLoadingMemory] = useState<string | null>(null)
+  const [memoryError, setMemoryError] = useState<string | null>(null)
   const [reviewsBySession, setReviewsBySession] = useState<Record<string, InjectionReview | null>>({})
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
@@ -173,31 +216,32 @@ export default function Sessions() {
 
   const handleMemoryClick = async (memory: SessionRecord['memories'][0]) => {
     if (loadingMemory) return
+    setSelectedId(memory.id)
+    activeMemoryRef.current = memory.id
+    setSelected(null)
+    setMemoryError(null)
     setLoadingMemory(memory.id)
+    setRetrievalContext({
+      prompt: memory.prompt,
+      similarity: memory.similarity,
+      keywordMatch: memory.keywordMatch,
+      score: memory.score
+    })
     try {
       const record = await fetchMemory(memory.id)
+      if (activeMemoryRef.current !== memory.id) return
       setSelected(record)
-      setRetrievalContext({
-        prompt: memory.prompt,
-        similarity: memory.similarity,
-        keywordMatch: memory.keywordMatch,
-        score: memory.score
-      })
     } catch {
-      // Silently fail - memory might have been deleted
+      if (activeMemoryRef.current !== memory.id) return
+      setMemoryError('Failed to load memory')
     } finally {
-      setLoadingMemory(null)
+      if (activeMemoryRef.current === memory.id) {
+        setLoadingMemory(null)
+      }
     }
   }
 
-  if (isPending && sessions.length === 0) {
-    return (
-      <div>
-        <PageHeader title="Sessions" />
-        <div className="text-sm text-muted-foreground">Loading…</div>
-      </div>
-    )
-  }
+  const isInitialLoading = isPending && sessions.length === 0
 
   if (error && !data) {
     return (
@@ -263,7 +307,9 @@ export default function Sessions() {
         </div>
       )}
 
-      {sessions.length === 0 ? (
+      {isInitialLoading ? (
+        <SessionListSkeleton />
+      ) : sessions.length === 0 ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
           No sessions tracked yet. Sessions appear when Claude Code injects memories.
         </div>
@@ -348,7 +394,7 @@ export default function Sessions() {
                                 disabled={reviewRunningState}
                                 className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
                               >
-                                {reviewRunningState && <Loader2 className="w-3 h-3 animate-spin" />}
+                                {reviewRunningState && <ButtonSpinner size="xs" />}
                                 {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
                               </button>
                             </div>
@@ -430,7 +476,7 @@ export default function Sessions() {
                           ) : hasReviewLoaded ? (
                             <div className="text-xs text-muted-foreground">No review yet.</div>
                           ) : reviewLoadingState ? (
-                            <div className="text-xs text-muted-foreground">Loading review...</div>
+                            <ReviewSkeleton />
                           ) : null}
                         </div>
                       )}
@@ -469,15 +515,14 @@ export default function Sessions() {
                             <div className="p-1.5 space-y-0.5">
                               {group.memories.map((memory, mi) => {
                                 const title = parseSnippetTitle(memory.snippet)
-                                const isLoading = loadingMemory === memory.id
                                 const trigger = formatRetrievalTrigger(memory)
 
                                 return (
                                   <button
                                     key={`${memory.id}-${mi}`}
                                     onClick={() => handleMemoryClick(memory)}
-                                    disabled={isLoading}
-                                    className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm hover:bg-background/60 transition-base disabled:opacity-50 group"
+                                    disabled={Boolean(loadingMemory)}
+                                    className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded text-sm hover:bg-background/60 transition-base disabled:opacity-50 disabled:cursor-not-allowed group"
                                   >
                                     <span className="flex-1 truncate text-foreground/70 group-hover:text-foreground/90">{title}</span>
                                     {trigger && (
@@ -510,7 +555,17 @@ export default function Sessions() {
       <MemoryDetail
         record={selected}
         retrievalContext={retrievalContext}
-        onClose={() => { setSelected(null); setRetrievalContext(null) }}
+        open={Boolean(selectedId)}
+        loading={Boolean(loadingMemory)}
+        error={memoryError}
+        onClose={() => {
+          setSelected(null)
+          setSelectedId(null)
+          activeMemoryRef.current = null
+          setRetrievalContext(null)
+          setMemoryError(null)
+          setLoadingMemory(null)
+        }}
       />
     </div>
   )

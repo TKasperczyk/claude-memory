@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Check, Circle, Eye, Loader2, Play } from 'lucide-react'
 import { PageHeader } from '@/App'
+import ButtonSpinner from '@/components/ButtonSpinner'
+import Skeleton from '@/components/Skeleton'
 import { formatDuration } from '@/lib/format'
 import {
   fetchMaintenanceOperations,
@@ -171,7 +173,9 @@ export default function Maintenance() {
 
   const [results, setResults] = useState<Record<MaintenanceOperation, OperationResult | null>>({})
   const [running, setRunning] = useState<Record<MaintenanceOperation, boolean>>({})
+  const [runningMode, setRunningMode] = useState<Record<MaintenanceOperation, 'preview' | 'run' | null>>({})
   const [bulkRunning, setBulkRunning] = useState(false)
+  const [bulkMode, setBulkMode] = useState<'preview' | 'run' | null>(null)
   const [bulkProgress, setBulkProgress] = useState<Record<MaintenanceOperation, BulkProgressState> | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState>(null)
@@ -180,6 +184,7 @@ export default function Maintenance() {
     if (operations.length === 0) return
     setResults(prev => buildOperationState(operations, null, prev))
     setRunning(prev => buildOperationState(operations, false, prev))
+    setRunningMode(prev => buildOperationState(operations, null, prev))
   }, [operations])
 
   const setOperationRunning = (operation: MaintenanceOperation, isRunning: boolean) => {
@@ -188,6 +193,7 @@ export default function Maintenance() {
 
   const handleRunOperation = async (operation: MaintenanceOperation, dryRun: boolean) => {
     setOperationRunning(operation, true)
+    setRunningMode(prev => ({ ...prev, [operation]: dryRun ? 'preview' : 'run' }))
     try {
       const result = await runMaintenance(operation, dryRun)
       setResults(prev => ({ ...prev, [operation]: result }))
@@ -206,12 +212,14 @@ export default function Maintenance() {
       }))
     } finally {
       setOperationRunning(operation, false)
+      setRunningMode(prev => ({ ...prev, [operation]: null }))
     }
   }
 
   const handleRunAll = (dryRun: boolean) => {
     if (operations.length === 0) return
     setBulkRunning(true)
+    setBulkMode(dryRun ? 'preview' : 'run')
     setBulkError(null)
     // Initialize all operations as pending
     setBulkProgress(
@@ -251,12 +259,14 @@ export default function Maintenance() {
     eventSource.addEventListener('complete', () => {
       setBulkRunning(false)
       setBulkProgress(null)
+      setBulkMode(null)
       eventSource.close()
     })
 
     eventSource.onerror = () => {
       setBulkRunning(false)
       setBulkProgress(null)
+      setBulkMode(null)
       eventSource.close()
     }
   }
@@ -286,7 +296,40 @@ export default function Maintenance() {
           title="Maintenance"
           description="Run maintenance operations manually with dry-run previews"
         />
-        <div className="text-sm text-muted-foreground">Loading maintenance operations...</div>
+        <section className="p-6 rounded-xl border border-border bg-card space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-3 w-64" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-9 w-28" />
+              <Skeleton className="h-9 w-20" />
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <Skeleton key={index} className="h-6 w-32" />
+            ))}
+          </div>
+        </section>
+
+        <div className="space-y-6">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <section key={index} className="p-6 rounded-xl border border-border bg-card space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-48" />
+                  <Skeleton className="h-3 w-64" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Skeleton className="h-8 w-24" />
+                  <Skeleton className="h-8 w-16" />
+                </div>
+              </div>
+            </section>
+          ))}
+        </div>
       </div>
     )
   }
@@ -334,16 +377,24 @@ export default function Maintenance() {
               disabled={bulkRunning}
               className="flex items-center gap-2 h-9 px-3 rounded-md border border-border bg-background text-sm disabled:opacity-50 hover:bg-secondary/60 transition-base"
             >
-              <Eye className="w-4 h-4" />
-              {bulkRunning ? 'Running...' : 'Preview all'}
+              {bulkRunning && bulkMode === 'preview' ? (
+                <ButtonSpinner size="sm" />
+              ) : (
+                <Eye className="w-4 h-4" />
+              )}
+              {bulkRunning && bulkMode === 'preview' ? 'Previewing...' : 'Preview all'}
             </button>
             <button
               onClick={requestExecuteAll}
               disabled={bulkRunning}
               className="flex items-center gap-2 h-9 px-3 rounded-md bg-foreground text-background text-sm font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
             >
-              <Play className="w-4 h-4" />
-              Run all
+              {bulkRunning && bulkMode === 'run' ? (
+                <ButtonSpinner size="sm" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+              {bulkRunning && bulkMode === 'run' ? 'Running...' : 'Run all'}
             </button>
           </div>
         </div>
@@ -382,7 +433,11 @@ export default function Maintenance() {
       <div className="space-y-6">
         {operations.map(operation => {
           const result = results[operation.key]
-          const isRunning = running[operation.key] || bulkRunning
+          const isRunning = running[operation.key]
+          const mode = runningMode[operation.key]
+          const isPreviewRunning = mode === 'preview'
+          const isRunRunning = mode === 'run'
+          const isDisabled = isRunning || bulkRunning
           const bulkStatus = bulkProgress?.[operation.key]
           const isCurrent = bulkStatus === 'running'
           return (
@@ -400,20 +455,20 @@ export default function Maintenance() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleRunOperation(operation.key, true)}
-                    disabled={isRunning}
+                    disabled={isDisabled}
                     className="flex items-center gap-2 h-8 px-3 rounded-md border border-border bg-background text-xs disabled:opacity-50 hover:bg-secondary/60 transition-base"
                   >
-                    <Eye className="w-4 h-4" />
-                    {isCurrent ? 'Running...' : 'Preview'}
+                    {isPreviewRunning ? <ButtonSpinner size="xs" /> : <Eye className="w-4 h-4" />}
+                    {isPreviewRunning ? 'Previewing...' : 'Preview'}
                   </button>
                   {operation.allowExecute && (
                     <button
                       onClick={() => requestExecute(operation.key)}
-                      disabled={isRunning}
+                      disabled={isDisabled}
                       className="flex items-center gap-2 h-8 px-3 rounded-md bg-foreground text-background text-xs font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
                     >
-                      <Play className="w-4 h-4" />
-                      Run
+                      {isRunRunning ? <ButtonSpinner size="xs" /> : <Play className="w-4 h-4" />}
+                      {isRunRunning ? 'Running...' : 'Run'}
                     </button>
                   )}
                 </div>

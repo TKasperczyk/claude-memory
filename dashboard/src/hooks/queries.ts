@@ -78,6 +78,7 @@ export function useMemories(params: MemoriesQueryParams) {
         deprecated
       })
     },
+    placeholderData: previousData => previousData,
     refetchInterval: 20000
   })
 }
@@ -91,6 +92,7 @@ export function useExtractions(params: ExtractionsQueryParams) {
       limit,
       offset: page * limit
     }),
+    placeholderData: previousData => previousData,
     refetchInterval: 30000
   })
 }

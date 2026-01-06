@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { PageHeader } from '@/App'
+import ButtonSpinner from '@/components/ButtonSpinner'
 import StatsCard from '@/components/StatsCard'
+import Skeleton from '@/components/Skeleton'
 import { useStats } from '@/hooks/queries'
 import { resetCollection, type RecordType } from '@/lib/api'
 
@@ -101,6 +103,42 @@ function TopList({
   )
 }
 
+function DistributionSkeleton() {
+  return (
+    <div className="space-y-4">
+      <Skeleton className="h-2.5 w-full rounded-full" />
+      <div className="flex flex-wrap gap-x-8 gap-y-2">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="flex items-center gap-2.5">
+            <Skeleton className="h-2.5 w-2.5 rounded-full" />
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-3 w-8" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TopListSkeleton({ title }: { title: string }) {
+  return (
+    <div>
+      <h3 className="section-header mb-5">{title}</h3>
+      <div className="space-y-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index}>
+            <div className="flex items-center justify-between mb-1.5">
+              <Skeleton className="h-3 w-32" />
+              <Skeleton className="h-3 w-8" />
+            </div>
+            <Skeleton className="h-1.5 w-full rounded-full" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function Overview() {
   const { data, error, isPending, refetch } = useStats()
   const [resetOpen, setResetOpen] = useState(false)
@@ -140,14 +178,7 @@ export default function Overview() {
     }
   }
 
-  if (isPending) {
-    return (
-      <div>
-        <PageHeader title="Overview" />
-        <div className="text-sm text-muted-foreground">Loading...</div>
-      </div>
-    )
-  }
+  const isInitialLoading = isPending && !data
 
   if (error && !data) {
     return (
@@ -158,7 +189,7 @@ export default function Overview() {
     )
   }
 
-  if (!data) {
+  if (!data && !isInitialLoading) {
     return (
       <div>
         <PageHeader title="Overview" />
@@ -167,20 +198,26 @@ export default function Overview() {
     )
   }
 
-  const typeData = (['command', 'error', 'discovery', 'procedure'] as const).map(type => ({
-    type,
-    count: data.byType[type] ?? 0,
-  }))
+  const typeData = data
+    ? (['command', 'error', 'discovery', 'procedure'] as const).map(type => ({
+        type,
+        count: data.byType[type] ?? 0,
+      }))
+    : []
 
-  const projectData = Object.entries(data.byProject)
-    .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value)
+  const projectData = data
+    ? Object.entries(data.byProject)
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => b.value - a.value)
+    : []
 
-  const domainData = Object.entries(data.byDomain)
-    .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value)
+  const domainData = data
+    ? Object.entries(data.byDomain)
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => b.value - a.value)
+    : []
 
-  const usagePercent = Math.round(data.avgUsageRatio * 100)
+  const usagePercent = data ? Math.round(data.avgUsageRatio * 100) : 0
 
   return (
     <div className="space-y-8">
@@ -199,19 +236,25 @@ export default function Overview() {
       <section className="p-6 rounded-xl border border-border bg-card">
         <h2 className="section-header mb-6">Metrics</h2>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-x-8 gap-y-6">
-          <StatsCard label="Total memories" value={formatNumber(data.total)} />
-          <StatsCard label="Deprecated" value={formatNumber(data.deprecated)} />
+          <StatsCard
+            label="Total memories"
+            value={isInitialLoading ? <Skeleton className="h-8 w-20" /> : formatNumber(data!.total)}
+          />
+          <StatsCard
+            label="Deprecated"
+            value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.deprecated)}
+          />
           <StatsCard
             label="Avg retrievals"
-            value={formatNumber(data.avgRetrievalCount, 1)}
+            value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.avgRetrievalCount, 1)}
           />
           <StatsCard
             label="Avg usage"
-            value={formatNumber(data.avgUsageCount, 1)}
+            value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.avgUsageCount, 1)}
           />
           <StatsCard
             label="Usage ratio"
-            value={`${usagePercent}%`}
+            value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : `${usagePercent}%`}
             subtext="Helpfulness score"
           />
         </div>
@@ -220,16 +263,24 @@ export default function Overview() {
       {/* Distribution */}
       <section className="p-6 rounded-xl border border-border bg-card">
         <h2 className="section-header mb-5">Type distribution</h2>
-        <DistributionBar data={typeData} />
+        {isInitialLoading ? <DistributionSkeleton /> : <DistributionBar data={typeData} />}
       </section>
 
       {/* Lists */}
       <div className="grid md:grid-cols-2 gap-6">
         <section className="p-6 rounded-xl border border-border bg-card">
-          <TopList title="Top projects" data={projectData} />
+          {isInitialLoading ? (
+            <TopListSkeleton title="Top projects" />
+          ) : (
+            <TopList title="Top projects" data={projectData} />
+          )}
         </section>
         <section className="p-6 rounded-xl border border-border bg-card">
-          <TopList title="Top domains" data={domainData} />
+          {isInitialLoading ? (
+            <TopListSkeleton title="Top domains" />
+          ) : (
+            <TopList title="Top domains" data={domainData} />
+          )}
         </section>
       </div>
 
@@ -290,7 +341,14 @@ export default function Overview() {
                   disabled={!resetReady || resetRunning}
                   className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base disabled:opacity-50"
                 >
-                  {resetRunning ? 'Resetting...' : 'Reset'}
+                  {resetRunning ? (
+                    <span className="flex items-center gap-2">
+                      <ButtonSpinner size="sm" />
+                      Resetting...
+                    </span>
+                  ) : (
+                    'Reset'
+                  )}
                 </button>
               </div>
             </div>
