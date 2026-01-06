@@ -240,12 +240,28 @@ export interface InjectionReview {
 
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 
+export interface MaintenanceMergeRecord {
+  id: string
+  snippet: string | null
+}
+
+export interface MaintenanceActionDetails {
+  keptId?: string
+  deprecatedIds?: string[]
+  deprecatedRecords?: MaintenanceMergeRecord[]
+  before?: string
+  after?: string
+  newerId?: string
+  similarity?: number
+  [key: string]: unknown
+}
+
 export interface MaintenanceAction {
   type: MaintenanceActionType
   recordId?: string
   snippet: string
   reason: string
-  details?: Record<string, unknown>
+  details?: MaintenanceActionDetails
 }
 
 export interface MaintenanceOperationInfo {

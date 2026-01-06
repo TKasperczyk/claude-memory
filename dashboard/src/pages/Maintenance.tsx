@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Check, Circle, Eye, Loader2, Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
@@ -70,26 +70,105 @@ function buildOperationState<T>(
   ) as Record<MaintenanceOperation, T>
 }
 
-function renderDetails(details?: Record<string, unknown>) {
+function RecordLink({
+  id,
+  onSelect,
+  className,
+  stopPropagation = false
+}: {
+  id: string
+  onSelect?: (id: string) => void
+  className?: string
+  stopPropagation?: boolean
+}) {
+  const classes = [className, onSelect ? 'transition-base hover:text-foreground' : null]
+    .filter(Boolean)
+    .join(' ')
+
+  if (!onSelect) {
+    return <span className={classes}>{id}</span>
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        if (stopPropagation) event.stopPropagation()
+        onSelect(id)
+      }}
+      className={classes}
+    >
+      {id}
+    </button>
+  )
+}
+
+function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: string) => void) {
   if (!details) return null
 
   const before = typeof details.before === 'string' ? details.before : null
   const after = typeof details.after === 'string' ? details.after : null
+  const deprecatedRecords = Array.isArray(details.deprecatedRecords) ? details.deprecatedRecords : null
   const deprecatedIds = Array.isArray(details.deprecatedIds) ? details.deprecatedIds : null
+  const keptId = typeof details.keptId === 'string' ? details.keptId : null
   const newerId = typeof details.newerId === 'string' ? details.newerId : null
   const similarity = typeof details.similarity === 'number' ? details.similarity : null
+  const hasDeprecatedRecords = Boolean(deprecatedRecords && deprecatedRecords.length > 0)
+  const hasDeprecatedIds = Boolean(!hasDeprecatedRecords && deprecatedIds && deprecatedIds.length > 0)
 
-  if (!before && !after && !deprecatedIds && !newerId && similarity === null) return null
+  if (!before && !after && !hasDeprecatedRecords && !hasDeprecatedIds && !newerId && similarity === null) return null
 
   return (
-    <div className="mt-2 text-xs text-muted-foreground space-y-1">
+    <div className="mt-2 text-xs text-muted-foreground space-y-2">
       {before && after && (
         <>
           <div className="font-mono">before: {before}</div>
           <div className="font-mono">after: {after}</div>
         </>
       )}
-      {deprecatedIds && deprecatedIds.length > 0 && (
+      {hasDeprecatedRecords && deprecatedRecords && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground/70">
+            <span>Duplicates being merged</span>
+            {keptId && (
+              <span className="flex items-center gap-1 normal-case text-muted-foreground/60">
+                <span aria-hidden="true">&rarr;</span>
+                <span className="text-[10px] uppercase tracking-wide">kept</span>
+                <RecordLink
+                  id={keptId}
+                  onSelect={onSelect}
+                  stopPropagation
+                  className="font-mono text-[11px] text-muted-foreground"
+                />
+              </span>
+            )}
+          </div>
+          <div className="space-y-2">
+            {deprecatedRecords.map(record => (
+              <div
+                key={record.id}
+                className="rounded-md border border-border/60 bg-secondary/30 px-2 py-1.5"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-muted-foreground/50">&rarr;</span>
+                  <RecordLink
+                    id={record.id}
+                    onSelect={onSelect}
+                    stopPropagation
+                    className="font-mono text-[11px] line-through text-muted-foreground/70"
+                  />
+                </div>
+                {record.snippet && (
+                  <div className="mt-1 text-muted-foreground/60">
+                    {record.snippet}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {hasDeprecatedIds && deprecatedIds && (
         <div className="font-mono">merged: {deprecatedIds.join(', ')}</div>
       )}
       {newerId && (
@@ -106,6 +185,18 @@ function ActionRow({ action, onSelect }: { action: MaintenanceAction; onSelect?:
   const containerClasses = `p-3 rounded-md border border-border bg-secondary/30 transition-base ${
     isSelectable ? 'cursor-pointer hover:bg-secondary/50' : ''
   }`
+  const handleSelect = () => {
+    if (recordId) {
+      onSelect?.(recordId)
+    }
+  }
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!isSelectable) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      handleSelect()
+    }
+  }
 
   const content = (
     <div className="flex items-start gap-3">
@@ -123,25 +214,19 @@ function ActionRow({ action, onSelect }: { action: MaintenanceAction; onSelect?:
         </div>
         <div className="text-sm text-foreground">{action.snippet}</div>
         <div className="text-xs text-muted-foreground">{action.reason}</div>
-        {renderDetails(action.details)}
+        {renderDetails(action.details, onSelect)}
       </div>
     </div>
   )
 
-  if (isSelectable && recordId) {
-    return (
-      <button
-        type="button"
-        onClick={() => onSelect?.(recordId)}
-        className={`w-full text-left ${containerClasses}`}
-      >
-        {content}
-      </button>
-    )
-  }
-
   return (
-    <div className={containerClasses}>
+    <div
+      className={containerClasses}
+      onClick={isSelectable ? handleSelect : undefined}
+      onKeyDown={isSelectable ? handleKeyDown : undefined}
+      role={isSelectable ? 'button' : undefined}
+      tabIndex={isSelectable ? 0 : undefined}
+    >
       {content}
     </div>
   )

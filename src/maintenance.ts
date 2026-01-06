@@ -29,12 +29,28 @@ const SIMILARITY_THRESHOLD = 0.85
 
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 
+export interface MaintenanceMergeRecord {
+  id: string
+  snippet: string | null
+}
+
+export interface MaintenanceActionDetails {
+  keptId?: string
+  deprecatedIds?: string[]
+  deprecatedRecords?: MaintenanceMergeRecord[]
+  before?: string
+  after?: string
+  newerId?: string
+  similarity?: number
+  [key: string]: unknown
+}
+
 export interface MaintenanceAction {
   type: MaintenanceActionType
   recordId?: string
   snippet: string
   reason: string
-  details?: Record<string, unknown>
+  details?: MaintenanceActionDetails
 }
 
 export interface MaintenanceRunResult {
@@ -251,6 +267,16 @@ export async function runConsolidation(
 
     for (const cluster of clusters) {
       try {
+        const recordById = new Map(cluster.map(record => [record.id, record]))
+        const buildDeprecatedRecords = (deprecatedIds: string[]) =>
+          deprecatedIds.map(id => {
+            const record = recordById.get(id)
+            return {
+              id,
+              snippet: record ? truncateSnippet(buildRecordSnippet(record)) : null
+            }
+          })
+
         if (dryRun) {
           const preview = summarizeCluster(cluster)
           if (!preview || preview.deprecatedIds.length === 0) continue
@@ -261,7 +287,11 @@ export async function runConsolidation(
             recordId: preview.keptId,
             snippet,
             reason: `merge ${preview.deprecatedIds.length} duplicates`,
-            details: { keptId: preview.keptId, deprecatedIds: preview.deprecatedIds }
+            details: {
+              keptId: preview.keptId,
+              deprecatedIds: preview.deprecatedIds,
+              deprecatedRecords: buildDeprecatedRecords(preview.deprecatedIds)
+            }
           })
           clustersMerged += 1
           deprecated += preview.deprecatedIds.length
@@ -277,7 +307,11 @@ export async function runConsolidation(
           recordId: result.keptId,
           snippet,
           reason: `merge ${result.deprecatedIds.length} duplicates`,
-          details: { keptId: result.keptId, deprecatedIds: result.deprecatedIds }
+          details: {
+            keptId: result.keptId,
+            deprecatedIds: result.deprecatedIds,
+            deprecatedRecords: buildDeprecatedRecords(result.deprecatedIds)
+          }
         })
         clustersMerged += 1
         deprecated += result.deprecatedIds.length
