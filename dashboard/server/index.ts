@@ -137,6 +137,34 @@ app.post('/api/hooks/install', (_req, res) => {
   }
 })
 
+app.post('/api/hooks/uninstall', (_req, res) => {
+  try {
+    const settings = readClaudeSettingsFile(CLAUDE_SETTINGS_PATH)
+    if (!settings) {
+      res.json({ success: true, hooks: buildHookStatus(null) })
+      return
+    }
+    if (!isPlainObject(settings.hooks)) {
+      res.json({ success: true, hooks: buildHookStatus(settings) })
+      return
+    }
+    const hooksConfig = settings.hooks as Record<string, unknown>
+
+    const entries = Object.entries(CLAUDE_HOOKS) as [ClaudeHookEvent, ClaudeHookDefinition][]
+    for (const [eventName, hookDefinition] of entries) {
+      if (!Object.prototype.hasOwnProperty.call(hooksConfig, eventName)) continue
+      hooksConfig[eventName] = removeHookEntries(hooksConfig[eventName], hookDefinition)
+    }
+
+    fs.mkdirSync(path.dirname(CLAUDE_SETTINGS_PATH), { recursive: true })
+    fs.writeFileSync(CLAUDE_SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
+
+    res.json({ success: true, hooks: buildHookStatus(settings) })
+  } catch (error) {
+    handleClaudeSettingsError(res, error, 'Failed to uninstall hooks')
+  }
+})
+
 // Initialize Milvus on startup
 let initialized = false
 
@@ -301,6 +329,43 @@ function ensureHookInstalled(eventConfig: unknown, hook: ClaudeHookDefinition): 
         }
       ]
     })
+  }
+
+  return entries
+}
+
+function removeHookEntries(eventConfig: unknown, hook: ClaudeHookDefinition): unknown {
+  if (!Array.isArray(eventConfig)) return eventConfig
+  const entries: unknown[] = []
+
+  for (const entry of eventConfig) {
+    if (!isPlainObject(entry)) {
+      entries.push(entry)
+      continue
+    }
+    const hooks = Array.isArray(entry.hooks) ? entry.hooks : null
+    if (!hooks) {
+      entries.push(entry)
+      continue
+    }
+    const retainedHooks = hooks.filter(item => {
+      if (!isPlainObject(item)) return true
+      const command = typeof item.command === 'string' ? item.command : ''
+      if (!command) return true
+      return !matchesClaudeHook(command, CONFIG_ROOT, hook.script)
+    })
+    if (retainedHooks.length === hooks.length) {
+      entries.push(entry)
+      continue
+    }
+    if (retainedHooks.length > 0) {
+      entries.push({ ...entry, hooks: retainedHooks })
+      continue
+    }
+    const hasMetadata = Object.keys(entry).some(key => key !== 'hooks')
+    if (hasMetadata) {
+      entries.push({ ...entry, hooks: [] })
+    }
   }
 
   return entries

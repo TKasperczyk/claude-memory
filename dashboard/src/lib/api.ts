@@ -408,6 +408,10 @@ export function installHooks(): Promise<HookInstallResponse> {
   return requestWithStatus('/hooks/install', { method: 'POST' })
 }
 
+export function uninstallHooks(): Promise<HookInstallResponse> {
+  return requestWithStatus('/hooks/uninstall', { method: 'POST' })
+}
+
 export function fetchMemories(params: {
   limit?: number
   offset?: number

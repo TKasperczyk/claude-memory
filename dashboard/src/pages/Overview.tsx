@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Check, Link2, X } from 'lucide-react'
+import { AlertTriangle, Check, Link2, X } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import StatsCard from '@/components/StatsCard'
 import Skeleton from '@/components/Skeleton'
 import { useHookStatus, useStats } from '@/hooks/queries'
-import { installHooks, resetCollection, type HookEvent, type RecordType } from '@/lib/api'
+import { installHooks, resetCollection, uninstallHooks, type HookEvent, type RecordType } from '@/lib/api'
 
 const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   command: { label: 'Commands', color: '#2dd4bf' },
@@ -157,6 +157,8 @@ export default function Overview() {
   const [resetNotice, setResetNotice] = useState<string | null>(null)
   const [resetRunning, setResetRunning] = useState(false)
   const [hookNotice, setHookNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [uninstallOpen, setUninstallOpen] = useState(false)
+  const [uninstallError, setUninstallError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!resetNotice) return
@@ -176,6 +178,11 @@ export default function Overview() {
     setResetInput('')
     setResetError(null)
     setResetOpen(true)
+  }
+
+  const openUninstall = () => {
+    setUninstallError(null)
+    setUninstallOpen(true)
   }
 
   const handleReset = async () => {
@@ -203,6 +210,21 @@ export default function Overview() {
     },
     onError: (err) => {
       const message = err instanceof Error ? err.message : 'Failed to install hooks'
+      setHookNotice({ type: 'error', text: message })
+    }
+  })
+
+  const uninstallMutation = useMutation({
+    mutationFn: uninstallHooks,
+    onSuccess: () => {
+      setHookNotice({ type: 'success', text: 'Hooks uninstalled successfully.' })
+      setUninstallError(null)
+      setUninstallOpen(false)
+      queryClient.invalidateQueries({ queryKey: ['hooksStatus'] })
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : 'Failed to uninstall hooks'
+      setUninstallError(message)
       setHookNotice({ type: 'error', text: message })
     }
   })
@@ -251,6 +273,7 @@ export default function Overview() {
   const hooksLoading = hookPending && !hookStatus
   const hasHookStatus = Boolean(hookData)
   const allHooksInstalled = hasHookStatus && HOOK_ITEMS.every(item => hookData![item.key]?.installed)
+  const anyHooksInstalled = hasHookStatus && HOOK_ITEMS.some(item => hookData![item.key]?.installed)
   const hasMissingHooks = hasHookStatus && HOOK_ITEMS.some(item => !hookData![item.key]?.installed)
   const hookErrorMessage = hookError instanceof Error ? hookError.message : 'Failed to load hook status'
   const showHookRecovery = Boolean(hookError) && !hooksLoading && !hasHookStatus
@@ -409,6 +432,18 @@ export default function Overview() {
               </button>
             )}
 
+            {anyHooksInstalled && (
+              <div className="flex items-center justify-end">
+                <button
+                  onClick={openUninstall}
+                  disabled={uninstallMutation.isPending}
+                  className="h-8 px-3 rounded-md border border-border bg-background text-xs text-muted-foreground hover:text-destructive hover:border-destructive/40 transition-base disabled:opacity-50"
+                >
+                  Uninstall Hooks
+                </button>
+              </div>
+            )}
+
           </>
         )}
 
@@ -483,6 +518,78 @@ export default function Overview() {
                     </span>
                   ) : (
                     'Reset'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {uninstallOpen && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/60 panel-backdrop open"
+            onClick={() => {
+              if (uninstallMutation.isPending) return
+              setUninstallOpen(false)
+              setUninstallError(null)
+            }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center px-4">
+            <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold">Uninstall Memory Hooks?</h2>
+                  <p className="text-sm text-muted-foreground">
+                    This will disable the claude-memory system.
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <p>If you continue:</p>
+                <ul className="list-disc list-inside space-y-2">
+                  <li>
+                    Memory injection will stop <span className="text-xs text-muted-foreground">(No context from past sessions)</span>
+                  </li>
+                  <li>
+                    Memory extraction will stop <span className="text-xs text-muted-foreground">(New learnings won&apos;t be saved)</span>
+                  </li>
+                </ul>
+                <p>
+                  Existing memories remain in the database and can be accessed via the dashboard.
+                  You can reinstall hooks anytime.
+                </p>
+              </div>
+              {uninstallError && (
+                <div className="text-sm text-destructive">{uninstallError}</div>
+              )}
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => {
+                    setUninstallOpen(false)
+                    setUninstallError(null)
+                  }}
+                  disabled={uninstallMutation.isPending}
+                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => uninstallMutation.mutate()}
+                  disabled={uninstallMutation.isPending}
+                  className="flex items-center gap-2 h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base disabled:opacity-50"
+                >
+                  {uninstallMutation.isPending ? (
+                    <>
+                      <ButtonSpinner size="sm" />
+                      Uninstalling...
+                    </>
+                  ) : (
+                    'Uninstall'
                   )}
                 </button>
               </div>
