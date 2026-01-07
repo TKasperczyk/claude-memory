@@ -205,9 +205,9 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
   if (existing.type === 'command' && incoming.type === 'command') {
     const commandUpdates = updates as Partial<typeof existing>
     const contextUpdates: Partial<typeof existing.context> = {}
-    if (!existing.context.project && incoming.context.project) contextUpdates.project = incoming.context.project
-    if (!existing.context.cwd && incoming.context.cwd) contextUpdates.cwd = incoming.context.cwd
-    if (!existing.context.intent && incoming.context.intent) contextUpdates.intent = incoming.context.intent
+    if (incoming.context.project) contextUpdates.project = incoming.context.project
+    if (incoming.context.cwd) contextUpdates.cwd = incoming.context.cwd
+    if (incoming.context.intent) contextUpdates.intent = incoming.context.intent
     if (Object.keys(contextUpdates).length > 0) {
       commandUpdates.context = { ...existing.context, ...contextUpdates }
     }
@@ -218,8 +218,8 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
   if (existing.type === 'error' && incoming.type === 'error') {
     const errorUpdates = updates as Partial<typeof existing>
     const contextUpdates: Partial<typeof existing.context> = {}
-    if (!existing.context.file && incoming.context.file) contextUpdates.file = incoming.context.file
-    if (!existing.context.tool && incoming.context.tool) contextUpdates.tool = incoming.context.tool
+    if (incoming.context.file) contextUpdates.file = incoming.context.file
+    if (incoming.context.tool) contextUpdates.tool = incoming.context.tool
     if (Object.keys(contextUpdates).length > 0) {
       errorUpdates.context = { ...existing.context, ...contextUpdates }
     }
@@ -229,7 +229,7 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
   if (existing.type === 'procedure' && incoming.type === 'procedure') {
     const procedureUpdates = updates as Partial<typeof existing>
     const contextUpdates: Partial<typeof existing.context> = {}
-    if (!existing.context.project && incoming.context.project) contextUpdates.project = incoming.context.project
+    if (incoming.context.project) contextUpdates.project = incoming.context.project
     if (Object.keys(contextUpdates).length > 0) {
       procedureUpdates.context = { ...existing.context, ...contextUpdates }
     }
