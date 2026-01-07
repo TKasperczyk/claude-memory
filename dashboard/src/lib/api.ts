@@ -288,6 +288,32 @@ export interface OperationResult {
   error?: string
 }
 
+export interface ApplySuggestionPayload {
+  recordId: string
+  action: 'new' | 'edit'
+  targetFile: string
+  diff: string
+  overwrite?: boolean
+}
+
+export interface ApplySuggestionResponse {
+  success: boolean
+  recordId: string
+  action: 'new' | 'edit'
+  targetFile: string
+  addedLines: number
+}
+
+export class ApiError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     headers: {
@@ -300,6 +326,35 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!response.ok) {
     const message = await response.text()
     throw new Error(message || `Request failed (${response.status})`)
+  }
+
+  return response.json() as Promise<T>
+}
+
+async function requestWithStatus<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {})
+    },
+    ...options
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    const contentType = response.headers.get('Content-Type') ?? ''
+    let message = body
+    if (contentType.includes('application/json')) {
+      try {
+        const parsed = JSON.parse(body) as { error?: string }
+        if (typeof parsed?.error === 'string') {
+          message = parsed.error
+        }
+      } catch {
+        // Fall back to raw text
+      }
+    }
+    throw new ApiError(message || `Request failed (${response.status})`, response.status)
   }
 
   return response.json() as Promise<T>
@@ -446,5 +501,12 @@ export function runAllMaintenance(dryRun: boolean): Promise<OperationResult[]> {
   return request('/maintenance/run-all', {
     method: 'POST',
     body: JSON.stringify({ dryRun })
+  })
+}
+
+export function applyMaintenanceSuggestion(payload: ApplySuggestionPayload): Promise<ApplySuggestionResponse> {
+  return requestWithStatus('/maintenance/suggestions/apply', {
+    method: 'POST',
+    body: JSON.stringify(payload)
   })
 }

@@ -5,6 +5,9 @@
 
 import express from 'express'
 import cors from 'cors'
+import fs from 'fs'
+import path from 'path'
+import { homedir } from 'os'
 import {
   initMilvus,
   queryRecords,
@@ -40,6 +43,10 @@ const PORT = process.env.PORT ?? 3001
 const CONFIG_ROOT = findGitRoot(process.cwd()) ?? process.cwd()
 const CONFIG = loadConfig(CONFIG_ROOT)
 const MEMORY_TYPES: RecordType[] = ['command', 'error', 'discovery', 'procedure']
+const SUGGESTION_ALLOWED_ROOTS = [
+  path.resolve(CONFIG_ROOT),
+  path.resolve(homedir(), '.claude', 'skills')
+]
 
 app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] }))
 app.use(express.json())
@@ -121,6 +128,168 @@ function buildKeywordFilter(query: string, baseFilter?: string): string {
   const escaped = escapeLikeValue(query)
   const likeClause = `exact_text like "%${escaped}%"`
   return baseFilter ? `${baseFilter} && ${likeClause}` : likeClause
+}
+
+type SuggestionApplyAction = 'new' | 'edit'
+
+class SuggestionTargetError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SuggestionTargetError'
+  }
+}
+
+function hasPathTraversal(targetFile: string): boolean {
+  const normalized = targetFile.replace(/\\/g, '/')
+  return normalized.split('/').some(segment => segment === '..')
+}
+
+function normalizeTildePath(targetFile: string): string {
+  if (targetFile === '~') return homedir()
+  if (targetFile.startsWith('~/')) return path.join(homedir(), targetFile.slice(2))
+  return targetFile
+}
+
+function isPathWithin(targetPath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, targetPath)
+  return !relative.startsWith('..') && !path.isAbsolute(relative)
+}
+
+function findExistingParent(targetPath: string): string {
+  let current = path.resolve(targetPath)
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current)
+    if (parent === current) return current
+    current = parent
+  }
+  return current
+}
+
+function resolveRealPath(targetPath: string): string {
+  const resolved = path.resolve(targetPath)
+  if (fs.existsSync(resolved)) {
+    return fs.realpathSync(resolved)
+  }
+  const existingParent = findExistingParent(resolved)
+  const realParent = fs.realpathSync(existingParent)
+  const relative = path.relative(existingParent, resolved)
+  return path.join(realParent, relative)
+}
+
+function resolveSuggestionTarget(targetFile: string): string {
+  const trimmed = targetFile.trim()
+  if (!trimmed) return trimmed
+  if (hasPathTraversal(trimmed)) {
+    throw new SuggestionTargetError('Invalid targetFile path')
+  }
+
+  const expanded = normalizeTildePath(trimmed)
+  const resolved = path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(CONFIG_ROOT, expanded)
+  const allowedRoot = SUGGESTION_ALLOWED_ROOTS.find(root => isPathWithin(resolved, root))
+  if (!allowedRoot) {
+    throw new SuggestionTargetError('Target file must be within project root or ~/.claude/skills')
+  }
+
+  const realAllowedRoot = resolveRealPath(allowedRoot)
+  const realTarget = resolveRealPath(resolved)
+  if (!isPathWithin(realTarget, realAllowedRoot)) {
+    throw new SuggestionTargetError('Invalid targetFile path')
+  }
+
+  return resolved
+}
+
+function normalizeDiffPathValue(targetFile: string): string {
+  const trimmed = targetFile.trim()
+  if (!trimmed) return ''
+  if (trimmed === '/dev/null') return trimmed
+  let unquoted = trimmed
+  if (
+    (unquoted.startsWith('"') && unquoted.endsWith('"')) ||
+    (unquoted.startsWith("'") && unquoted.endsWith("'"))
+  ) {
+    unquoted = unquoted.slice(1, -1)
+  }
+  const withoutPrefix = unquoted.replace(/^([ab])\//, '').replace(/^\.\/+/, '')
+  return withoutPrefix.replace(/\\/g, '/')
+}
+
+function parseUnifiedDiff(
+  diff: string
+): {
+  oldPath: string
+  newPath: string
+  addedLines: string[]
+  hasHunk: boolean
+  hasDeletion: boolean
+  isSingleFile: boolean
+} {
+  const lines = diff.replace(/\r\n/g, '\n').split('\n')
+  const addedLines: string[] = []
+  const oldPaths: string[] = []
+  const newPaths: string[] = []
+  let inHunk = false
+  let hasHunk = false
+  let hasDeletion = false
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      inHunk = false
+      continue
+    }
+    if (!inHunk && line.startsWith('--- ')) {
+      oldPaths.push(line.slice(4))
+      inHunk = false
+      continue
+    }
+    if (!inHunk && line.startsWith('+++ ')) {
+      newPaths.push(line.slice(4))
+      inHunk = false
+      continue
+    }
+    if (line.startsWith('@@')) {
+      inHunk = true
+      hasHunk = true
+      continue
+    }
+    if (!inHunk) continue
+    if (line.startsWith('\\ No newline at end of file')) continue
+    if (line.startsWith('+')) {
+      addedLines.push(line.slice(1))
+      continue
+    }
+    if (line.startsWith('-')) {
+      hasDeletion = true
+      continue
+    }
+  }
+
+  return {
+    oldPath: oldPaths[0] ?? '',
+    newPath: newPaths[0] ?? '',
+    addedLines,
+    hasHunk,
+    hasDeletion,
+    isSingleFile: oldPaths.length === 1 && newPaths.length === 1
+  }
+}
+
+function buildDiffContent(addedLines: string[]): string {
+  if (addedLines.length === 0) return ''
+  const content = addedLines.join('\n')
+  return addedLines[addedLines.length - 1] === '' ? content : `${content}\n`
+}
+
+function appendToExistingFile(targetPath: string, content: string): void {
+  const fd = fs.openSync(targetPath, 'r+')
+  try {
+    const { size } = fs.fstatSync(fd)
+    fs.writeSync(fd, content, size, 'utf-8')
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 // Get aggregate stats
@@ -512,6 +681,94 @@ app.post('/api/extractions/:runId/review', async (req, res) => {
 // List maintenance operations for the dashboard
 app.get('/api/maintenance/operations', (_req, res) => {
   res.json({ operations: MAINTENANCE_OPERATION_DEFINITIONS })
+})
+
+// Apply a promotion suggestion diff
+app.post('/api/maintenance/suggestions/apply', (req, res) => {
+  try {
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ error: 'Invalid payload' })
+    }
+
+    const { recordId, action, targetFile, diff, overwrite } = req.body
+    if (typeof recordId !== 'string' || recordId.trim().length === 0) {
+      return res.status(400).json({ error: 'recordId required' })
+    }
+    if (action !== 'new' && action !== 'edit') {
+      return res.status(400).json({ error: 'Invalid action' })
+    }
+    if (typeof targetFile !== 'string' || targetFile.trim().length === 0) {
+      return res.status(400).json({ error: 'targetFile required' })
+    }
+    if (typeof diff !== 'string' || diff.trim().length === 0) {
+      return res.status(400).json({ error: 'diff required' })
+    }
+
+    const parsedDiff = parseUnifiedDiff(diff)
+    if (!parsedDiff.isSingleFile) {
+      return res.status(400).json({ error: 'Diff must target a single file' })
+    }
+    const normalizedTarget = normalizeDiffPathValue(targetFile)
+    const normalizedDiffTarget = normalizeDiffPathValue(parsedDiff.newPath)
+    if (!normalizedDiffTarget || normalizedDiffTarget !== normalizedTarget) {
+      return res.status(400).json({ error: 'Diff target does not match targetFile' })
+    }
+    if (!parsedDiff.hasHunk || parsedDiff.addedLines.length === 0 || parsedDiff.hasDeletion) {
+      return res.status(400).json({ error: 'Invalid diff format' })
+    }
+    const normalizedOldTarget = normalizeDiffPathValue(parsedDiff.oldPath)
+    if (action === 'new' && normalizedOldTarget !== '/dev/null') {
+      return res.status(400).json({ error: 'Diff does not represent a new file' })
+    }
+    if (action === 'edit' && normalizedOldTarget === '/dev/null') {
+      return res.status(400).json({ error: 'Diff does not represent an edit' })
+    }
+
+    const content = buildDiffContent(parsedDiff.addedLines)
+    if (!content) {
+      return res.status(400).json({ error: 'Invalid diff format' })
+    }
+
+    const resolvedTarget = resolveSuggestionTarget(targetFile)
+    const allowOverwrite = overwrite === true
+
+    if (action === 'new') {
+      if (fs.existsSync(resolvedTarget) && !allowOverwrite) {
+        return res.status(409).json({ error: 'Target file already exists' })
+      }
+      fs.mkdirSync(path.dirname(resolvedTarget), { recursive: true })
+      fs.writeFileSync(resolvedTarget, content, { encoding: 'utf-8', flag: allowOverwrite ? 'w' : 'wx' })
+    } else {
+      if (!fs.existsSync(resolvedTarget)) {
+        return res.status(404).json({ error: 'Target file not found' })
+      }
+      appendToExistingFile(resolvedTarget, content)
+    }
+
+    res.json({
+      success: true,
+      recordId,
+      action: action as SuggestionApplyAction,
+      targetFile: resolvedTarget,
+      addedLines: parsedDiff.addedLines.length
+    })
+  } catch (error) {
+    if (error instanceof SuggestionTargetError) {
+      return res.status(400).json({ error: error.message })
+    }
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EACCES' || code === 'EPERM') {
+      return res.status(403).json({ error: 'Permission denied' })
+    }
+    if (code === 'ENOENT') {
+      return res.status(404).json({ error: 'Target file not found' })
+    }
+    if (code === 'EEXIST') {
+      return res.status(409).json({ error: 'Target file already exists' })
+    }
+    console.error('Apply suggestion error:', error)
+    res.status(500).json({ error: 'Failed to apply suggestion' })
+  }
 })
 
 // Run a single maintenance operation

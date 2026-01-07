@@ -6,6 +6,8 @@ import MemoryDetail from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
 import { formatDuration } from '@/lib/format'
 import {
+  ApiError,
+  applyMaintenanceSuggestion,
   fetchMaintenanceOperations,
   runMaintenance,
   type MaintenanceAction,
@@ -24,6 +26,8 @@ type ConfirmState =
   | null
 
 type BulkProgressState = 'pending' | 'running' | 'completed'
+type ApplyStatus = { state: 'loading' | 'success' | 'error'; message?: string }
+type ApplyConfirmState = { key: string; action: MaintenanceAction } | null
 
 const ACTION_STYLES: Record<MaintenanceActionType, { badge: string; dot: string; label: string }> = {
   deprecate: {
@@ -68,6 +72,59 @@ function buildOperationState<T>(
   return Object.fromEntries(
     operations.map(operation => [operation.key, existing[operation.key] ?? fallback])
   ) as Record<MaintenanceOperation, T>
+}
+
+function buildActionKey(operation: MaintenanceOperation, action: MaintenanceAction, index: number): string {
+  const targetFile = typeof action.details?.targetFile === 'string' ? action.details?.targetFile : ''
+  const actionType = typeof action.details?.action === 'string' ? action.details?.action : ''
+  return `${operation}:${action.recordId ?? 'unknown'}:${actionType}:${targetFile}:${index}`
+}
+
+function getSuggestionPayload(action: MaintenanceAction): {
+  recordId: string
+  action: 'new' | 'edit'
+  targetFile: string
+  diff: string
+} | null {
+  const details = action.details
+  if (!details || typeof details !== 'object') return null
+  if (!action.recordId || typeof action.recordId !== 'string') return null
+  if (details.action !== 'new' && details.action !== 'edit') return null
+  if (typeof details.targetFile !== 'string' || details.targetFile.trim().length === 0) return null
+  if (typeof details.diff !== 'string' || details.diff.trim().length === 0) return null
+  return {
+    recordId: action.recordId,
+    action: details.action,
+    targetFile: details.targetFile,
+    diff: details.diff
+  }
+}
+
+function getDiffStats(diff: string): { addedLines: number; hasDeletion: boolean; hasHunk: boolean } {
+  const lines = diff.replace(/\r\n/g, '\n').split('\n')
+  let inHunk = false
+  let hasHunk = false
+  let hasDeletion = false
+  let addedLines = 0
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      inHunk = true
+      hasHunk = true
+      continue
+    }
+    if (!inHunk) continue
+    if (line.startsWith('+++ ') || line.startsWith('--- ') || line.startsWith('diff ')) continue
+    if (line.startsWith('+')) {
+      addedLines += 1
+      continue
+    }
+    if (line.startsWith('-')) {
+      hasDeletion = true
+    }
+  }
+
+  return { addedLines, hasDeletion, hasHunk }
 }
 
 function RecordLink({
@@ -228,15 +285,24 @@ function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: s
 function ActionRow({
   action,
   onSelect,
-  executed = false
+  executed = false,
+  onApply,
+  applyStatus,
+  applyDisabled = false
 }: {
   action: MaintenanceAction
   onSelect?: (id: string) => void
   executed?: boolean
+  onApply?: (action: MaintenanceAction) => void
+  applyStatus?: ApplyStatus
+  applyDisabled?: boolean
 }) {
   const style = ACTION_STYLES[action.type]
   const recordId = action.recordId
   const isSelectable = Boolean(recordId && onSelect)
+  const isApplying = applyStatus?.state === 'loading'
+  const isApplied = applyStatus?.state === 'success'
+  const canApply = Boolean(onApply)
   const containerClasses = `p-3 rounded-md border border-border bg-secondary/30 transition-base ${
     isSelectable
       ? executed
@@ -271,15 +337,41 @@ function ActionRow({
               Done
             </span>
           )}
+          {isApplied && (
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300">
+              <Check className="w-3 h-3" aria-hidden="true" />
+              Applied
+            </span>
+          )}
           {recordId && (
             <span className="text-[11px] text-muted-foreground font-mono">
               {recordId}
+            </span>
+          )}
+          {canApply && (
+            <span className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onApply?.(action)
+                }}
+                disabled={applyDisabled || isApplying || isApplied}
+                className="flex items-center gap-2 h-7 px-2.5 rounded-md border border-border bg-background text-[11px] uppercase tracking-wide disabled:opacity-50 hover:bg-secondary/60 transition-base"
+              >
+                {isApplying ? <ButtonSpinner size="xs" /> : 'Apply'}
+              </button>
             </span>
           )}
         </div>
         <div className="text-sm text-foreground">{action.snippet}</div>
         <div className="text-xs text-muted-foreground">{action.reason}</div>
         {renderDetails(action.details, onSelect)}
+        {applyStatus?.message && (
+          <div className={`mt-2 text-xs ${applyStatus.state === 'error' ? 'text-destructive' : 'text-emerald-300'}`}>
+            {applyStatus.message}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -297,7 +389,19 @@ function ActionRow({
   )
 }
 
-function ResultPanel({ result, onSelect }: { result: OperationResult; onSelect?: (id: string) => void }) {
+function ResultPanel({
+  result,
+  onSelect,
+  onApply,
+  applyStatuses,
+  applyDisabled = false
+}: {
+  result: OperationResult
+  onSelect?: (id: string) => void
+  onApply?: (key: string, action: MaintenanceAction) => void
+  applyStatuses?: Record<string, ApplyStatus>
+  applyDisabled?: boolean
+}) {
   const summaryEntries = Object.entries(result.summary)
 
   return (
@@ -333,14 +437,23 @@ function ResultPanel({ result, onSelect }: { result: OperationResult; onSelect?:
         <div className="text-sm text-muted-foreground">No actions for this run.</div>
       ) : (
         <div className="space-y-2">
-          {result.actions.map((action, index) => (
-            <ActionRow
-              key={`${action.recordId ?? action.reason}-${index}`}
-              action={action}
-              onSelect={onSelect}
-              executed={!result.dryRun}
-            />
-          ))}
+          {result.actions.map((action, index) => {
+            const operationKey = result.operation as MaintenanceOperation
+            const actionKey = buildActionKey(operationKey, action, index)
+            const canApply = action.type === 'suggestion' && Boolean(getSuggestionPayload(action))
+            const status = applyStatuses?.[actionKey]
+            return (
+              <ActionRow
+                key={`${action.recordId ?? action.reason}-${index}`}
+                action={action}
+                onSelect={onSelect}
+                executed={!result.dryRun}
+                onApply={canApply && onApply ? (selectedAction) => onApply(actionKey, selectedAction) : undefined}
+                applyStatus={status}
+                applyDisabled={applyDisabled}
+              />
+            )
+          })}
         </div>
       )}
     </div>
@@ -359,6 +472,10 @@ export default function Maintenance() {
   const [bulkProgress, setBulkProgress] = useState<Record<MaintenanceOperation, BulkProgressState> | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState>(null)
+  const [applyConfirm, setApplyConfirm] = useState<ApplyConfirmState>(null)
+  const [applyStatuses, setApplyStatuses] = useState<Record<string, ApplyStatus>>({})
+  const [applyError, setApplyError] = useState<string | null>(null)
+  const [applyConflict, setApplyConflict] = useState(false)
   const {
     selectedId,
     selected,
@@ -368,6 +485,12 @@ export default function Maintenance() {
     handleClose: closeMemory
   } = useSelectedMemory()
   const eventSourceRef = useRef<EventSource | null>(null)
+  const activeApply = applyConfirm
+  const activeApplyKey = activeApply?.key ?? ''
+  const applyLoading = activeApplyKey ? applyStatuses[activeApplyKey]?.state === 'loading' : false
+  const applyPayload = activeApply ? getSuggestionPayload(activeApply.action) : null
+  const applyStats = applyPayload ? getDiffStats(applyPayload.diff) : null
+  const applyBlocked = Boolean(applyStats?.hasDeletion)
 
   useEffect(() => {
     if (operations.length === 0) return
@@ -481,6 +604,51 @@ export default function Maintenance() {
 
   const requestExecuteAll = () => {
     setConfirmState({ mode: 'all' })
+  }
+
+  const requestApply = (key: string, action: MaintenanceAction) => {
+    setApplyConfirm({ key, action })
+    setApplyError(null)
+    setApplyConflict(false)
+  }
+
+  const handleApplySuggestion = async (overwrite = false) => {
+    if (!applyConfirm) return
+    const currentApply = applyConfirm
+    const payload = getSuggestionPayload(currentApply.action)
+    if (!payload) {
+      setApplyError('Suggestion details are incomplete.')
+      return
+    }
+
+    setApplyError(null)
+    setApplyConflict(false)
+    setApplyStatuses(prev => ({
+      ...prev,
+      [currentApply.key]: { state: 'loading' }
+    }))
+
+    try {
+      const result = await applyMaintenanceSuggestion({ ...payload, overwrite })
+      const summary = result.addedLines === 1
+        ? 'Applied (1 line added).'
+        : `Applied (${result.addedLines} lines added).`
+      setApplyStatuses(prev => ({
+        ...prev,
+        [currentApply.key]: { state: 'success', message: summary }
+      }))
+      setApplyConfirm(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to apply suggestion'
+      if (error instanceof ApiError && error.status === 409) {
+        setApplyConflict(true)
+      }
+      setApplyStatuses(prev => ({
+        ...prev,
+        [currentApply.key]: { state: 'error', message }
+      }))
+      setApplyError(message)
+    }
   }
 
   const confirmRun = () => {
@@ -678,7 +846,15 @@ export default function Maintenance() {
                 </div>
               </div>
 
-              {result && <ResultPanel result={result} onSelect={selectMemory} />}
+              {result && (
+                <ResultPanel
+                  result={result}
+                  onSelect={selectMemory}
+                  onApply={requestApply}
+                  applyStatuses={applyStatuses}
+                  applyDisabled={isDisabled}
+                />
+              )}
             </section>
           )
         })}
@@ -712,6 +888,117 @@ export default function Maintenance() {
                   className="h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base"
                 >
                   Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {applyConfirm && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/60 panel-backdrop open"
+            onClick={() => {
+              if (applyLoading) return
+              setApplyConfirm(null)
+              setApplyError(null)
+              setApplyConflict(false)
+            }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center px-4">
+            <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4">
+              <div>
+                <h2 className="text-lg font-semibold">Apply suggestion</h2>
+                <p className="text-sm text-muted-foreground">
+                  Confirm the changes before applying this diff.
+                </p>
+              </div>
+              {(() => {
+                if (!applyPayload) {
+                  return (
+                    <div className="text-sm text-destructive">
+                      Suggestion details are incomplete.
+                    </div>
+                  )
+                }
+                const stats = applyStats ?? { addedLines: 0, hasDeletion: false, hasHunk: false }
+                const actionLabel = applyPayload.action === 'new' ? 'Create new file' : 'Edit existing file'
+                const summary = stats.hasHunk && stats.addedLines > 0
+                  ? `Will add ${stats.addedLines} line${stats.addedLines === 1 ? '' : 's'}.`
+                  : 'Diff summary unavailable.'
+                return (
+                  <div className="space-y-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs uppercase tracking-wide text-muted-foreground">Action</span>
+                      <span className="font-medium text-foreground">{actionLabel}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs uppercase tracking-wide text-muted-foreground">Target</span>
+                      <span className="font-mono text-xs text-foreground">{applyPayload.targetFile}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">{summary}</div>
+                    {applyPayload.action === 'new' ? (
+                      <div className="text-xs text-amber-300">
+                        This will create a new file. If the file already exists, you can overwrite it.
+                      </div>
+                    ) : (
+                      <div className="text-xs text-amber-300">
+                        This will append content to the existing file.
+                      </div>
+                    )}
+                    {stats.hasDeletion && (
+                      <div className="text-xs text-amber-300">
+                        Diff contains deletions and cannot be applied.
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+              {applyError && (
+                <div className="text-sm text-destructive">{applyError}</div>
+              )}
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => {
+                    setApplyConfirm(null)
+                    setApplyError(null)
+                    setApplyConflict(false)
+                  }}
+                  disabled={applyLoading}
+                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                {applyConflict && (
+                  <button
+                    onClick={() => handleApplySuggestion(true)}
+                    disabled={applyLoading || applyBlocked}
+                    className="flex items-center gap-2 h-9 px-4 rounded-md bg-amber-500 text-background text-sm font-medium hover:bg-amber-500/90 transition-base disabled:opacity-50"
+                  >
+                    {applyLoading ? (
+                      <>
+                        <ButtonSpinner size="md" />
+                        Overwriting...
+                      </>
+                    ) : (
+                      'Overwrite'
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={() => handleApplySuggestion(false)}
+                  disabled={applyConflict || applyLoading || applyBlocked}
+                  className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
+                >
+                  {applyLoading ? (
+                    <>
+                      <ButtonSpinner size="md" />
+                      Applying...
+                    </>
+                  ) : (
+                    'Apply'
+                  )}
                 </button>
               </div>
             </div>
