@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { extractSignals, stripNoiseWords, type ContextSignals } from './context.js'
 import { embedBatch } from './embed.js'
-import { escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.js'
+import { buildFilter, escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.js'
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { asString, isPlainObject } from './parsing.js'
@@ -367,20 +367,16 @@ function truncateForEmbedding(value: string, maxLength: number): string {
 }
 
 function buildSimilarFilter(signals: ContextSignals, excludeIds: string[], cwd: string | undefined): string {
-  const parts: string[] = ['deprecated == false']
-
   const project = signals.projectRoot ?? cwd
-  if (project) {
-    const escaped = escapeFilterValue(project)
-    parts.push(`(project == "${escaped}" || scope == "global")`)
-  } else {
-    parts.push('scope == "global"')
-  }
 
-  if (signals.domain) {
-    const domainValue = escapeFilterValue(signals.domain)
-    parts.push(`(domain == "${domainValue}" || domain == "")`)
-  }
+  const baseFilter = buildFilter({
+    project: project ?? undefined,
+    includeGlobal: true,
+    domain: signals.domain,
+    excludeDeprecated: true
+  })
+
+  const parts: string[] = baseFilter ? [baseFilter] : ['scope == "global"']
 
   for (const id of excludeIds) {
     parts.push(`id != "${escapeFilterValue(id)}"`)

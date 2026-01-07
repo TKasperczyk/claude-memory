@@ -1325,7 +1325,7 @@ function escapeLikeValue(value: string): string {
   return escapeFilterValue(escapedWildcards)
 }
 
-function buildFilter(filters: {
+export function buildFilter(filters: {
   project?: string
   includeGlobal?: boolean
   domain?: string
@@ -1335,18 +1335,26 @@ function buildFilter(filters: {
 }): string | undefined {
   const parts: string[] = []
 
+  // Build scope-sensitive filters (project + domain) that global scope bypasses
+  const scopeParts: string[] = []
+
   if (filters.project) {
-    const projectClause = `project == "${escapeFilterValue(filters.project)}"`
-    if (filters.includeGlobal) {
-      parts.push(`(${projectClause} || scope == "global")`)
-    } else {
-      parts.push(projectClause)
-    }
+    scopeParts.push(`project == "${escapeFilterValue(filters.project)}"`)
   }
 
   if (filters.domain) {
     const domainValue = escapeFilterValue(filters.domain)
-    parts.push(`(domain == "${domainValue}" || domain == "")`)
+    scopeParts.push(`(domain == "${domainValue}" || domain == "")`)
+  }
+
+  if (scopeParts.length > 0) {
+    const scopeClause = scopeParts.join(' && ')
+    if (filters.includeGlobal) {
+      // Global scope bypasses both project AND domain filters
+      parts.push(`(${scopeClause} || scope == "global")`)
+    } else {
+      parts.push(scopeClause)
+    }
   }
 
   if (filters.type) {
