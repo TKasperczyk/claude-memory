@@ -108,6 +108,10 @@ function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: s
 
   const before = typeof details.before === 'string' ? details.before : null
   const after = typeof details.after === 'string' ? details.after : null
+  const diff = typeof details.diff === 'string' ? details.diff : null
+  const targetFile = typeof details.targetFile === 'string' ? details.targetFile : null
+  const action = details.action === 'new' || details.action === 'edit' ? details.action : null
+  const decisionReason = typeof details.decisionReason === 'string' ? details.decisionReason : null
   const deprecatedRecords = Array.isArray(details.deprecatedRecords) ? details.deprecatedRecords : null
   const deprecatedIds = Array.isArray(details.deprecatedIds) ? details.deprecatedIds : null
   const keptId = typeof details.keptId === 'string' ? details.keptId : null
@@ -116,7 +120,9 @@ function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: s
   const hasDeprecatedRecords = Boolean(deprecatedRecords && deprecatedRecords.length > 0)
   const hasDeprecatedIds = Boolean(!hasDeprecatedRecords && deprecatedIds && deprecatedIds.length > 0)
 
-  if (!before && !after && !hasDeprecatedRecords && !hasDeprecatedIds && !newerId && similarity === null) return null
+  if (!before && !after && !diff && !hasDeprecatedRecords && !hasDeprecatedIds && !newerId && similarity === null) return null
+
+  const diffLines = diff ? diff.split('\n') : []
 
   return (
     <div className="mt-2 text-xs text-muted-foreground space-y-2">
@@ -173,6 +179,47 @@ function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: s
       )}
       {newerId && (
         <div className="font-mono">kept: {newerId}{similarity !== null ? ` (sim ${similarity.toFixed(2)})` : ''}</div>
+      )}
+      {(action || targetFile) && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground/70">
+          {action && (
+            <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-wide">
+              {action}
+            </span>
+          )}
+          {targetFile && (
+            <span className="font-mono normal-case text-muted-foreground">
+              {targetFile}
+            </span>
+          )}
+        </div>
+      )}
+      {decisionReason && (
+        <div className="text-[11px] text-muted-foreground/80">Reason: {decisionReason}</div>
+      )}
+      {diff && (
+        <div className="overflow-hidden rounded-md border border-border/60 bg-background/60">
+          <div className="max-h-80 overflow-auto text-[11px] font-mono">
+            {diffLines.map((line, index) => {
+              const content = line || ' '
+              let className = 'whitespace-pre px-3 py-0.5 text-muted-foreground/80'
+              if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff')) {
+                className = 'whitespace-pre px-3 py-0.5 text-sky-200'
+              } else if (line.startsWith('@@')) {
+                className = 'whitespace-pre px-3 py-0.5 text-purple-200'
+              } else if (line.startsWith('+')) {
+                className = 'whitespace-pre px-3 py-0.5 text-emerald-200 bg-emerald-500/10'
+              } else if (line.startsWith('-')) {
+                className = 'whitespace-pre px-3 py-0.5 text-rose-200 bg-rose-500/10'
+              }
+              return (
+                <div key={`${index}-${line.slice(0, 8)}`} className={className}>
+                  {content}
+                </div>
+              )
+            })}
+          </div>
+        </div>
       )}
     </div>
   )

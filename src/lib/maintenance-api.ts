@@ -1,5 +1,6 @@
 import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config } from './types.js'
-import { findClaudeMdCandidates, findSkillCandidates } from './promotions.js'
+import { findGitRoot } from './context.js'
+import { buildPromotionDiffs } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import {
   runStaleCheck,
@@ -137,48 +138,44 @@ async function runPromotionSuggestions(config: Config): Promise<MaintenanceRunRe
   let errors = 0
 
   try {
-    const [skillCandidatesList, claudeCandidates] = await Promise.all([
-      findSkillCandidates(config),
-      findClaudeMdCandidates(config)
-    ])
+    const root = findGitRoot(process.cwd()) ?? process.cwd()
+    const { skillDiffs, claudeMdDiffs, skillCandidates: skillCount, claudeMdCandidates: claudeCount } =
+      await buildPromotionDiffs(config, root)
 
-    skillCandidates = skillCandidatesList.length
-    claudeMdCandidates = claudeCandidates.global.length
-      + Object.values(claudeCandidates.byProject).reduce((total, group) => total + group.length, 0)
+    skillCandidates = skillCount
+    claudeMdCandidates = claudeCount
 
-    for (const record of skillCandidatesList) {
+    for (const diff of skillDiffs) {
       actions.push({
         type: 'suggestion',
-        recordId: record.id,
-        snippet: truncateSnippet(record.name || buildRecordSnippet(record)),
+        recordId: diff.record.id,
+        snippet: truncateSnippet(diff.record.name || buildRecordSnippet(diff.record)),
         reason: 'skill suggestion',
         details: {
           kind: 'skill',
-          successCount: record.successCount ?? 0
+          action: diff.action,
+          targetFile: diff.targetFile,
+          diff: diff.diff,
+          decisionReason: diff.decisionReason,
+          successCount: diff.record.successCount ?? 0
         }
       })
     }
 
-    for (const record of claudeCandidates.global) {
+    for (const diff of claudeMdDiffs) {
       actions.push({
         type: 'suggestion',
-        recordId: record.id,
-        snippet: truncateSnippet(record.what || buildRecordSnippet(record)),
-        reason: 'CLAUDE.md suggestion (global)',
-        details: { kind: 'claude-md', scope: 'global' }
+        recordId: diff.record.id,
+        snippet: truncateSnippet(diff.record.what || buildRecordSnippet(diff.record)),
+        reason: 'CLAUDE.md suggestion',
+        details: {
+          kind: 'claude-md',
+          action: diff.action,
+          targetFile: diff.targetFile,
+          diff: diff.diff,
+          decisionReason: diff.decisionReason
+        }
       })
-    }
-
-    for (const [project, records] of Object.entries(claudeCandidates.byProject)) {
-      for (const record of records) {
-        actions.push({
-          type: 'suggestion',
-          recordId: record.id,
-          snippet: truncateSnippet(record.what || buildRecordSnippet(record)),
-          reason: `CLAUDE.md suggestion (${project})`,
-          details: { kind: 'claude-md', scope: project }
-        })
-      }
     }
   } catch (error) {
     errors += 1

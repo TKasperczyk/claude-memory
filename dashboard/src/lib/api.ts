@@ -253,6 +253,10 @@ export interface MaintenanceActionDetails {
   after?: string
   newerId?: string
   similarity?: number
+  action?: 'new' | 'edit'
+  targetFile?: string
+  diff?: string
+  decisionReason?: string
   [key: string]: unknown
 }
 

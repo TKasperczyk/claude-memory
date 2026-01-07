@@ -24,10 +24,14 @@ const SKILL_FILE_MAX_CHARS = 4000
 
 type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
 
+type PromotionAction = 'new' | 'edit'
+
 interface PromotionDecision {
   id: string
   shouldPromote: boolean
   reason: string
+  action: PromotionAction
+  targetFile: string
   suggestedContent?: string
 }
 
@@ -43,6 +47,10 @@ Rules:
 - Use existing content to avoid redundancy.
 - Only promote durable, reusable information.
 - Keep the reason concise and specific.
+- Always include an action ("new" or "edit") and targetFile for each decision.
+- Use action="edit" only when an existing file from the provided context should be updated.
+- Use action="new" when a new file should be created, and include the proposed target path.
+- If you include suggestedContent: for action="new" provide full file content; for action="edit" provide only the new content to add.
 - suggestedContent is optional; keep it short and in Markdown if provided.
 `
 
@@ -59,17 +67,24 @@ const PROMOTION_TOOL: Anthropic.Tool = {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['id', 'shouldPromote', 'reason'],
+          required: ['id', 'shouldPromote', 'reason', 'action', 'targetFile'],
           properties: {
             id: { type: 'string' },
             shouldPromote: { type: 'boolean' },
             reason: { type: 'string' },
+            action: { type: 'string', enum: ['new', 'edit'] },
+            targetFile: { type: 'string' },
             suggestedContent: { type: 'string' }
           }
         }
       }
     }
   }
+}
+
+interface PromotionSuggestion<T> {
+  record: T
+  decision: PromotionDecision
 }
 
 
@@ -116,9 +131,9 @@ export async function findClaudeMdCandidatesHeuristic(
 export async function findSkillCandidates(
   config: Config = DEFAULT_CONFIG,
   root: string = process.cwd()
-): Promise<ProcedureRecord[]> {
+): Promise<PromotionSuggestion<ProcedureRecord>[]> {
   const candidates = await findSkillCandidatesHeuristic(config)
-  if (candidates.length === 0) return candidates
+  if (candidates.length === 0) return []
 
   return filterSkillCandidatesWithLlm(candidates, root, config)
 }
@@ -126,13 +141,12 @@ export async function findSkillCandidates(
 export async function findClaudeMdCandidates(
   config: Config = DEFAULT_CONFIG,
   root: string = process.cwd()
-): Promise<ClaudeMdCandidateGroups> {
+): Promise<PromotionSuggestion<DiscoveryRecord>[]> {
   const candidates = await findClaudeMdCandidatesHeuristic(config)
   const flattened = flattenClaudeMdCandidates(candidates)
-  if (flattened.length === 0) return candidates
+  if (flattened.length === 0) return []
 
-  const filtered = await filterClaudeMdCandidatesWithLlm(flattened, root, config)
-  return groupClaudeMdCandidates(filtered)
+  return filterClaudeMdCandidatesWithLlm(flattened, root, config)
 }
 
 export function generateSkillSuggestion(record: ProcedureRecord): string {
@@ -201,6 +215,38 @@ export function generateSkillSuggestion(record: ProcedureRecord): string {
   return finalizeOutput(lines)
 }
 
+function generateSkillAppendix(record: ProcedureRecord): string {
+  const lines: string[] = []
+  lines.push('## Suggested updates')
+  lines.push('')
+  lines.push('### Steps')
+  lines.push(...formatProcedureSteps(record.steps))
+
+  const prerequisites = (record.prerequisites ?? [])
+    .map(entry => cleanInline(entry))
+    .filter(Boolean)
+  if (prerequisites.length > 0) {
+    lines.push('')
+    lines.push('### Prerequisites')
+    for (const entry of prerequisites) {
+      lines.push(`- ${entry}`)
+    }
+  }
+
+  const verification = cleanInline(record.verification ?? '')
+  if (verification) {
+    lines.push('')
+    lines.push('### Verification')
+    if (looksLikeCommand(verification)) {
+      lines.push(`- \`${verification}\``)
+    } else {
+      lines.push(`- ${verification}`)
+    }
+  }
+
+  return finalizeOutput(lines)
+}
+
 export function generateClaudeMdSuggestion(records: DiscoveryRecord[]): string {
   const generatedAt = new Date().toISOString()
   const sourceIds = uniqueStrings(records.map(record => record.id))
@@ -232,6 +278,65 @@ export function generateClaudeMdSuggestion(records: DiscoveryRecord[]): string {
   return finalizeOutput(lines)
 }
 
+function generateClaudeMdAppendix(records: DiscoveryRecord[]): string {
+  const grouped = groupDiscoveries(records)
+  const lines: string[] = []
+  lines.push('## Suggested additions')
+  lines.push('')
+
+  for (const [groupName, groupRecords] of grouped) {
+    lines.push(`### ${groupName}`)
+    for (const record of groupRecords) {
+      const what = cleanInline(record.what)
+      const evidence = cleanInline(record.evidence ?? '')
+      const line = evidence ? `- ${what} (Evidence: ${evidence})` : `- ${what}`
+      lines.push(line)
+    }
+    lines.push('')
+  }
+
+  return finalizeOutput(lines)
+}
+
+interface PromotionDiff<T> {
+  kind: 'skill' | 'claude-md'
+  record: T
+  action: PromotionAction
+  targetFile: string
+  diff: string
+  decisionReason: string
+}
+
+export async function buildPromotionDiffs(
+  config: Config = DEFAULT_CONFIG,
+  root: string = process.cwd()
+): Promise<{
+  skillDiffs: PromotionDiff<ProcedureRecord>[]
+  claudeMdDiffs: PromotionDiff<DiscoveryRecord>[]
+  skillCandidates: number
+  claudeMdCandidates: number
+}> {
+  const [skillSuggestions, claudeSuggestions] = await Promise.all([
+    findSkillCandidates(config, root),
+    findClaudeMdCandidates(config, root)
+  ])
+
+  const skillDiffs = skillSuggestions
+    .map(suggestion => buildSkillDiff(suggestion, root))
+    .filter((diff): diff is PromotionDiff<ProcedureRecord> => Boolean(diff))
+
+  const claudeMdDiffs = claudeSuggestions
+    .map(suggestion => buildClaudeDiff(suggestion, root))
+    .filter((diff): diff is PromotionDiff<DiscoveryRecord> => Boolean(diff))
+
+  return {
+    skillDiffs,
+    claudeMdDiffs,
+    skillCandidates: skillSuggestions.length,
+    claudeMdCandidates: claudeSuggestions.length
+  }
+}
+
 export async function writeSuggestions(
   config: Config = DEFAULT_CONFIG,
   root: string = process.cwd()
@@ -243,14 +348,9 @@ export async function writeSuggestions(
     claudeMdCandidates: 0
   }
 
-  const [skillCandidates, claudeCandidates] = await Promise.all([
-    findSkillCandidates(config, root),
-    findClaudeMdCandidates(config, root)
-  ])
-
-  summary.skillCandidates = skillCandidates.length
-  summary.claudeMdCandidates = claudeCandidates.global.length
-    + Object.values(claudeCandidates.byProject).reduce((total, group) => total + group.length, 0)
+  const { skillDiffs, claudeMdDiffs, skillCandidates, claudeMdCandidates } = await buildPromotionDiffs(config, root)
+  summary.skillCandidates = skillCandidates
+  summary.claudeMdCandidates = claudeMdCandidates
 
   const skillsDir = path.join(root, 'suggestions', 'skills')
   const claudeDir = path.join(root, 'suggestions', 'claude-md')
@@ -260,60 +360,281 @@ export async function writeSuggestions(
   ensureDir(claudeDir)
 
   const usedSkillNames = new Set<string>()
-  for (const record of skillCandidates) {
-    const baseName = normalizeSkillName(record.name, record.id)
-    const fileBase = uniqueName(baseName, record.id, usedSkillNames)
+  for (const diff of skillDiffs) {
+    const baseName = normalizeSkillName(diff.record.name ?? '', diff.record.id)
+    const fileBase = uniqueName(baseName, diff.record.id, usedSkillNames)
     const filePath = resolveSuggestionPath(
-      path.join(skillsDir, `${fileBase}.md`),
+      path.join(skillsDir, `${fileBase}.diff`),
       dateStamp
     )
-    fs.writeFileSync(filePath, generateSkillSuggestion(record), 'utf-8')
+    fs.writeFileSync(filePath, diff.diff, 'utf-8')
     summary.skillFiles.push(filePath)
   }
 
-  if (claudeCandidates.global.length > 0) {
-    const filePath = resolveSuggestionPath(path.join(claudeDir, 'global.md'), dateStamp)
-    fs.writeFileSync(filePath, generateClaudeMdSuggestion(claudeCandidates.global), 'utf-8')
-    summary.claudeMdFiles.push(filePath)
-  }
-
-  for (const [project, records] of Object.entries(claudeCandidates.byProject)) {
-    if (records.length === 0) continue
-    const fileBase = normalizeProjectFileName(project)
+  const usedClaudeNames = new Set<string>()
+  for (const diff of claudeMdDiffs) {
+    const project = normalizeProjectKey(diff.record.project)
+    const baseName = project ? normalizeProjectFileName(project) : 'global'
+    const fileBase = uniqueName(baseName, diff.record.id, usedClaudeNames)
     const filePath = resolveSuggestionPath(
-      path.join(claudeDir, `${fileBase}.md`),
+      path.join(claudeDir, `${fileBase}.diff`),
       dateStamp
     )
-    fs.writeFileSync(filePath, generateClaudeMdSuggestion(records), 'utf-8')
+    fs.writeFileSync(filePath, diff.diff, 'utf-8')
     summary.claudeMdFiles.push(filePath)
   }
 
   return summary
 }
 
+function buildSkillDiff(
+  suggestion: PromotionSuggestion<ProcedureRecord>,
+  root: string
+): PromotionDiff<ProcedureRecord> | null {
+  const { record, decision } = suggestion
+  const skillsDir = path.join(homedir(), '.claude', 'skills')
+  const resolvedTarget = resolveTargetPath(decision.targetFile, skillsDir)
+  const displayTarget = formatDiffPath(resolvedTarget, root)
+  const targetExists = fs.existsSync(resolvedTarget)
+  const action = resolvePromotionAction(decision.action, resolvedTarget, record.id, targetExists)
+  const generatedContent = generateSkillSuggestion(record)
+  const newFileContent = decision.action === 'new'
+    ? coalesceSuggestedContent(decision.suggestedContent, generatedContent)
+    : ensureTrailingNewline(generatedContent)
+
+  if (action === 'new') {
+    const diff = buildNewFileDiff(displayTarget, newFileContent)
+    if (!diff) return null
+    return {
+      kind: 'skill',
+      record,
+      action,
+      targetFile: displayTarget,
+      diff,
+      decisionReason: decision.reason
+    }
+  }
+
+  const existing = readFileIfExists(resolvedTarget)
+  if (!existing) {
+    const diff = buildNewFileDiff(displayTarget, ensureTrailingNewline(generatedContent))
+    if (!diff) return null
+    return {
+      kind: 'skill',
+      record,
+      action: 'new',
+      targetFile: displayTarget,
+      diff,
+      decisionReason: decision.reason
+    }
+  }
+
+  const appendix = coalesceSuggestedContent(decision.suggestedContent, generateSkillAppendix(record))
+  const appendContent = buildAppendContent(existing, appendix)
+  const diff = buildAppendDiff(displayTarget, existing, appendContent)
+  if (!diff) return null
+  return {
+    kind: 'skill',
+    record,
+    action,
+    targetFile: displayTarget,
+    diff,
+    decisionReason: decision.reason
+  }
+}
+
+function buildClaudeDiff(
+  suggestion: PromotionSuggestion<DiscoveryRecord>,
+  root: string
+): PromotionDiff<DiscoveryRecord> | null {
+  const { record, decision } = suggestion
+  const resolvedTarget = resolveTargetPath(decision.targetFile, root)
+  const displayTarget = formatDiffPath(resolvedTarget, root)
+  const targetExists = fs.existsSync(resolvedTarget)
+  const action = resolvePromotionAction(decision.action, resolvedTarget, record.id, targetExists)
+  const generatedContent = generateClaudeMdSuggestion([record])
+  const newFileContent = decision.action === 'new'
+    ? coalesceSuggestedContent(decision.suggestedContent, generatedContent)
+    : ensureTrailingNewline(generatedContent)
+
+  if (action === 'new') {
+    const diff = buildNewFileDiff(displayTarget, newFileContent)
+    if (!diff) return null
+    return {
+      kind: 'claude-md',
+      record,
+      action,
+      targetFile: displayTarget,
+      diff,
+      decisionReason: decision.reason
+    }
+  }
+
+  const existing = readFileIfExists(resolvedTarget)
+  if (!existing) {
+    const diff = buildNewFileDiff(displayTarget, ensureTrailingNewline(generatedContent))
+    if (!diff) return null
+    return {
+      kind: 'claude-md',
+      record,
+      action: 'new',
+      targetFile: displayTarget,
+      diff,
+      decisionReason: decision.reason
+    }
+  }
+
+  const appendix = coalesceSuggestedContent(decision.suggestedContent, generateClaudeMdAppendix([record]))
+  const appendContent = buildAppendContent(existing, appendix)
+  const diff = buildAppendDiff(displayTarget, existing, appendContent)
+  if (!diff) return null
+  return {
+    kind: 'claude-md',
+    record,
+    action,
+    targetFile: displayTarget,
+    diff,
+    decisionReason: decision.reason
+  }
+}
+
+function resolvePromotionAction(
+  action: PromotionAction,
+  targetFile: string,
+  recordId: string,
+  targetExists: boolean = fs.existsSync(targetFile)
+): PromotionAction {
+  if (action === 'edit' && !targetExists) {
+    console.warn(`[claude-memory] Promotion edit target missing (${recordId}): ${targetFile}; falling back to new.`)
+    return 'new'
+  }
+  return action
+}
+
+function resolveTargetPath(targetFile: string, baseDir: string): string {
+  const trimmed = targetFile.trim()
+  if (trimmed === '~') return homedir()
+  if (trimmed.startsWith('~/')) return path.join(homedir(), trimmed.slice(2))
+  if (path.isAbsolute(trimmed)) return trimmed
+  return path.resolve(baseDir, trimmed)
+}
+
+function formatDiffPath(targetFile: string, root: string): string {
+  const normalizedTarget = targetFile.replace(/\\/g, '/')
+  const normalizedRoot = path.resolve(root).replace(/\\/g, '/')
+  if (normalizedTarget.startsWith(`${normalizedRoot}/`)) {
+    return normalizedTarget.slice(normalizedRoot.length + 1)
+  }
+  return normalizedTarget
+}
+
+function readFileIfExists(targetFile: string): string | null {
+  if (!fs.existsSync(targetFile)) return null
+  try {
+    return fs.readFileSync(targetFile, 'utf-8')
+  } catch (error) {
+    console.error(`[claude-memory] Failed to read target file for promotion (${targetFile}):`, error)
+    return null
+  }
+}
+
+function coalesceSuggestedContent(suggested: string | undefined, fallback: string): string {
+  const trimmed = suggested?.trim()
+  if (trimmed) return ensureTrailingNewline(suggested ?? trimmed)
+  return ensureTrailingNewline(fallback)
+}
+
+function ensureTrailingNewline(content: string): string {
+  return content.endsWith('\n') ? content : `${content}\n`
+}
+
+function buildAppendContent(existing: string, appendix: string): string {
+  const trimmedAppendix = appendix.trim()
+  if (!trimmedAppendix) return ''
+  const separator = existing.trim().length > 0 ? '\n\n' : ''
+  const normalizedAppendix = appendix.replace(/^\n+/, '')
+  return ensureTrailingNewline(`${separator}${normalizedAppendix}`)
+}
+
+function splitLines(content: string): string[] {
+  if (!content) return []
+  const normalized = content.replace(/\r\n/g, '\n')
+  const lines = normalized.split('\n')
+  if (lines[lines.length - 1] === '') {
+    lines.pop()
+  }
+  return lines
+}
+
+function buildNewFileDiff(targetFile: string, content: string): string {
+  if (!content.trim()) return ''
+  const lines = splitLines(content)
+  const header = [
+    '--- /dev/null',
+    `+++ ${targetFile}`,
+    `@@ -0,0 +1,${lines.length} @@`
+  ]
+  const body = lines.map(line => `+${line}`)
+  return finalizeDiff([...header, ...body])
+}
+
+function buildAppendDiff(targetFile: string, oldContent: string, appendContent: string, contextSize = 3): string {
+  if (!appendContent.trim()) return ''
+  const oldLines = splitLines(oldContent)
+  const appendLines = splitLines(appendContent)
+  if (oldLines.length === 0) return buildNewFileDiff(targetFile, appendContent)
+  const contextStart = Math.max(0, oldLines.length - contextSize)
+  const contextLines = oldLines.slice(contextStart)
+  const oldStart = contextStart + 1
+  const oldCount = contextLines.length
+  const newStart = oldStart
+  const newCount = contextLines.length + appendLines.length
+  const header = [
+    `--- ${targetFile}`,
+    `+++ ${targetFile}`,
+    `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`
+  ]
+  const body = [
+    ...contextLines.map(line => ` ${line}`),
+    ...appendLines.map(line => `+${line}`)
+  ]
+  return finalizeDiff([...header, ...body])
+}
+
+function finalizeDiff(lines: string[]): string {
+  const output = lines.join('\n').trimEnd()
+  return output ? `${output}\n` : ''
+}
+
 async function filterSkillCandidatesWithLlm(
   candidates: ProcedureRecord[],
   _root: string,
   config: Config
-): Promise<ProcedureRecord[]> {
+): Promise<PromotionSuggestion<ProcedureRecord>[]> {
   const client = await createAnthropicClient()
   if (!client) {
     console.error('[claude-memory] No authentication available for promotion suggestions. Set ANTHROPIC_API_KEY or run kira login.')
-    return candidates
+    return candidates.map(record => ({
+      record,
+      decision: buildDefaultSkillDecision(record)
+    }))
   }
 
   const skillContext = loadSkillContext()
   const batches = chunkArray(candidates, PROMOTION_BATCH_SIZE)
-  const approved: ProcedureRecord[] = []
+  const approved: PromotionSuggestion<ProcedureRecord>[] = []
 
   for (const batch of batches) {
     try {
       const prompt = buildSkillPromotionPrompt(batch, skillContext)
       const decisions = await requestPromotionDecisions(client, prompt, config)
-      approved.push(...applyPromotionDecisions(batch, decisions))
+      approved.push(...applyPromotionDecisions(batch, decisions, buildDefaultSkillDecision))
     } catch (error) {
       console.error('[claude-memory] Failed to score skill promotions with LLM; using heuristic results for batch:', error)
-      approved.push(...batch)
+      approved.push(...batch.map(record => ({
+        record,
+        decision: buildDefaultSkillDecision(record)
+      })))
     }
   }
 
@@ -324,16 +645,19 @@ async function filterClaudeMdCandidatesWithLlm(
   candidates: DiscoveryRecord[],
   root: string,
   config: Config
-): Promise<DiscoveryRecord[]> {
+): Promise<PromotionSuggestion<DiscoveryRecord>[]> {
   const client = await createAnthropicClient()
   if (!client) {
     console.error('[claude-memory] No authentication available for promotion suggestions. Set ANTHROPIC_API_KEY or run kira login.')
-    return candidates
+    return candidates.map(record => ({
+      record,
+      decision: buildDefaultClaudeDecision(record, root)
+    }))
   }
 
   const fallbackClaudeMd = loadClaudeMdContext(root)
   const grouped = groupClaudeMdCandidates(candidates)
-  const approved: DiscoveryRecord[] = []
+  const approved: PromotionSuggestion<DiscoveryRecord>[] = []
 
   const scoreGroup = async (records: DiscoveryRecord[], claudeMd: string): Promise<void> => {
     if (records.length === 0) return
@@ -342,10 +666,13 @@ async function filterClaudeMdCandidatesWithLlm(
       try {
         const prompt = buildClaudeMdPromotionPrompt(batch, claudeMd)
         const decisions = await requestPromotionDecisions(client, prompt, config)
-        approved.push(...applyPromotionDecisions(batch, decisions))
+        approved.push(...applyPromotionDecisions(batch, decisions, record => buildDefaultClaudeDecision(record, root)))
       } catch (error) {
         console.error('[claude-memory] Failed to score CLAUDE.md promotions with LLM; using heuristic results for batch:', error)
-        approved.push(...batch)
+        approved.push(...batch.map(record => ({
+          record,
+          decision: buildDefaultClaudeDecision(record, root)
+        })))
       }
     }
   }
@@ -366,8 +693,10 @@ function buildSkillPromotionPrompt(
   const payload = buildProcedureCandidatePayload(candidates)
   const contextText = skillContext.text || '(no existing skills found)'
 
-  return `Given these existing skills, is this procedure worth creating as a new skill?
-Is it redundant?
+  return `Given these existing skills, decide whether to promote each candidate.
+If promoting, choose action="edit" to update an existing skill file or action="new" to create a new skill file.
+For action="edit", targetFile must match a file path from the context below.
+For action="new", targetFile should be the proposed path (use defaultTargetFile unless you have a better option).
 
 Existing skills from ~/.claude/skills (count: ${skillContext.fileCount}, truncated):
 ${contextText}
@@ -384,7 +713,10 @@ function buildClaudeMdPromotionPrompt(
   const payload = buildDiscoveryCandidatePayload(candidates)
   const contextText = claudeMd || '(CLAUDE.md not found)'
 
-  return `Given this existing CLAUDE.md, is this discovery worth adding? Is it redundant?
+  return `Given this existing CLAUDE.md, decide whether to promote each discovery.
+If promoting, choose action="edit" to update the existing CLAUDE.md or action="new" to create a new file.
+For action="edit", targetFile should match the existing CLAUDE.md path shown or provided in defaultTargetFile.
+For action="new", targetFile should be the proposed path.
 
 Existing CLAUDE.md (truncated):
 ${contextText}
@@ -415,6 +747,7 @@ function buildProcedureCandidatePayload(records: ProcedureRecord[]): Array<Recor
       ...(verification ? { verification } : {}),
       ...(project ? { project } : {}),
       ...(domain ? { domain } : {}),
+      defaultTargetFile: suggestSkillTargetPath(record),
       usageCount: record.usageCount ?? 0,
       successCount: record.successCount ?? 0,
       failureCount: record.failureCount ?? 0,
@@ -437,6 +770,7 @@ function buildDiscoveryCandidatePayload(records: DiscoveryRecord[]): Array<Recor
       ...(evidence ? { evidence } : {}),
       ...(project ? { project } : {}),
       ...(domain ? { domain } : {}),
+      defaultTargetFile: suggestClaudeMdTargetPath(project),
       confidence: record.confidence,
       usageCount: record.usageCount ?? 0,
       lastUsed: formatTimestamp(record.lastUsed) ?? undefined
@@ -480,8 +814,9 @@ async function requestPromotionDecisions(
 
 function applyPromotionDecisions<T extends { id: string }>(
   candidates: T[],
-  decisions: PromotionDecision[]
-): T[] {
+  decisions: PromotionDecision[],
+  fallbackDecision: (candidate: T) => PromotionDecision
+): PromotionSuggestion<T>[] {
   const decisionMap = new Map<string, PromotionDecision>()
 
   for (const decision of decisions) {
@@ -490,16 +825,15 @@ function applyPromotionDecisions<T extends { id: string }>(
     }
   }
 
-  const approved: T[] = []
+  const approved: PromotionSuggestion<T>[] = []
   for (const candidate of candidates) {
     const decision = decisionMap.get(candidate.id)
+    const resolved = decision ?? fallbackDecision(candidate)
     if (!decision) {
       console.warn(`[claude-memory] Missing promotion decision for candidate ${candidate.id}; falling back to heuristic.`)
-      approved.push(candidate)
-      continue
     }
-    if (decision.shouldPromote) {
-      approved.push(candidate)
+    if (resolved.shouldPromote) {
+      approved.push({ record: candidate, decision: resolved })
     }
   }
 
@@ -523,15 +857,31 @@ function coercePromotionDecision(input: unknown): PromotionDecision | null {
 
   const id = asString(record.id)?.trim()
   const reason = asString(record.reason)?.trim()
+  const action = asString(record.action)?.trim()
+  const targetFile = asString(record.targetFile)?.trim()
   const suggestedContent = asString(record.suggestedContent)?.trim()
   const shouldPromote = typeof record.shouldPromote === 'boolean' ? record.shouldPromote : null
 
   if (!id || !reason || shouldPromote === null) return null
+  if (!shouldPromote) {
+    const resolvedAction = action === 'new' || action === 'edit' ? action : 'new'
+    return {
+      id,
+      shouldPromote,
+      reason,
+      action: resolvedAction,
+      targetFile: targetFile ?? ''
+    }
+  }
+  if (!action || (action !== 'new' && action !== 'edit')) return null
+  if (!targetFile) return null
 
   return {
     id,
     shouldPromote,
     reason,
+    action,
+    targetFile,
     ...(suggestedContent ? { suggestedContent } : {})
   }
 }
@@ -741,6 +1091,44 @@ function normalizeSkillName(name: string, fallbackId: string): string {
   const slug = slugify(name, SKILL_NAME_MAX_LENGTH)
   if (slug) return slug
   return `procedure-${fallbackId.slice(0, 8)}`
+}
+
+function suggestSkillTargetPath(record: ProcedureRecord): string {
+  const displayName = cleanInline(record.name ?? '')
+  const skillName = normalizeSkillName(displayName, record.id)
+  return path.join(homedir(), '.claude', 'skills', `${skillName}.md`)
+}
+
+function suggestClaudeMdTargetPath(project?: string): string {
+  if (project) return path.join(project, 'CLAUDE.md')
+  return 'CLAUDE.md'
+}
+
+function buildDefaultSkillDecision(record: ProcedureRecord): PromotionDecision {
+  const targetFile = suggestSkillTargetPath(record)
+  const action: PromotionAction = fs.existsSync(targetFile) ? 'edit' : 'new'
+  return {
+    id: record.id,
+    shouldPromote: true,
+    reason: 'heuristic promotion',
+    action,
+    targetFile
+  }
+}
+
+function buildDefaultClaudeDecision(record: DiscoveryRecord, root: string): PromotionDecision {
+  const project = normalizeProjectKey(record.project)
+  const targetFile = project
+    ? path.join(project, 'CLAUDE.md')
+    : path.join(root, 'CLAUDE.md')
+  const action: PromotionAction = fs.existsSync(targetFile) ? 'edit' : 'new'
+  return {
+    id: record.id,
+    shouldPromote: true,
+    reason: 'heuristic promotion',
+    action,
+    targetFile
+  }
 }
 
 function buildSkillDescription(record: ProcedureRecord, displayName: string): string {

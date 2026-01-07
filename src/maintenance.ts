@@ -418,8 +418,7 @@ async function runPromotions(config: Config, dryRun: boolean): Promise<void> {
         findClaudeMdCandidates(config)
       ])
       const skills = skillCandidates.length
-      const claudeMd = claudeCandidates.global.length
-        + Object.values(claudeCandidates.byProject).reduce((total, group) => total + group.length, 0)
+      const claudeMd = claudeCandidates.length
       console.error(`[claude-memory] [DRY RUN] Would generate promotion suggestions: skills=${skills} claude-md=${claudeMd}`)
       return
     }
