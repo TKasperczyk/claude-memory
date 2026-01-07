@@ -15,9 +15,9 @@ import {
   type ProcedureRecord
 } from './types.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
-import { findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
+import { buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
-import { buildExactText, buildRecordSnippet, escapeFilterValue, normalizeExactText, normalizeStep, truncateSnippet } from './shared.js'
+import { buildExactText, buildRecordSnippet, normalizeExactText, normalizeStep, truncateSnippet } from './shared.js'
 
 const STALE_DAYS = 90
 const DISCOVERY_MAX_AGE_DAYS = 180
@@ -957,15 +957,16 @@ export async function checkGlobalPromotion(
 }
 
 function buildContradictionFilter(record: MemoryRecord): string {
-  const project = record.project ?? ''
-  const domain = record.domain ?? ''
-  return [
-    'deprecated == false',
-    `type == "${escapeFilterValue(record.type)}"`,
-    `project == "${escapeFilterValue(project)}"`,
-    `domain == "${escapeFilterValue(domain)}"`,
-    `id != "${escapeFilterValue(record.id)}"`
-  ].join(' && ')
+  // For contradictions, we DO want to filter by project/domain since
+  // the same command can legitimately have different outcomes in different projects.
+  // Don't include global scope bypass (includeGlobal: false).
+  return buildFilter({
+    project: record.project,
+    domain: record.domain,
+    type: record.type,
+    excludeId: record.id,
+    excludeDeprecated: true
+  }) ?? 'deprecated == false'
 }
 
 async function fetchRecords(
@@ -1014,15 +1015,12 @@ function isExactTextSimilar(seed: string, candidate: string): boolean {
 }
 
 function buildConsolidationFilter(record: MemoryRecord): string {
-  const project = record.project ?? ''
-  const domain = record.domain ?? ''
-  return [
-    'deprecated == false',
-    `type == "${escapeFilterValue(record.type)}"`,
-    `project == "${escapeFilterValue(project)}"`,
-    `domain == "${escapeFilterValue(domain)}"`,
-    `id != "${escapeFilterValue(record.id)}"`
-  ].join(' && ')
+  // Only filter by type - no project/domain so we find cross-project duplicates
+  return buildFilter({
+    type: record.type,
+    excludeId: record.id,
+    excludeDeprecated: true
+  }) ?? 'deprecated == false'
 }
 
 function isGlobalCandidate(record: MemoryRecord): boolean {
