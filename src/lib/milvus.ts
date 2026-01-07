@@ -53,6 +53,7 @@ const OUTPUT_FIELDS = [
   'generalized',
   'last_generalization_check',
   'last_global_check',
+  'last_conflict_check',
   'source_session_id',
   'source_excerpt'
 ]
@@ -75,6 +76,7 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
     await ensureScopeField(config)
     await ensureGeneralizationFields(config)
     await ensureGlobalCheckField(config)
+    await ensureConflictField(config)
     await ensureSourceFields(config)
   }
 
@@ -661,7 +663,8 @@ export async function findSimilar(
   record: MemoryRecord,
   similarityThreshold: number = SIMILARITY_THRESHOLDS.EXTRACTION_DEDUP,
   limit: number = 5,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  extraFilter?: string
 ): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
   try {
     await ensureClient(config)
@@ -669,13 +672,16 @@ export async function findSimilar(
     const vector = record.embedding ?? await embed(buildEmbeddingInput(record), config)
     ensureEmbeddingDim(vector)
 
-    const filter = buildFilter({
+    const baseFilter = buildFilter({
       project: resolveProject(record),
       domain: resolveDomain(record),
       type: record.type,
       excludeId: record.id,
       excludeDeprecated: true
     })
+    const filterParts = [baseFilter, extraFilter]
+      .filter((part): part is string => Boolean(part && part.trim()))
+    const filter = filterParts.length > 0 ? filterParts.join(' && ') : undefined
 
     const searchResults = await client!.search({
       collection_name: config.milvus.collection,
@@ -776,6 +782,7 @@ async function createCollection(config: Config): Promise<void> {
       { name: 'generalized', data_type: DataType.Bool },
       { name: 'last_generalization_check', data_type: DataType.Int64 },
       { name: 'last_global_check', data_type: DataType.Int64 },
+      { name: 'last_conflict_check', data_type: DataType.Int64 },
       { name: 'source_session_id', data_type: DataType.VarChar, max_length: SOURCE_SESSION_ID_MAX_LENGTH, nullable: true },
       { name: 'source_excerpt', data_type: DataType.VarChar, max_length: SOURCE_EXCERPT_MAX_LENGTH, nullable: true },
       { name: 'embedding', data_type: DataType.FloatVector, dim: EMBEDDING_DIM }
@@ -915,6 +922,34 @@ async function ensureGlobalCheckField(config: Config): Promise<void> {
   }
 }
 
+async function ensureConflictField(config: Config): Promise<void> {
+  if (!client) throw new Error('Milvus client not initialized')
+
+  try {
+    const description = await client.describeCollection({
+      collection_name: config.milvus.collection
+    })
+
+    const fields = description.schema?.fields ?? []
+    const fieldNames = new Set(fields.map(field => field.name))
+    if (fieldNames.has('last_conflict_check')) return
+
+    const result = await client.addCollectionFields({
+      collection_name: config.milvus.collection,
+      fields: [{ name: 'last_conflict_check', data_type: DataType.Int64, nullable: true }]
+    })
+
+    if (result.error_code !== 'Success') {
+      console.error(`[claude-memory] Failed to add conflict check field: ${result.reason}`)
+      return
+    }
+
+    console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_conflict_check`)
+  } catch (error) {
+    console.error('[claude-memory] Failed to ensure conflict check field:', error)
+  }
+}
+
 async function ensureSourceFields(config: Config): Promise<void> {
   if (!client) throw new Error('Milvus client not initialized')
 
@@ -982,6 +1017,7 @@ async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<Row
     generalized: Boolean(normalized.generalized),
     last_generalization_check: toInt64(normalized.lastGeneralizationCheck, 0),
     last_global_check: toInt64(normalized.lastGlobalCheck, 0),
+    last_conflict_check: toInt64(normalized.lastConflictCheck, 0),
     source_session_id: sourceSessionId ? truncateString(sourceSessionId, SOURCE_SESSION_ID_MAX_LENGTH) : null,
     source_excerpt: sourceExcerpt ? truncateString(sourceExcerpt, SOURCE_EXCERPT_MAX_LENGTH) : null,
     embedding
@@ -1002,6 +1038,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const generalized = toBoolean(record.generalized, false)
   const lastGeneralizationCheck = toInt64(record.lastGeneralizationCheck, 0)
   const lastGlobalCheck = toInt64(record.lastGlobalCheck, 0)
+  const lastConflictCheck = toInt64(record.lastConflictCheck, 0)
 
   return {
     ...record,
@@ -1017,7 +1054,8 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     deprecated,
     generalized,
     lastGeneralizationCheck,
-    lastGlobalCheck
+    lastGlobalCheck,
+    lastConflictCheck
   }
 }
 
@@ -1212,6 +1250,10 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord | null {
     ),
     lastGlobalCheck: toInt64(
       (row.last_global_check as number | string | undefined) ?? parsed.lastGlobalCheck,
+      0
+    ),
+    lastConflictCheck: toInt64(
+      (row.last_conflict_check as number | string | undefined) ?? parsed.lastConflictCheck,
       0
     ),
     sourceSessionId: coerceOptionalString(row.source_session_id) ?? parsed.sourceSessionId,

@@ -3,7 +3,7 @@
  * Run with: pnpm run server
  */
 
-import express from 'express'
+import express, { type Response } from 'express'
 import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
@@ -47,6 +47,23 @@ const SUGGESTION_ALLOWED_ROOTS = [
   path.resolve(CONFIG_ROOT),
   path.resolve(homedir(), '.claude', 'skills')
 ]
+const CLAUDE_SETTINGS_PATH = path.join(homedir(), '.claude', 'settings.json')
+const CLAUDE_HOOK_TIMEOUT_SECONDS = 5
+const HOOKS_ROOT = path.resolve(CONFIG_ROOT, 'dist', 'hooks')
+const CLAUDE_HOOKS = {
+  UserPromptSubmit: {
+    script: 'pre-prompt.js',
+    command: `node "${path.join(HOOKS_ROOT, 'pre-prompt.js')}"`
+  },
+  SessionEnd: {
+    script: 'post-session.js',
+    command: `node "${path.join(HOOKS_ROOT, 'post-session.js')}"`
+  },
+  PreCompact: {
+    script: 'post-session.js',
+    command: `node "${path.join(HOOKS_ROOT, 'post-session.js')}"`
+  }
+} as const
 
 app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] }))
 app.use(express.json())
@@ -89,6 +106,37 @@ app.post('/api/settings/reset', (_req, res) => {
   }
 })
 
+app.get('/api/hooks/status', (_req, res) => {
+  try {
+    const settings = readClaudeSettingsFile(CLAUDE_SETTINGS_PATH)
+    res.json({ hooks: buildHookStatus(settings) })
+  } catch (error) {
+    handleClaudeSettingsError(res, error, 'Failed to load hook status')
+  }
+})
+
+app.post('/api/hooks/install', (_req, res) => {
+  try {
+    const settings = (readClaudeSettingsFile(CLAUDE_SETTINGS_PATH) ?? {}) as Record<string, unknown>
+    const hooksConfig = isPlainObject(settings.hooks)
+      ? settings.hooks as Record<string, unknown>
+      : {}
+    settings.hooks = hooksConfig
+
+    const entries = Object.entries(CLAUDE_HOOKS) as [ClaudeHookEvent, ClaudeHookDefinition][]
+    for (const [eventName, hook] of entries) {
+      hooksConfig[eventName] = ensureHookInstalled(hooksConfig[eventName], hook)
+    }
+
+    fs.mkdirSync(path.dirname(CLAUDE_SETTINGS_PATH), { recursive: true })
+    fs.writeFileSync(CLAUDE_SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
+
+    res.json({ success: true, hooks: buildHookStatus(settings) })
+  } catch (error) {
+    handleClaudeSettingsError(res, error, 'Failed to install hooks')
+  }
+})
+
 // Initialize Milvus on startup
 let initialized = false
 
@@ -128,6 +176,149 @@ function buildKeywordFilter(query: string, baseFilter?: string): string {
   const escaped = escapeLikeValue(query)
   const likeClause = `exact_text like "%${escaped}%"`
   return baseFilter ? `${baseFilter} && ${likeClause}` : likeClause
+}
+
+type ClaudeHookEvent = keyof typeof CLAUDE_HOOKS
+type ClaudeHookStatus = {
+  installed: boolean
+  configured: string | null
+  expected: string
+}
+type ClaudeHookDefinition = {
+  script: string
+  command: string
+}
+
+class ClaudeSettingsError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ClaudeSettingsError'
+  }
+}
+
+function normalizeHookCommand(value: string): string {
+  return value.replace(/\\/g, '/')
+}
+
+function matchesClaudeHook(command: string, gitRoot: string, scriptName: string): boolean {
+  const normalizedCommand = normalizeHookCommand(command)
+  const resolvedGitRoot = path.resolve(gitRoot)
+  const normalizedGitRoot = normalizeHookCommand(resolvedGitRoot)
+  if (!normalizedCommand.includes(normalizedGitRoot)) return false
+  const scriptPath = normalizeHookCommand(path.join(resolvedGitRoot, 'dist', 'hooks', scriptName))
+  return normalizedCommand.includes(scriptPath)
+}
+
+function collectHookCommands(eventConfig: unknown): string[] {
+  if (!Array.isArray(eventConfig)) return []
+  const commands: string[] = []
+  for (const entry of eventConfig) {
+    if (!isPlainObject(entry)) continue
+    const hooks = entry.hooks
+    if (!Array.isArray(hooks)) continue
+    for (const hook of hooks) {
+      if (!isPlainObject(hook)) continue
+      if (typeof hook.command === 'string') {
+        commands.push(hook.command)
+      }
+    }
+  }
+  return commands
+}
+
+function buildHookStatus(settings: Record<string, unknown> | null): Record<ClaudeHookEvent, ClaudeHookStatus> {
+  const hooksConfig = settings && isPlainObject(settings.hooks)
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const status = {} as Record<ClaudeHookEvent, ClaudeHookStatus>
+  const entries = Object.entries(CLAUDE_HOOKS) as [ClaudeHookEvent, ClaudeHookDefinition][]
+  for (const [eventName, hook] of entries) {
+    const commands = collectHookCommands(hooksConfig[eventName])
+    const configured = commands.find(command => matchesClaudeHook(command, CONFIG_ROOT, hook.script)) ?? null
+    status[eventName] = {
+      installed: Boolean(configured),
+      configured,
+      expected: hook.command
+    }
+  }
+  return status
+}
+
+function readClaudeSettingsFile(settingsPath: string): Record<string, unknown> | null {
+  let raw: string
+  try {
+    raw = fs.readFileSync(settingsPath, 'utf-8')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return null
+    throw error
+  }
+
+  let parsed: unknown
+  const trimmed = raw.trim()
+  if (!trimmed) return {}
+
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    throw new ClaudeSettingsError('settings.json is not valid JSON')
+  }
+
+  if (!isPlainObject(parsed)) {
+    throw new ClaudeSettingsError('settings.json must be a JSON object')
+  }
+
+  return parsed
+}
+
+function ensureHookInstalled(eventConfig: unknown, hook: ClaudeHookDefinition): unknown[] {
+  const entries = Array.isArray(eventConfig) ? eventConfig.slice() : []
+  let found = false
+
+  for (const entry of entries) {
+    if (!isPlainObject(entry)) continue
+    const hooks = Array.isArray(entry.hooks) ? entry.hooks : null
+    if (!hooks) continue
+    for (const item of hooks) {
+      if (!isPlainObject(item)) continue
+      const command = typeof item.command === 'string' ? item.command : ''
+      if (command && matchesClaudeHook(command, CONFIG_ROOT, hook.script)) {
+        item.type = 'command'
+        item.command = hook.command
+        item.timeout = CLAUDE_HOOK_TIMEOUT_SECONDS
+        found = true
+      }
+    }
+  }
+
+  if (!found) {
+    entries.push({
+      hooks: [
+        {
+          type: 'command',
+          command: hook.command,
+          timeout: CLAUDE_HOOK_TIMEOUT_SECONDS
+        }
+      ]
+    })
+  }
+
+  return entries
+}
+
+function handleClaudeSettingsError(res: Response, error: unknown, fallbackMessage: string): void {
+  const code = (error as NodeJS.ErrnoException).code
+  if (code === 'EACCES' || code === 'EPERM') {
+    res.status(403).json({ error: 'Permission denied' })
+    return
+  }
+  if (error instanceof ClaudeSettingsError) {
+    res.status(500).json({ error: error.message })
+    return
+  }
+  console.error('Claude settings error:', error)
+  const message = error instanceof Error ? error.message : fallbackMessage
+  res.status(500).json({ error: message || fallbackMessage })
 }
 
 type SuggestionApplyAction = 'new' | 'edit'

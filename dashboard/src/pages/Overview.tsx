@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
+import { Check, Link2, X } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import StatsCard from '@/components/StatsCard'
 import Skeleton from '@/components/Skeleton'
-import { useStats } from '@/hooks/queries'
-import { resetCollection, type RecordType } from '@/lib/api'
+import { useHookStatus, useStats } from '@/hooks/queries'
+import { installHooks, resetCollection, type HookEvent, type RecordType } from '@/lib/api'
 
 const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   command: { label: 'Commands', color: '#2dd4bf' },
@@ -12,6 +14,12 @@ const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   discovery: { label: 'Discoveries', color: '#60a5fa' },
   procedure: { label: 'Procedures', color: '#a78bfa' },
 }
+
+const HOOK_ITEMS: { key: HookEvent; label: string; script: string }[] = [
+  { key: 'UserPromptSubmit', label: 'UserPromptSubmit', script: 'pre-prompt.js' },
+  { key: 'SessionEnd', label: 'SessionEnd', script: 'post-session.js' },
+  { key: 'PreCompact', label: 'PreCompact', script: 'post-session.js' },
+]
 
 function formatNumber(value: number, decimals = 0): string {
   return new Intl.NumberFormat('en', {
@@ -140,18 +148,27 @@ function TopListSkeleton({ title }: { title: string }) {
 }
 
 export default function Overview() {
+  const queryClient = useQueryClient()
   const { data, error, isPending, refetch } = useStats()
+  const { data: hookStatus, error: hookError, isPending: hookPending } = useHookStatus()
   const [resetOpen, setResetOpen] = useState(false)
   const [resetInput, setResetInput] = useState('')
   const [resetError, setResetError] = useState<string | null>(null)
   const [resetNotice, setResetNotice] = useState<string | null>(null)
   const [resetRunning, setResetRunning] = useState(false)
+  const [hookNotice, setHookNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   useEffect(() => {
     if (!resetNotice) return
     const timer = setTimeout(() => setResetNotice(null), 4000)
     return () => clearTimeout(timer)
   }, [resetNotice])
+
+  useEffect(() => {
+    if (!hookNotice) return
+    const timer = setTimeout(() => setHookNotice(null), 4000)
+    return () => clearTimeout(timer)
+  }, [hookNotice])
 
   const resetReady = resetInput.trim() === 'RESET'
 
@@ -177,6 +194,18 @@ export default function Overview() {
       setResetRunning(false)
     }
   }
+
+  const installMutation = useMutation({
+    mutationFn: installHooks,
+    onSuccess: () => {
+      setHookNotice({ type: 'success', text: 'Hooks installed successfully.' })
+      queryClient.invalidateQueries({ queryKey: ['hooksStatus'] })
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : 'Failed to install hooks'
+      setHookNotice({ type: 'error', text: message })
+    }
+  })
 
   const isInitialLoading = isPending && !data
 
@@ -218,6 +247,13 @@ export default function Overview() {
     : []
 
   const usagePercent = data ? Math.round(data.avgUsageRatio * 100) : 0
+  const hookData = hookStatus?.hooks ?? null
+  const hooksLoading = hookPending && !hookStatus
+  const hasHookStatus = Boolean(hookData)
+  const allHooksInstalled = hasHookStatus && HOOK_ITEMS.every(item => hookData![item.key]?.installed)
+  const hasMissingHooks = hasHookStatus && HOOK_ITEMS.some(item => !hookData![item.key]?.installed)
+  const hookErrorMessage = hookError instanceof Error ? hookError.message : 'Failed to load hook status'
+  const showHookRecovery = Boolean(hookError) && !hooksLoading && !hasHookStatus
 
   return (
     <div className="space-y-8">
@@ -283,6 +319,105 @@ export default function Overview() {
           )}
         </section>
       </div>
+
+      <section className="p-6 rounded-xl border border-border bg-card space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Link2 className="w-4 h-4 text-muted-foreground" />
+            <h2 className="section-header">Hook configuration</h2>
+          </div>
+          {hasHookStatus && (
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wide ${
+                allHooksInstalled
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : 'bg-amber-500/15 text-amber-300'
+              }`}
+            >
+              {allHooksInstalled ? 'Active' : 'Needs configuration'}
+            </span>
+          )}
+        </div>
+
+        {showHookRecovery && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 space-y-2">
+            <p className="text-sm text-destructive">Unable to read hook settings.</p>
+            <p className="text-xs text-muted-foreground">{hookErrorMessage}</p>
+            <button
+              onClick={() => installMutation.mutate()}
+              disabled={installMutation.isPending}
+              className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
+            >
+              {installMutation.isPending ? (
+                <>
+                  <ButtonSpinner size="sm" />
+                  Installing...
+                </>
+              ) : (
+                'Try Install Anyway'
+              )}
+            </button>
+          </div>
+        )}
+
+        {hooksLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-4 w-56" />
+            <Skeleton className="h-4 w-52" />
+          </div>
+        )}
+
+        {!hooksLoading && hasHookStatus && (
+          <>
+            <p className="text-sm text-muted-foreground">
+              {allHooksInstalled
+                ? 'All claude-memory hooks are installed.'
+                : 'Install missing hooks to enable automatic memory extraction and injection.'}
+            </p>
+            <div className="space-y-2">
+              {HOOK_ITEMS.map(item => {
+                const installed = hookData![item.key]?.installed
+                return (
+                  <div key={item.key} className="flex items-center gap-2 text-sm">
+                    {installed ? (
+                      <Check className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <X className="w-4 h-4 text-destructive" />
+                    )}
+                    <span className="font-medium">{item.label}</span>
+                    <span className="text-xs text-muted-foreground">({item.script})</span>
+                  </div>
+                )
+              })}
+            </div>
+
+            {hasMissingHooks && (
+              <button
+                onClick={() => installMutation.mutate()}
+                disabled={installMutation.isPending}
+                className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
+              >
+                {installMutation.isPending ? (
+                  <>
+                    <ButtonSpinner size="sm" />
+                    Installing...
+                  </>
+                ) : (
+                  'Install Missing Hooks'
+                )}
+              </button>
+            )}
+
+          </>
+        )}
+
+        {hookNotice && (
+          <div className={`text-sm ${hookNotice.type === 'success' ? 'text-emerald-400' : 'text-destructive'}`}>
+            {hookNotice.text}
+          </div>
+        )}
+      </section>
 
       <section className="p-6 rounded-xl border border-destructive/30 bg-card space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

@@ -98,6 +98,23 @@ export interface ActionResponse {
   success: boolean
 }
 
+export type HookEvent = 'UserPromptSubmit' | 'SessionEnd' | 'PreCompact'
+
+export interface HookStatusEntry {
+  installed: boolean
+  configured: string | null
+  expected: string
+}
+
+export interface HookStatusResponse {
+  hooks: Record<HookEvent, HookStatusEntry>
+}
+
+export interface HookInstallResponse {
+  success: boolean
+  hooks: Record<HookEvent, HookStatusEntry>
+}
+
 export interface SearchResult {
   record: MemoryRecord
   score: number
@@ -239,6 +256,7 @@ export interface InjectionReview {
 }
 
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
+export type ConflictVerdict = 'supersedes' | 'variant' | 'hallucination'
 
 export interface MaintenanceMergeRecord {
   id: string
@@ -252,6 +270,9 @@ export interface MaintenanceActionDetails {
   before?: string
   after?: string
   newerId?: string
+  verdict?: ConflictVerdict
+  candidateId?: string
+  existingId?: string
   similarity?: number
   action?: 'new' | 'edit'
   targetFile?: string
@@ -377,6 +398,14 @@ export function updateSettings(settings: Partial<RetrievalSettings>): Promise<Re
 
 export function resetSettings(): Promise<RetrievalSettings> {
   return request('/settings/reset', { method: 'POST' })
+}
+
+export function fetchHookStatus(): Promise<HookStatusResponse> {
+  return requestWithStatus('/hooks/status')
+}
+
+export function installHooks(): Promise<HookInstallResponse> {
+  return requestWithStatus('/hooks/install', { method: 'POST' })
 }
 
 export function fetchMemories(params: {

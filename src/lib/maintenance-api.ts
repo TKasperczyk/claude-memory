@@ -7,6 +7,7 @@ import {
   runLowUsageDeprecation,
   runLowUsageCheck,
   runConsolidation,
+  runConflictResolution,
   runGlobalPromotion,
   type MaintenanceAction,
   type MaintenanceRunResult
@@ -37,6 +38,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     key: 'consolidation',
     label: 'Consolidation',
     description: `Merge duplicate records (>=${CONSOLIDATION_SIMILARITY_PERCENT}% similar)`,
+    allowExecute: true
+  },
+  {
+    key: 'conflict-resolution',
+    label: 'Conflict Resolution',
+    description: 'Verify new memories against existing ones using LLM',
     allowExecute: true
   },
   {
@@ -124,6 +131,8 @@ async function runOperation(
       return runLowUsageCheck(dryRun, config)
     case 'consolidation':
       return runConsolidation(dryRun, config)
+    case 'conflict-resolution':
+      return runConflictResolution(dryRun, config)
     case 'global-promotion':
       return runGlobalPromotion(dryRun, config)
     case 'promotion-suggestions':

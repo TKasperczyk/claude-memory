@@ -4,6 +4,18 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
+export type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
+
+export function isToolUseBlock(value: unknown): value is ToolUseBlock {
+  return (
+    isPlainObject(value)
+    && value.type === 'tool_use'
+    && typeof value.id === 'string'
+    && typeof value.name === 'string'
+    && 'input' in value
+  )
+}
+
 export function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }

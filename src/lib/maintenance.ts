@@ -1,3 +1,4 @@
+import Anthropic from '@anthropic-ai/sdk'
 import { execFileSync } from 'child_process'
 import fs from 'fs'
 import { homedir } from 'os'
@@ -14,8 +15,9 @@ import {
   type ProcedureRecord
 } from './types.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
-import { queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
-import { buildExactText, escapeFilterValue, normalizeExactText, normalizeStep } from './shared.js'
+import { findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
+import { isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { buildExactText, buildRecordSnippet, escapeFilterValue, normalizeExactText, normalizeStep, truncateSnippet } from './shared.js'
 
 const STALE_DAYS = 90
 const DISCOVERY_MAX_AGE_DAYS = 180
@@ -32,6 +34,11 @@ const CONTRADICTION_SEARCH_LIMIT = 8
 const GENERALIZATION_MAX_TOKENS = 800
 export const CONTRADICTION_BATCH_SIZE = 15
 const CONTRADICTION_MAX_TOKENS = 600
+const CONFLICT_SIMILARITY_THRESHOLD = 0.85
+export const CONFLICT_CHECK_BATCH_SIZE = 10
+const CONFLICT_ADJUDICATION_MAX_TOKENS = 600
+const CONFLICT_ADJUDICATION_MODEL = 'claude-haiku-4-5-20251001'
+const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
 export const GLOBAL_PROMOTION_BATCH_SIZE = 20
 const GLOBAL_PROMOTION_MAX_TOKENS = 400
 export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
@@ -164,6 +171,19 @@ Return JSON:
   "merged": { /* only if verdict is "merge", partial record combining both */ }
 }`
 
+const CONFLICT_ADJUDICATION_PROMPT = `You adjudicate conflicts between a newly extracted memory and an existing memory.
+
+Compare the Existing Memory and the New Candidate. Determine their relationship and emit a verdict:
+- "supersedes": the new memory updates/corrects the existing fact; deprecate the existing record.
+- "variant": both can be true in different contexts; keep both records.
+- "hallucination": the new memory is vague/incorrect compared to the existing; deprecate the new record.
+
+Rules:
+- Use only the provided records; do not invent context.
+- Be conservative: choose "variant" when both could be true.
+- Provide a concise reason.
+- Output ONLY via the tool call "${CONFLICT_ADJUDICATION_TOOL_NAME}" exactly once.`
+
 const GLOBAL_PROMOTION_PROMPT = `Evaluate if this memory record should be promoted to global scope.
 
 Global scope means the knowledge is universally applicable across different projects.
@@ -187,6 +207,20 @@ Return JSON:
   "confidence": "high" | "medium" | "low",
   "reason": "brief explanation"
 }`
+
+const CONFLICT_ADJUDICATION_TOOL: Anthropic.Tool = {
+  name: CONFLICT_ADJUDICATION_TOOL_NAME,
+  description: 'Emit verdict for memory conflict resolution',
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['verdict', 'reason'],
+    properties: {
+      verdict: { type: 'string', enum: ['supersedes', 'variant', 'hallucination'] },
+      reason: { type: 'string' }
+    }
+  }
+}
 
 let cachedAnthropicClient: Awaited<ReturnType<typeof createAnthropicClient>> | undefined
 
@@ -215,6 +249,11 @@ export interface ContradictionResult {
   verdict: 'keep_newer' | 'keep_older' | 'keep_both' | 'merge'
   reason?: string
   mergedRecord?: Partial<MemoryRecord>
+}
+
+export interface ConflictPair {
+  newRecord: MemoryRecord
+  existingRecord: MemoryRecord
 }
 
 export interface GeneralizationResult {
@@ -277,6 +316,22 @@ export async function findLowUsageHighRetrieval(
   const filter = ['deprecated == false', `retrieval_count >= ${LOW_USAGE_HIGH_RETRIEVAL_MIN}`].join(' && ')
   const records = await fetchRecords(filter, config, false)
   return records.filter(record => (record.usageCount ?? 0) === 0)
+}
+
+export async function findNewConflicts(config: Config = DEFAULT_CONFIG): Promise<ConflictPair[]> {
+  const pairs: ConflictPair[] = []
+  const filter = 'deprecated == false && last_conflict_check == 0'
+  const unchecked = await fetchRecords(filter, config, true)
+  const establishedFilter = 'last_conflict_check > 0'
+
+  for (const record of unchecked) {
+    const matches = await findSimilar(record, CONFLICT_SIMILARITY_THRESHOLD, 5, config, establishedFilter)
+    for (const match of matches) {
+      pairs.push({ newRecord: record, existingRecord: match.record })
+    }
+  }
+
+  return pairs
 }
 
 export async function checkValidity(record: MemoryRecord): Promise<ValidityResult> {
@@ -601,6 +656,216 @@ export async function resolveContradictionWithLLM(
     default:
       return { action: 'keep_both' }
   }
+}
+
+export async function resolveConflictWithLlm(
+  pair: ConflictPair,
+  config: Config
+): Promise<{ verdict: 'supersedes' | 'variant' | 'hallucination'; reason: string }> {
+  const client = await getAnthropicClient()
+  if (!client) {
+    throw new Error('No authentication available for conflict adjudication. Set ANTHROPIC_API_KEY or run kira login.')
+  }
+
+  const payload = JSON.stringify(buildConflictAdjudicationInput(pair), null, 2)
+
+  const response = await client.messages.create({
+    model: CONFLICT_ADJUDICATION_MODEL,
+    max_tokens: Math.min(CONFLICT_ADJUDICATION_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: CONFLICT_ADJUDICATION_PROMPT }
+    ],
+    messages: [{ role: 'user', content: `Records:\n${payload}` }],
+    tools: [CONFLICT_ADJUDICATION_TOOL],
+    tool_choice: { type: 'tool', name: CONFLICT_ADJUDICATION_TOOL_NAME }
+  })
+
+  const toolInput = response.content.find((block): block is ToolUseBlock =>
+    isToolUseBlock(block) && block.name === CONFLICT_ADJUDICATION_TOOL_NAME
+  )?.input
+
+  if (!toolInput) {
+    throw new Error('Conflict adjudication tool call missing in response.')
+  }
+
+  const verdict = coerceConflictVerdict(toolInput)
+  if (!verdict) {
+    throw new Error('Conflict adjudication response invalid or incomplete.')
+  }
+
+  return verdict
+}
+
+type ConflictMaintenanceAction = {
+  type: 'deprecate'
+  recordId?: string
+  snippet: string
+  reason: string
+  details?: Record<string, unknown>
+}
+
+export async function runConflictResolution(
+  dryRun: boolean,
+  config: Config = DEFAULT_CONFIG
+): Promise<{ actions: ConflictMaintenanceAction[]; summary: Record<string, number>; error?: string }> {
+  const actions: ConflictMaintenanceAction[] = []
+  let candidates = 0
+  let pairs = 0
+  let checked = 0
+  let deprecatedExisting = 0
+  let deprecatedNew = 0
+  let variants = 0
+  let updated = 0
+  let errors = 0
+
+  try {
+    const unchecked = await fetchRecords('deprecated == false && last_conflict_check == 0', config, false)
+    candidates = unchecked.length
+
+    const conflictPairs = await findNewConflicts(config)
+    pairs = conflictPairs.length
+
+    const deprecatedNewIds = new Set<string>()
+    const failedNewIds = new Set<string>()
+    // Stage actions per candidate so errors don't cause partial deprecations.
+    let currentNewId: string | null = null
+    let pendingActions: ConflictMaintenanceAction[] = []
+    let pendingVariants = 0
+    let pendingFailed = false
+
+    const resetPending = (newId: string) => {
+      currentNewId = newId
+      pendingActions = []
+      pendingVariants = 0
+      pendingFailed = false
+    }
+
+    const flushPending = async () => {
+      if (!currentNewId) return
+      if (pendingFailed) {
+        pendingActions = []
+        pendingVariants = 0
+        return
+      }
+
+      if (dryRun) {
+        actions.push(...pendingActions)
+        for (const action of pendingActions) {
+          if (!action.recordId) continue
+          if (action.recordId === currentNewId) {
+            deprecatedNew += 1
+          } else {
+            deprecatedExisting += 1
+          }
+        }
+        variants += pendingVariants
+        return
+      }
+
+      for (const action of pendingActions) {
+        if (!action.recordId) continue
+        const updatedRecord = await markDeprecated(action.recordId, config)
+        if (updatedRecord) {
+          actions.push(action)
+          if (action.recordId === currentNewId) {
+            deprecatedNew += 1
+          } else {
+            deprecatedExisting += 1
+          }
+        }
+      }
+      variants += pendingVariants
+    }
+
+    for (let i = 0; i < conflictPairs.length; i += CONFLICT_CHECK_BATCH_SIZE) {
+      const batch = conflictPairs.slice(i, i + CONFLICT_CHECK_BATCH_SIZE)
+
+      for (const pair of batch) {
+        const newId = pair.newRecord.id
+        if (currentNewId && newId !== currentNewId) {
+          await flushPending()
+          resetPending(newId)
+        } else if (!currentNewId) {
+          resetPending(newId)
+        }
+
+        if (deprecatedNewIds.has(newId) || failedNewIds.has(newId)) continue
+
+        try {
+          const verdict = await resolveConflictWithLlm(pair, config)
+          checked += 1
+
+          if (verdict.verdict === 'supersedes') {
+            const action: ConflictMaintenanceAction = {
+              type: 'deprecate',
+              recordId: pair.existingRecord.id,
+              snippet: truncateSnippet(buildRecordSnippet(pair.existingRecord)),
+              reason: verdict.reason,
+              details: {
+                verdict: verdict.verdict,
+                candidateId: newId,
+                existingId: pair.existingRecord.id
+              }
+            }
+
+            pendingActions.push(action)
+          } else if (verdict.verdict === 'hallucination') {
+            const action: ConflictMaintenanceAction = {
+              type: 'deprecate',
+              recordId: newId,
+              snippet: truncateSnippet(buildRecordSnippet(pair.newRecord)),
+              reason: verdict.reason,
+              details: {
+                verdict: verdict.verdict,
+                candidateId: newId,
+                existingId: pair.existingRecord.id
+              }
+            }
+
+            pendingActions = [action]
+            pendingVariants = 0
+            deprecatedNewIds.add(newId)
+          } else {
+            pendingVariants += 1
+          }
+        } catch {
+          errors += 1
+          failedNewIds.add(newId)
+          pendingActions = []
+          pendingVariants = 0
+          pendingFailed = true
+        }
+      }
+    }
+
+    await flushPending()
+
+    const checkedAt = Date.now()
+    for (const record of unchecked) {
+      if (deprecatedNewIds.has(record.id)) continue
+      if (failedNewIds.has(record.id)) continue
+
+      if (dryRun) {
+        updated += 1
+      } else {
+        const didUpdate = await updateRecord(record.id, { lastConflictCheck: checkedAt }, config)
+        if (didUpdate) {
+          updated += 1
+        }
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      actions,
+      summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, updated, errors },
+      error: message
+    }
+  }
+
+  return { actions, summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, updated, errors } }
 }
 
 export async function checkGeneralization(
@@ -1167,6 +1432,21 @@ function buildContradictionInput(pair: ContradictionPair): Record<string, unknow
   }
 }
 
+function buildConflictAdjudicationInput(pair: ConflictPair): Record<string, unknown> {
+  return {
+    existing: {
+      id: pair.existingRecord.id,
+      timestamp: pair.existingRecord.timestamp,
+      record: buildGeneralizationInput(pair.existingRecord)
+    },
+    candidate: {
+      id: pair.newRecord.id,
+      timestamp: pair.newRecord.timestamp,
+      record: buildGeneralizationInput(pair.newRecord)
+    }
+  }
+}
+
 function buildGeneralizationInput(record: MemoryRecord): Record<string, unknown> {
   const base = {
     type: record.type,
@@ -1290,6 +1570,21 @@ function parseGlobalPromotionResponse(rawText: string): GlobalPromotionResult {
     confidence,
     ...(reason ? { reason } : {})
   }
+}
+
+function coerceConflictVerdict(
+  value: unknown
+): { verdict: 'supersedes' | 'variant' | 'hallucination'; reason: string } | null {
+  if (!isPlainObject(value)) return null
+  const verdict = value.verdict
+  const reason = typeof value.reason === 'string' ? value.reason.trim() : ''
+
+  if (verdict !== 'supersedes' && verdict !== 'variant' && verdict !== 'hallucination') {
+    return null
+  }
+  if (!reason) return null
+
+  return { verdict, reason }
 }
 
 function parseVerdict(value: unknown): ContradictionResult['verdict'] {
@@ -1455,8 +1750,4 @@ function extractJsonObject(rawText: string): unknown {
   }
 
   return null
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

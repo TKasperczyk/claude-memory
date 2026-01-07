@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import {
   fetchExtractions,
+  fetchHookStatus,
   fetchMemories,
   fetchMemoryTypes,
   fetchSettings,
@@ -8,6 +9,7 @@ import {
   fetchStats,
   searchMemories,
   type ExtractionListResponse,
+  type HookStatusResponse,
   type MemoryListResponse,
   type RecordType,
   type RetrievalSettings,
@@ -118,5 +120,12 @@ export function useSettings() {
   return useQuery<RetrievalSettings>({
     queryKey: ['settings'],
     queryFn: fetchSettings
+  })
+}
+
+export function useHookStatus() {
+  return useQuery<HookStatusResponse>({
+    queryKey: ['hooksStatus'],
+    queryFn: fetchHookStatus
   })
 }

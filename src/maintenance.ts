@@ -14,6 +14,7 @@ import {
   GLOBAL_PROMOTION_BATCH_SIZE,
   GLOBAL_PROMOTION_MIN_CONFIDENCE,
   GLOBAL_PROMOTION_RECHECK_DAYS,
+  runConflictResolution,
   findStaleRecords,
   isConfidenceSufficient,
   markDeprecated,
@@ -24,6 +25,8 @@ import { loadConfig } from './lib/config.js'
 import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config } from './lib/types.js'
 import { updateRecord } from './lib/milvus.js'
 import { buildRecordSnippet, truncateSnippet } from './lib/shared.js'
+
+export { runConflictResolution }
 
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 
@@ -68,6 +71,7 @@ async function main(): Promise<void> {
   logMaintenanceResult('Low usage deprecation', await runLowUsageDeprecation(dryRun, config), dryRun)
   logMaintenanceResult('Low usage check', await runLowUsageCheck(dryRun, config), dryRun)
   logMaintenanceResult('Consolidation', await runConsolidation(dryRun, config), dryRun)
+  logMaintenanceResult('Conflict resolution', await runConflictResolution(dryRun, config), dryRun)
   logMaintenanceResult('Global promotion', await runGlobalPromotion(dryRun, config), dryRun)
   await runPromotions(config, dryRun)
 

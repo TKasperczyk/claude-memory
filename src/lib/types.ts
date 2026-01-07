@@ -36,6 +36,7 @@ export interface BaseRecord {
   generalized?: boolean
   lastGeneralizationCheck?: number
   lastGlobalCheck?: number
+  lastConflictCheck?: number
   embedding?: number[]
 }
 

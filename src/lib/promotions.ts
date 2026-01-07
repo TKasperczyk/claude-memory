@@ -5,7 +5,7 @@ import { homedir } from 'os'
 import path from 'path'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { queryRecords } from './milvus.js'
-import { asString, isPlainObject } from './parsing.js'
+import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { KNOWN_COMMANDS, normalizeStep, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
 
@@ -21,8 +21,6 @@ const PROMOTION_BATCH_SIZE = 8
 const CLAUDE_MD_MAX_CHARS = 16000
 const SKILL_CONTEXT_MAX_CHARS = 24000
 const SKILL_FILE_MAX_CHARS = 4000
-
-type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
 
 type PromotionAction = 'new' | 'edit'
 
@@ -995,16 +993,6 @@ function chunkArray<T>(items: T[], size: number): T[][] {
     batches.push(items.slice(i, i + size))
   }
   return batches
-}
-
-function isToolUseBlock(value: unknown): value is ToolUseBlock {
-  return (
-    isPlainObject(value)
-    && value.type === 'tool_use'
-    && typeof value.id === 'string'
-    && typeof value.name === 'string'
-    && 'input' in value
-  )
 }
 
 function ensureDir(dir: string): void {

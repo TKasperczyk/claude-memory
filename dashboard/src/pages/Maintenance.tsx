@@ -10,6 +10,7 @@ import {
   applyMaintenanceSuggestion,
   fetchMaintenanceOperations,
   runMaintenance,
+  type ConflictVerdict,
   type MaintenanceAction,
   type MaintenanceActionType,
   type MaintenanceOperationInfo,
@@ -55,6 +56,42 @@ const ACTION_STYLES: Record<MaintenanceActionType, { badge: string; dot: string;
     dot: 'bg-amber-400',
     label: 'Suggestion'
   }
+}
+
+type ConflictStatus = 'kept' | 'deprecated'
+
+const CONFLICT_STYLES: Record<ConflictVerdict, { badge: string; label: string; ring: string; background: string }> = {
+  supersedes: {
+    badge: 'bg-emerald-500/15 text-emerald-300',
+    label: 'Supersedes',
+    ring: 'ring-emerald-500/30',
+    background: 'bg-emerald-500/5'
+  },
+  variant: {
+    badge: 'bg-sky-500/15 text-sky-300',
+    label: 'Variant',
+    ring: 'ring-sky-500/30',
+    background: 'bg-sky-500/5'
+  },
+  hallucination: {
+    badge: 'bg-destructive/15 text-destructive',
+    label: 'Hallucination',
+    ring: 'ring-destructive/30',
+    background: 'bg-destructive/5'
+  }
+}
+
+const CONFLICT_STATUS_STYLES: Record<ConflictStatus, string> = {
+  kept: 'bg-emerald-500/15 text-emerald-300',
+  deprecated: 'bg-destructive/15 text-destructive'
+}
+
+function getConflictVerdict(details?: MaintenanceAction['details']): ConflictVerdict | null {
+  const verdict = details?.verdict
+  if (verdict === 'supersedes' || verdict === 'variant' || verdict === 'hallucination') {
+    return verdict
+  }
+  return null
 }
 
 function formatSummaryKey(key: string): string {
@@ -146,6 +183,12 @@ function RecordLink({
     return <span className={classes}>{id}</span>
   }
 
+  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (stopPropagation && (event.key === 'Enter' || event.key === ' ')) {
+      event.stopPropagation()
+    }
+  }
+
   return (
     <button
       type="button"
@@ -153,10 +196,19 @@ function RecordLink({
         if (stopPropagation) event.stopPropagation()
         onSelect(id)
       }}
+      onKeyDown={handleKeyDown}
       className={classes}
     >
       {id}
     </button>
+  )
+}
+
+function StatusBadge({ status }: { status: ConflictStatus }) {
+  return (
+    <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${CONFLICT_STATUS_STYLES[status]}`}>
+      {status}
+    </span>
   )
 }
 
@@ -169,6 +221,11 @@ function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: s
   const targetFile = typeof details.targetFile === 'string' ? details.targetFile : null
   const action = details.action === 'new' || details.action === 'edit' ? details.action : null
   const decisionReason = typeof details.decisionReason === 'string' ? details.decisionReason : null
+  const verdict = getConflictVerdict(details)
+  const candidateId = typeof details.candidateId === 'string' ? details.candidateId : null
+  const existingId = typeof details.existingId === 'string' ? details.existingId : null
+  const isCompleteConflict = Boolean(verdict && candidateId && existingId)
+  const conflictStyle = isCompleteConflict && verdict ? CONFLICT_STYLES[verdict] : null
   const deprecatedRecords = Array.isArray(details.deprecatedRecords) ? details.deprecatedRecords : null
   const deprecatedIds = Array.isArray(details.deprecatedIds) ? details.deprecatedIds : null
   const keptId = typeof details.keptId === 'string' ? details.keptId : null
@@ -177,12 +234,79 @@ function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: s
   const hasDeprecatedRecords = Boolean(deprecatedRecords && deprecatedRecords.length > 0)
   const hasDeprecatedIds = Boolean(!hasDeprecatedRecords && deprecatedIds && deprecatedIds.length > 0)
 
-  if (!before && !after && !diff && !hasDeprecatedRecords && !hasDeprecatedIds && !newerId && similarity === null) return null
+  if (
+    !before
+    && !after
+    && !diff
+    && !hasDeprecatedRecords
+    && !hasDeprecatedIds
+    && !newerId
+    && similarity === null
+    && !isCompleteConflict
+  ) {
+    return null
+  }
 
   const diffLines = diff ? diff.split('\n') : []
+  let candidateStatus: ConflictStatus | null = null
+  let existingStatus: ConflictStatus | null = null
+  let outcomeText: string | null = null
+
+  if (verdict === 'supersedes') {
+    candidateStatus = 'kept'
+    existingStatus = 'deprecated'
+    outcomeText = 'Outcome: New replaces existing.'
+  } else if (verdict === 'hallucination') {
+    candidateStatus = 'deprecated'
+    existingStatus = 'kept'
+    outcomeText = 'Outcome: Existing kept, new deprecated.'
+  } else if (verdict === 'variant') {
+    candidateStatus = 'kept'
+    existingStatus = 'kept'
+    outcomeText = 'Outcome: Keep both.'
+  }
 
   return (
     <div className="mt-2 text-xs text-muted-foreground space-y-2">
+      {isCompleteConflict && verdict && conflictStyle && (
+        <div className="rounded-md border border-border/60 bg-background/60 px-3 py-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground/70">
+            <span>Conflict resolution</span>
+            <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${conflictStyle.badge}`}>
+              {conflictStyle.label}
+            </span>
+          </div>
+          <div className="space-y-1 text-[11px] text-muted-foreground/80">
+            {candidateId && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">New</span>
+                <RecordLink
+                  id={candidateId}
+                  onSelect={onSelect}
+                  stopPropagation
+                  className="font-mono text-[11px] text-muted-foreground"
+                />
+                {candidateStatus && <StatusBadge status={candidateStatus} />}
+              </div>
+            )}
+            {existingId && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Existing</span>
+                <RecordLink
+                  id={existingId}
+                  onSelect={onSelect}
+                  stopPropagation
+                  className="font-mono text-[11px] text-muted-foreground"
+                />
+                {existingStatus && <StatusBadge status={existingStatus} />}
+              </div>
+            )}
+            {outcomeText && (
+              <div className="text-[11px] text-muted-foreground/80">{outcomeText}</div>
+            )}
+          </div>
+        </div>
+      )}
       {before && after && (
         <>
           <div className="font-mono">before: {before}</div>
@@ -299,17 +423,33 @@ function ActionRow({
 }) {
   const style = ACTION_STYLES[action.type]
   const recordId = action.recordId
+  const conflictVerdict = getConflictVerdict(action.details)
+  const candidateId = typeof action.details?.candidateId === 'string' ? action.details.candidateId : null
+  const existingId = typeof action.details?.existingId === 'string' ? action.details.existingId : null
+  const isCompleteConflict = Boolean(conflictVerdict && candidateId && existingId)
+  const conflictStyle = isCompleteConflict && conflictVerdict ? CONFLICT_STYLES[conflictVerdict] : null
   const isSelectable = Boolean(recordId && onSelect)
   const isApplying = applyStatus?.state === 'loading'
   const isApplied = applyStatus?.state === 'success'
   const canApply = Boolean(onApply)
-  const containerClasses = `p-3 rounded-md border border-border bg-secondary/30 transition-base ${
-    isSelectable
-      ? executed
-        ? 'cursor-pointer hover:bg-emerald-500/10 hover:opacity-100'
-        : 'cursor-pointer hover:bg-secondary/50'
-      : ''
-  } ${executed ? 'border-emerald-500/30 bg-emerald-500/5 opacity-80' : ''}`
+  const conflictClasses = conflictStyle
+    ? `ring-1 ring-inset ${conflictStyle.ring} ${conflictStyle.background}`
+    : ''
+  const executedClasses = executed
+    ? conflictStyle
+      ? 'border-emerald-500/30'
+      : 'border-emerald-500/30 bg-emerald-500/5 opacity-80'
+    : ''
+  const hoverClasses = isSelectable
+    ? executed
+      ? conflictStyle
+        ? 'cursor-pointer hover:opacity-100'
+        : 'cursor-pointer hover:bg-emerald-500/10 hover:opacity-100'
+      : 'cursor-pointer hover:bg-secondary/50'
+    : ''
+  const containerClasses = `p-3 rounded-md border border-border bg-secondary/30 transition-base ${conflictClasses} ${
+    hoverClasses
+  } ${executedClasses}`
   const handleSelect = () => {
     if (recordId) {
       onSelect?.(recordId)
@@ -331,6 +471,11 @@ function ActionRow({
           <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${style.badge}`}>
             {style.label}
           </span>
+          {conflictStyle && (
+            <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${conflictStyle.badge}`}>
+              {conflictStyle.label}
+            </span>
+          )}
           {executed && (
             <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300">
               <Check className="w-3 h-3" aria-hidden="true" />
@@ -365,7 +510,9 @@ function ActionRow({
           )}
         </div>
         <div className="text-sm text-foreground">{action.snippet}</div>
-        <div className="text-xs text-muted-foreground">{action.reason}</div>
+        <div className="text-xs text-muted-foreground">
+          {conflictVerdict ? `LLM reason: ${action.reason}` : action.reason}
+        </div>
         {renderDetails(action.details, onSelect)}
         {applyStatus?.message && (
           <div className={`mt-2 text-xs ${applyStatus.state === 'error' ? 'text-destructive' : 'text-emerald-300'}`}>
