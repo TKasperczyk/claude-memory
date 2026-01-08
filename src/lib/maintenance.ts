@@ -6,7 +6,6 @@ import path from 'path'
 import {
   DEFAULT_CONFIG,
   EMBEDDING_DIM,
-  SIMILARITY_THRESHOLDS,
   type CommandRecord,
   type Config,
   type DiscoveryRecord,
@@ -19,6 +18,7 @@ import {
 } from './types.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
+import { loadSettings, type MaintenanceSettings } from './settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import {
   buildCandidateRecord,
@@ -35,7 +35,6 @@ const QUERY_PAGE_SIZE = 500
 const PROCEDURE_STEP_CHECK_COUNT = 3
 const CONSOLIDATION_SEARCH_LIMIT = 12
 const CONSOLIDATION_MAX_CLUSTER_SIZE = 8
-const TEXT_SIMILARITY_RATIO = 0.2
 const LOW_USAGE_MIN_RETRIEVALS = 5
 const LOW_USAGE_RATIO_THRESHOLD = 0.1
 const LOW_USAGE_HIGH_RETRIEVAL_MIN = 10
@@ -138,6 +137,10 @@ const FILE_EXTENSION_REGEX = /\.(json|yml|yaml|toml|lock|md|txt|ini|cfg|conf|sh|
 const PATH_TEXT_REGEX = /(^|\s)(\.{1,2}[\\/]|~\/|[A-Za-z]:[\\/]|\/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/
 const GLOBAL_TOOL_REGEXES = GLOBAL_TOOL_KEYWORDS.map(buildKeywordRegex)
 const GLOBAL_DISCOVERY_REGEXES = GLOBAL_DISCOVERY_KEYWORDS.map(buildKeywordRegex)
+
+function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
+  return settings ?? loadSettings()
+}
 
 // Warning synthesis constants
 const WARNING_SYNTHESIS_MIN_FAILURES = 2
@@ -354,19 +357,27 @@ export type ConsolidationCluster = MemoryRecord[] & {
   members: ConsolidationClusterMember[]
 }
 
-export async function findStaleRecords(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
-  const cutoff = Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000
+export async function findStaleRecords(
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
+): Promise<MemoryRecord[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
+  const cutoff = Date.now() - maintenance.staleDays * 24 * 60 * 60 * 1000
   const filter = `deprecated == false && last_used < ${Math.trunc(cutoff)}`
   return fetchRecords(filter, config, false)
 }
 
-export async function findGlobalCandidates(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
+export async function findGlobalCandidates(
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
+): Promise<MemoryRecord[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const candidates: MemoryRecord[] = []
   const types = ['error', 'command', 'discovery'] as const
   const typeFilter = types.map(type => `type == "${type}"`).join(' || ')
   const countFilter = [
-    `(type == "command" && success_count >= ${GLOBAL_PROMOTION_MIN_SUCCESS_COUNT})`,
-    `(type != "command" && usage_count >= ${GLOBAL_PROMOTION_MIN_SUCCESS_COUNT})`
+    `(type == "command" && success_count >= ${maintenance.globalPromotionMinSuccessCount})`,
+    `(type != "command" && usage_count >= ${maintenance.globalPromotionMinSuccessCount})`
   ].join(' || ')
   const filter = ['deprecated == false', `(${typeFilter})`, `(${countFilter})`].join(' && ')
   const records = await fetchRecords(filter, config, false)
@@ -374,7 +385,7 @@ export async function findGlobalCandidates(config: Config = DEFAULT_CONFIG): Pro
   for (const record of records) {
     if (record.scope === 'global') continue
     if (record.deprecated) continue
-    if (isGlobalCandidate(record)) {
+    if (isGlobalCandidate(record, maintenance)) {
       candidates.push(record)
     }
   }
@@ -382,36 +393,52 @@ export async function findGlobalCandidates(config: Config = DEFAULT_CONFIG): Pro
   return candidates
 }
 
-export async function findLowUsageRecords(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
+export async function findLowUsageRecords(
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
+): Promise<MemoryRecord[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
   // Find records retrieved at least N times with usage ratio below threshold
-  const filter = `deprecated == false && retrieval_count >= ${LOW_USAGE_MIN_RETRIEVALS}`
+  const filter = `deprecated == false && retrieval_count >= ${maintenance.lowUsageMinRetrievals}`
   const records = await fetchRecords(filter, config, false)
 
   return records.filter(record => {
     const retrievalCount = record.retrievalCount ?? 0
     const usageCount = record.usageCount ?? 0
-    if (retrievalCount < LOW_USAGE_MIN_RETRIEVALS) return false
+    if (retrievalCount < maintenance.lowUsageMinRetrievals) return false
     const ratio = usageCount / retrievalCount
-    return ratio < LOW_USAGE_RATIO_THRESHOLD
+    return ratio < maintenance.lowUsageRatioThreshold
   })
 }
 
 export async function findLowUsageHighRetrieval(
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<MemoryRecord[]> {
-  const filter = ['deprecated == false', `retrieval_count >= ${LOW_USAGE_HIGH_RETRIEVAL_MIN}`].join(' && ')
+  const maintenance = resolveMaintenanceSettings(settings)
+  const filter = ['deprecated == false', `retrieval_count >= ${maintenance.lowUsageHighRetrievalMin}`].join(' && ')
   const records = await fetchRecords(filter, config, false)
   return records.filter(record => (record.usageCount ?? 0) === 0)
 }
 
-export async function findNewConflicts(config: Config = DEFAULT_CONFIG): Promise<ConflictPair[]> {
+export async function findNewConflicts(
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
+): Promise<ConflictPair[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const pairs: ConflictPair[] = []
   const filter = 'deprecated == false && last_conflict_check == 0'
   const unchecked = await fetchRecords(filter, config, true)
   const establishedFilter = 'last_conflict_check > 0'
 
   for (const record of unchecked) {
-    const matches = await findSimilar(record, CONFLICT_SIMILARITY_THRESHOLD, 5, config, establishedFilter)
+    const matches = await findSimilar(
+      record,
+      maintenance.conflictSimilarityThreshold,
+      5,
+      config,
+      establishedFilter
+    )
     for (const match of matches) {
       pairs.push({ newRecord: record, existingRecord: match.record })
     }
@@ -420,7 +447,8 @@ export async function findNewConflicts(config: Config = DEFAULT_CONFIG): Promise
   return pairs
 }
 
-export async function checkValidity(record: MemoryRecord): Promise<ValidityResult> {
+export async function checkValidity(record: MemoryRecord, settings?: MaintenanceSettings): Promise<ValidityResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
   switch (record.type) {
     case 'command': {
       const command = extractExecutable(record.command)
@@ -430,7 +458,7 @@ export async function checkValidity(record: MemoryRecord): Promise<ValidityResul
     }
     case 'procedure': {
       const baseDir = record.context.project ?? record.project
-      const steps = pickProcedureSteps(record.steps, PROCEDURE_STEP_CHECK_COUNT)
+      const steps = pickProcedureSteps(record.steps, maintenance.procedureStepCheckCount)
       if (steps.length === 0) return { valid: false, reason: 'missing-procedure-step' }
 
       for (const step of steps) {
@@ -446,7 +474,7 @@ export async function checkValidity(record: MemoryRecord): Promise<ValidityResul
       const timestamp = record.timestamp ?? 0
       if (!timestamp) return { valid: true, reason: 'no-timestamp' }
       const ageDays = (Date.now() - timestamp) / (1000 * 60 * 60 * 24)
-      if (ageDays >= DISCOVERY_MAX_AGE_DAYS) {
+      if (ageDays >= maintenance.discoveryMaxAgeDays) {
         return { valid: false, reason: `discovery-aged:${Math.floor(ageDays)}d` }
       }
       return { valid: true }
@@ -467,9 +495,14 @@ export async function promoteToGlobal(id: string, config: Config = DEFAULT_CONFI
 }
 
 export async function findSimilarClusters(
-  similarityThreshold: number = SIMILARITY_THRESHOLDS.CONSOLIDATION,
-  config: Config = DEFAULT_CONFIG
+  similarityThreshold: number | undefined = undefined,
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<ConsolidationCluster[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
+  const resolvedThreshold = typeof similarityThreshold === 'number'
+    ? similarityThreshold
+    : maintenance.consolidationThreshold
   const clusters: ConsolidationCluster[] = []
   const clusteredIds = new Set<string>()
   let offset = 0
@@ -498,8 +531,8 @@ export async function findSimilarClusters(
         record.embedding,
         {
           filter: buildConsolidationFilter(record),
-          limit: CONSOLIDATION_SEARCH_LIMIT,
-          similarityThreshold
+          limit: maintenance.consolidationSearchLimit,
+          similarityThreshold: resolvedThreshold
         },
         config
       )
@@ -516,11 +549,11 @@ export async function findSimilarClusters(
 
         const candidateText = normalizeExactText(buildExactText(candidate))
         if (!candidateText) continue
-        if (!isExactTextSimilar(seedText, candidateText)) continue
+        if (!isExactTextSimilar(seedText, candidateText, maintenance.consolidationTextSimilarityRatio)) continue
 
         cluster.push(candidate)
         members.push({ record: candidate, similarity: match.similarity })
-        if (cluster.length >= CONSOLIDATION_MAX_CLUSTER_SIZE) break
+        if (cluster.length >= maintenance.consolidationMaxClusterSize) break
       }
 
       if (cluster.length > 1) {
@@ -603,8 +636,11 @@ export async function consolidateCluster(
  * this finds records that cover the same topic but say different things.
  */
 export async function findContradictionPairs(
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<ContradictionPair[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
+  const pairLimit = maintenance.contradictionBatchSize
   const pairs: ContradictionPair[] = []
   const processedIds = new Set<string>()
   let offset = 0
@@ -634,8 +670,8 @@ export async function findContradictionPairs(
         record.embedding,
         {
           filter: buildContradictionFilter(record),
-          limit: CONTRADICTION_SEARCH_LIMIT,
-          similarityThreshold: CONTRADICTION_SIMILARITY_THRESHOLD
+          limit: maintenance.contradictionSearchLimit,
+          similarityThreshold: maintenance.contradictionSimilarityThreshold
         },
         config
       )
@@ -649,7 +685,7 @@ export async function findContradictionPairs(
         if (!candidateText) continue
 
         // Skip if texts are too similar (that's consolidation territory)
-        if (isExactTextSimilar(recordText, candidateText)) continue
+        if (isExactTextSimilar(recordText, candidateText, maintenance.consolidationTextSimilarityRatio)) continue
 
         // Determine which is newer
         const recordTime = record.timestamp ?? 0
@@ -657,8 +693,10 @@ export async function findContradictionPairs(
 
         if (recordTime > candidateTime) {
           pairs.push({ newer: record, older: candidate, similarity: match.similarity })
+          if (pairs.length >= pairLimit) return pairs
         } else if (candidateTime > recordTime) {
           pairs.push({ newer: candidate, older: record, similarity: match.similarity })
+          if (pairs.length >= pairLimit) return pairs
         }
         // If same timestamp, skip (ambiguous)
 
@@ -668,6 +706,7 @@ export async function findContradictionPairs(
       }
 
       processedIds.add(record.id)
+      if (pairs.length >= pairLimit) return pairs
     }
 
     if (batch.length < QUERY_PAGE_SIZE) break
@@ -801,13 +840,15 @@ type ConflictMaintenanceAction = {
 
 export async function runConflictResolution(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<{
   actions: ConflictMaintenanceAction[]
   summary: Record<string, number>
   candidates: MaintenanceCandidateGroup[]
   error?: string
 }> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const actions: ConflictMaintenanceAction[] = []
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
@@ -831,7 +872,7 @@ export async function runConflictResolution(
       })
     }
 
-    const conflictPairs = await findNewConflicts(config)
+    const conflictPairs = await findNewConflicts(config, maintenance)
     pairs = conflictPairs.length
 
     const deprecatedNewIds = new Set<string>()
@@ -886,8 +927,8 @@ export async function runConflictResolution(
       variants += pendingVariants
     }
 
-    for (let i = 0; i < conflictPairs.length; i += CONFLICT_CHECK_BATCH_SIZE) {
-      const batch = conflictPairs.slice(i, i + CONFLICT_CHECK_BATCH_SIZE)
+    for (let i = 0; i < conflictPairs.length; i += maintenance.conflictCheckBatchSize) {
+      const batch = conflictPairs.slice(i, i + maintenance.conflictCheckBatchSize)
 
       for (const pair of batch) {
         const newId = pair.newRecord.id
@@ -1113,13 +1154,13 @@ function isValidEmbedding(embedding: number[] | undefined): embedding is number[
   return Array.isArray(embedding) && embedding.length === EMBEDDING_DIM
 }
 
-function isExactTextSimilar(seed: string, candidate: string): boolean {
+function isExactTextSimilar(seed: string, candidate: string, ratio: number): boolean {
   if (!seed || !candidate) return false
   if (seed === candidate) return true
   if (seed.includes(candidate) || candidate.includes(seed)) return true
 
   const maxLength = Math.max(seed.length, candidate.length)
-  const threshold = Math.floor(maxLength * TEXT_SIMILARITY_RATIO)
+  const threshold = Math.floor(maxLength * ratio)
   if (threshold === 0) return false
   if (Math.abs(seed.length - candidate.length) > threshold) return false
 
@@ -1135,8 +1176,8 @@ function buildConsolidationFilter(record: MemoryRecord): string {
   }) ?? 'deprecated == false'
 }
 
-function isGlobalCandidate(record: MemoryRecord): boolean {
-  if (!passesGlobalPromotionHeuristics(record)) return false
+function isGlobalCandidate(record: MemoryRecord, settings: MaintenanceSettings): boolean {
+  if (!passesGlobalPromotionHeuristics(record, settings)) return false
   switch (record.type) {
     case 'error':
       return isGlobalErrorCandidate(record)
@@ -1149,20 +1190,20 @@ function isGlobalCandidate(record: MemoryRecord): boolean {
   }
 }
 
-function passesGlobalPromotionHeuristics(record: MemoryRecord): boolean {
+function passesGlobalPromotionHeuristics(record: MemoryRecord, settings: MaintenanceSettings): boolean {
   const successCount = record.successCount ?? 0
   const usageCount = record.usageCount ?? 0
   if (record.type === 'command') {
-    if (successCount < GLOBAL_PROMOTION_MIN_SUCCESS_COUNT) return false
-  } else if (usageCount < GLOBAL_PROMOTION_MIN_SUCCESS_COUNT) {
+    if (successCount < settings.globalPromotionMinSuccessCount) return false
+  } else if (usageCount < settings.globalPromotionMinSuccessCount) {
     return false
   }
   if (recordHasPathReference(record)) return false
 
   const retrievalCount = record.retrievalCount ?? 0
-  if (retrievalCount >= GLOBAL_PROMOTION_MIN_RETRIEVALS_FOR_USAGE_RATIO) {
+  if (retrievalCount >= settings.globalPromotionMinRetrievalsForUsageRatio) {
     const ratio = usageCount / retrievalCount
-    if (ratio < GLOBAL_PROMOTION_MIN_USAGE_RATIO) return false
+    if (ratio < settings.globalPromotionMinUsageRatio) return false
   }
 
   return true
@@ -1757,11 +1798,16 @@ export type WarningSynthesisAction = {
 }
 
 export async function findWarningCandidates(
-  minFailures: number = WARNING_SYNTHESIS_MIN_FAILURES,
-  config: Config = DEFAULT_CONFIG
+  minFailures: number | undefined = undefined,
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<WarningCandidate[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
+  const resolvedMinFailures = typeof minFailures === 'number'
+    ? minFailures
+    : maintenance.warningSynthesisMinFailures
   // Query high-failure records that haven't been synthesized into warnings yet
-  const filter = `deprecated == false && failure_count >= ${minFailures} && type in ["command", "error"]`
+  const filter = `deprecated == false && failure_count >= ${resolvedMinFailures} && type in ["command", "error"]`
   const records = await fetchRecords(filter, config, true)
 
   if (records.length === 0) return []
@@ -1784,14 +1830,14 @@ export async function findWarningCandidates(
           excludeId: record.id,
           excludeDeprecated: true
         }),
-        limit: 5,
-        similarityThreshold: 0.8
+        limit: maintenance.warningClusterLimit,
+        similarityThreshold: maintenance.warningClusterSimilarityThreshold
       },
       config
     )
 
     const cluster = [record, ...matches.map(m => m.record).filter(r =>
-      (r.failureCount ?? 0) >= minFailures && !processed.has(r.id)
+      (r.failureCount ?? 0) >= resolvedMinFailures && !processed.has(r.id)
     )]
 
     // Even single records with high failures can generate warnings
@@ -1884,12 +1930,14 @@ export async function synthesizeWarning(
 
 export async function runWarningSynthesis(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<{
   actions: WarningSynthesisAction[]
   summary: Record<string, number>
   candidates: MaintenanceCandidateGroup[]
 }> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const { insertRecord } = await import('./milvus.js')
   const actions: WarningSynthesisAction[] = []
   const candidateGroups: MaintenanceCandidateGroup[] = []
@@ -1898,7 +1946,7 @@ export async function runWarningSynthesis(
   let skipped = 0
   let errors = 0
 
-  const candidateList = await findWarningCandidates(WARNING_SYNTHESIS_MIN_FAILURES, config)
+  const candidateList = await findWarningCandidates(undefined, config, maintenance)
   candidates = candidateList.length
   if (candidateList.length > 0) {
     candidateGroups.push(...candidateList.map((candidate, index) => ({
@@ -1912,8 +1960,8 @@ export async function runWarningSynthesis(
     })))
   }
 
-  for (let i = 0; i < candidateList.length; i += WARNING_SYNTHESIS_BATCH_SIZE) {
-    const batch = candidateList.slice(i, i + WARNING_SYNTHESIS_BATCH_SIZE)
+  for (let i = 0; i < candidateList.length; i += maintenance.warningSynthesisBatchSize) {
+    const batch = candidateList.slice(i, i + maintenance.warningSynthesisBatchSize)
 
     for (const candidate of batch) {
       try {

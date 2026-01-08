@@ -4,7 +4,8 @@ export const TYPE_COLORS: Record<MemoryRecord['type'], string> = {
   command: '#2dd4bf',
   error: '#f43f5e',
   discovery: '#60a5fa',
-  procedure: '#a78bfa'
+  procedure: '#a78bfa',
+  warning: '#fbbf24'
 }
 
 export function getMemorySummary(record: MemoryRecord): string {
@@ -17,6 +18,8 @@ export function getMemorySummary(record: MemoryRecord): string {
       return record.what
     case 'procedure':
       return record.name
+    case 'warning':
+      return record.avoid
   }
 }
 

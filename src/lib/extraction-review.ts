@@ -6,7 +6,8 @@ import { escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.j
 import { asString, isPlainObject } from './parsing.js'
 import { clampScore, coerceReviewIssue, parseOverallAccuracy } from './review-coercion.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
-import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config, type MemoryRecord } from './types.js'
+import { loadSettings } from './settings.js'
+import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 
 export interface ExtractionReviewIssue {
   recordId?: string
@@ -117,10 +118,17 @@ export async function reviewExtraction(
     throw new Error('Could not fetch extracted records from Milvus. They may have been deleted.')
   }
 
+  const { reviewSimilarThreshold, reviewDuplicateWarningThreshold } = loadSettings()
+
   let similarMemories: Array<{ record: MemoryRecord; similarity: number }> = []
   try {
     const transcriptSegments = collectTranscriptSegments(records)
-    similarMemories = await collectSimilarMemories(transcriptSegments, extractedIds, config)
+    similarMemories = await collectSimilarMemories(
+      transcriptSegments,
+      extractedIds,
+      config,
+      reviewSimilarThreshold
+    )
   } catch (error) {
     console.error('[claude-memory] Failed to fetch similar memories for review:', error)
   }
@@ -130,7 +138,10 @@ export async function reviewExtraction(
     throw new Error('No authentication available for extraction review. Set ANTHROPIC_API_KEY or run kira login.')
   }
 
-  const prompt = buildReviewPrompt(run, records, similarMemories)
+  const prompt = buildReviewPrompt(run, records, similarMemories, {
+    reviewSimilarThreshold,
+    reviewDuplicateWarningThreshold
+  })
 
   const response = await client.messages.create({
     model: REVIEW_MODEL,
@@ -209,7 +220,8 @@ function collectTranscriptSegments(records: MemoryRecord[]): string[] {
 async function collectSimilarMemories(
   transcriptSegments: string[],
   excludeIds: string[],
-  config: Config
+  config: Config,
+  similarityThreshold: number
 ): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
   const inputs = buildTranscriptEmbeddingInputs(transcriptSegments)
   if (inputs.length === 0) return []
@@ -224,7 +236,7 @@ async function collectSimilarMemories(
     const results = await vectorSearchSimilar(embedding, {
       filter,
       limit: REVIEW_SIMILAR_LIMIT,
-      similarityThreshold: SIMILARITY_THRESHOLDS.REVIEW_SIMILAR
+      similarityThreshold
     }, config)
 
     for (const result of results) {
@@ -266,15 +278,16 @@ function buildExcludeFilter(excludeIds: string[]): string {
 function buildReviewPrompt(
   run: { runId: string; sessionId: string; transcriptPath: string; recordCount: number; parseErrorCount: number },
   records: MemoryRecord[],
-  similar: Array<{ record: MemoryRecord; similarity: number }>
+  similar: Array<{ record: MemoryRecord; similarity: number }>,
+  thresholds: { reviewSimilarThreshold: number; reviewDuplicateWarningThreshold: number }
 ): string {
   const recordPayload = records.map(formatReviewRecord)
   const transcriptPayload = records.map(record => ({
     recordId: record.id,
     excerpt: record.sourceExcerpt ?? '(missing source excerpt)'
   }))
-  const duplicateThreshold = SIMILARITY_THRESHOLDS.REVIEW_DUPLICATE_WARNING
-  const similarThreshold = SIMILARITY_THRESHOLDS.REVIEW_SIMILAR
+  const duplicateThreshold = thresholds.reviewDuplicateWarningThreshold
+  const similarThreshold = thresholds.reviewSimilarThreshold
   const potentialDuplicates = similar.filter(entry => entry.similarity >= duplicateThreshold)
   const relatedMemories = similar.filter(entry => entry.similarity < duplicateThreshold)
   const duplicatePayload = potentialDuplicates.map(entry => formatSimilarRecord(entry.record, entry.similarity))

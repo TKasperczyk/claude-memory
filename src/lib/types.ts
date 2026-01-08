@@ -3,7 +3,7 @@
 
 export const EMBEDDING_DIM = 4096
 
-// Similarity thresholds - centralized to prevent drift.
+// Similarity thresholds - defaults that can be overridden via settings.
 export const SIMILARITY_THRESHOLDS = {
   /** Threshold for deduplication during extraction (insert vs update). */
   EXTRACTION_DEDUP: 0.85,

@@ -11,9 +11,7 @@ import {
   findLowUsageHighRetrieval,
   findLowUsageRecords,
   findSimilarClusters,
-  GLOBAL_PROMOTION_BATCH_SIZE,
   GLOBAL_PROMOTION_MIN_CONFIDENCE,
-  GLOBAL_PROMOTION_RECHECK_DAYS,
   runConflictResolution,
   runWarningSynthesis as runWarningSynthesisInternal,
   findStaleRecords,
@@ -25,7 +23,8 @@ import {
 } from './lib/maintenance.js'
 import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from './lib/promotions.js'
 import { loadConfig } from './lib/config.js'
-import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config } from './lib/types.js'
+import { DEFAULT_CONFIG, type Config } from './lib/types.js'
+import { loadSettings, type MaintenanceSettings } from './lib/settings.js'
 import { updateRecord } from './lib/milvus.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from './lib/shared.js'
 
@@ -67,17 +66,18 @@ export interface MaintenanceRunResult {
 async function main(): Promise<void> {
   const config = loadConfig(process.cwd())
   const dryRun = process.argv.slice(2).includes('--dry-run')
+  const maintenanceSettings = loadSettings()
   await initMilvus(config)
 
   console.error('[claude-memory] Maintenance started.')
 
-  logMaintenanceResult('Stale check', await runStaleCheck(dryRun, config), dryRun)
-  logMaintenanceResult('Low usage deprecation', await runLowUsageDeprecation(dryRun, config), dryRun)
-  logMaintenanceResult('Low usage check', await runLowUsageCheck(dryRun, config), dryRun)
-  logMaintenanceResult('Consolidation', await runConsolidation(dryRun, config), dryRun)
-  logMaintenanceResult('Conflict resolution', await runConflictResolution(dryRun, config), dryRun)
-  logMaintenanceResult('Global promotion', await runGlobalPromotion(dryRun, config), dryRun)
-  logMaintenanceResult('Warning synthesis', await runWarningSynthesis(dryRun, config), dryRun)
+  logMaintenanceResult('Stale check', await runStaleCheck(dryRun, config, maintenanceSettings), dryRun)
+  logMaintenanceResult('Low usage deprecation', await runLowUsageDeprecation(dryRun, config, maintenanceSettings), dryRun)
+  logMaintenanceResult('Low usage check', await runLowUsageCheck(dryRun, config, maintenanceSettings), dryRun)
+  logMaintenanceResult('Consolidation', await runConsolidation(dryRun, config, maintenanceSettings), dryRun)
+  logMaintenanceResult('Conflict resolution', await runConflictResolution(dryRun, config, maintenanceSettings), dryRun)
+  logMaintenanceResult('Global promotion', await runGlobalPromotion(dryRun, config, maintenanceSettings), dryRun)
+  logMaintenanceResult('Warning synthesis', await runWarningSynthesis(dryRun, config, maintenanceSettings), dryRun)
   await runPromotions(config, dryRun)
 
   if (dryRun) {
@@ -108,12 +108,18 @@ function formatSummary(summary: Record<string, number>): string {
     .join(' ')
 }
 
+function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
+  return settings ?? loadSettings()
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000
 
 export async function runStaleCheck(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const actions: MaintenanceAction[] = []
   const candidates: MaintenanceCandidateGroup[] = []
   let checked = 0
@@ -121,7 +127,7 @@ export async function runStaleCheck(
   let errors = 0
 
   try {
-    const records = await findStaleRecords(config)
+    const records = await findStaleRecords(config, maintenance)
     checked = records.length
     if (records.length > 0) {
       const candidateRecords = records.map(record => {
@@ -139,7 +145,7 @@ export async function runStaleCheck(
 
     for (const record of records) {
       try {
-        const validity = await checkValidity(record)
+        const validity = await checkValidity(record, maintenance)
         if (validity.valid) continue
 
         const reason = validity.reason ?? 'invalid'
@@ -175,8 +181,10 @@ export async function runStaleCheck(
 
 export async function runLowUsageDeprecation(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const actions: MaintenanceAction[] = []
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
@@ -184,7 +192,7 @@ export async function runLowUsageDeprecation(
   let errors = 0
 
   try {
-    const records = await findLowUsageHighRetrieval(config)
+    const records = await findLowUsageHighRetrieval(config, maintenance)
     candidates = records.length
     if (records.length > 0) {
       const candidateRecords = records.map(record => {
@@ -237,8 +245,10 @@ export async function runLowUsageDeprecation(
 
 export async function runLowUsageCheck(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const actions: MaintenanceAction[] = []
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
@@ -246,7 +256,7 @@ export async function runLowUsageCheck(
   let errors = 0
 
   try {
-    const records = await findLowUsageRecords(config)
+    const records = await findLowUsageRecords(config, maintenance)
     candidates = records.length
     if (records.length > 0) {
       const candidateRecords = records.map(record => {
@@ -306,8 +316,10 @@ export async function runLowUsageCheck(
 
 export async function runConsolidation(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const actions: MaintenanceAction[] = []
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let clustersFound = 0
@@ -316,10 +328,10 @@ export async function runConsolidation(
   let errors = 0
 
   try {
-    const clusters = await findSimilarClusters(SIMILARITY_THRESHOLDS.CONSOLIDATION, config)
+    const clusters = await findSimilarClusters(maintenance.consolidationThreshold, config, maintenance)
     clustersFound = clusters.length
     if (clusters.length > 0) {
-      const thresholdPercent = Math.round(SIMILARITY_THRESHOLDS.CONSOLIDATION * 100)
+      const thresholdPercent = Math.round(maintenance.consolidationThreshold * 100)
       candidateGroups.push(...clusters.map((cluster, index) => ({
         id: `consolidation-cluster-${index + 1}`,
         label: `Cluster ${index + 1}`,
@@ -400,8 +412,10 @@ export async function runConsolidation(
 
 export async function runGlobalPromotion(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
   const actions: MaintenanceAction[] = []
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
@@ -411,7 +425,7 @@ export async function runGlobalPromotion(
   let errors = 0
 
   try {
-    const records = await findGlobalCandidates(config)
+    const records = await findGlobalCandidates(config, maintenance)
     candidates = records.length
     if (records.length > 0) {
       const candidateRecords = records.map(record =>
@@ -423,11 +437,11 @@ export async function runGlobalPromotion(
         records: candidateRecords
       })
     }
-    const cutoff = Date.now() - GLOBAL_PROMOTION_RECHECK_DAYS * 24 * 60 * 60 * 1000
+    const cutoff = Date.now() - maintenance.globalPromotionRecheckDays * 24 * 60 * 60 * 1000
     const eligible = records.filter(record => (record.lastGlobalCheck ?? 0) < cutoff)
     skippedRecent = candidates - eligible.length
 
-    const batch = selectPromotionBatch(eligible, GLOBAL_PROMOTION_BATCH_SIZE)
+    const batch = selectPromotionBatch(eligible, maintenance.globalPromotionBatchSize)
 
     for (const record of batch) {
       checked += 1
@@ -542,10 +556,12 @@ function summarizeCluster(cluster: { id: string; successCount?: number; lastUsed
 
 export async function runWarningSynthesis(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
   try {
-    const result = await runWarningSynthesisInternal(dryRun, config)
+    const result = await runWarningSynthesisInternal(dryRun, config, maintenance)
     const actions: MaintenanceAction[] = result.actions
       .filter(action => action.type === 'created')
       .map(action => ({

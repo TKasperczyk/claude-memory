@@ -1,4 +1,4 @@
-export type RecordType = 'command' | 'error' | 'discovery' | 'procedure'
+export type RecordType = 'command' | 'error' | 'discovery' | 'procedure' | 'warning'
 
 export interface RetrievalSettings {
   minSemanticSimilarity: number
@@ -8,6 +8,43 @@ export interface RetrievalSettings {
   maxTokens: number
   mmrLambda: number
   usageRatioWeight: number
+}
+
+export interface MaintenanceSettings {
+  staleDays: number
+  discoveryMaxAgeDays: number
+  lowUsageMinRetrievals: number
+  lowUsageRatioThreshold: number
+  lowUsageHighRetrievalMin: number
+  consolidationSearchLimit: number
+  consolidationMaxClusterSize: number
+  consolidationThreshold: number
+  consolidationTextSimilarityRatio: number
+  conflictSimilarityThreshold: number
+  conflictCheckBatchSize: number
+  contradictionSimilarityThreshold: number
+  contradictionSearchLimit: number
+  contradictionBatchSize: number
+  globalPromotionBatchSize: number
+  globalPromotionRecheckDays: number
+  globalPromotionMinSuccessCount: number
+  globalPromotionMinUsageRatio: number
+  globalPromotionMinRetrievalsForUsageRatio: number
+  warningClusterSimilarityThreshold: number
+  warningClusterLimit: number
+  warningSynthesisMinFailures: number
+  warningSynthesisBatchSize: number
+  procedureStepCheckCount: number
+  extractionDedupThreshold: number
+  reviewSimilarThreshold: number
+  reviewDuplicateWarningThreshold: number
+}
+
+export type Settings = RetrievalSettings & MaintenanceSettings
+
+export interface SettingsDefaultsResponse {
+  settings: Settings
+  maintenance: MaintenanceSettings
 }
 
 export interface BaseRecord {
@@ -73,7 +110,19 @@ export interface ProcedureRecord extends BaseRecord {
   verification?: string
 }
 
-export type MemoryRecord = CommandRecord | ErrorRecord | DiscoveryRecord | ProcedureRecord
+export type WarningSeverity = 'caution' | 'warning' | 'critical'
+
+export interface WarningRecord extends BaseRecord {
+  type: 'warning'
+  avoid: string
+  useInstead: string
+  reason: string
+  severity: WarningSeverity
+  sourceRecordIds?: string[]
+  synthesizedAt?: number
+}
+
+export type MemoryRecord = CommandRecord | ErrorRecord | DiscoveryRecord | ProcedureRecord | WarningRecord
 
 export interface StatsResponse {
   total: number
@@ -401,18 +450,22 @@ export function fetchStats(): Promise<StatsResponse> {
   return request('/stats')
 }
 
-export function fetchSettings(): Promise<RetrievalSettings> {
+export function fetchSettings(): Promise<Settings> {
   return request('/settings')
 }
 
-export function updateSettings(settings: Partial<RetrievalSettings>): Promise<RetrievalSettings> {
+export function fetchSettingsDefaults(): Promise<SettingsDefaultsResponse> {
+  return request('/settings/defaults')
+}
+
+export function updateSettings(settings: Partial<Settings>): Promise<Settings> {
   return request('/settings', {
     method: 'PUT',
     body: JSON.stringify(settings)
   })
 }
 
-export function resetSettings(): Promise<RetrievalSettings> {
+export function resetSettings(): Promise<Settings> {
   return request('/settings/reset', { method: 'POST' })
 }
 

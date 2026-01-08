@@ -46,6 +46,7 @@
     --type-error: 350 89% 60%;
     --type-discovery: 217 91% 60%;
     --type-procedure: 270 60% 65%;
+    --type-warning: 43 96% 56%;
   }
 
   * {
@@ -126,10 +127,12 @@
 .bg-type-error { background-color: hsl(var(--type-error)); }
 .bg-type-discovery { background-color: hsl(var(--type-discovery)); }
 .bg-type-procedure { background-color: hsl(var(--type-procedure)); }
+.bg-type-warning { background-color: hsl(var(--type-warning)); }
 .text-type-command { color: hsl(var(--type-command)); }
 .text-type-error { color: hsl(var(--type-error)); }
 .text-type-discovery { color: hsl(var(--type-discovery)); }
 .text-type-procedure { color: hsl(var(--type-procedure)); }
+.text-type-warning { color: hsl(var(--type-warning)); }
 
 /* Panel slide animation */
 .panel-backdrop {

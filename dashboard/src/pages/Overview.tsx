@@ -13,6 +13,7 @@ const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   error: { label: 'Errors', color: '#f43f5e' },
   discovery: { label: 'Discoveries', color: '#60a5fa' },
   procedure: { label: 'Procedures', color: '#a78bfa' },
+  warning: { label: 'Warnings', color: '#fbbf24' },
 }
 
 const HOOK_ITEMS: { key: HookEvent; label: string; script: string }[] = [

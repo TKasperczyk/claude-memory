@@ -61,6 +61,7 @@ function getRecordSummary(record: MemoryRecord): string {
     case 'error': return record.errorText
     case 'discovery': return record.what
     case 'procedure': return record.name
+    case 'warning': return record.avoid
   }
 }
 

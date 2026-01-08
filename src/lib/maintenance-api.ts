@@ -1,7 +1,8 @@
-import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config } from './types.js'
+import { DEFAULT_CONFIG, type Config } from './types.js'
 import { findGitRoot } from './context.js'
 import { buildPromotionDiffs } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
+import { loadSettings, type MaintenanceSettings } from './settings.js'
 import {
   runStaleCheck,
   runLowUsageDeprecation,
@@ -14,31 +15,29 @@ import {
   type MaintenanceRunResult
 } from '../maintenance.js'
 
-const CONSOLIDATION_SIMILARITY_PERCENT = Math.round(SIMILARITY_THRESHOLDS.CONSOLIDATION * 100)
-
 export const MAINTENANCE_OPERATION_DEFINITIONS = [
   {
     key: 'stale-check',
     label: 'Stale Check',
-    description: 'Find records unused for 90+ days',
+    description: 'Find records unused for the configured number of days',
     allowExecute: true
   },
   {
     key: 'low-usage-deprecation',
     label: 'Zero Usage Deprecation',
-    description: 'Deprecate records with 10+ retrievals and zero usage',
+    description: 'Deprecate records with high retrievals and zero usage',
     allowExecute: true
   },
   {
     key: 'low-usage',
     label: 'Low Usage',
-    description: 'Deprecate records with <10% usefulness',
+    description: 'Deprecate records below the configured usage ratio',
     allowExecute: true
   },
   {
     key: 'consolidation',
     label: 'Consolidation',
-    description: `Merge duplicate records (>=${CONSOLIDATION_SIMILARITY_PERCENT}% similar)`,
+    description: 'Merge duplicate records using the configured similarity threshold',
     allowExecute: true
   },
   {
@@ -83,15 +82,21 @@ export interface OperationResult {
 export const MAINTENANCE_OPERATIONS: MaintenanceOperation[] =
   MAINTENANCE_OPERATION_DEFINITIONS.map(definition => definition.key) as MaintenanceOperation[]
 
+function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
+  return settings ?? loadSettings()
+}
+
 export async function runMaintenanceOperation(
   operation: MaintenanceOperation,
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<OperationResult> {
   const started = Date.now()
+  const maintenance = resolveMaintenanceSettings(settings)
 
   try {
-    const payload = await runOperation(operation, dryRun, config)
+    const payload = await runOperation(operation, dryRun, config, maintenance)
     return {
       operation,
       dryRun,
@@ -117,12 +122,14 @@ export async function runMaintenanceOperation(
 
 export async function runAllMaintenance(
   dryRun: boolean,
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
 ): Promise<OperationResult[]> {
   const results: OperationResult[] = []
+  const maintenance = resolveMaintenanceSettings(settings)
   for (const operation of MAINTENANCE_OPERATIONS) {
     const effectiveDryRun = operation === 'promotion-suggestions' ? true : dryRun
-    results.push(await runMaintenanceOperation(operation, effectiveDryRun, config))
+    results.push(await runMaintenanceOperation(operation, effectiveDryRun, config, maintenance))
   }
   return results
 }
@@ -130,23 +137,24 @@ export async function runAllMaintenance(
 async function runOperation(
   operation: MaintenanceOperation,
   dryRun: boolean,
-  config: Config
+  config: Config,
+  settings: MaintenanceSettings
 ): Promise<MaintenanceRunResult> {
   switch (operation) {
     case 'stale-check':
-      return runStaleCheck(dryRun, config)
+      return runStaleCheck(dryRun, config, settings)
     case 'low-usage-deprecation':
-      return runLowUsageDeprecation(dryRun, config)
+      return runLowUsageDeprecation(dryRun, config, settings)
     case 'low-usage':
-      return runLowUsageCheck(dryRun, config)
+      return runLowUsageCheck(dryRun, config, settings)
     case 'consolidation':
-      return runConsolidation(dryRun, config)
+      return runConsolidation(dryRun, config, settings)
     case 'conflict-resolution':
-      return runConflictResolution(dryRun, config)
+      return runConflictResolution(dryRun, config, settings)
     case 'warning-synthesis':
-      return runWarningSynthesis(dryRun, config)
+      return runWarningSynthesis(dryRun, config, settings)
     case 'global-promotion':
-      return runGlobalPromotion(dryRun, config)
+      return runGlobalPromotion(dryRun, config, settings)
     case 'promotion-suggestions':
       return runPromotionSuggestions(config)
   }

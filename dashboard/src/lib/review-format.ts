@@ -52,6 +52,14 @@ function getRecordContent(record: MemoryRecord): string {
         record.verification ? `Verification: ${record.verification}` : '',
         `Context: ${record.context.domain}${record.context.project ? `, project=${record.context.project}` : ''}`
       ].filter(Boolean).join('\n')
+
+    case 'warning':
+      return [
+        `Avoid: ${record.avoid}`,
+        `Use instead: ${record.useInstead}`,
+        `Reason: ${record.reason}`,
+        `Severity: ${record.severity}`
+      ].join('\n')
   }
 }
 

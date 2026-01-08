@@ -5,6 +5,7 @@ import {
   fetchMemories,
   fetchMemoryTypes,
   fetchSettings,
+  fetchSettingsDefaults,
   fetchSessions,
   fetchStats,
   searchMemories,
@@ -12,7 +13,8 @@ import {
   type HookStatusResponse,
   type MemoryListResponse,
   type RecordType,
-  type RetrievalSettings,
+  type Settings,
+  type SettingsDefaultsResponse,
   type SessionsResponse,
   type StatsResponse
 } from '@/lib/api'
@@ -117,9 +119,17 @@ export function useMemoryTypes() {
 }
 
 export function useSettings() {
-  return useQuery<RetrievalSettings>({
+  return useQuery<Settings>({
     queryKey: ['settings'],
     queryFn: fetchSettings
+  })
+}
+
+export function useSettingsDefaults() {
+  return useQuery<SettingsDefaultsResponse>({
+    queryKey: ['settingsDefaults'],
+    queryFn: fetchSettingsDefaults,
+    staleTime: Infinity
   })
 }
 

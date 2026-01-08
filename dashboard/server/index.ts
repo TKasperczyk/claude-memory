@@ -24,7 +24,14 @@ import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '..
 import { findGitRoot } from '../../src/lib/context.js'
 import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
-import { getDefaultSettings, loadSettings, resetSettings, saveSettings, type RetrievalSettings } from '../../src/lib/settings.js'
+import {
+  getDefaultMaintenanceSettings,
+  getDefaultSettings,
+  loadSettings,
+  resetSettings,
+  saveSettings,
+  type Settings
+} from '../../src/lib/settings.js'
 import { type MemoryRecord, type RecordType } from '../../src/lib/types.js'
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
 import { reviewExtraction } from '../../src/lib/extraction-review.js'
@@ -81,12 +88,24 @@ app.get('/api/settings', (_req, res) => {
   }
 })
 
+app.get('/api/settings/defaults', (_req, res) => {
+  try {
+    res.json({
+      settings: getDefaultSettings(),
+      maintenance: getDefaultMaintenanceSettings()
+    })
+  } catch (error) {
+    console.error('Settings defaults error:', error)
+    res.status(500).json({ error: 'Failed to load default settings' })
+  }
+})
+
 app.put('/api/settings', (req, res) => {
   try {
     if (!isPlainObject(req.body)) {
       return res.status(400).json({ error: 'Settings payload must be an object' })
     }
-    saveSettings(req.body as Partial<RetrievalSettings>)
+    saveSettings(req.body as Partial<Settings>)
     res.json(loadSettings())
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to update settings'

@@ -5,6 +5,7 @@ const typeConfig: Record<RecordType, { label: string; dotClass: string }> = {
   error: { label: 'Error', dotClass: 'bg-type-error' },
   discovery: { label: 'Discovery', dotClass: 'bg-type-discovery' },
   procedure: { label: 'Procedure', dotClass: 'bg-type-procedure' },
+  warning: { label: 'Warning', dotClass: 'bg-type-warning' },
 }
 
 interface TypeBadgeProps {
