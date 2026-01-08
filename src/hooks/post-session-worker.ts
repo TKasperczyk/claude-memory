@@ -122,7 +122,8 @@ async function main(): Promise<void> {
       recordAugmenter: (record, transcript) => ({
         ...record,
         sourceSessionId: payload.session_id,
-        sourceExcerpt: buildSourceExcerpt(record, transcript)
+        // Prefer LLM-provided sourceExcerpt, fall back to heuristic search
+        sourceExcerpt: record.sourceExcerpt ?? buildSourceExcerpt(record, transcript)
       })
     })
     debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
@@ -331,8 +332,8 @@ function buildExcerptCandidates(record: MemoryRecord): string[] {
         return compactStrings([record.what, record.evidence, record.where])
       case 'procedure':
         return compactStrings([record.name, ...record.steps, record.verification, ...(record.prerequisites ?? [])])
-      default:
-        return []
+      case 'warning':
+        return compactStrings([record.avoid, record.useInstead, record.reason])
     }
   })()
 

@@ -5,6 +5,7 @@ import type { Transcript, TranscriptEvent } from './transcript.js'
 import { getDomainExamples, type DomainExample } from './milvus.js'
 import { stripNoiseWords } from './context.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import { getRecordSchemaOneOf } from './record-schema.js'
 
 export interface ExtractionContext {
   sessionId: string
@@ -42,6 +43,17 @@ Rules:
 - Commands and errors must be verbatim from tool calls/output.
 - When transcript output includes a "[truncated]" marker, do not include that marker in extracted text.
 - Extract warnings when Claude explicitly learns that an approach doesn't work and identifies a better alternative.
+
+CRITICAL - Source Evidence:
+- EVERY record MUST include a sourceExcerpt field with a verbatim quote from the transcript.
+- The sourceExcerpt must contain the actual text that supports the extraction.
+- For commands: quote the tool call or result that shows the command.
+- For errors: quote the error message as it appears in the transcript.
+- For discoveries: quote the specific transcript segment that establishes the fact.
+- For procedures: quote the steps as they appear in the conversation.
+- For warnings: quote the conversation that shows the failed approach and the working alternative.
+- If you cannot find a specific transcript segment to cite, DO NOT extract that record.
+- Do not synthesize or infer information that isn't directly supported by transcript text.
 
 Priority guidance:
 - Prefer extracting project-level context over routine commands.
@@ -98,113 +110,7 @@ const EMIT_RECORDS_TOOL: Anthropic.Tool = {
       records: {
         type: 'array',
         items: {
-          oneOf: [
-            {
-              type: 'object',
-              additionalProperties: false,
-              required: ['type', 'command', 'exitCode', 'context', 'outcome'],
-              properties: {
-                type: { const: 'command' },
-                command: { type: 'string' },
-                exitCode: { type: 'number' },
-                truncatedOutput: { type: 'string' },
-                outcome: { type: 'string', enum: ['success', 'failure', 'partial'] },
-                resolution: { type: 'string' },
-                project: { type: 'string' },
-                scope: { type: 'string', enum: ['global', 'project'] },
-                domain: { type: 'string' },
-                context: {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['project', 'cwd', 'intent'],
-                  properties: {
-                    project: { type: 'string' },
-                    cwd: { type: 'string' },
-                    intent: { type: 'string' }
-                  }
-                }
-              }
-            },
-            {
-              type: 'object',
-              additionalProperties: false,
-              required: ['type', 'errorText', 'errorType', 'resolution', 'context'],
-              properties: {
-                type: { const: 'error' },
-                errorText: { type: 'string' },
-                errorType: { type: 'string' },
-                cause: { type: 'string' },
-                resolution: { type: 'string' },
-                project: { type: 'string' },
-                scope: { type: 'string', enum: ['global', 'project'] },
-                domain: { type: 'string' },
-                context: {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['project'],
-                  properties: {
-                    project: { type: 'string' },
-                    file: { type: 'string' },
-                    tool: { type: 'string' }
-                  }
-                }
-              }
-            },
-            {
-              type: 'object',
-              additionalProperties: false,
-              required: ['type', 'what', 'where', 'evidence', 'confidence'],
-              properties: {
-                type: { const: 'discovery' },
-                what: { type: 'string' },
-                where: { type: 'string' },
-                evidence: { type: 'string' },
-                confidence: { type: 'string', enum: ['verified', 'inferred', 'tentative'] },
-                project: { type: 'string' },
-                scope: { type: 'string', enum: ['global', 'project'] },
-                domain: { type: 'string' }
-              }
-            },
-            {
-              type: 'object',
-              additionalProperties: false,
-              required: ['type', 'name', 'steps', 'context'],
-              properties: {
-                type: { const: 'procedure' },
-                name: { type: 'string' },
-                steps: { type: 'array', items: { type: 'string' } },
-                prerequisites: { type: 'array', items: { type: 'string' } },
-                verification: { type: 'string' },
-                project: { type: 'string' },
-                scope: { type: 'string', enum: ['global', 'project'] },
-                domain: { type: 'string' },
-                context: {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['domain'],
-                  properties: {
-                    project: { type: 'string' },
-                    domain: { type: 'string' }
-                  }
-                }
-              }
-            },
-            {
-              type: 'object',
-              additionalProperties: false,
-              required: ['type', 'avoid', 'useInstead', 'reason', 'severity'],
-              properties: {
-                type: { const: 'warning' },
-                avoid: { type: 'string', description: 'The anti-pattern or approach to avoid' },
-                useInstead: { type: 'string', description: 'The recommended alternative' },
-                reason: { type: 'string', description: 'Why the avoided approach fails' },
-                severity: { type: 'string', enum: ['caution', 'warning', 'critical'] },
-                project: { type: 'string' },
-                scope: { type: 'string', enum: ['global', 'project'] },
-                domain: { type: 'string' }
-              }
-            }
-          ]
+          oneOf: getRecordSchemaOneOf()
         }
       }
     }
@@ -362,6 +268,8 @@ Formatting rules:
 - Use short, specific intent strings.
 - If exit code is not explicit, infer 0 for success and 1 for failure.
 - Do not include the "[truncated]" marker in extracted fields.
+- sourceExcerpt MUST be a verbatim quote from the transcript above that justifies this extraction.
+- If no transcript segment directly supports the extraction, do not extract the record.
 
 Transcript:
 ${transcriptText}
@@ -518,7 +426,9 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
   const command = commandRaw ? stripTruncationMarkers(commandRaw) : undefined
   const exitCodeRaw = asNumber(input.exitCode)
   const outcome = coerceOutcome(input.outcome)
-  if (!command || exitCodeRaw === null || !outcome) return null
+  const sourceExcerptRaw = asString(input.sourceExcerpt)
+  const sourceExcerpt = sourceExcerptRaw ? stripTruncationMarkers(sourceExcerptRaw) : undefined
+  if (!command || exitCodeRaw === null || !outcome || !sourceExcerpt) return null
 
   const contextInput = isPlainObject(input.context) ? input.context : {}
   const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
@@ -532,6 +442,7 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
     command,
     exitCode: Math.trunc(exitCodeRaw),
     outcome,
+    sourceExcerpt,
     context: {
       project,
       cwd,
@@ -563,7 +474,9 @@ function coerceErrorRecord(input: Record<string, unknown>, context: ExtractionCo
   const errorText = errorTextRaw ? stripTruncationMarkers(errorTextRaw) : undefined
   const errorType = asString(input.errorType)
   const resolution = asString(input.resolution)
-  if (!errorText || !errorType || !resolution) return null
+  const sourceExcerptRaw = asString(input.sourceExcerpt)
+  const sourceExcerpt = sourceExcerptRaw ? stripTruncationMarkers(sourceExcerptRaw) : undefined
+  if (!errorText || !errorType || !resolution || !sourceExcerpt) return null
 
   const contextInput = isPlainObject(input.context) ? input.context : {}
   const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
@@ -573,6 +486,7 @@ function coerceErrorRecord(input: Record<string, unknown>, context: ExtractionCo
     errorText,
     errorType,
     resolution,
+    sourceExcerpt,
     context: {
       project
     }
@@ -602,7 +516,9 @@ function coerceDiscoveryRecord(input: Record<string, unknown>, context: Extracti
   const where = asString(input.where)
   const evidence = asString(input.evidence)
   const confidence = coerceConfidence(input.confidence)
-  if (!what || !where || !evidence || !confidence) return null
+  const sourceExcerptRaw = asString(input.sourceExcerpt)
+  const sourceExcerpt = sourceExcerptRaw ? stripTruncationMarkers(sourceExcerptRaw) : undefined
+  if (!what || !where || !evidence || !confidence || !sourceExcerpt) return null
 
   const record: DiscoveryRecord = {
     id: randomUUID(),
@@ -610,7 +526,8 @@ function coerceDiscoveryRecord(input: Record<string, unknown>, context: Extracti
     what,
     where,
     evidence,
-    confidence
+    confidence,
+    sourceExcerpt
   }
 
   const scope = coerceScope(input.scope)
@@ -627,7 +544,9 @@ function coerceDiscoveryRecord(input: Record<string, unknown>, context: Extracti
 function coerceProcedureRecord(input: Record<string, unknown>, context: ExtractionContext): ProcedureRecord | null {
   const name = asString(input.name)
   const steps = coerceStringArray(input.steps)
-  if (!name || steps.length === 0) return null
+  const sourceExcerptRaw = asString(input.sourceExcerpt)
+  const sourceExcerpt = sourceExcerptRaw ? stripTruncationMarkers(sourceExcerptRaw) : undefined
+  if (!name || steps.length === 0 || !sourceExcerpt) return null
 
   const contextInput = isPlainObject(input.context) ? input.context : {}
   const domain = asString((contextInput as Record<string, unknown>).domain) ?? context.domain ?? 'general'
@@ -637,6 +556,7 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
     type: 'procedure',
     name,
     steps,
+    sourceExcerpt,
     context: {
       domain
     }
@@ -667,7 +587,9 @@ function coerceWarningRecord(input: Record<string, unknown>, context: Extraction
   const useInstead = asString(input.useInstead)
   const reason = asString(input.reason)
   const severity = coerceSeverity(input.severity)
-  if (!avoid || !useInstead || !reason || !severity) return null
+  const sourceExcerptRaw = asString(input.sourceExcerpt)
+  const sourceExcerpt = sourceExcerptRaw ? stripTruncationMarkers(sourceExcerptRaw) : undefined
+  if (!avoid || !useInstead || !reason || !severity || !sourceExcerpt) return null
 
   const record: WarningRecord = {
     id: randomUUID(),
@@ -676,6 +598,7 @@ function coerceWarningRecord(input: Record<string, unknown>, context: Extraction
     useInstead,
     reason,
     severity,
+    sourceExcerpt,
     synthesizedAt: Date.now()
   }
 

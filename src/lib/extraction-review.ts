@@ -4,6 +4,7 @@ import { embedBatch } from './embed.js'
 import { getExtractionRun } from './extraction-log.js'
 import { escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.js'
 import { asString, isPlainObject } from './parsing.js'
+import { getSchemaDescription } from './record-schema.js'
 import { clampScore, coerceReviewIssue, parseOverallAccuracy } from './review-coercion.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
 import { loadSettings } from './settings.js'
@@ -48,12 +49,8 @@ Rules:
 - Be precise and concrete in descriptions and suggested fixes.
 `
 
-const EXTRACTION_SCHEMA_DESCRIPTION = `Record types:
-- command: { command, exitCode, outcome, truncatedOutput?, resolution?, context:{ project, cwd, intent } }
-- error: { errorText, errorType, cause?, resolution, context:{ project, file?, tool? } }
-- discovery: { what, where, evidence, confidence }
-- procedure: { name, steps[], prerequisites?, verification?, context:{ project?, domain } }
-`
+// Schema description is now generated from record-schema.ts
+const EXTRACTION_SCHEMA_DESCRIPTION = `Record types:\n${getSchemaDescription()}\n`
 
 const REVIEW_TOOL: Anthropic.Tool = {
   name: REVIEW_TOOL_NAME,
