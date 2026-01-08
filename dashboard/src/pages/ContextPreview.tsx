@@ -1,10 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import { previewContext, type MemoryRecord, type PreviewResponse } from '@/lib/api'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
+
+type PreviewLocationState = {
+  prompt?: string
+  cwd?: string
+}
 
 function escapeHtml(str: string): string {
   return str
@@ -27,12 +33,24 @@ function highlightContext(str: string): string {
 }
 
 export default function ContextPreview() {
+  const location = useLocation()
+  const locationState = location.state as PreviewLocationState | null
+  const previewPrompt = typeof locationState?.prompt === 'string' ? locationState.prompt : ''
+  const previewCwd = typeof locationState?.cwd === 'string' ? locationState.cwd : ''
   const [prompt, setPrompt] = useState('')
   const [cwd, setCwd] = useState('')
   const [result, setResult] = useState<PreviewResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
+
+  useEffect(() => {
+    if (!previewPrompt && !previewCwd) return
+    setPrompt(previewPrompt)
+    setCwd(previewCwd)
+    setResult(null)
+    setError(null)
+  }, [previewPrompt, previewCwd])
 
   const handlePreview = async () => {
     const trimmed = prompt.trim()

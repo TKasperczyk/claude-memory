@@ -434,6 +434,9 @@ function trackSession(
 ): void {
   if (!sessionId) return
 
+  // Strip noise words (ultrathink, etc.) before storing
+  const cleanPrompt = stripNoiseWords(prompt)
+
   // Build lookup map for retrieval metadata
   const resultById = new Map(searchResults.map(r => [r.record.id, r]))
 
@@ -452,7 +455,7 @@ function trackSession(
     }
   })
 
-  appendSessionTracking(sessionId, entries, cwd, prompt, status)
+  appendSessionTracking(sessionId, entries, cwd, cleanPrompt, status)
 }
 
 function normalizeSnippet(value: string): string {

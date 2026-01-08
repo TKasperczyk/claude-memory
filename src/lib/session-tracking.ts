@@ -2,7 +2,13 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, isPlainObject } from './parsing.js'
-import { type InjectedMemoryEntry, type InjectionSessionRecord, type InjectionStatus, type RecordType } from './types.js'
+import {
+  type InjectedMemoryEntry,
+  type InjectionPromptEntry,
+  type InjectionSessionRecord,
+  type InjectionStatus,
+  type RecordType
+} from './types.js'
 
 const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
 const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure):/i
@@ -44,15 +50,21 @@ export function appendSessionTracking(
   status: InjectionStatus = 'injected'
 ): InjectionSessionRecord {
   // Add prompt to all entries if provided
-  if (prompt) {
+  if (typeof prompt === 'string') {
     entries = entries.map(e => ({ ...e, prompt }))
   }
   const existing = loadSessionTracking(sessionId)
   const now = Date.now()
 
-  const prevPromptCount = existing?.promptCount ?? 0
-  const prevInjectionCount = existing?.injectionCount ?? 0
+  const prevPromptCount = existing?.promptCount ?? existing?.prompts?.length ?? 0
+  const prevInjectionCount = existing?.injectionCount ?? countPromptInjections(existing?.prompts)
   const didInject = status === 'injected' && entries.length > 0
+  const promptEntry: InjectionPromptEntry = {
+    text: typeof prompt === 'string' ? prompt : '',
+    timestamp: now,
+    status,
+    memoryCount: entries.length
+  }
 
   const record: InjectionSessionRecord = {
     sessionId,
@@ -60,6 +72,7 @@ export function appendSessionTracking(
     lastActivity: now,
     cwd: cwd ?? existing?.cwd,
     memories: [...(existing?.memories ?? []), ...entries],
+    prompts: [...(existing?.prompts ?? []), promptEntry],
     promptCount: prevPromptCount + 1,
     injectionCount: prevInjectionCount + (didInject ? 1 : 0),
     lastStatus: status
@@ -124,6 +137,7 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
 
   const record = value
   const memories = coerceMemoryEntries(record.memories)
+  const prompts = coercePromptEntries(record.prompts)
   const now = Date.now()
   const createdAt = asInteger(record.createdAt) ?? now
 
@@ -133,6 +147,7 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
     lastActivity: asInteger(record.lastActivity) ?? createdAt,
     cwd: asString(record.cwd),
     memories,
+    prompts,
     promptCount: asInteger(record.promptCount) ?? undefined,
     injectionCount: asInteger(record.injectionCount) ?? undefined,
     lastStatus: asInjectionStatus(record.lastStatus)
@@ -171,9 +186,33 @@ function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {
   return entries
 }
 
+function coercePromptEntries(value: unknown): InjectionPromptEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined
+
+  const entries: InjectionPromptEntry[] = []
+  for (const item of value) {
+    if (!isPlainObject(item)) continue
+    const record = item
+    const text = asString(record.text)
+    const timestamp = asInteger(record.timestamp)
+    const status = asInjectionStatus(record.status)
+    const memoryCount = asInteger(record.memoryCount)
+    if (text === undefined || timestamp === null || !status || memoryCount === null) continue
+
+    entries.push({ text, timestamp, status, memoryCount })
+  }
+
+  return entries
+}
+
 function parseSnippetType(snippet: string): RecordType | null {
   const match = snippet.match(SNIPPET_TYPE_REGEX)
   if (!match) return null
   const type = match[1].toLowerCase()
   return asRecordType(type) ?? null
+}
+
+function countPromptInjections(prompts: InjectionPromptEntry[] | undefined): number {
+  if (!prompts) return 0
+  return prompts.filter(prompt => prompt.status === 'injected' && prompt.memoryCount > 0).length
 }

@@ -214,12 +214,20 @@ export interface InjectedMemoryEntry {
 
 export type InjectionStatus = 'injected' | 'no_matches' | 'empty_prompt' | 'timeout' | 'error'
 
+export interface SessionPromptEntry {
+  text: string
+  timestamp: number
+  status: InjectionStatus
+  memoryCount: number
+}
+
 export interface SessionRecord {
   sessionId: string
   createdAt: number
   lastActivity: number
   cwd?: string
   memories: InjectedMemoryEntry[]
+  prompts?: SessionPromptEntry[]
   promptCount?: number
   injectionCount?: number
   lastStatus?: InjectionStatus

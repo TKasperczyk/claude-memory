@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
@@ -68,6 +69,13 @@ const VERDICT_STYLES: Record<InjectedMemoryVerdict['verdict'], { badge: string; 
   }
 }
 
+type PromptDisplayEntry = {
+  text: string
+  timestamp?: number
+  status?: InjectionStatus
+  memoryCount?: number
+}
+
 function formatRelative(ts: number): string {
   const diff = Date.now() - ts
   const mins = Math.floor(diff / 60000)
@@ -108,6 +116,11 @@ function getUsageColor(stats: MemoryStats | null | undefined): string {
   return 'text-red-400'
 }
 
+function formatMemoryCount(count: number | undefined): string | null {
+  if (typeof count !== 'number') return null
+  return `${count} ${count === 1 ? 'memory' : 'memories'}`
+}
+
 function formatRetrievalTrigger(memory: SessionRecord['memories'][0]): { label: string; color: string; title: string } | null {
   const hasKeyword = memory.keywordMatch === true
   const hasSemantic = typeof memory.similarity === 'number' && memory.similarity > 0
@@ -137,6 +150,31 @@ function formatRetrievalTrigger(memory: SessionRecord['memories'][0]): { label: 
     color: 'text-cyan-400',
     title: `Semantic (${(memory.similarity! * 100).toFixed(0)}% similarity, score: ${memory.score?.toFixed(2) ?? '?'})${promptSnippet}`
   }
+}
+
+function getSessionPrompts(session: SessionRecord): PromptDisplayEntry[] {
+  const sessionPrompts = session.prompts
+  if (Array.isArray(sessionPrompts) && sessionPrompts.length > 0) {
+    return sessionPrompts
+  }
+
+  const prompts: PromptDisplayEntry[] = []
+  const byPrompt = new Map<string, PromptDisplayEntry>()
+
+  for (const memory of session.memories) {
+    if (typeof memory.prompt !== 'string') continue
+    if (memory.prompt.trim().length === 0) continue
+    const existing = byPrompt.get(memory.prompt)
+    if (existing) {
+      existing.memoryCount = (existing.memoryCount ?? 0) + 1
+      continue
+    }
+    const entry: PromptDisplayEntry = { text: memory.prompt, memoryCount: 1 }
+    prompts.push(entry)
+    byPrompt.set(memory.prompt, entry)
+  }
+
+  return prompts
 }
 
 interface TypeGroup {
@@ -200,6 +238,7 @@ function ReviewSkeleton() {
 }
 
 export default function Sessions() {
+  const navigate = useNavigate()
   const [expanded, setExpanded] = useState<string | null>(null)
   const [retrievalContext, setRetrievalContext] = useState<RetrievalContext | null>(null)
   const {
@@ -304,6 +343,10 @@ export default function Sessions() {
     }, 2000)
   }
 
+  const handleSendToSimulator = (prompt: string, cwd?: string) => {
+    navigate('/preview', { state: { prompt, cwd } })
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -329,6 +372,7 @@ export default function Sessions() {
             const active = isSessionActive(session)
             const isOpen = expanded === session.sessionId
             const memories = session.memories
+            const prompts = getSessionPrompts(session)
             const typeGroups = groupByType(memories)
             const review = reviewsBySession[session.sessionId]
             const reviewLoadingState = reviewLoading[session.sessionId] ?? false
@@ -519,6 +563,55 @@ export default function Sessions() {
                             <ReviewSkeleton />
                           ) : null}
                         </div>
+                      )}
+
+                      {prompts.length > 0 && (
+                        <details className="rounded-lg border border-border bg-background/40 p-4">
+                          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                            Prompts ({prompts.length})
+                          </summary>
+                          <div className="mt-3 space-y-2 max-h-60 overflow-y-auto pr-1">
+                            {prompts.map((prompt, index) => {
+                              const status = prompt.status
+                              const statusStyle = status ? STATUS_STYLES[status] : null
+                              const memoryCountLabel = formatMemoryCount(prompt.memoryCount)
+                              const promptText = prompt.text.trim().length > 0 ? prompt.text : '(empty prompt)'
+
+                              return (
+                                <div
+                                  key={`${session.sessionId}-prompt-${index}`}
+                                  className="rounded-md border border-border bg-secondary/30 p-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
+                                >
+                                  <div className="flex-1 space-y-2">
+                                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                      {statusStyle && (
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${statusStyle.badge}`}>
+                                          {statusStyle.label}
+                                        </span>
+                                      )}
+                                      {memoryCountLabel && (
+                                        <span>{memoryCountLabel}</span>
+                                      )}
+                                    </div>
+                                    <div className="text-sm text-foreground whitespace-pre-wrap break-words">
+                                      {promptText}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      handleSendToSimulator(prompt.text, session.cwd)
+                                    }}
+                                    className="inline-flex items-center justify-center h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base shrink-0"
+                                  >
+                                    To Simulator
+                                  </button>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </details>
                       )}
 
                       <div className="max-h-80 overflow-y-auto space-y-2">

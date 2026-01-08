@@ -115,12 +115,20 @@ export interface InjectedMemoryEntry {
 
 export type InjectionStatus = 'injected' | 'no_matches' | 'empty_prompt' | 'timeout' | 'error'
 
+export interface InjectionPromptEntry {
+  text: string
+  timestamp: number
+  status: InjectionStatus
+  memoryCount: number
+}
+
 export interface InjectionSessionRecord {
   sessionId: string
   createdAt: number
   lastActivity: number
   cwd?: string
   memories: InjectedMemoryEntry[]
+  prompts?: InjectionPromptEntry[]
   // Track injection attempts, not just successes
   promptCount?: number        // Total prompts in this session
   injectionCount?: number     // Prompts that got memories injected
