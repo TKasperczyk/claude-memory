@@ -15,16 +15,19 @@ import {
   GLOBAL_PROMOTION_MIN_CONFIDENCE,
   GLOBAL_PROMOTION_RECHECK_DAYS,
   runConflictResolution,
+  runWarningSynthesis as runWarningSynthesisInternal,
   findStaleRecords,
   isConfidenceSufficient,
   markDeprecated,
   promoteToGlobal,
+  type MaintenanceCandidateGroup,
+  type MaintenanceCandidateRecord,
 } from './lib/maintenance.js'
 import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from './lib/promotions.js'
 import { loadConfig } from './lib/config.js'
 import { DEFAULT_CONFIG, SIMILARITY_THRESHOLDS, type Config } from './lib/types.js'
 import { updateRecord } from './lib/milvus.js'
-import { buildRecordSnippet, truncateSnippet } from './lib/shared.js'
+import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from './lib/shared.js'
 
 export { runConflictResolution }
 
@@ -57,6 +60,7 @@ export interface MaintenanceAction {
 export interface MaintenanceRunResult {
   actions: MaintenanceAction[]
   summary: Record<string, number>
+  candidates: MaintenanceCandidateGroup[]
   error?: string
 }
 
@@ -73,6 +77,7 @@ async function main(): Promise<void> {
   logMaintenanceResult('Consolidation', await runConsolidation(dryRun, config), dryRun)
   logMaintenanceResult('Conflict resolution', await runConflictResolution(dryRun, config), dryRun)
   logMaintenanceResult('Global promotion', await runGlobalPromotion(dryRun, config), dryRun)
+  logMaintenanceResult('Warning synthesis', await runWarningSynthesis(dryRun, config), dryRun)
   await runPromotions(config, dryRun)
 
   if (dryRun) {
@@ -103,11 +108,14 @@ function formatSummary(summary: Record<string, number>): string {
     .join(' ')
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
 export async function runStaleCheck(
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG
 ): Promise<MaintenanceRunResult> {
   const actions: MaintenanceAction[] = []
+  const candidates: MaintenanceCandidateGroup[] = []
   let checked = 0
   let deprecated = 0
   let errors = 0
@@ -115,6 +123,19 @@ export async function runStaleCheck(
   try {
     const records = await findStaleRecords(config)
     checked = records.length
+    if (records.length > 0) {
+      const candidateRecords = records.map(record => {
+        const lastUsed = record.lastUsed ?? record.timestamp ?? 0
+        const ageDays = lastUsed ? Math.floor((Date.now() - lastUsed) / DAY_MS) : 0
+        const reason = ageDays > 0 ? `last used ${ageDays}d ago` : 'stale record'
+        return buildCandidateRecord(record, reason, { ageDays })
+      })
+      candidates.push({
+        id: 'stale-candidates',
+        label: 'Stale records',
+        records: candidateRecords
+      })
+    }
 
     for (const record of records) {
       try {
@@ -146,10 +167,10 @@ export async function runStaleCheck(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return { actions, summary: { checked, deprecated, errors }, error: message }
+    return { actions, summary: { checked, deprecated, errors }, candidates, error: message }
   }
 
-  return { actions, summary: { checked, deprecated, errors } }
+  return { actions, summary: { checked, deprecated, errors }, candidates }
 }
 
 export async function runLowUsageDeprecation(
@@ -157,6 +178,7 @@ export async function runLowUsageDeprecation(
   config: Config = DEFAULT_CONFIG
 ): Promise<MaintenanceRunResult> {
   const actions: MaintenanceAction[] = []
+  const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
   let deprecated = 0
   let errors = 0
@@ -164,6 +186,19 @@ export async function runLowUsageDeprecation(
   try {
     const records = await findLowUsageHighRetrieval(config)
     candidates = records.length
+    if (records.length > 0) {
+      const candidateRecords = records.map(record => {
+        const retrievalCount = record.retrievalCount ?? 0
+        const usageCount = record.usageCount ?? 0
+        const reason = `zero-usage:${retrievalCount} retrievals`
+        return buildCandidateRecord(record, reason, { retrievalCount, usageCount })
+      })
+      candidateGroups.push({
+        id: 'low-usage-zero',
+        label: 'Zero usage candidates',
+        records: candidateRecords
+      })
+    }
 
     for (const record of records) {
       const retrievalCount = record.retrievalCount ?? 0
@@ -194,10 +229,10 @@ export async function runLowUsageDeprecation(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return { actions, summary: { candidates, deprecated, errors }, error: message }
+    return { actions, summary: { candidates, deprecated, errors }, candidates: candidateGroups, error: message }
   }
 
-  return { actions, summary: { candidates, deprecated, errors } }
+  return { actions, summary: { candidates, deprecated, errors }, candidates: candidateGroups }
 }
 
 export async function runLowUsageCheck(
@@ -205,6 +240,7 @@ export async function runLowUsageCheck(
   config: Config = DEFAULT_CONFIG
 ): Promise<MaintenanceRunResult> {
   const actions: MaintenanceAction[] = []
+  const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
   let deprecated = 0
   let errors = 0
@@ -212,6 +248,20 @@ export async function runLowUsageCheck(
   try {
     const records = await findLowUsageRecords(config)
     candidates = records.length
+    if (records.length > 0) {
+      const candidateRecords = records.map(record => {
+        const retrievalCount = record.retrievalCount ?? 1
+        const usageCount = record.usageCount ?? 0
+        const ratio = usageCount / Math.max(retrievalCount, 1)
+        const reason = `low-usage:${Math.round(ratio * 100)}% over ${retrievalCount} retrievals`
+        return buildCandidateRecord(record, reason, { retrievalCount, usageCount, ratio })
+      })
+      candidateGroups.push({
+        id: 'low-usage-ratio',
+        label: 'Low usage candidates',
+        records: candidateRecords
+      })
+    }
 
     for (const record of records) {
       const retrievalCount = record.retrievalCount ?? 1
@@ -246,11 +296,12 @@ export async function runLowUsageCheck(
     return {
       actions,
       summary: { candidates, deprecated, errors },
+      candidates: candidateGroups,
       error: message
     }
   }
 
-  return { actions, summary: { candidates, deprecated, errors } }
+  return { actions, summary: { candidates, deprecated, errors }, candidates: candidateGroups }
 }
 
 export async function runConsolidation(
@@ -258,6 +309,7 @@ export async function runConsolidation(
   config: Config = DEFAULT_CONFIG
 ): Promise<MaintenanceRunResult> {
   const actions: MaintenanceAction[] = []
+  const candidateGroups: MaintenanceCandidateGroup[] = []
   let clustersFound = 0
   let clustersMerged = 0
   let deprecated = 0
@@ -266,10 +318,22 @@ export async function runConsolidation(
   try {
     const clusters = await findSimilarClusters(SIMILARITY_THRESHOLDS.CONSOLIDATION, config)
     clustersFound = clusters.length
+    if (clusters.length > 0) {
+      const thresholdPercent = Math.round(SIMILARITY_THRESHOLDS.CONSOLIDATION * 100)
+      candidateGroups.push(...clusters.map((cluster, index) => ({
+        id: `consolidation-cluster-${index + 1}`,
+        label: `Cluster ${index + 1}`,
+        reason: `similarity >= ${thresholdPercent}%`,
+        records: cluster.members.map(member =>
+          buildCandidateRecord(member.record, 'similar record', { similarity: member.similarity })
+        )
+      })))
+    }
 
     for (const cluster of clusters) {
+      const clusterRecords = cluster.members.map(member => member.record)
       try {
-        const recordById = new Map(cluster.map(record => [record.id, record]))
+        const recordById = new Map(clusterRecords.map(record => [record.id, record]))
         const buildDeprecatedRecords = (deprecatedIds: string[]) =>
           deprecatedIds.map(id => {
             const record = recordById.get(id)
@@ -280,9 +344,9 @@ export async function runConsolidation(
           })
 
         if (dryRun) {
-          const preview = summarizeCluster(cluster)
+          const preview = summarizeCluster(clusterRecords)
           if (!preview || preview.deprecatedIds.length === 0) continue
-          const keeperRecord = cluster.find(record => record.id === preview.keptId)
+          const keeperRecord = clusterRecords.find(record => record.id === preview.keptId)
           const snippet = keeperRecord ? truncateSnippet(buildRecordSnippet(keeperRecord)) : 'cluster'
           actions.push({
             type: 'merge',
@@ -300,9 +364,9 @@ export async function runConsolidation(
           continue
         }
 
-        const result = await consolidateCluster(cluster, config)
+        const result = await consolidateCluster(clusterRecords, config)
         if (!result || result.deprecatedIds.length === 0) continue
-        const keeperRecord = cluster.find(record => record.id === result.keptId)
+        const keeperRecord = clusterRecords.find(record => record.id === result.keptId)
         const snippet = keeperRecord ? truncateSnippet(buildRecordSnippet(keeperRecord)) : 'cluster'
         actions.push({
           type: 'merge',
@@ -326,11 +390,12 @@ export async function runConsolidation(
     return {
       actions,
       summary: { clusters: clustersFound, merged: clustersMerged, deprecated, errors },
+      candidates: candidateGroups,
       error: message
     }
   }
 
-  return { actions, summary: { clusters: clustersFound, merged: clustersMerged, deprecated, errors } }
+  return { actions, summary: { clusters: clustersFound, merged: clustersMerged, deprecated, errors }, candidates: candidateGroups }
 }
 
 export async function runGlobalPromotion(
@@ -338,6 +403,7 @@ export async function runGlobalPromotion(
   config: Config = DEFAULT_CONFIG
 ): Promise<MaintenanceRunResult> {
   const actions: MaintenanceAction[] = []
+  const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
   let checked = 0
   let promoted = 0
@@ -347,6 +413,16 @@ export async function runGlobalPromotion(
   try {
     const records = await findGlobalCandidates(config)
     candidates = records.length
+    if (records.length > 0) {
+      const candidateRecords = records.map(record =>
+        buildCandidateRecord(record, 'eligible for global promotion', { scope: record.scope ?? 'project' })
+      )
+      candidateGroups.push({
+        id: 'global-promotion',
+        label: 'Promotion candidates',
+        records: candidateRecords
+      })
+    }
     const cutoff = Date.now() - GLOBAL_PROMOTION_RECHECK_DAYS * 24 * 60 * 60 * 1000
     const eligible = records.filter(record => (record.lastGlobalCheck ?? 0) < cutoff)
     skippedRecent = candidates - eligible.length
@@ -397,11 +473,12 @@ export async function runGlobalPromotion(
     return {
       actions,
       summary: { candidates, checked, promoted, skippedRecent, errors },
+      candidates: candidateGroups,
       error: message
     }
   }
 
-  return { actions, summary: { candidates, checked, promoted, skippedRecent, errors } }
+  return { actions, summary: { candidates, checked, promoted, skippedRecent, errors }, candidates: candidateGroups }
 }
 
 function selectPromotionBatch<T>(records: T[], batchSize: number): T[] {
@@ -461,6 +538,28 @@ function summarizeCluster(cluster: { id: string; successCount?: number; lastUsed
   const deprecatedIds = sorted.slice(1).map(record => record.id)
 
   return { keptId: keeper.id, deprecatedIds }
+}
+
+export async function runWarningSynthesis(
+  dryRun: boolean,
+  config: Config = DEFAULT_CONFIG
+): Promise<MaintenanceRunResult> {
+  try {
+    const result = await runWarningSynthesisInternal(dryRun, config)
+    const actions: MaintenanceAction[] = result.actions
+      .filter(action => action.type === 'created')
+      .map(action => ({
+        type: 'update' as MaintenanceActionType,
+        recordId: action.warningId,
+        snippet: action.avoid ? `warning: ${truncateSnippet(action.avoid)}` : 'warning',
+        reason: `synthesized from ${action.sourceRecordIds.length} failures`,
+        details: { sourceRecordIds: action.sourceRecordIds }
+      }))
+    return { actions, summary: result.summary, candidates: result.candidates }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { actions: [], summary: {}, candidates: [], error: message }
+  }
 }
 
 const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : ''

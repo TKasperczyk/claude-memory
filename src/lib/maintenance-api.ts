@@ -9,6 +9,7 @@ import {
   runConsolidation,
   runConflictResolution,
   runGlobalPromotion,
+  runWarningSynthesis,
   type MaintenanceAction,
   type MaintenanceRunResult
 } from '../maintenance.js'
@@ -47,6 +48,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     allowExecute: true
   },
   {
+    key: 'warning-synthesis',
+    label: 'Warning Synthesis',
+    description: 'Create warnings from repeated failure patterns',
+    allowExecute: true
+  },
+  {
     key: 'global-promotion',
     label: 'Global Promotion',
     description: 'Elevate project-scoped to global',
@@ -68,6 +75,7 @@ export interface OperationResult {
   dryRun: boolean
   actions: MaintenanceAction[]
   summary: Record<string, number>
+  candidates: MaintenanceRunResult['candidates']
   duration: number
   error?: string
 }
@@ -89,6 +97,7 @@ export async function runMaintenanceOperation(
       dryRun,
       actions: payload.actions,
       summary: payload.summary,
+      candidates: payload.candidates,
       duration: Date.now() - started,
       ...(payload.error ? { error: payload.error } : {})
     }
@@ -99,6 +108,7 @@ export async function runMaintenanceOperation(
       dryRun,
       actions: [],
       summary: {},
+      candidates: [],
       duration: Date.now() - started,
       error: message
     }
@@ -133,6 +143,8 @@ async function runOperation(
       return runConsolidation(dryRun, config)
     case 'conflict-resolution':
       return runConflictResolution(dryRun, config)
+    case 'warning-synthesis':
+      return runWarningSynthesis(dryRun, config)
     case 'global-promotion':
       return runGlobalPromotion(dryRun, config)
     case 'promotion-suggestions':
@@ -142,6 +154,7 @@ async function runOperation(
 
 async function runPromotionSuggestions(config: Config): Promise<MaintenanceRunResult> {
   const actions: MaintenanceAction[] = []
+  const candidates: MaintenanceRunResult['candidates'] = []
   let skillCandidates = 0
   let claudeMdCandidates = 0
   let errors = 0
@@ -189,8 +202,8 @@ async function runPromotionSuggestions(config: Config): Promise<MaintenanceRunRe
   } catch (error) {
     errors += 1
     const message = error instanceof Error ? error.message : String(error)
-    return { actions, summary: { skillCandidates, claudeMdCandidates, errors }, error: message }
+    return { actions, summary: { skillCandidates, claudeMdCandidates, errors }, candidates, error: message }
   }
 
-  return { actions, summary: { skillCandidates, claudeMdCandidates, errors } }
+  return { actions, summary: { skillCandidates, claudeMdCandidates, errors }, candidates }
 }

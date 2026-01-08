@@ -15,7 +15,7 @@ export const SIMILARITY_THRESHOLDS = {
   REVIEW_DUPLICATE_WARNING: 0.8
 } as const
 
-export type RecordType = 'command' | 'error' | 'discovery' | 'procedure'
+export type RecordType = 'command' | 'error' | 'discovery' | 'procedure' | 'warning'
 export type RecordScope = 'global' | 'project'
 
 export interface BaseRecord {
@@ -87,7 +87,19 @@ export interface ProcedureRecord extends BaseRecord {
   verification?: string
 }
 
-export type MemoryRecord = CommandRecord | ErrorRecord | DiscoveryRecord | ProcedureRecord
+export type WarningSeverity = 'caution' | 'warning' | 'critical'
+
+export interface WarningRecord extends BaseRecord {
+  type: 'warning'
+  avoid: string              // What NOT to do
+  useInstead: string         // The alternative
+  reason: string             // Why it fails
+  severity: WarningSeverity
+  sourceRecordIds?: string[] // Original failures (if synthesized)
+  synthesizedAt?: number     // When created
+}
+
+export type MemoryRecord = CommandRecord | ErrorRecord | DiscoveryRecord | ProcedureRecord | WarningRecord
 
 export interface InjectedMemoryEntry {
   id: string

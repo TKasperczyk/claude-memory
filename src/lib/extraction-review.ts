@@ -353,6 +353,15 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
         verification: record.verification,
         context: record.context
       }
+    case 'warning':
+      return {
+        ...base,
+        avoid: record.avoid,
+        useInstead: record.useInstead,
+        reason: record.reason,
+        severity: record.severity,
+        sourceRecordIds: record.sourceRecordIds
+      }
   }
 }
 

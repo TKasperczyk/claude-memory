@@ -12,12 +12,22 @@ import {
   type DiscoveryRecord,
   type ErrorRecord,
   type MemoryRecord,
-  type ProcedureRecord
+  type ProcedureRecord,
+  type RecordType,
+  type WarningRecord,
+  type WarningSeverity
 } from './types.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
-import { buildExactText, buildRecordSnippet, normalizeExactText, normalizeStep, truncateSnippet } from './shared.js'
+import {
+  buildCandidateRecord,
+  buildExactText,
+  buildRecordSnippet,
+  normalizeExactText,
+  normalizeStep,
+  truncateSnippet
+} from './shared.js'
 
 const STALE_DAYS = 90
 const DISCOVERY_MAX_AGE_DAYS = 180
@@ -129,6 +139,12 @@ const PATH_TEXT_REGEX = /(^|\s)(\.{1,2}[\\/]|~\/|[A-Za-z]:[\\/]|\/[A-Za-z0-9._-]
 const GLOBAL_TOOL_REGEXES = GLOBAL_TOOL_KEYWORDS.map(buildKeywordRegex)
 const GLOBAL_DISCOVERY_REGEXES = GLOBAL_DISCOVERY_KEYWORDS.map(buildKeywordRegex)
 
+// Warning synthesis constants
+const WARNING_SYNTHESIS_MIN_FAILURES = 2
+const WARNING_SYNTHESIS_BATCH_SIZE = 10
+const WARNING_SYNTHESIS_MAX_TOKENS = 800
+const WARNING_SYNTHESIS_TOOL_NAME = 'emit_warning'
+
 const GENERALIZATION_PROMPT = `Evaluate this memory record for reusability across different contexts.
 
 A memory is too specific if it contains details that are:
@@ -208,6 +224,51 @@ Return JSON:
   "reason": "brief explanation"
 }`
 
+const WARNING_SYNTHESIS_PROMPT = `Analyze these failure records and synthesize a warning if there's a clear anti-pattern.
+
+You're looking at records that have failed multiple times. Determine if they represent:
+1. A consistent anti-pattern that should be avoided
+2. Random failures with no clear pattern
+3. Context-dependent issues that aren't generalizable
+
+If there IS a clear anti-pattern, provide:
+- avoid: what specifically to avoid (be concrete, e.g., "npm run build" not "building")
+- useInstead: the better alternative (if known from the records, or describe the fix)
+- reason: why it fails (error message, behavior issue)
+- severity: "caution" (minor inconvenience), "warning" (will fail), "critical" (data loss/security)
+
+If there's no clear pattern (random failures, context-dependent), return null for the warning.
+
+Output ONLY via the tool call "${WARNING_SYNTHESIS_TOOL_NAME}" exactly once.`
+
+const WARNING_SYNTHESIS_TOOL: Anthropic.Tool = {
+  name: WARNING_SYNTHESIS_TOOL_NAME,
+  description: 'Emit a synthesized warning from failure patterns, or null if no clear pattern.',
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['warning'],
+    properties: {
+      warning: {
+        oneOf: [
+          { type: 'null' },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['avoid', 'useInstead', 'reason', 'severity'],
+            properties: {
+              avoid: { type: 'string' },
+              useInstead: { type: 'string' },
+              reason: { type: 'string' },
+              severity: { type: 'string', enum: ['caution', 'warning', 'critical'] }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
 const CONFLICT_ADJUDICATION_TOOL: Anthropic.Tool = {
   name: CONFLICT_ADJUDICATION_TOOL_NAME,
   description: 'Emit verdict for memory conflict resolution',
@@ -266,6 +327,31 @@ export interface GlobalPromotionResult {
   shouldPromote: boolean
   confidence: 'high' | 'medium' | 'low'
   reason?: string
+}
+
+export interface MaintenanceCandidateRecord {
+  id: string
+  type: RecordType
+  snippet: string
+  reason: string
+  details?: Record<string, number | string | boolean>
+}
+
+export interface MaintenanceCandidateGroup {
+  id: string
+  label: string
+  reason?: string
+  records: MaintenanceCandidateRecord[]
+}
+
+export interface ConsolidationClusterMember {
+  record: MemoryRecord
+  similarity: number
+}
+
+export type ConsolidationCluster = MemoryRecord[] & {
+  seedId: string
+  members: ConsolidationClusterMember[]
 }
 
 export async function findStaleRecords(config: Config = DEFAULT_CONFIG): Promise<MemoryRecord[]> {
@@ -367,6 +453,8 @@ export async function checkValidity(record: MemoryRecord): Promise<ValidityResul
     }
     case 'error':
       return { valid: true, reason: 'assumed-valid' }
+    case 'warning':
+      return { valid: true, reason: 'assumed-valid' }
   }
 }
 
@@ -381,8 +469,8 @@ export async function promoteToGlobal(id: string, config: Config = DEFAULT_CONFI
 export async function findSimilarClusters(
   similarityThreshold: number = SIMILARITY_THRESHOLDS.CONSOLIDATION,
   config: Config = DEFAULT_CONFIG
-): Promise<MemoryRecord[][]> {
-  const clusters: MemoryRecord[][] = []
+): Promise<ConsolidationCluster[]> {
+  const clusters: ConsolidationCluster[] = []
   const clusteredIds = new Set<string>()
   let offset = 0
 
@@ -416,7 +504,11 @@ export async function findSimilarClusters(
         config
       )
 
-      const cluster: MemoryRecord[] = [record]
+      const members: ConsolidationClusterMember[] = [{ record, similarity: 1 }]
+      // Keep clusters array-like for older callers while exposing metadata for new consumers.
+      const cluster = [record] as ConsolidationCluster
+      cluster.seedId = record.id
+      cluster.members = members
       for (const match of matches) {
         const candidate = match.record
         if (clusteredIds.has(candidate.id)) continue
@@ -427,6 +519,7 @@ export async function findSimilarClusters(
         if (!isExactTextSimilar(seedText, candidateText)) continue
 
         cluster.push(candidate)
+        members.push({ record: candidate, similarity: match.similarity })
         if (cluster.length >= CONSOLIDATION_MAX_CLUSTER_SIZE) break
       }
 
@@ -709,20 +802,34 @@ type ConflictMaintenanceAction = {
 export async function runConflictResolution(
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG
-): Promise<{ actions: ConflictMaintenanceAction[]; summary: Record<string, number>; error?: string }> {
+): Promise<{
+  actions: ConflictMaintenanceAction[]
+  summary: Record<string, number>
+  candidates: MaintenanceCandidateGroup[]
+  error?: string
+}> {
   const actions: ConflictMaintenanceAction[] = []
+  const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
   let pairs = 0
   let checked = 0
   let deprecatedExisting = 0
   let deprecatedNew = 0
   let variants = 0
-  let updated = 0
+  let processed = 0
   let errors = 0
 
   try {
     const unchecked = await fetchRecords('deprecated == false && last_conflict_check == 0', config, false)
     candidates = unchecked.length
+    if (unchecked.length > 0) {
+      const records = unchecked.map(record => buildCandidateRecord(record, 'new, never conflict-checked'))
+      candidateGroups.push({
+        id: 'conflict-candidates',
+        label: 'New records',
+        records
+      })
+    }
 
     const conflictPairs = await findNewConflicts(config)
     pairs = conflictPairs.length
@@ -848,11 +955,11 @@ export async function runConflictResolution(
       if (failedNewIds.has(record.id)) continue
 
       if (dryRun) {
-        updated += 1
+        processed += 1
       } else {
         const didUpdate = await updateRecord(record.id, { lastConflictCheck: checkedAt }, config)
         if (didUpdate) {
-          updated += 1
+          processed += 1
         }
       }
     }
@@ -860,12 +967,17 @@ export async function runConflictResolution(
     const message = error instanceof Error ? error.message : String(error)
     return {
       actions,
-      summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, updated, errors },
+      summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, processed, errors },
+      candidates: candidateGroups,
       error: message
     }
   }
 
-  return { actions, summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, updated, errors } }
+  return {
+    actions,
+    summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, processed, errors },
+    candidates: candidateGroups
+  }
 }
 
 export async function checkGeneralization(
@@ -1490,6 +1602,15 @@ function buildGeneralizationInput(record: MemoryRecord): Record<string, unknown>
         verification: record.verification,
         context: record.context
       }
+    case 'warning':
+      return {
+        ...base,
+        avoid: record.avoid,
+        useInstead: record.useInstead,
+        reason: record.reason,
+        severity: record.severity,
+        sourceRecordIds: record.sourceRecordIds
+      }
   }
 }
 
@@ -1612,6 +1733,235 @@ export function isConfidenceSufficient(actual: string, minimum: string): boolean
   return actualRank >= minimumRank
 }
 
+// =============================================================================
+// Warning Synthesis
+// =============================================================================
+
+export interface WarningCandidate {
+  records: MemoryRecord[]
+  totalFailures: number
+}
+
+export interface WarningSynthesisResult {
+  warning: WarningRecord | null
+  sourceRecordIds: string[]
+  reason?: string
+}
+
+export type WarningSynthesisAction = {
+  type: 'created' | 'skipped'
+  warningId?: string
+  avoid?: string
+  sourceRecordIds: string[]
+  reason?: string
+}
+
+export async function findWarningCandidates(
+  minFailures: number = WARNING_SYNTHESIS_MIN_FAILURES,
+  config: Config = DEFAULT_CONFIG
+): Promise<WarningCandidate[]> {
+  // Query high-failure records that haven't been synthesized into warnings yet
+  const filter = `deprecated == false && failure_count >= ${minFailures} && type in ["command", "error"]`
+  const records = await fetchRecords(filter, config, true)
+
+  if (records.length === 0) return []
+
+  // Group similar records by embedding similarity
+  const candidates: WarningCandidate[] = []
+  const processed = new Set<string>()
+
+  for (const record of records) {
+    if (processed.has(record.id)) continue
+    if (!record.embedding || record.embedding.length !== EMBEDDING_DIM) continue
+
+    // Find similar high-failure records
+    const matches = await vectorSearchSimilar(
+      record.embedding,
+      {
+        filter: buildFilter({
+          type: record.type,
+          project: record.project,
+          excludeId: record.id,
+          excludeDeprecated: true
+        }),
+        limit: 5,
+        similarityThreshold: 0.8
+      },
+      config
+    )
+
+    const cluster = [record, ...matches.map(m => m.record).filter(r =>
+      (r.failureCount ?? 0) >= minFailures && !processed.has(r.id)
+    )]
+
+    // Even single records with high failures can generate warnings
+    const totalFailures = cluster.reduce((sum, r) => sum + (r.failureCount ?? 0), 0)
+    candidates.push({ records: cluster, totalFailures })
+    cluster.forEach(r => processed.add(r.id))
+  }
+
+  // Sort by total failures descending
+  candidates.sort((a, b) => b.totalFailures - a.totalFailures)
+  return candidates
+}
+
+export async function synthesizeWarning(
+  candidate: WarningCandidate,
+  config: Config = DEFAULT_CONFIG
+): Promise<WarningSynthesisResult> {
+  const client = await getAnthropicClient()
+  if (!client) {
+    throw new Error('No authentication available for warning synthesis.')
+  }
+
+  const sourceRecordIds = candidate.records.map(r => r.id)
+  const payload = JSON.stringify({
+    totalFailures: candidate.totalFailures,
+    records: candidate.records.map(r => ({
+      type: r.type,
+      snippet: buildRecordSnippet(r),
+      failureCount: r.failureCount ?? 0,
+      resolution: (r as CommandRecord | ErrorRecord).resolution,
+      project: r.project
+    }))
+  }, null, 2)
+
+  const response = await client.messages.create({
+    model: config.extraction.model,
+    max_tokens: Math.min(WARNING_SYNTHESIS_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: WARNING_SYNTHESIS_PROMPT }
+    ],
+    messages: [{ role: 'user', content: `Failure records:\n${payload}` }],
+    tools: [WARNING_SYNTHESIS_TOOL],
+    tool_choice: { type: 'tool', name: WARNING_SYNTHESIS_TOOL_NAME }
+  })
+
+  const toolInput = response.content.find((block): block is ToolUseBlock =>
+    isToolUseBlock(block) && block.name === WARNING_SYNTHESIS_TOOL_NAME
+  )?.input
+
+  if (!toolInput) {
+    return { warning: null, sourceRecordIds, reason: 'no-tool-response' }
+  }
+
+  const parsed = toolInput as { warning: unknown }
+  if (!parsed.warning || typeof parsed.warning !== 'object') {
+    return { warning: null, sourceRecordIds, reason: 'no-pattern-found' }
+  }
+
+  const w = parsed.warning as Record<string, unknown>
+  const avoid = typeof w.avoid === 'string' ? w.avoid.trim() : ''
+  const useInstead = typeof w.useInstead === 'string' ? w.useInstead.trim() : ''
+  const reason = typeof w.reason === 'string' ? w.reason.trim() : ''
+  const severity = coerceSeverityValue(w.severity)
+
+  if (!avoid || !useInstead || !reason || !severity) {
+    return { warning: null, sourceRecordIds, reason: 'invalid-warning-fields' }
+  }
+
+  // Derive metadata from source records
+  const firstRecord = candidate.records[0]
+  const { randomUUID } = await import('crypto')
+  const warning: WarningRecord = {
+    id: randomUUID(),
+    type: 'warning',
+    avoid,
+    useInstead,
+    reason,
+    severity,
+    sourceRecordIds,
+    synthesizedAt: Date.now(),
+    project: firstRecord.project,
+    domain: firstRecord.domain,
+    scope: firstRecord.scope
+  }
+
+  return { warning, sourceRecordIds }
+}
+
+export async function runWarningSynthesis(
+  dryRun: boolean,
+  config: Config = DEFAULT_CONFIG
+): Promise<{
+  actions: WarningSynthesisAction[]
+  summary: Record<string, number>
+  candidates: MaintenanceCandidateGroup[]
+}> {
+  const { insertRecord } = await import('./milvus.js')
+  const actions: WarningSynthesisAction[] = []
+  const candidateGroups: MaintenanceCandidateGroup[] = []
+  let candidates = 0
+  let created = 0
+  let skipped = 0
+  let errors = 0
+
+  const candidateList = await findWarningCandidates(WARNING_SYNTHESIS_MIN_FAILURES, config)
+  candidates = candidateList.length
+  if (candidateList.length > 0) {
+    candidateGroups.push(...candidateList.map((candidate, index) => ({
+      id: `warning-group-${index + 1}`,
+      label: `Failure group ${index + 1}`,
+      reason: `total failures: ${candidate.totalFailures}`,
+      records: candidate.records.map(record => {
+        const failureCount = record.failureCount ?? 0
+        return buildCandidateRecord(record, `failures: ${failureCount}`, { failureCount })
+      })
+    })))
+  }
+
+  for (let i = 0; i < candidateList.length; i += WARNING_SYNTHESIS_BATCH_SIZE) {
+    const batch = candidateList.slice(i, i + WARNING_SYNTHESIS_BATCH_SIZE)
+
+    for (const candidate of batch) {
+      try {
+        const result = await synthesizeWarning(candidate, config)
+
+        if (!result.warning) {
+          skipped += 1
+          actions.push({
+            type: 'skipped',
+            sourceRecordIds: result.sourceRecordIds,
+            reason: result.reason
+          })
+          continue
+        }
+
+        if (dryRun) {
+          created += 1
+          actions.push({
+            type: 'created',
+            warningId: result.warning.id,
+            avoid: result.warning.avoid,
+            sourceRecordIds: result.sourceRecordIds
+          })
+        } else {
+          await insertRecord(result.warning, config)
+          created += 1
+          actions.push({
+            type: 'created',
+            warningId: result.warning.id,
+            avoid: result.warning.avoid,
+            sourceRecordIds: result.sourceRecordIds
+          })
+        }
+      } catch (error) {
+        errors += 1
+        console.error('[claude-memory] Warning synthesis failed:', error)
+      }
+    }
+  }
+
+  return { actions, summary: { candidates, created, skipped, errors }, candidates: candidateGroups }
+}
+
+function coerceSeverityValue(value: unknown): WarningSeverity | null {
+  if (value === 'caution' || value === 'warning' || value === 'critical') return value
+  return null
+}
+
 function filterGeneralizationUpdates(
   record: MemoryRecord,
   updates: Partial<MemoryRecord>
@@ -1673,6 +2023,20 @@ function filterGeneralizationUpdates(
 
       const verification = maybeUpdateString(record.verification, candidate.verification)
       if (verification) filtered.verification = verification
+
+      return filtered as Partial<MemoryRecord>
+    }
+    case 'warning': {
+      const filtered: Partial<WarningRecord> = {}
+      const candidate = updates as Partial<WarningRecord>
+      const avoid = maybeUpdateString(record.avoid, candidate.avoid)
+      if (avoid) filtered.avoid = avoid
+
+      const useInstead = maybeUpdateString(record.useInstead, candidate.useInstead)
+      if (useInstead) filtered.useInstead = useInstead
+
+      const reason = maybeUpdateString(record.reason, candidate.reason)
+      if (reason) filtered.reason = reason
 
       return filtered as Partial<MemoryRecord>
     }

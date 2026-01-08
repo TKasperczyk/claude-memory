@@ -1133,6 +1133,7 @@ function isRecordType(value: unknown): value is RecordType {
     || value === 'error'
     || value === 'discovery'
     || value === 'procedure'
+    || value === 'warning'
 }
 
 function coerceOptionalString(value: unknown): string | undefined {
@@ -1159,6 +1160,10 @@ function isValidOutcome(value: unknown): value is 'success' | 'failure' | 'parti
 
 function isValidConfidence(value: unknown): value is 'verified' | 'inferred' | 'tentative' {
   return value === 'verified' || value === 'inferred' || value === 'tentative'
+}
+
+function isValidSeverity(value: unknown): value is 'caution' | 'warning' | 'critical' {
+  return value === 'caution' || value === 'warning' || value === 'critical'
 }
 
 function isValidScope(value: unknown): value is RecordScope {
@@ -1201,6 +1206,11 @@ function isValidRecord(record: MemoryRecord): boolean {
         && isStringArray(record.steps)
         && record.steps.some(step => step.trim().length > 0)
         && isPlainObject(record.context)
+    case 'warning':
+      return isNonEmptyString(record.avoid)
+        && isNonEmptyString(record.useInstead)
+        && isNonEmptyString(record.reason)
+        && isValidSeverity(record.severity)
   }
 
   return false
@@ -1295,8 +1305,9 @@ async function getRecordById(
 function mergeRecords(existing: MemoryRecord, updates: Partial<MemoryRecord>): MemoryRecord {
   const merged = { ...existing, ...updates } as MemoryRecord
 
-  if (existing.type !== 'discovery' && 'context' in updates && updates.context) {
-    const mergedWithContext = merged as Exclude<MemoryRecord, { type: 'discovery' }>
+  // Only merge context for types that have it (command, error, procedure - not discovery or warning)
+  if (existing.type !== 'discovery' && existing.type !== 'warning' && 'context' in updates && updates.context) {
+    const mergedWithContext = merged as Exclude<MemoryRecord, { type: 'discovery' } | { type: 'warning' }>
     mergedWithContext.context = {
       ...existing.context,
       ...(updates.context as typeof existing.context)

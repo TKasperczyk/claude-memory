@@ -289,6 +289,21 @@ export interface MaintenanceAction {
   details?: MaintenanceActionDetails
 }
 
+export interface MaintenanceCandidateRecord {
+  id: string
+  type: RecordType
+  snippet: string
+  reason: string
+  details?: Record<string, number | string | boolean>
+}
+
+export interface MaintenanceCandidateGroup {
+  id: string
+  label: string
+  reason?: string
+  records: MaintenanceCandidateRecord[]
+}
+
 export interface MaintenanceOperationInfo {
   key: string
   label: string
@@ -305,6 +320,7 @@ export interface OperationResult {
   dryRun: boolean
   actions: MaintenanceAction[]
   summary: Record<string, number>
+  candidates: MaintenanceCandidateGroup[]
   duration: number
   error?: string
 }

@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
-import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type InjectedMemoryEntry, type MemoryRecord, type ProcedureRecord } from './types.js'
+import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type InjectedMemoryEntry, type MemoryRecord, type ProcedureRecord, type WarningRecord, type WarningSeverity } from './types.js'
 import type { Transcript, TranscriptEvent } from './transcript.js'
 import { getDomainExamples, type DomainExample } from './milvus.js'
 import { stripNoiseWords } from './context.js'
@@ -37,15 +37,17 @@ Rules:
 - Output ONLY via the tool call "${TOOL_NAME}" exactly once.
 - Do NOT paraphrase commands or error messages. Copy them EXACTLY from the transcript.
 - If you are unsure about a field, omit the record entirely.
-- Extract only durable, re-usable items (commands, errors + resolutions, discoveries, procedures).
+- Extract only durable, re-usable items (commands, errors + resolutions, discoveries, procedures, warnings).
 - Ignore chit-chat, long code listings, and private thinking blocks.
 - Commands and errors must be verbatim from tool calls/output.
 - When transcript output includes a "[truncated]" marker, do not include that marker in extracted text.
+- Extract warnings when Claude explicitly learns that an approach doesn't work and identifies a better alternative.
 
 Priority guidance:
 - Prefer extracting project-level context over routine commands.
 - A single "project uses SvelteKit with Supabase" discovery is more valuable than 10 routine build commands.
 - Focus on insights that would help orient a future session in this codebase.
+- Extract warnings when there's a clear "don't do X, do Y instead" pattern.
 
 Scope guidance:
 If a discovery or procedure applies universally (not specific to this project),
@@ -185,6 +187,21 @@ const EMIT_RECORDS_TOOL: Anthropic.Tool = {
                     domain: { type: 'string' }
                   }
                 }
+              }
+            },
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['type', 'avoid', 'useInstead', 'reason', 'severity'],
+              properties: {
+                type: { const: 'warning' },
+                avoid: { type: 'string', description: 'The anti-pattern or approach to avoid' },
+                useInstead: { type: 'string', description: 'The recommended alternative' },
+                reason: { type: 'string', description: 'Why the avoided approach fails' },
+                severity: { type: 'string', enum: ['caution', 'warning', 'critical'] },
+                project: { type: 'string' },
+                scope: { type: 'string', enum: ['global', 'project'] },
+                domain: { type: 'string' }
               }
             }
           ]
@@ -333,6 +350,12 @@ Extraction guidance:
    - Project structure insights ("tests in /tests, e2e uses Playwright")
    Also include specific tool/config discoveries when genuinely useful.
 4) ProcedureRecord: step-by-step procedures with exact commands.
+5) WarningRecord: extract when Claude learns something doesn't work.
+   - avoid: the approach that failed (be specific)
+   - useInstead: what works instead
+   - reason: why it fails (error message, behavior issue)
+   - severity: "caution" (minor inconvenience), "warning" (will fail), "critical" (data loss/security)
+   Example: "Don't use 'npm run build' in this project, use 'npm run build:prod' (deprecated script)"
 
 Formatting rules:
 - Keep command and errorText EXACT (verbatim).
@@ -478,6 +501,11 @@ function coerceExtractionResult(input: unknown, context: ExtractionContext): Mem
     }
     if (type === 'procedure') {
       const record = coerceProcedureRecord(item, context)
+      if (record) records.push(record)
+      continue
+    }
+    if (type === 'warning') {
+      const record = coerceWarningRecord(item, context)
       if (record) records.push(record)
     }
   }
@@ -632,6 +660,39 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
   if (domainOverride) record.domain = domainOverride
 
   return record
+}
+
+function coerceWarningRecord(input: Record<string, unknown>, context: ExtractionContext): WarningRecord | null {
+  const avoid = asString(input.avoid)
+  const useInstead = asString(input.useInstead)
+  const reason = asString(input.reason)
+  const severity = coerceSeverity(input.severity)
+  if (!avoid || !useInstead || !reason || !severity) return null
+
+  const record: WarningRecord = {
+    id: randomUUID(),
+    type: 'warning',
+    avoid,
+    useInstead,
+    reason,
+    severity,
+    synthesizedAt: Date.now()
+  }
+
+  const scope = coerceScope(input.scope)
+  if (scope) record.scope = scope
+
+  const project = asString(input.project) ?? context.project ?? context.cwd
+  if (project) record.project = project
+  const domain = asString(input.domain) ?? context.domain
+  if (domain) record.domain = domain
+
+  return record
+}
+
+function coerceSeverity(value: unknown): WarningSeverity | null {
+  if (value === 'caution' || value === 'warning' || value === 'critical') return value
+  return null
 }
 
 function inferIntent(transcript: Transcript): string | undefined {

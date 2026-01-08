@@ -74,6 +74,8 @@ export function buildExactText(record: MemoryRecord): string {
       return [record.what, record.where].filter(Boolean).join('\n')
     case 'procedure':
       return [record.name, ...record.steps].filter(Boolean).join('\n')
+    case 'warning':
+      return [record.avoid, record.useInstead, record.reason].filter(Boolean).join('\n')
   }
 }
 
@@ -91,6 +93,7 @@ export function buildRecordSnippet(record: {
   errorText?: string
   what?: string
   name?: string
+  avoid?: string
 }): string {
   switch (record.type) {
     case 'command':
@@ -101,6 +104,8 @@ export function buildRecordSnippet(record: {
       return record.what ?? 'unknown discovery'
     case 'procedure':
       return record.name ?? 'unknown procedure'
+    case 'warning':
+      return record.avoid ?? 'unknown warning'
     default:
       return `${record.type} record`
   }
@@ -110,6 +115,23 @@ export function truncateSnippet(value: string, maxLength: number = 120): string 
   const cleaned = value.replace(/\s+/g, ' ').trim()
   if (cleaned.length <= maxLength) return cleaned
   return `${cleaned.slice(0, maxLength - 3)}...`
+}
+
+export function buildCandidateRecord(
+  record: MemoryRecord,
+  reason: string,
+  details?: Record<string, number | string | boolean>
+) {
+  const candidate = {
+    id: record.id,
+    type: record.type,
+    snippet: truncateSnippet(buildRecordSnippet(record)),
+    reason
+  }
+  if (details) {
+    return { ...candidate, details }
+  }
+  return candidate
 }
 
 export function truncateWithTail(value: string, maxLength: number, tailLength: number = 300): string {

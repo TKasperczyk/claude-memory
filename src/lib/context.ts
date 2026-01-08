@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { execFileSync } from 'child_process'
-import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
+import { DEFAULT_CONFIG, type Config, type MemoryRecord, type WarningRecord } from './types.js'
 import { KNOWN_COMMANDS } from './shared.js'
 
 export interface ContextSignals {
@@ -18,6 +18,8 @@ const MAX_SIGNAL_CHARS = 240
 const MAX_ENTRY_CHARS = 600
 const MAX_PROCEDURE_STEPS = 3
 const MAX_STEP_CHARS = 160
+const MAX_WARNING_RECORDS = 3
+const MAX_WARNING_CHARS = 400
 
 // Words/phrases to strip from prompts before memory processing
 const NOISE_PATTERNS = [
@@ -86,34 +88,90 @@ export function buildContext(
   const maxTokens = config.injection.maxTokens
   const maxRecords = config.injection.maxRecords
 
+  // Separate warnings from other memories
+  const warnings = filtered.filter((r): r is WarningRecord => r.type === 'warning')
+  const others = filtered.filter(r => r.type !== 'warning')
+
+  const lines: string[] = []
+  let usedTokens = 0
+  const selected: MemoryRecord[] = []
+
+  // Inject warnings FIRST with special header (if any exist)
+  if (warnings.length > 0) {
+    const warningHeader = '<known-pitfalls>'
+    const warningFooter = '</known-pitfalls>'
+    lines.push(warningHeader)
+    usedTokens += estimateTokens(warningHeader)
+
+    let warningCount = 0
+    for (const warning of warnings) {
+      if (warningCount >= MAX_WARNING_RECORDS) break
+      const entry = formatWarningRecord(warning)
+      const entryTokens = estimateTokens(entry)
+      const projected = usedTokens + entryTokens + estimateTokens(warningFooter)
+      if (projected > maxTokens * 0.3) break // Warnings get max 30% of budget
+
+      lines.push(`- ${entry}`)
+      usedTokens += entryTokens
+      warningCount += 1
+      selected.push(warning)
+    }
+
+    lines.push(warningFooter)
+    usedTokens += estimateTokens(warningFooter)
+  }
+
+  // Now inject other memories
   const header = '<prior-knowledge>'
   const preamble = CONTEXT_PREAMBLE
   const footer = '</prior-knowledge>'
-  const lines: string[] = [header, preamble]
-  let usedTokens = estimateTokens(header) + estimateTokens(preamble)
-  let added = 0
-  const selected: MemoryRecord[] = []
 
-  for (const record of filtered) {
-    if (added >= maxRecords) break
-    const entry = formatRecordWithAge(record)
-    if (!entry) continue
+  if (others.length > 0) {
+    lines.push(header)
+    lines.push(preamble)
+    usedTokens += estimateTokens(header) + estimateTokens(preamble)
 
-    const line = `- ${entry}`
-    const lineTokens = estimateTokens(line)
-    const projected = usedTokens + lineTokens + estimateTokens(footer)
-    if (projected > maxTokens) break
+    let added = 0
+    for (const record of others) {
+      if (added >= maxRecords) break
+      const entry = formatRecordWithAge(record)
+      if (!entry) continue
 
-    lines.push(line)
-    usedTokens += lineTokens
-    added += 1
-    selected.push(record)
+      const line = `- ${entry}`
+      const lineTokens = estimateTokens(line)
+      const projected = usedTokens + lineTokens + estimateTokens(footer)
+      if (projected > maxTokens) break
+
+      lines.push(line)
+      usedTokens += lineTokens
+      added += 1
+      selected.push(record)
+    }
+
+    if (added > 0) {
+      lines.push(footer)
+    } else {
+      // Remove header/preamble if no records were added
+      lines.splice(lines.indexOf(header), 2)
+    }
   }
 
-  if (added === 0) return { context: '', records: [] }
+  if (selected.length === 0) return { context: '', records: [] }
 
-  lines.push(footer)
   return { context: lines.join('\n'), records: selected }
+}
+
+function formatWarningRecord(record: WarningRecord): string {
+  const icon = record.severity === 'critical' ? '🚨' :
+               record.severity === 'warning' ? '⚠️' : '⚡'
+  const avoid = cleanInline(record.avoid)
+  const useInstead = cleanInline(record.useInstead)
+  const reason = cleanInline(record.reason)
+
+  return truncateText(
+    `${icon} Don't: ${avoid} → Use: ${useInstead} (${reason})`,
+    MAX_WARNING_CHARS
+  )
 }
 
 export function formatRecordSnippet(record: MemoryRecord): string | null {
@@ -275,6 +333,14 @@ function formatRecord(record: MemoryRecord): string | null {
         `steps: ${steps.join('; ')}`
       ]
       if (record.verification) parts.push(`verify: ${cleanInline(record.verification)}`)
+      return truncateText(parts.join(' | '), MAX_ENTRY_CHARS)
+    }
+    case 'warning': {
+      const parts = [
+        `warning: Don't ${cleanInline(record.avoid)}`,
+        `use instead: ${cleanInline(record.useInstead)}`,
+        `reason: ${cleanInline(record.reason)}`
+      ]
       return truncateText(parts.join(' | '), MAX_ENTRY_CHARS)
     }
     default:
