@@ -171,6 +171,30 @@ export interface SearchResult {
   keywordMatch: boolean
 }
 
+export type ScoredRecord = SearchResult
+
+export interface ExclusionReason {
+  reason:
+    | 'score_below_threshold'
+    | 'similarity_below_threshold'
+    | 'semantic_only_score_below_threshold'
+    | 'mmr_diversity_penalty'
+    | 'exceeded_max_records'
+    | 'exceeded_token_budget'
+  threshold: number
+  actual: number
+  gap: number
+  similarTo?: string
+  similarityScore?: number
+  rank?: number
+  projectedTokens?: number
+}
+
+export interface NearMissRecord {
+  record: ScoredRecord
+  exclusionReasons: ExclusionReason[]
+}
+
 export interface SearchResponse {
   query: string
   total: number
@@ -186,6 +210,8 @@ export interface PreviewResponse {
     domain?: string
   }
   results: SearchResult[]
+  nearMisses?: NearMissRecord[]
+  injected?: ScoredRecord[]
   injectedRecords: MemoryRecord[]
   context: string | null
   timedOut?: boolean
@@ -541,6 +567,7 @@ export function previewContext(payload: {
   prompt: string
   cwd?: string
   settings?: Partial<RetrievalSettings>
+  diagnostic?: boolean
 }): Promise<PreviewResponse> {
   return request('/preview', {
     method: 'POST',

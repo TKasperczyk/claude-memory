@@ -5,6 +5,7 @@ import { Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
+import TypeBadge from '@/components/TypeBadge'
 import {
   RETRIEVAL_FIELDS,
   SettingsPanel,
@@ -15,7 +16,9 @@ import {
 import {
   previewContext,
   updateSettings,
+  type ExclusionReason,
   type MemoryRecord,
+  type NearMissRecord,
   type PreviewResponse,
   type RetrievalSettings
 } from '@/lib/api'
@@ -47,6 +50,116 @@ function highlightContext(str: string): string {
   return out
 }
 
+const EXCLUSION_REASON_STYLES: Record<ExclusionReason['reason'], string> = {
+  score_below_threshold: 'bg-amber-500/15 text-amber-300',
+  semantic_only_score_below_threshold: 'bg-amber-500/15 text-amber-300',
+  similarity_below_threshold: 'bg-sky-500/15 text-sky-300',
+  mmr_diversity_penalty: 'bg-purple-500/15 text-purple-300',
+  exceeded_max_records: 'bg-muted-foreground/15 text-muted-foreground',
+  exceeded_token_budget: 'bg-red-500/15 text-red-300'
+}
+
+function formatDecimal(value: number, digits = 2): string {
+  return value.toFixed(digits)
+}
+
+function formatTokenCount(value: number): string {
+  return Math.round(value).toLocaleString()
+}
+
+function formatShortId(value: string): string {
+  if (value.length <= 8) return value
+  return `${value.slice(0, 8)}...`
+}
+
+function formatExclusionReason(reason: ExclusionReason): string {
+  const threshold = formatDecimal(reason.threshold)
+  const actual = formatDecimal(reason.actual)
+  const gap = formatDecimal(reason.gap)
+
+  switch (reason.reason) {
+    case 'score_below_threshold':
+      return `Score < ${threshold} (actual: ${actual}, gap: ${gap})`
+    case 'semantic_only_score_below_threshold':
+      return `Semantic score < ${threshold} (actual: ${actual}, gap: ${gap})`
+    case 'similarity_below_threshold':
+      return `Similarity < ${threshold} (actual: ${actual}, gap: ${gap})`
+    case 'mmr_diversity_penalty': {
+      const similarity = reason.similarityScore != null ? formatDecimal(reason.similarityScore) : null
+      const similarTo = reason.similarTo ? `to Memory ${formatShortId(reason.similarTo)}` : null
+      const similarityDetail = similarity
+        ? `, sim: ${similarity}${similarTo ? ` ${similarTo}` : ''}`
+        : ''
+      return `MMR ${actual} < ${threshold} (gap: ${gap}${similarityDetail})`
+    }
+    case 'exceeded_max_records': {
+      const rank = reason.rank ?? Math.round(reason.actual)
+      const limit = Math.round(reason.threshold)
+      const overBy = Math.max(0, rank - limit)
+      const overByDetail = overBy > 0 ? `, over by ${overBy}` : ''
+      return `Rank #${rank} (max: ${limit}${overByDetail})`
+    }
+    case 'exceeded_token_budget': {
+      const projected = reason.projectedTokens ?? reason.actual
+      const maxTokens = reason.threshold
+      const overBy = Math.max(0, projected - maxTokens)
+      const overByDetail = overBy > 0 ? `, over by ${formatTokenCount(overBy)}` : ''
+      return `Tokens ${formatTokenCount(projected)} > ${formatTokenCount(maxTokens)}${overByDetail}`
+    }
+  }
+}
+
+function NearMissesPanel({
+  nearMisses,
+  onSelect
+}: {
+  nearMisses: NearMissRecord[]
+  onSelect: (record: MemoryRecord) => void
+}) {
+  return (
+    <div className="p-6 rounded-xl border border-border bg-card">
+      <h3 className="section-header mb-4">Near Misses ({nearMisses.length})</h3>
+      {nearMisses.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No near misses</p>
+      ) : (
+        <div className="space-y-2">
+          {nearMisses.map(miss => {
+            const { record, score, similarity } = miss.record
+            const summary = getMemorySummary(record)
+            return (
+              <button
+                key={record.id}
+                onClick={() => onSelect(record)}
+                className="w-full text-left p-3 rounded-md bg-secondary/30 text-sm cursor-pointer hover:bg-secondary/50 transition-base"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <TypeBadge type={record.type} />
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    Score {formatDecimal(score)} · Sim {formatDecimal(similarity)}
+                  </span>
+                </div>
+                <div className="mt-1 truncate" title={summary}>
+                  {summary}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {miss.exclusionReasons.map((reason, index) => (
+                    <span
+                      key={`${record.id}-${index}`}
+                      className={`px-2 py-0.5 rounded-full text-[11px] ${EXCLUSION_REASON_STYLES[reason.reason]}`}
+                    >
+                      {formatExclusionReason(reason)}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 export default function ContextPreview() {
   const queryClient = useQueryClient()
@@ -60,6 +173,7 @@ export default function ContextPreview() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
+  const [diagnosticEnabled, setDiagnosticEnabled] = useState(false)
 
   // Settings state
   const { data: savedSettings, isPending: settingsPending } = useSettings()
@@ -162,7 +276,8 @@ export default function ContextPreview() {
       const response = await previewContext({
         prompt: trimmed,
         cwd: cwd.trim() || undefined,
-        settings: settingsOverride
+        settings: settingsOverride,
+        diagnostic: diagnosticEnabled ? true : undefined
       })
       setResult(response)
     } catch (err) {
@@ -170,6 +285,13 @@ export default function ContextPreview() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleDiagnosticToggle = (checked: boolean) => {
+    setDiagnosticEnabled(checked)
+    setResult(null)
+    setSelected(null)
+    setError(null)
   }
 
   const previewDisabled = loading || settingsPending
@@ -194,7 +316,7 @@ export default function ContextPreview() {
           />
         </div>
 
-        <div className="flex items-end gap-4">
+        <div className="flex flex-wrap items-end gap-4">
           <div className="flex-1">
             <label className="block text-xs text-muted-foreground mb-1.5">
               Working directory (optional)
@@ -207,6 +329,15 @@ export default function ContextPreview() {
               className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
+          <label className="flex items-center gap-2 h-9 px-3 rounded-md border border-border bg-background cursor-pointer">
+            <input
+              type="checkbox"
+              checked={diagnosticEnabled}
+              onChange={e => handleDiagnosticToggle(e.target.checked)}
+              className="w-4 h-4 rounded border-border"
+            />
+            <span className="text-sm text-muted-foreground">Diagnostic mode</span>
+          </label>
           <button
             onClick={handlePreview}
             disabled={previewDisabled}
@@ -318,6 +449,13 @@ export default function ContextPreview() {
                 </div>
               )}
             </div>
+
+            {diagnosticEnabled && (
+              <NearMissesPanel
+                nearMisses={result.nearMisses ?? []}
+                onSelect={setSelected}
+              />
+            )}
           </div>
 
           {/* Right column: Injected context */}
