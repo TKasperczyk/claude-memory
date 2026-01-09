@@ -8,6 +8,7 @@ import { homedir } from 'os'
 import { DataType, MilvusClient, type RowData } from '@zilliz/milvus2-sdk-node'
 import { embed, ensureEmbeddingDim } from './embed.js'
 import { buildExactText, escapeFilterValue } from './shared.js'
+import { buildExclusionReason } from './diagnostics.js'
 import {
   DEFAULT_CONFIG,
   EMBEDDING_DIM,
@@ -620,17 +621,6 @@ export async function hybridSearch(
       }
     }
 
-    const buildExclusionReason = (
-      reason: ExclusionReason['reason'],
-      threshold: number,
-      actual: number
-    ): ExclusionReason => ({
-      reason,
-      threshold,
-      actual,
-      gap: threshold - actual
-    })
-
     const addNearMiss = (record: HybridSearchResult, reason: ExclusionReason): void => {
       if (!nearMisses) return
       const existing = nearMisses.get(record.record.id)
@@ -712,11 +702,11 @@ export async function hybridSearch(
 
     if (diagnostic && shouldApplyMinScore) {
       for (const result of results) {
-        if (!result.keywordMatch && result.score < minScore) {
-          const scoreReason: ExclusionReason['reason'] = result.keywordMatch
-            ? 'score_below_threshold'
-            : 'semantic_only_score_below_threshold'
-          addNearMiss(result, buildExclusionReason(scoreReason, minScore, result.score))
+        if (result.score < minScore && !result.keywordMatch) {
+          addNearMiss(
+            result,
+            buildExclusionReason('semantic_only_score_below_threshold', minScore, result.score)
+          )
         }
       }
     }

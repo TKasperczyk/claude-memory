@@ -24,6 +24,7 @@ import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '..
 import { findGitRoot } from '../../src/lib/context.js'
 import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
+import { mergeNearMisses } from '../../src/lib/diagnostics.js'
 import {
   coerceRetrievalSettings,
   getDefaultMaintenanceSettings,
@@ -243,18 +244,7 @@ function combineNearMisses(...sources: Array<NearMissRecord[] | undefined>): Nea
   const merged = new Map<string, NearMissRecord>()
   for (const entries of sources) {
     if (!entries) continue
-    for (const entry of entries) {
-      const id = entry.record.record.id
-      const existing = merged.get(id)
-      if (existing) {
-        existing.exclusionReasons.push(...entry.exclusionReasons)
-        continue
-      }
-      merged.set(id, {
-        record: entry.record,
-        exclusionReasons: [...entry.exclusionReasons]
-      })
-    }
+    mergeNearMisses(merged, entries)
   }
   return Array.from(merged.values())
 }

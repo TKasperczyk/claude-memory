@@ -6,6 +6,7 @@ import { initMilvus, hybridSearch } from '../lib/milvus.js'
 import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { embed } from '../lib/embed.js'
 import { loadConfig } from '../lib/config.js'
+import { mergeNearMisses } from '../lib/diagnostics.js'
 import { loadSettings, type RetrievalSettings } from '../lib/settings.js'
 import {
   DEFAULT_CONFIG,
@@ -239,7 +240,7 @@ async function searchMemories(
       if (mmrResult.selected.length !== results.length) {
         console.error(`[claude-memory] MMR reranked ${results.length} -> ${mmrResult.selected.length} results`)
       }
-      finalResults = mmrResult.selected
+      finalResults = mmrResult.ordered
       mmrExclusions = mmrResult.exclusions
     } else {
       const diverseResults = applyMMR(results, settings.mmrLambda, config.injection.maxRecords)
@@ -258,18 +259,6 @@ async function searchMemories(
           mmrExclusions
         }
       : undefined
-  }
-}
-
-function mergeNearMisses(target: Map<string, NearMissRecord>, incoming: NearMissRecord[]): void {
-  for (const entry of incoming) {
-    const id = entry.record.record.id
-    const existing = target.get(id)
-    if (existing) {
-      existing.exclusionReasons.push(...entry.exclusionReasons)
-      continue
-    }
-    target.set(id, { record: entry.record, exclusionReasons: [...entry.exclusionReasons] })
   }
 }
 
@@ -299,10 +288,11 @@ async function searchWithScope(
   signal?: AbortSignal,
   options: { diagnostic?: boolean } = {}
 ): Promise<SearchWithScopeResult> {
-  const limit = config.injection.maxRecords
+  const maxRecords = config.injection.maxRecords
   const keywordQueries = buildKeywordQueries(signals, cleanPrompt)
   const resultsById = new Map<string, HybridSearchResult>()
   const diagnostic = options.diagnostic === true
+  const limit = maxRecords
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
   console.error(`[claude-memory] Signals: errors=${signals.errors.length}, commands=${signals.commands.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
@@ -380,7 +370,112 @@ async function searchWithScope(
  */
 type MMRDiagnosticResult = {
   selected: HybridSearchResult[]
+  ordered: HybridSearchResult[]
   exclusions: NearMissRecord[]
+}
+
+type MMRSelection = {
+  selected: HybridSearchResult[]
+  remaining: HybridSearchResult[]
+  lastSelectedMmr: number
+}
+
+function hasEmbedding(candidate: HybridSearchResult): boolean {
+  return Boolean(candidate.record.embedding && candidate.record.embedding.length > 0)
+}
+
+function sortByScore(candidates: HybridSearchResult[]): HybridSearchResult[] {
+  return [...candidates].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score
+    return b.similarity - a.similarity
+  })
+}
+
+function selectWithMMR(
+  candidates: HybridSearchResult[],
+  lambda: number,
+  limit: number
+): MMRSelection {
+  const selected: HybridSearchResult[] = []
+  const remaining = sortByScore(candidates)
+  let lastSelectedMmr = 0
+
+  const first = remaining.shift()
+  if (!first) return { selected, remaining, lastSelectedMmr }
+  selected.push(first)
+  lastSelectedMmr = lambda * first.score
+
+  while (remaining.length > 0 && selected.length < limit) {
+    let bestIdx = 0
+    let bestMMR = -Infinity
+
+    for (let i = 0; i < remaining.length; i++) {
+      const relevance = remaining[i].score
+
+      let maxSim = -Infinity
+      for (const chosen of selected) {
+        const sim = cosineSimilarity(chosen.record.embedding!, remaining[i].record.embedding!)
+        maxSim = Math.max(maxSim, sim)
+      }
+
+      const mmr = lambda * relevance - (1 - lambda) * maxSim
+
+      if (mmr > bestMMR) {
+        bestMMR = mmr
+        bestIdx = i
+      }
+    }
+
+    selected.push(remaining.splice(bestIdx, 1)[0])
+    lastSelectedMmr = bestMMR
+  }
+
+  return { selected, remaining, lastSelectedMmr }
+}
+
+function buildMmrExclusions(
+  remaining: HybridSearchResult[],
+  selected: HybridSearchResult[],
+  allCandidates: HybridSearchResult[],
+  lambda: number,
+  lastSelectedMmr: number,
+  limit: number
+): NearMissRecord[] {
+  if (remaining.length === 0 || selected.length === 0 || limit <= 0) return []
+
+  const baselineIds = new Set(
+    sortByScore(allCandidates)
+      .slice(0, limit)
+      .map(candidate => candidate.record.id)
+  )
+
+  const exclusions: NearMissRecord[] = []
+  for (const candidate of remaining) {
+    if (!baselineIds.has(candidate.record.id)) {
+      continue
+    }
+    let maxSim = -Infinity
+    let similarTo: string | undefined
+    for (const chosen of selected) {
+      const sim = cosineSimilarity(chosen.record.embedding!, candidate.record.embedding!)
+      if (sim > maxSim) {
+        maxSim = sim
+        similarTo = chosen.record.id
+      }
+    }
+    const mmr = lambda * candidate.score - (1 - lambda) * maxSim
+    const reason: ExclusionReason = {
+      reason: 'mmr_diversity_penalty',
+      threshold: lastSelectedMmr,
+      actual: mmr,
+      gap: lastSelectedMmr - mmr,
+      similarTo,
+      similarityScore: maxSim
+    }
+    exclusions.push({ record: candidate, exclusionReasons: [reason] })
+  }
+
+  return exclusions
 }
 
 function applyMMR(
@@ -403,66 +498,34 @@ function applyMMR(
 ): HybridSearchResult[] | MMRDiagnosticResult {
   const diagnostic = options.diagnostic === true
   if (limit <= 0) {
-    return diagnostic ? { selected: [], exclusions: [] } : []
+    return diagnostic ? { selected: [], ordered: candidates, exclusions: [] } : []
   }
   if (candidates.length <= 1) {
-    return diagnostic ? { selected: candidates, exclusions: [] } : candidates
+    return diagnostic ? { selected: candidates, ordered: candidates, exclusions: [] } : candidates
   }
 
   // Filter to candidates with embeddings
-  const withEmbeddings = candidates.filter(c => c.record.embedding && c.record.embedding.length > 0)
-  const withoutEmbeddings = candidates.filter(c => !c.record.embedding || c.record.embedding.length === 0)
+  const withEmbeddings = candidates.filter(hasEmbedding)
+  const withoutEmbeddings = candidates.filter(candidate => !hasEmbedding(candidate))
 
   // If no embeddings available, return original order
   if (withEmbeddings.length === 0) {
-    return diagnostic ? { selected: candidates, exclusions: [] } : candidates
+    return diagnostic ? { selected: candidates, ordered: candidates, exclusions: [] } : candidates
   }
 
-  const selected: HybridSearchResult[] = []
-  const remaining = [...withEmbeddings]
-  let lastSelectedMmr = 0
-
-  // First pick is always highest relevance
-  remaining.sort((a, b) => b.score - a.score)
-  const first = remaining.shift()!
-  selected.push(first)
-  if (diagnostic) {
-    lastSelectedMmr = lambda * first.score
-  }
-
-  while (remaining.length > 0 && selected.length < limit) {
-    let bestIdx = 0
-    let bestMMR = -Infinity
-
-    for (let i = 0; i < remaining.length; i++) {
-      const relevance = remaining[i].score
-
-      // Max similarity to any already-selected item
-      let maxSim = -Infinity
-      for (const chosen of selected) {
-        const sim = cosineSimilarity(chosen.record.embedding!, remaining[i].record.embedding!)
-        maxSim = Math.max(maxSim, sim)
-      }
-
-      // MMR = λ * relevance - (1-λ) * maxSimilarity
-      const mmr = lambda * relevance - (1 - lambda) * maxSim
-
-      if (mmr > bestMMR) {
-        bestMMR = mmr
-        bestIdx = i
-      }
-    }
-
-    selected.push(remaining.splice(bestIdx, 1)[0])
-    if (diagnostic) {
-      lastSelectedMmr = bestMMR
-    }
-  }
+  const selection = selectWithMMR(withEmbeddings, lambda, limit)
+  const selected: HybridSearchResult[] = [...selection.selected]
+  const remainingWithEmbeddings = selection.remaining
+  const lastSelectedMmr = selection.lastSelectedMmr
 
   // Append any records without embeddings at the end (they couldn't be compared)
+  const remainingWithoutEmbeddings: HybridSearchResult[] = []
   for (const item of withoutEmbeddings) {
-    if (selected.length >= limit) break
-    selected.push(item)
+    if (selected.length < limit) {
+      selected.push(item)
+    } else {
+      remainingWithoutEmbeddings.push(item)
+    }
   }
 
   const finalSelected = selected.slice(0, limit)
@@ -471,35 +534,20 @@ function applyMMR(
     return finalSelected
   }
 
-  const exclusions: NearMissRecord[] = []
-  if (remaining.length > 0) {
-    const selectedWithEmbeddings = finalSelected.filter(item =>
-      item.record.embedding && item.record.embedding.length > 0
-    )
-    for (const candidate of remaining) {
-      let maxSim = -Infinity
-      let similarTo: string | undefined
-      for (const chosen of selectedWithEmbeddings) {
-        const sim = cosineSimilarity(chosen.record.embedding!, candidate.record.embedding!)
-        if (sim > maxSim) {
-          maxSim = sim
-          similarTo = chosen.record.id
-        }
-      }
-      const mmr = lambda * candidate.score - (1 - lambda) * maxSim
-      const reason: ExclusionReason = {
-        reason: 'mmr_diversity_penalty',
-        threshold: lastSelectedMmr,
-        actual: mmr,
-        gap: lastSelectedMmr - mmr,
-        similarTo,
-        similarityScore: maxSim
-      }
-      exclusions.push({ record: candidate, exclusionReasons: [reason] })
-    }
-  }
+  const exclusions = buildMmrExclusions(
+    remainingWithEmbeddings,
+    selection.selected,
+    candidates,
+    lambda,
+    lastSelectedMmr,
+    limit
+  )
 
-  return { selected: finalSelected, exclusions }
+  return {
+    selected: finalSelected,
+    ordered: [...finalSelected, ...remainingWithEmbeddings, ...remainingWithoutEmbeddings],
+    exclusions
+  }
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {

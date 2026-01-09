@@ -12,6 +12,7 @@ import {
   type WarningRecord
 } from './types.js'
 import { KNOWN_COMMANDS } from './shared.js'
+import { buildExclusionReason } from './diagnostics.js'
 
 export interface ContextSignals {
   errors: string[]
@@ -117,6 +118,171 @@ function toScoredRecord(candidate: ContextCandidate): ScoredRecord {
   }
 }
 
+type WarningSectionResult = {
+  lines: string[]
+  usedTokens: number
+  selected: ScoredWarningRecord[]
+}
+
+type MemorySectionResult = {
+  lines: string[]
+  usedTokens: number
+  selected: ScoredRecord[]
+}
+
+function buildWarningSection(
+  warnings: ScoredWarningRecord[],
+  maxTokens: number,
+  diagnostic: boolean,
+  addExclusion: (record: ScoredRecord, reason: ExclusionReason) => void
+): WarningSectionResult {
+  if (warnings.length === 0) {
+    return { lines: [], usedTokens: 0, selected: [] }
+  }
+
+  const warningHeader = '<known-pitfalls>'
+  const warningFooter = '</known-pitfalls>'
+  const headerTokens = estimateTokens(warningHeader)
+  const footerTokens = estimateTokens(warningFooter)
+  const warningBudget = maxTokens * 0.3
+
+  const lines: string[] = []
+  const selected: ScoredWarningRecord[] = []
+  let usedTokens = 0
+  let warningCount = 0
+
+  for (let i = 0; i < warnings.length; i++) {
+    if (warningCount >= MAX_WARNING_RECORDS) break
+    const warning = warnings[i]
+    const entry = formatWarningRecord(warning.record)
+    const entryTokens = estimateTokens(entry)
+    const baseTokens = warningCount === 0 ? usedTokens + headerTokens : usedTokens
+    const projected = baseTokens + entryTokens + footerTokens
+    if (projected > warningBudget) {
+      if (diagnostic) {
+        addExclusion(
+          warning,
+          buildExclusionReason('exceeded_token_budget', warningBudget, projected, { projectedTokens: projected })
+        )
+        for (let j = i + 1; j < warnings.length; j++) {
+          const candidate = warnings[j]
+          const candidateEntry = formatWarningRecord(candidate.record)
+          const candidateTokens = estimateTokens(candidateEntry)
+          const candidateBaseTokens = warningCount === 0 ? usedTokens + headerTokens : usedTokens
+          const candidateProjected = candidateBaseTokens + candidateTokens + footerTokens
+          addExclusion(
+            candidate,
+            buildExclusionReason('exceeded_token_budget', warningBudget, candidateProjected, {
+              projectedTokens: candidateProjected
+            })
+          )
+        }
+      }
+      break
+    }
+
+    if (warningCount === 0) {
+      lines.push(warningHeader)
+      usedTokens += headerTokens
+    }
+
+    lines.push(`- ${entry}`)
+    usedTokens += entryTokens
+    warningCount += 1
+    selected.push(warning)
+  }
+
+  if (warningCount > 0) {
+    lines.push(warningFooter)
+    usedTokens += footerTokens
+  }
+
+  return { lines, usedTokens, selected }
+}
+
+function buildMemorySection(
+  records: ScoredRecord[],
+  maxTokens: number,
+  maxRecords: number,
+  diagnostic: boolean,
+  addExclusion: (record: ScoredRecord, reason: ExclusionReason) => void,
+  usedTokens: number
+): MemorySectionResult {
+  if (records.length === 0) {
+    return { lines: [], usedTokens, selected: [] }
+  }
+
+  const header = '<prior-knowledge>'
+  const preamble = CONTEXT_PREAMBLE
+  const footer = '</prior-knowledge>'
+  const headerTokens = estimateTokens(header)
+  const preambleTokens = estimateTokens(preamble)
+  const footerTokens = estimateTokens(footer)
+
+  const lines: string[] = [header, preamble]
+  const selected: ScoredRecord[] = []
+  let added = 0
+  let localUsedTokens = usedTokens + headerTokens + preambleTokens
+
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i]
+    const rank = i + 1
+    if (added >= maxRecords) {
+      if (diagnostic) {
+        addExclusion(
+          record,
+          buildExclusionReason('exceeded_max_records', maxRecords, rank, { rank })
+        )
+      }
+      if (!diagnostic) break
+      continue
+    }
+    const entry = formatRecordWithAge(record.record)
+    if (!entry) continue
+
+    const line = `- ${entry}`
+    const lineTokens = estimateTokens(line)
+    const projected = localUsedTokens + lineTokens + footerTokens
+    if (projected > maxTokens) {
+      if (diagnostic) {
+        addExclusion(
+          record,
+          buildExclusionReason('exceeded_token_budget', maxTokens, projected, { projectedTokens: projected })
+        )
+        for (let j = i + 1; j < records.length; j++) {
+          const candidate = records[j]
+          const candidateEntry = formatRecordWithAge(candidate.record)
+          if (!candidateEntry) continue
+          const candidateLine = `- ${candidateEntry}`
+          const candidateTokens = estimateTokens(candidateLine)
+          const candidateProjected = localUsedTokens + candidateTokens + footerTokens
+          addExclusion(
+            candidate,
+            buildExclusionReason('exceeded_token_budget', maxTokens, candidateProjected, {
+              projectedTokens: candidateProjected
+            })
+          )
+        }
+      }
+      break
+    }
+
+    lines.push(line)
+    localUsedTokens += lineTokens
+    added += 1
+    selected.push(record)
+  }
+
+  if (added === 0) {
+    return { lines: [], usedTokens, selected: [] }
+  }
+
+  lines.push(footer)
+  localUsedTokens += footerTokens
+
+  return { lines, usedTokens: localUsedTokens, selected }
+}
+
 export function buildContext(
   records: MemoryRecord[],
   config?: Config
@@ -137,19 +303,6 @@ export function buildContext(
 ): ContextBuildResult | DiagnosticContextResult {
   const diagnostic = options.diagnostic === true
   const exclusionsById = diagnostic ? new Map<string, NearMissRecord>() : null
-
-  const buildExclusionReason = (
-    reason: ExclusionReason['reason'],
-    threshold: number,
-    actual: number,
-    extra: Partial<ExclusionReason> = {}
-  ): ExclusionReason => ({
-    reason,
-    threshold,
-    actual,
-    gap: threshold - actual,
-    ...extra
-  })
 
   const addExclusion = (record: ScoredRecord, reason: ExclusionReason): void => {
     if (!exclusionsById) return
@@ -190,125 +343,22 @@ export function buildContext(
   const others = filtered.filter(r => r.record.type !== 'warning')
 
   const lines: string[] = []
-  let usedTokens = 0
   const selected: ScoredRecord[] = []
 
-  // Inject warnings FIRST with special header (if any exist)
-  if (warnings.length > 0) {
-    const warningHeader = '<known-pitfalls>'
-    const warningFooter = '</known-pitfalls>'
-    const warningFooterTokens = estimateTokens(warningFooter)
-    const warningBudget = maxTokens * 0.3
-    lines.push(warningHeader)
-    usedTokens += estimateTokens(warningHeader)
+  const warningSection = buildWarningSection(warnings, maxTokens, diagnostic, addExclusion)
+  lines.push(...warningSection.lines)
+  selected.push(...warningSection.selected)
 
-    let warningCount = 0
-    for (let i = 0; i < warnings.length; i++) {
-      if (warningCount >= MAX_WARNING_RECORDS) break
-      const warning = warnings[i]
-      const entry = formatWarningRecord(warning.record)
-      const entryTokens = estimateTokens(entry)
-      const projected = usedTokens + entryTokens + warningFooterTokens
-      if (projected > warningBudget) {
-        if (diagnostic) {
-          addExclusion(
-            warning,
-            buildExclusionReason('exceeded_token_budget', warningBudget, projected, { projectedTokens: projected })
-          )
-          for (let j = i + 1; j < warnings.length; j++) {
-            const candidate = warnings[j]
-            const candidateEntry = formatWarningRecord(candidate.record)
-            const candidateTokens = estimateTokens(candidateEntry)
-            const candidateProjected = usedTokens + candidateTokens + warningFooterTokens
-            addExclusion(
-              candidate,
-              buildExclusionReason('exceeded_token_budget', warningBudget, candidateProjected, {
-                projectedTokens: candidateProjected
-              })
-            )
-          }
-        }
-        break
-      }
-
-      lines.push(`- ${entry}`)
-      usedTokens += entryTokens
-      warningCount += 1
-      selected.push(warning)
-    }
-
-    lines.push(warningFooter)
-    usedTokens += warningFooterTokens
-  }
-
-  // Now inject other memories
-  const header = '<prior-knowledge>'
-  const preamble = CONTEXT_PREAMBLE
-  const footer = '</prior-knowledge>'
-
-  if (others.length > 0) {
-    lines.push(header)
-    lines.push(preamble)
-    usedTokens += estimateTokens(header) + estimateTokens(preamble)
-
-    let added = 0
-    const footerTokens = estimateTokens(footer)
-    for (let i = 0; i < others.length; i++) {
-      const record = others[i]
-      const rank = i + 1
-      if (added >= maxRecords) {
-        if (diagnostic) {
-          addExclusion(
-            record,
-            buildExclusionReason('exceeded_max_records', maxRecords, rank, { rank })
-          )
-        }
-        if (!diagnostic) break
-        continue
-      }
-      const entry = formatRecordWithAge(record.record)
-      if (!entry) continue
-
-      const line = `- ${entry}`
-      const lineTokens = estimateTokens(line)
-      const projected = usedTokens + lineTokens + footerTokens
-      if (projected > maxTokens) {
-        if (diagnostic) {
-          addExclusion(
-            record,
-            buildExclusionReason('exceeded_token_budget', maxTokens, projected, { projectedTokens: projected })
-          )
-          for (let j = i + 1; j < others.length; j++) {
-            const candidate = others[j]
-            const candidateEntry = formatRecordWithAge(candidate.record)
-            if (!candidateEntry) continue
-            const candidateLine = `- ${candidateEntry}`
-            const candidateTokens = estimateTokens(candidateLine)
-            const candidateProjected = usedTokens + candidateTokens + footerTokens
-            addExclusion(
-              candidate,
-              buildExclusionReason('exceeded_token_budget', maxTokens, candidateProjected, {
-                projectedTokens: candidateProjected
-              })
-            )
-          }
-        }
-        break
-      }
-
-      lines.push(line)
-      usedTokens += lineTokens
-      added += 1
-      selected.push(record)
-    }
-
-    if (added > 0) {
-      lines.push(footer)
-    } else {
-      // Remove header/preamble if no records were added
-      lines.splice(lines.indexOf(header), 2)
-    }
-  }
+  const memorySection = buildMemorySection(
+    others,
+    maxTokens,
+    maxRecords,
+    diagnostic,
+    addExclusion,
+    warningSection.usedTokens
+  )
+  lines.push(...memorySection.lines)
+  selected.push(...memorySection.selected)
 
   if (diagnostic && exclusionsById) {
     for (const injected of selected) {
