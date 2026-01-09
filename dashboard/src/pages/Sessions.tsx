@@ -31,6 +31,23 @@ const STATUS_STYLES: Record<InjectionStatus, { badge: string; label: string }> =
   error: { badge: 'bg-destructive/15 text-destructive', label: 'Error' }
 }
 
+function getInjectionRatioBadge(injectionCount: number, promptCount: number): { badge: string; label: string; title: string } {
+  const ratio = promptCount > 0 ? injectionCount / promptCount : 0
+  const label = `${injectionCount}/${promptCount}`
+  const title = `${injectionCount} injection${injectionCount !== 1 ? 's' : ''} out of ${promptCount} prompt${promptCount !== 1 ? 's' : ''}`
+
+  if (promptCount === 0) {
+    return { badge: 'bg-muted-foreground/15 text-muted-foreground', label: '0/0', title: 'No prompts recorded' }
+  }
+  if (ratio >= 0.7) {
+    return { badge: 'bg-emerald-500/15 text-emerald-300', label, title }
+  }
+  if (ratio > 0) {
+    return { badge: 'bg-amber-500/15 text-amber-300', label, title }
+  }
+  return { badge: 'bg-red-500/15 text-red-300', label, title }
+}
+
 const RELEVANCE_STYLES: Record<InjectionReview['overallRelevance'], { badge: string; label: string }> = {
   excellent: {
     badge: 'bg-emerald-500/15 text-emerald-300',
@@ -408,16 +425,17 @@ export default function Sessions() {
                   </div>
 
                   <div className="flex items-center gap-4 text-xs text-muted-foreground shrink-0">
-                    {session.lastStatus && (
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${STATUS_STYLES[session.lastStatus].badge}`}>
-                        {STATUS_STYLES[session.lastStatus].label}
-                      </span>
-                    )}
-                    {session.promptCount !== undefined && session.promptCount > 0 && (
-                      <span title={`${session.injectionCount ?? 0} injections / ${session.promptCount} prompts`}>
-                        {session.injectionCount ?? 0}/{session.promptCount} inj
-                      </span>
-                    )}
+                    {session.promptCount !== undefined && session.promptCount > 0 && (() => {
+                      const ratioBadge = getInjectionRatioBadge(session.injectionCount ?? 0, session.promptCount)
+                      return (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide tabular-nums ${ratioBadge.badge}`}
+                          title={ratioBadge.title}
+                        >
+                          {ratioBadge.label} inj
+                        </span>
+                      )
+                    })()}
                     <span>{memories.length} memories</span>
                     <span>{formatRelative(session.lastActivity)}</span>
                   </div>
