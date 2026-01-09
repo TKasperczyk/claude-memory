@@ -33,7 +33,7 @@ import {
   saveSettings,
   type Settings
 } from '../../src/lib/settings.js'
-import { type MemoryRecord, type RecordType } from '../../src/lib/types.js'
+import { type MemoryRecord, type NearMissRecord, type RecordType } from '../../src/lib/types.js'
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
 import { reviewExtraction } from '../../src/lib/extraction-review.js'
 import { reviewInjection } from '../../src/lib/injection-review.js'
@@ -203,6 +203,19 @@ function parseNonNegativeInt(value: unknown, fallback: number): number {
   return parsed
 }
 
+function parseOptionalBoolean(value: unknown, fallback = false): boolean {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (raw === undefined || raw === null) return fallback
+  if (typeof raw === 'boolean') return raw
+  if (typeof raw === 'number') return raw !== 0
+  if (typeof raw === 'string') {
+    const normalized = raw.trim().toLowerCase()
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true
+    if (['false', '0', 'no', 'off', ''].includes(normalized)) return false
+  }
+  return fallback
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -224,6 +237,26 @@ function buildKeywordFilter(query: string, baseFilter?: string): string {
   const escaped = escapeLikeValue(query)
   const likeClause = `exact_text like "%${escaped}%"`
   return baseFilter ? `${baseFilter} && ${likeClause}` : likeClause
+}
+
+function combineNearMisses(...sources: Array<NearMissRecord[] | undefined>): NearMissRecord[] {
+  const merged = new Map<string, NearMissRecord>()
+  for (const entries of sources) {
+    if (!entries) continue
+    for (const entry of entries) {
+      const id = entry.record.record.id
+      const existing = merged.get(id)
+      if (existing) {
+        existing.exclusionReasons.push(...entry.exclusionReasons)
+        continue
+      }
+      merged.set(id, {
+        record: entry.record,
+        exclusionReasons: [...entry.exclusionReasons]
+      })
+    }
+  }
+  return Array.from(merged.values())
 }
 
 type ClaudeHookEvent = keyof typeof CLAUDE_HOOKS
@@ -713,6 +746,7 @@ app.post('/api/preview', async (req, res) => {
       return res.status(400).json({ error: 'Prompt required' })
     }
 
+    const diagnostic = parseOptionalBoolean(req.query.diagnostic ?? req.body?.diagnostic)
     const settingsOverride = isPlainObject(rawSettingsOverride)
       ? coerceRetrievalSettings(rawSettingsOverride as Record<string, unknown>, loadSettings())
       : undefined
@@ -723,19 +757,37 @@ app.post('/api/preview', async (req, res) => {
       prompt,
       cwd,
       session_id: 'preview'
-    }, CONFIG, { settingsOverride })
+    }, CONFIG, { settingsOverride, diagnostic })
+
+    const scoredResults = result.results.map(r => ({
+      record: r.record,
+      score: r.score,
+      similarity: r.similarity,
+      keywordMatch: r.keywordMatch
+    }))
+
+    const diagnosticPayload = diagnostic && result.diagnostics
+      ? {
+          injected: result.diagnostics.context.injectedRecords.map(r => ({
+            record: r.record,
+            score: r.score,
+            similarity: r.similarity,
+            keywordMatch: r.keywordMatch
+          })),
+          nearMisses: combineNearMisses(
+            result.diagnostics.search.nearMisses,
+            result.diagnostics.context.exclusions
+          )
+        }
+      : undefined
 
     res.json({
       signals: result.signals,
-      results: result.results.map(r => ({
-        record: r.record,
-        score: r.score,
-        similarity: r.similarity,
-        keywordMatch: r.keywordMatch
-      })),
+      results: scoredResults,
       injectedRecords: result.injectedRecords,
       context: result.context ?? null,
-      timedOut: result.timedOut
+      timedOut: result.timedOut,
+      ...diagnosticPayload
     })
   } catch (error) {
     console.error('Preview error:', error)
