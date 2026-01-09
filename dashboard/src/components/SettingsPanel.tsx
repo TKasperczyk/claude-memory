@@ -53,6 +53,7 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     description: 'Maximum memories injected per prompt.',
     step: 1,
     min: 1,
+    max: 20,
     kind: 'int'
   },
   {
@@ -61,6 +62,7 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     description: 'Token budget for the injected context block.',
     step: 50,
     min: 1,
+    max: 10000,
     kind: 'int'
   },
   {
@@ -107,6 +109,10 @@ function validateFieldValue(field: SettingsField, rawInput: string): FieldValida
   }
 
   return { value }
+}
+
+function clampValue(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
 }
 
 export function toFormState(settings: Partial<RetrievalSettings> | null): RetrievalSettingsFormState {
@@ -261,10 +267,19 @@ export function SettingsPanel<K extends string>({
     ? 'text-[10px] text-muted-foreground leading-tight'
     : 'text-xs text-muted-foreground'
   const fieldContainerClass = variant === 'compact' ? 'space-y-1' : 'space-y-2'
-  const inputBaseClass = variant === 'compact'
-    ? 'w-full h-8 px-2 rounded-md border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
-    : 'w-full h-9 px-3 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
+  const valueInputBaseClass = variant === 'compact'
+    ? 'h-7 w-[72px] px-2 rounded-md border border-border bg-background text-xs font-mono tabular-nums text-right focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
+    : 'h-8 w-[90px] px-2 rounded-md border border-border bg-background text-sm font-mono tabular-nums text-right focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
+  const valueButtonBaseClass = variant === 'compact'
+    ? 'h-7 min-w-[72px] px-2 rounded-md border border-border bg-background/60 text-xs font-mono tabular-nums text-right hover:bg-secondary/60 transition-base disabled:opacity-60'
+    : 'h-8 min-w-[90px] px-2 rounded-md border border-border bg-background/60 text-sm font-mono tabular-nums text-right hover:bg-secondary/60 transition-base disabled:opacity-60'
+  const sliderRowClass = variant === 'compact' ? 'flex items-center gap-3' : 'flex items-center gap-4'
+  const sliderClass = 'range-slider'
+  const resetButtonClass = variant === 'compact'
+    ? 'ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-base disabled:opacity-40'
+    : 'ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-base disabled:opacity-40'
   const errorTextClass = variant === 'compact' ? 'text-[10px] text-destructive' : 'text-xs text-destructive'
+  const [editingField, setEditingField] = useState<K | null>(null)
 
   const modified = useMemo(() => {
     if (!shouldShowModifiedBadge || !savedValues) return false
@@ -287,14 +302,58 @@ export function SettingsPanel<K extends string>({
     const savedValue = savedValues?.[key]
     const defaultValue = defaultValues?.[key]
     const formValue = values[key] ?? ''
+    const trimmedValue = formValue.trim()
     const fieldError = errors?.[key]
-    const inputClassName = fieldError
-      ? `${inputBaseClass} border-destructive focus:ring-destructive`
-      : inputBaseClass
+    const valueInputClassName = fieldError
+      ? `${valueInputBaseClass} border-destructive focus:ring-destructive`
+      : valueInputBaseClass
+    const valueButtonClassName = fieldError
+      ? `${valueButtonBaseClass} border-destructive text-destructive`
+      : valueButtonBaseClass
+
+    const parsedValue = Number(trimmedValue)
+    const hasNumericValue = trimmedValue !== '' && Number.isFinite(parsedValue)
+    const baseResetValue = defaultValue ?? savedValue
+    const baseResetNum = typeof baseResetValue === 'number' && Number.isFinite(baseResetValue) ? baseResetValue : undefined
+    const rangeMin = field.min ?? 0
+    const fallbackValue = baseResetNum ?? rangeMin
+    const baselineForMax = Math.max(
+      rangeMin,
+      baseResetNum ?? rangeMin,
+      hasNumericValue ? parsedValue : rangeMin
+    )
+    const inferredMax = field.max ?? Math.max(
+      rangeMin + field.step * 100,
+      baselineForMax + field.step * 100
+    )
+    let rangeMax = inferredMax <= rangeMin ? rangeMin + field.step * 100 : inferredMax
+    if (field.max === undefined && hasNumericValue && parsedValue > rangeMax) {
+      rangeMax = parsedValue
+    }
+    const sliderValueSource = !fieldError && hasNumericValue ? parsedValue : fallbackValue
+    const sliderValue = clampValue(sliderValueSource, rangeMin, rangeMax)
+    const displayValue = trimmedValue !== '' ? formValue : '—'
+    const isEditing = editingField === key
+    const isResetAvailable = baseResetValue !== undefined
+      && (trimmedValue === '' || !Number.isFinite(parsedValue) || parsedValue !== baseResetValue)
+    const fieldId = `settings-field-${key}`
+    const labelId = `${fieldId}-label`
+    const sliderId = `${fieldId}-slider`
+    const errorId = fieldError ? `${fieldId}-error` : undefined
+    const describedBy = fieldError ? errorId : undefined
+    const formatResetValue = (value: number) => (field.kind === 'int' ? String(Math.trunc(value)) : String(value))
+    const resetContextLabel = defaultValue !== undefined
+      ? 'Reset to default'
+      : savedValue !== undefined
+        ? 'Reset to saved'
+        : 'Reset'
+    const resetActionLabel = baseResetNum !== undefined
+      ? `${resetContextLabel} (${formatResetValue(baseResetNum)})`
+      : resetContextLabel
 
     let isFieldModified = false
-    if (shouldShowFieldModified && formValue.trim() !== '' && savedValue !== undefined) {
-      const parsed = Number(formValue)
+    if (shouldShowFieldModified && trimmedValue !== '' && savedValue !== undefined) {
+      const parsed = Number(trimmedValue)
       if (Number.isFinite(parsed)) {
         isFieldModified = parsed !== savedValue
       } else {
@@ -306,9 +365,25 @@ export function SettingsPanel<K extends string>({
       <div key={field.key} className={fieldContainerClass}>
         <div>
           <div className="flex items-center gap-2">
-            <label className={fieldLabelClass}>{field.label}</label>
+            <label className={fieldLabelClass} htmlFor={sliderId} id={labelId}>{field.label}</label>
             {isFieldModified && (
               <span className="px-1.5 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-400">Modified</span>
+            )}
+            {isResetAvailable && (
+              <button
+                type="button"
+                onClick={() => {
+                  const resetValue = baseResetValue ?? 0
+                  onChange(key, field.kind === 'int' ? String(Math.trunc(resetValue)) : String(resetValue))
+                  setEditingField(null)
+                }}
+                disabled={disabled}
+                className={resetButtonClass}
+                aria-label={`${resetActionLabel} for ${field.label}`}
+                title={resetActionLabel}
+              >
+                <RotateCcw className={variant === 'compact' ? 'w-3 h-3' : 'w-3.5 h-3.5'} />
+              </button>
             )}
           </div>
           <p className={fieldDescriptionClass}>{field.description}</p>
@@ -316,20 +391,58 @@ export function SettingsPanel<K extends string>({
             <p className="text-xs text-muted-foreground">Default: {defaultValue ?? '—'}</p>
           )}
         </div>
-        <input
-          type="number"
-          value={formValue}
-          onChange={e => onChange(key, e.target.value)}
-          step={field.step}
-          min={field.min}
-          max={field.max}
-          placeholder={variant === 'compact' && savedValue !== undefined ? String(savedValue) : undefined}
-          disabled={disabled}
-          aria-invalid={fieldError ? 'true' : undefined}
-          className={inputClassName}
-        />
+        <div className={sliderRowClass}>
+          <input
+            type="range"
+            id={sliderId}
+            value={sliderValue}
+            onChange={e => onChange(key, e.target.value)}
+            step={field.step}
+            min={rangeMin}
+            max={rangeMax}
+            disabled={disabled}
+            aria-invalid={fieldError ? 'true' : undefined}
+            aria-labelledby={labelId}
+            aria-describedby={describedBy}
+            className={sliderClass}
+          />
+          {isEditing ? (
+            <input
+              type="number"
+              value={formValue}
+              onChange={e => onChange(key, e.target.value)}
+              onFocus={event => event.currentTarget.select()}
+              onBlur={() => setEditingField(null)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === 'Escape') {
+                  event.currentTarget.blur()
+                }
+              }}
+              step={field.step}
+              min={field.min}
+              max={field.max}
+              disabled={disabled}
+              aria-invalid={fieldError ? 'true' : undefined}
+              aria-labelledby={labelId}
+              aria-describedby={describedBy}
+              className={valueInputClassName}
+              autoFocus
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEditingField(key)}
+              disabled={disabled}
+              className={valueButtonClassName}
+              aria-label={`Edit ${field.label} value`}
+              title="Click to edit"
+            >
+              {displayValue}
+            </button>
+          )}
+        </div>
         {fieldError && (
-          <div className={errorTextClass}>{fieldError}</div>
+          <div className={errorTextClass} id={errorId}>{fieldError}</div>
         )}
       </div>
     )
