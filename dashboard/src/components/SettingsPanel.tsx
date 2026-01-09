@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, RotateCcw, Save } from 'lucide-react'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import { type RetrievalSettings } from '@/lib/api'
+import { cn } from '../lib/utils'
 
 export type SettingsField<K extends string = string> = {
   key: K
@@ -18,6 +19,45 @@ export type SettingsErrors<K extends string = string> = Partial<Record<K, string
 
 export type RetrievalSettingsFormState = SettingsFormState<keyof RetrievalSettings>
 export type RetrievalSettingsErrors = SettingsErrors<keyof RetrievalSettings>
+
+type ModifiedBadgeVariant = 'field' | 'header'
+
+export function ModifiedBadge({
+  variant = 'header',
+  className
+}: { variant?: ModifiedBadgeVariant; className?: string }) {
+  const baseClass = 'text-[10px] rounded bg-amber-500/20 text-amber-400'
+  const variantClass = variant === 'field' ? 'px-1.5 py-0.5' : 'px-2 py-0.5 font-medium'
+  return <span className={cn(baseClass, variantClass, className)}>Modified</span>
+}
+
+export function isSettingsModified<K extends string>({
+  fields,
+  values,
+  baselineValues,
+  errors
+}: {
+  fields: SettingsField<K>[]
+  values: SettingsFormState<K>
+  baselineValues?: Partial<Record<K, number>>
+  errors?: SettingsErrors<K>
+}): boolean {
+  if (!baselineValues) return false
+
+  for (const field of fields) {
+    const rawInput = values[field.key].trim()
+    if (rawInput === '') continue
+    const baselineValue = baselineValues[field.key]
+    if (baselineValue === undefined) continue
+    if (errors?.[field.key]) return true
+    const parsed = Number(rawInput)
+    if (!Number.isFinite(parsed)) return true
+    if (parsed !== baselineValue) {
+      return true
+    }
+  }
+  return false
+}
 
 export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
   {
@@ -282,19 +322,13 @@ export function SettingsPanel<K extends string>({
   const [editingField, setEditingField] = useState<K | null>(null)
 
   const modified = useMemo(() => {
-    if (!shouldShowModifiedBadge || !savedValues) return false
-    for (const field of fields) {
-      const rawInput = values[field.key].trim()
-      if (rawInput === '') continue
-      if (errors?.[field.key]) continue
-      const parsed = Number(rawInput)
-      if (!Number.isFinite(parsed)) continue
-      const normalized = field.kind === 'int' ? Math.trunc(parsed) : parsed
-      if (normalized !== savedValues[field.key]) {
-        return true
-      }
-    }
-    return false
+    if (!shouldShowModifiedBadge) return false
+    return isSettingsModified({
+      fields,
+      values,
+      baselineValues: savedValues,
+      errors
+    })
   }, [errors, fields, savedValues, shouldShowModifiedBadge, values])
 
   const renderField = (field: SettingsField<K>) => {
@@ -367,7 +401,7 @@ export function SettingsPanel<K extends string>({
           <div className="flex items-center gap-2">
             <label className={fieldLabelClass} htmlFor={sliderId} id={labelId}>{field.label}</label>
             {isFieldModified && (
-              <span className="px-1.5 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-400">Modified</span>
+              <ModifiedBadge variant="field" />
             )}
             {isResetAvailable && (
               <button
@@ -509,9 +543,7 @@ export function SettingsPanel<K extends string>({
             <div className="flex items-center gap-2">
               <span className={headerTitleClass}>{title}</span>
               {shouldShowModifiedBadge && modified && (
-                <span className="px-2 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-400 font-medium">
-                  Modified
-                </span>
+                <ModifiedBadge variant="header" />
               )}
             </div>
             {description && (
@@ -533,7 +565,14 @@ export function SettingsPanel<K extends string>({
     <div className={containerClasses}>
       {showHeader && (
         <div>
-          {title && <div className={headerTitleClass}>{title}</div>}
+          {title && (
+            <div className="flex items-center gap-2">
+              <div className={headerTitleClass}>{title}</div>
+              {shouldShowModifiedBadge && modified && (
+                <ModifiedBadge variant="header" />
+              )}
+            </div>
+          )}
           {description && <p className={headerDescriptionClass}>{description}</p>}
         </div>
       )}

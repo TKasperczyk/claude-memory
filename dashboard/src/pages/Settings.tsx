@@ -3,7 +3,14 @@ import { ChevronDown, ChevronRight, RotateCcw, Save } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
-import { RETRIEVAL_FIELDS, SettingsPanel, type RetrievalSettingsFormState, type SettingsField } from '@/components/SettingsPanel'
+import {
+  ModifiedBadge,
+  RETRIEVAL_FIELDS,
+  SettingsPanel,
+  isSettingsModified,
+  type RetrievalSettingsFormState,
+  type SettingsField
+} from '@/components/SettingsPanel'
 import { useSettings, useSettingsDefaults } from '@/hooks/queries'
 import { resetSettings, updateSettings, type Settings } from '@/lib/api'
 
@@ -445,7 +452,10 @@ export default function Settings() {
           description="Control similarity filters and injected context limits."
           values={retrievalForm}
           onChange={(key, value) => setForm(prev => ({ ...prev, [key]: value }))}
+          savedValues={defaultSettings ?? undefined}
           defaultValues={defaultSettings ?? undefined}
+          showModifiedBadge
+          showFieldModified
           disabled={isPending}
           gridClassName="grid gap-5 md:grid-cols-2"
         />
@@ -462,6 +472,11 @@ export default function Settings() {
         <div className="space-y-3">
           {MAINTENANCE_GROUPS.map(group => {
             const isOpen = openGroups[group.id]
+            const groupModified = isSettingsModified({
+              fields: group.fields,
+              values: form,
+              baselineValues: defaultSettings ?? undefined
+            })
             return (
               <div key={group.id} className="rounded-xl border border-border bg-background/40">
                 <button
@@ -474,7 +489,10 @@ export default function Settings() {
                     <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
                   )}
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm">{group.label}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="font-medium text-sm">{group.label}</div>
+                      {groupModified && <ModifiedBadge variant="header" />}
+                    </div>
                     {group.description && (
                       <div className="text-xs text-muted-foreground">{group.description}</div>
                     )}
@@ -487,7 +505,9 @@ export default function Settings() {
                       fields={group.fields}
                       values={form}
                       onChange={(key, value) => setForm(prev => ({ ...prev, [key]: value }))}
+                      savedValues={defaultSettings ?? undefined}
                       defaultValues={defaultSettings ?? undefined}
+                      showFieldModified
                       disabled={isPending}
                       variant="full"
                       containerClassName="px-4 pb-4"
