@@ -1,7 +1,16 @@
 import fs from 'fs'
 import path from 'path'
 import { execFileSync } from 'child_process'
-import { DEFAULT_CONFIG, type Config, type MemoryRecord, type WarningRecord } from './types.js'
+import {
+  DEFAULT_CONFIG,
+  type Config,
+  type DiagnosticContextResult,
+  type ExclusionReason,
+  type MemoryRecord,
+  type NearMissRecord,
+  type ScoredRecord,
+  type WarningRecord
+} from './types.js'
 import { KNOWN_COMMANDS } from './shared.js'
 
 export interface ContextSignals {
@@ -76,40 +85,151 @@ export interface ContextBuildResult {
   records: MemoryRecord[]
 }
 
+type ContextCandidate = MemoryRecord | ScoredRecord
+
+type DiagnosticBuildContextOptions = {
+  diagnostic: true
+  mmrExclusions?: NearMissRecord[]
+}
+
+type StandardBuildContextOptions = {
+  diagnostic?: false | undefined
+  mmrExclusions?: NearMissRecord[]
+}
+
+type BuildContextOptions = DiagnosticBuildContextOptions | StandardBuildContextOptions
+
 const CONTEXT_PREAMBLE = `These are memories from past sessions. Command results and state information may be outdated - verify current state by running commands rather than assuming these results are still valid.`
+
+type ScoredWarningRecord = ScoredRecord & { record: WarningRecord }
+
+function isScoredRecord(candidate: ContextCandidate): candidate is ScoredRecord {
+  return 'record' in candidate
+}
+
+function toScoredRecord(candidate: ContextCandidate): ScoredRecord {
+  if (isScoredRecord(candidate)) return candidate
+  return {
+    record: candidate,
+    score: 0,
+    similarity: 0,
+    keywordMatch: false
+  }
+}
 
 export function buildContext(
   records: MemoryRecord[],
-  config: Config = DEFAULT_CONFIG
-): ContextBuildResult {
-  const filtered = records.filter(record => !record.deprecated)
-  if (filtered.length === 0) return { context: '', records: [] }
+  config?: Config
+): ContextBuildResult
+export function buildContext(
+  records: ScoredRecord[],
+  config?: Config
+): ContextBuildResult
+export function buildContext(
+  records: ScoredRecord[],
+  config: Config,
+  options: DiagnosticBuildContextOptions
+): DiagnosticContextResult
+export function buildContext(
+  records: ContextCandidate[],
+  config: Config = DEFAULT_CONFIG,
+  options: BuildContextOptions = {}
+): ContextBuildResult | DiagnosticContextResult {
+  const diagnostic = options.diagnostic === true
+  const exclusionsById = diagnostic ? new Map<string, NearMissRecord>() : null
+
+  const buildExclusionReason = (
+    reason: ExclusionReason['reason'],
+    threshold: number,
+    actual: number,
+    extra: Partial<ExclusionReason> = {}
+  ): ExclusionReason => ({
+    reason,
+    threshold,
+    actual,
+    gap: threshold - actual,
+    ...extra
+  })
+
+  const addExclusion = (record: ScoredRecord, reason: ExclusionReason): void => {
+    if (!exclusionsById) return
+    const existing = exclusionsById.get(record.record.id)
+    if (existing) {
+      existing.exclusionReasons.push(reason)
+      return
+    }
+    exclusionsById.set(record.record.id, { record, exclusionReasons: [reason] })
+  }
+
+  if (diagnostic && options.mmrExclusions) {
+    for (const exclusion of options.mmrExclusions) {
+      for (const reason of exclusion.exclusionReasons) {
+        addExclusion(exclusion.record, reason)
+      }
+    }
+  }
+
+  const candidates = records.map(toScoredRecord)
+  const filtered = candidates.filter(candidate => !candidate.record.deprecated)
+  if (filtered.length === 0) {
+    if (diagnostic) {
+      return {
+        context: '',
+        injectedRecords: [],
+        exclusions: Array.from(exclusionsById?.values() ?? [])
+      }
+    }
+    return { context: '', records: [] }
+  }
 
   const maxTokens = config.injection.maxTokens
   const maxRecords = config.injection.maxRecords
 
   // Separate warnings from other memories
-  const warnings = filtered.filter((r): r is WarningRecord => r.type === 'warning')
-  const others = filtered.filter(r => r.type !== 'warning')
+  const warnings = filtered.filter((r): r is ScoredWarningRecord => r.record.type === 'warning')
+  const others = filtered.filter(r => r.record.type !== 'warning')
 
   const lines: string[] = []
   let usedTokens = 0
-  const selected: MemoryRecord[] = []
+  const selected: ScoredRecord[] = []
 
   // Inject warnings FIRST with special header (if any exist)
   if (warnings.length > 0) {
     const warningHeader = '<known-pitfalls>'
     const warningFooter = '</known-pitfalls>'
+    const warningFooterTokens = estimateTokens(warningFooter)
+    const warningBudget = maxTokens * 0.3
     lines.push(warningHeader)
     usedTokens += estimateTokens(warningHeader)
 
     let warningCount = 0
-    for (const warning of warnings) {
+    for (let i = 0; i < warnings.length; i++) {
       if (warningCount >= MAX_WARNING_RECORDS) break
-      const entry = formatWarningRecord(warning)
+      const warning = warnings[i]
+      const entry = formatWarningRecord(warning.record)
       const entryTokens = estimateTokens(entry)
-      const projected = usedTokens + entryTokens + estimateTokens(warningFooter)
-      if (projected > maxTokens * 0.3) break // Warnings get max 30% of budget
+      const projected = usedTokens + entryTokens + warningFooterTokens
+      if (projected > warningBudget) {
+        if (diagnostic) {
+          addExclusion(
+            warning,
+            buildExclusionReason('exceeded_token_budget', warningBudget, projected, { projectedTokens: projected })
+          )
+          for (let j = i + 1; j < warnings.length; j++) {
+            const candidate = warnings[j]
+            const candidateEntry = formatWarningRecord(candidate.record)
+            const candidateTokens = estimateTokens(candidateEntry)
+            const candidateProjected = usedTokens + candidateTokens + warningFooterTokens
+            addExclusion(
+              candidate,
+              buildExclusionReason('exceeded_token_budget', warningBudget, candidateProjected, {
+                projectedTokens: candidateProjected
+              })
+            )
+          }
+        }
+        break
+      }
 
       lines.push(`- ${entry}`)
       usedTokens += entryTokens
@@ -118,7 +238,7 @@ export function buildContext(
     }
 
     lines.push(warningFooter)
-    usedTokens += estimateTokens(warningFooter)
+    usedTokens += warningFooterTokens
   }
 
   // Now inject other memories
@@ -132,15 +252,49 @@ export function buildContext(
     usedTokens += estimateTokens(header) + estimateTokens(preamble)
 
     let added = 0
-    for (const record of others) {
-      if (added >= maxRecords) break
-      const entry = formatRecordWithAge(record)
+    const footerTokens = estimateTokens(footer)
+    for (let i = 0; i < others.length; i++) {
+      const record = others[i]
+      const rank = i + 1
+      if (added >= maxRecords) {
+        if (diagnostic) {
+          addExclusion(
+            record,
+            buildExclusionReason('exceeded_max_records', maxRecords, rank, { rank })
+          )
+        }
+        if (!diagnostic) break
+        continue
+      }
+      const entry = formatRecordWithAge(record.record)
       if (!entry) continue
 
       const line = `- ${entry}`
       const lineTokens = estimateTokens(line)
-      const projected = usedTokens + lineTokens + estimateTokens(footer)
-      if (projected > maxTokens) break
+      const projected = usedTokens + lineTokens + footerTokens
+      if (projected > maxTokens) {
+        if (diagnostic) {
+          addExclusion(
+            record,
+            buildExclusionReason('exceeded_token_budget', maxTokens, projected, { projectedTokens: projected })
+          )
+          for (let j = i + 1; j < others.length; j++) {
+            const candidate = others[j]
+            const candidateEntry = formatRecordWithAge(candidate.record)
+            if (!candidateEntry) continue
+            const candidateLine = `- ${candidateEntry}`
+            const candidateTokens = estimateTokens(candidateLine)
+            const candidateProjected = usedTokens + candidateTokens + footerTokens
+            addExclusion(
+              candidate,
+              buildExclusionReason('exceeded_token_budget', maxTokens, candidateProjected, {
+                projectedTokens: candidateProjected
+              })
+            )
+          }
+        }
+        break
+      }
 
       lines.push(line)
       usedTokens += lineTokens
@@ -156,9 +310,24 @@ export function buildContext(
     }
   }
 
-  if (selected.length === 0) return { context: '', records: [] }
+  if (diagnostic && exclusionsById) {
+    for (const injected of selected) {
+      exclusionsById.delete(injected.record.id)
+    }
+  }
 
-  return { context: lines.join('\n'), records: selected }
+  const context = selected.length === 0 ? '' : lines.join('\n')
+
+  if (!diagnostic) {
+    if (selected.length === 0) return { context: '', records: [] }
+    return { context, records: selected.map(item => item.record) }
+  }
+
+  return {
+    context,
+    injectedRecords: selected,
+    exclusions: Array.from(exclusionsById?.values() ?? [])
+  }
 }
 
 function formatWarningRecord(record: WarningRecord): string {

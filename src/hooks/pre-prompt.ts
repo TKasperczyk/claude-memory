@@ -7,7 +7,20 @@ import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNo
 import { embed } from '../lib/embed.js'
 import { loadConfig } from '../lib/config.js'
 import { loadSettings, type RetrievalSettings } from '../lib/settings.js'
-import { DEFAULT_CONFIG, type Config, type HybridSearchResult, type InjectionStatus, type MemoryRecord, type PrePromptInput, type UserPromptSubmitInput } from '../lib/types.js'
+import {
+  DEFAULT_CONFIG,
+  type Config,
+  type DiagnosticContextResult,
+  type DiagnosticSearchResults,
+  type ExclusionReason,
+  type HybridSearchResult,
+  type HybridSearchParams,
+  type InjectionStatus,
+  type MemoryRecord,
+  type NearMissRecord,
+  type PrePromptInput,
+  type UserPromptSubmitInput
+} from '../lib/types.js'
 import { appendSessionTracking } from '../lib/session-tracking.js'
 
 const MAX_KEYWORD_QUERIES = 4
@@ -33,6 +46,12 @@ export interface PrePromptResult {
   results: HybridSearchResult[]
   injectedRecords: MemoryRecord[]
   timedOut: boolean
+  diagnostics?: PrePromptDiagnostics
+}
+
+export interface PrePromptDiagnostics {
+  search: DiagnosticSearchResults
+  context: DiagnosticContextResult
 }
 
 /**
@@ -43,7 +62,7 @@ export interface PrePromptResult {
 export async function handlePrePrompt(
   input: PrePromptInput,
   config: Config = DEFAULT_CONFIG,
-  options: { projectRoot?: string; settingsOverride?: Partial<RetrievalSettings> } = {}
+  options: { projectRoot?: string; settingsOverride?: Partial<RetrievalSettings>; diagnostic?: boolean } = {}
 ): Promise<PrePromptResult> {
   if (!input.prompt || !input.prompt.trim()) {
     return {
@@ -61,15 +80,40 @@ export async function handlePrePrompt(
     ? { ...baseSettings, ...options.settingsOverride }
     : baseSettings
   const runtimeConfig = applySettingsToConfig(config, settings)
+  const diagnostic = options.diagnostic === true
 
   const result = await runWithTimeout(async (signal) => {
     await initMilvus(runtimeConfig)
-    const results = await searchMemories(input.prompt, signals, runtimeConfig, settings, input.cwd, signal)
+    const searchResult = await searchMemories(
+      input.prompt,
+      signals,
+      runtimeConfig,
+      settings,
+      input.cwd,
+      signal,
+      { diagnostic }
+    )
+    const results = searchResult.results
+    if (diagnostic) {
+      const contextResult = buildContext(results, runtimeConfig, {
+        diagnostic: true,
+        mmrExclusions: searchResult.diagnostics?.mmrExclusions
+      })
+      return {
+        context: contextResult.context || null,
+        results,
+        injectedRecords: contextResult.injectedRecords.map(item => item.record),
+        diagnostics: searchResult.diagnostics
+          ? { search: searchResult.diagnostics.search, context: contextResult }
+          : undefined
+      }
+    }
+
     if (results.length === 0) {
       return { context: null, results, injectedRecords: [] }
     }
 
-    const { context, records: injectedRecords } = buildContext(results.map(r => r.record), runtimeConfig)
+    const { context, records: injectedRecords } = buildContext(results, runtimeConfig)
     return { context: context || null, results, injectedRecords }
   }, PREPROMPT_TIMEOUT_MS)
 
@@ -88,8 +132,24 @@ export async function handlePrePrompt(
     signals,
     results: result.value?.results ?? [],
     injectedRecords: result.value?.injectedRecords ?? [],
-    timedOut: false
+    timedOut: false,
+    diagnostics: result.value?.diagnostics
   }
+}
+
+type SearchMemoriesDiagnostics = {
+  search: DiagnosticSearchResults
+  mmrExclusions: NearMissRecord[]
+}
+
+type SearchMemoriesResult = {
+  results: HybridSearchResult[]
+  diagnostics?: SearchMemoriesDiagnostics
+}
+
+type SearchWithScopeResult = {
+  results: HybridSearchResult[]
+  nearMisses: NearMissRecord[]
 }
 
 async function searchMemories(
@@ -98,13 +158,15 @@ async function searchMemories(
   config: Config,
   settings: RetrievalSettings,
   cwd: string,
-  signal?: AbortSignal
-): Promise<HybridSearchResult[]> {
+  signal?: AbortSignal,
+  options: { diagnostic?: boolean } = {}
+): Promise<SearchMemoriesResult> {
   const cleanPrompt = stripNoiseWords(prompt)
   const scope = {
     project: signals.projectRoot ?? cwd,
     domain: signals.domain
   }
+  const diagnostic = options.diagnostic === true
 
   // Pre-compute embedding once to avoid duplicate API calls on retry
   const semanticQuery = buildSemanticQuery(cleanPrompt, signals)
@@ -120,23 +182,111 @@ async function searchMemories(
     }
   }
 
-  let results = await searchWithScope(cleanPrompt, signals, config, settings, scope, embedding, signal)
+  let searchQualifiedResult = await searchWithScope(
+    cleanPrompt,
+    signals,
+    config,
+    settings,
+    scope,
+    embedding,
+    signal,
+    { diagnostic }
+  )
+  let results = searchQualifiedResult.results
+  const searchNearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
+  if (diagnostic && searchNearMisses) {
+    mergeNearMisses(searchNearMisses, searchQualifiedResult.nearMisses)
+  }
+
   if (results.length === 0 && scope.project) {
     // Fallback: remove project filter but preserve domain to avoid cross-domain noise
     console.error('[claude-memory] No project-scoped hits; retrying with domain filter only.')
-    results = await searchWithScope(cleanPrompt, signals, config, settings, { domain: scope.domain }, embedding, signal)
+    searchQualifiedResult = await searchWithScope(
+      cleanPrompt,
+      signals,
+      config,
+      settings,
+      { domain: scope.domain },
+      embedding,
+      signal,
+      { diagnostic }
+    )
+    results = searchQualifiedResult.results
+    if (diagnostic && searchNearMisses) {
+      mergeNearMisses(searchNearMisses, searchQualifiedResult.nearMisses)
+    }
   }
 
+  if (diagnostic && searchNearMisses) {
+    for (const result of results) {
+      searchNearMisses.delete(result.record.id)
+    }
+  }
+
+  const searchDiagnostics = diagnostic
+    ? {
+        qualified: results,
+        nearMisses: Array.from(searchNearMisses?.values() ?? [])
+      }
+    : undefined
+
+  let mmrExclusions: NearMissRecord[] = []
+  let finalResults = results
   // Apply MMR for diversity if we have multiple results with embeddings
   if (results.length > 1) {
-    const diverseResults = applyMMR(results, settings.mmrLambda, config.injection.maxRecords)
-    if (diverseResults.length !== results.length) {
-      console.error(`[claude-memory] MMR reranked ${results.length} -> ${diverseResults.length} results`)
+    if (diagnostic) {
+      const mmrResult = applyMMR(results, settings.mmrLambda, config.injection.maxRecords, { diagnostic: true })
+      if (mmrResult.selected.length !== results.length) {
+        console.error(`[claude-memory] MMR reranked ${results.length} -> ${mmrResult.selected.length} results`)
+      }
+      finalResults = mmrResult.selected
+      mmrExclusions = mmrResult.exclusions
+    } else {
+      const diverseResults = applyMMR(results, settings.mmrLambda, config.injection.maxRecords)
+      if (diverseResults.length !== results.length) {
+        console.error(`[claude-memory] MMR reranked ${results.length} -> ${diverseResults.length} results`)
+      }
+      finalResults = diverseResults
     }
-    return diverseResults
   }
 
-  return results
+  return {
+    results: finalResults,
+    diagnostics: diagnostic
+      ? {
+          search: searchDiagnostics ?? { qualified: [], nearMisses: [] },
+          mmrExclusions
+        }
+      : undefined
+  }
+}
+
+function mergeNearMisses(target: Map<string, NearMissRecord>, incoming: NearMissRecord[]): void {
+  for (const entry of incoming) {
+    const id = entry.record.record.id
+    const existing = target.get(id)
+    if (existing) {
+      existing.exclusionReasons.push(...entry.exclusionReasons)
+      continue
+    }
+    target.set(id, { record: entry.record, exclusionReasons: [...entry.exclusionReasons] })
+  }
+}
+
+async function runHybridSearch(
+  params: HybridSearchParams,
+  config: Config,
+  diagnostic: boolean
+): Promise<SearchWithScopeResult> {
+  const response = await hybridSearch(
+    diagnostic ? { ...params, diagnostic: true } : params,
+    config
+  )
+  if (diagnostic) {
+    const diagnosticResponse = response as DiagnosticSearchResults
+    return { results: diagnosticResponse.qualified, nearMisses: diagnosticResponse.nearMisses }
+  }
+  return { results: response as HybridSearchResult[], nearMisses: [] }
 }
 
 async function searchWithScope(
@@ -146,17 +296,20 @@ async function searchWithScope(
   settings: RetrievalSettings,
   scope: { project?: string; domain?: string },
   precomputedEmbedding?: number[],
-  signal?: AbortSignal
-): Promise<HybridSearchResult[]> {
+  signal?: AbortSignal,
+  options: { diagnostic?: boolean } = {}
+): Promise<SearchWithScopeResult> {
   const limit = config.injection.maxRecords
   const keywordQueries = buildKeywordQueries(signals, cleanPrompt)
   const resultsById = new Map<string, HybridSearchResult>()
+  const diagnostic = options.diagnostic === true
+  const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
   console.error(`[claude-memory] Signals: errors=${signals.errors.length}, commands=${signals.commands.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
 
   for (const query of keywordQueries) {
     if (resultsById.size >= limit) break
-    const keywordResults = await hybridSearch({
+    const keywordResults = await runHybridSearch({
       query,
       limit,
       project: scope.project,
@@ -168,17 +321,20 @@ async function searchWithScope(
       usageRatioWeight: settings.usageRatioWeight,
       includeEmbeddings: true,
       signal
-    }, config)
-    for (const item of keywordResults) {
+    }, config, diagnostic)
+    for (const item of keywordResults.results) {
       if (resultsById.size >= limit) break
       if (!resultsById.has(item.record.id)) {
         resultsById.set(item.record.id, item)
       }
     }
+    if (diagnostic && nearMisses) {
+      mergeNearMisses(nearMisses, keywordResults.nearMisses)
+    }
   }
 
   if (precomputedEmbedding) {
-    const semanticResults = await hybridSearch({
+    const semanticResults = await runHybridSearch({
       query: '', // Not used when embedding provided
       embedding: precomputedEmbedding,
       limit,
@@ -192,8 +348,8 @@ async function searchWithScope(
       usageRatioWeight: settings.usageRatioWeight,
       includeEmbeddings: true,
       signal
-    }, config)
-    for (const item of semanticResults) {
+    }, config, diagnostic)
+    for (const item of semanticResults.results) {
       const existing = resultsById.get(item.record.id)
       if (existing) {
         // Merge: record was found by both keyword and semantic search
@@ -203,36 +359,76 @@ async function searchWithScope(
         resultsById.set(item.record.id, item)
       }
     }
+    if (diagnostic && nearMisses) {
+      mergeNearMisses(nearMisses, semanticResults.nearMisses)
+    }
   }
 
-  return Array.from(resultsById.values())
+  const filteredResults = Array.from(resultsById.values())
     .filter(result => result.keywordMatch || result.score >= settings.minScore)
+  if (diagnostic && nearMisses) {
+    for (const result of filteredResults) {
+      nearMisses.delete(result.record.id)
+    }
+  }
+  return { results: filteredResults, nearMisses: Array.from(nearMisses?.values() ?? []) }
 }
 
 /**
  * Apply Maximal Marginal Relevance to diversify results.
  * Penalizes candidates that are too similar to already-selected items.
  */
+type MMRDiagnosticResult = {
+  selected: HybridSearchResult[]
+  exclusions: NearMissRecord[]
+}
+
 function applyMMR(
   candidates: HybridSearchResult[],
   lambda: number,
-  limit: number
-): HybridSearchResult[] {
-  if (candidates.length <= 1) return candidates
+  limit: number,
+  options: { diagnostic: true }
+): MMRDiagnosticResult
+function applyMMR(
+  candidates: HybridSearchResult[],
+  lambda: number,
+  limit: number,
+  options?: { diagnostic?: false | undefined }
+): HybridSearchResult[]
+function applyMMR(
+  candidates: HybridSearchResult[],
+  lambda: number,
+  limit: number,
+  options: { diagnostic?: boolean } = {}
+): HybridSearchResult[] | MMRDiagnosticResult {
+  const diagnostic = options.diagnostic === true
+  if (limit <= 0) {
+    return diagnostic ? { selected: [], exclusions: [] } : []
+  }
+  if (candidates.length <= 1) {
+    return diagnostic ? { selected: candidates, exclusions: [] } : candidates
+  }
 
   // Filter to candidates with embeddings
   const withEmbeddings = candidates.filter(c => c.record.embedding && c.record.embedding.length > 0)
   const withoutEmbeddings = candidates.filter(c => !c.record.embedding || c.record.embedding.length === 0)
 
   // If no embeddings available, return original order
-  if (withEmbeddings.length === 0) return candidates
+  if (withEmbeddings.length === 0) {
+    return diagnostic ? { selected: candidates, exclusions: [] } : candidates
+  }
 
   const selected: HybridSearchResult[] = []
   const remaining = [...withEmbeddings]
+  let lastSelectedMmr = 0
 
   // First pick is always highest relevance
   remaining.sort((a, b) => b.score - a.score)
-  selected.push(remaining.shift()!)
+  const first = remaining.shift()!
+  selected.push(first)
+  if (diagnostic) {
+    lastSelectedMmr = lambda * first.score
+  }
 
   while (remaining.length > 0 && selected.length < limit) {
     let bestIdx = 0
@@ -242,9 +438,11 @@ function applyMMR(
       const relevance = remaining[i].score
 
       // Max similarity to any already-selected item
-      const maxSim = Math.max(...selected.map(s =>
-        cosineSimilarity(s.record.embedding!, remaining[i].record.embedding!)
-      ))
+      let maxSim = -Infinity
+      for (const chosen of selected) {
+        const sim = cosineSimilarity(chosen.record.embedding!, remaining[i].record.embedding!)
+        maxSim = Math.max(maxSim, sim)
+      }
 
       // MMR = λ * relevance - (1-λ) * maxSimilarity
       const mmr = lambda * relevance - (1 - lambda) * maxSim
@@ -256,6 +454,9 @@ function applyMMR(
     }
 
     selected.push(remaining.splice(bestIdx, 1)[0])
+    if (diagnostic) {
+      lastSelectedMmr = bestMMR
+    }
   }
 
   // Append any records without embeddings at the end (they couldn't be compared)
@@ -264,7 +465,41 @@ function applyMMR(
     selected.push(item)
   }
 
-  return selected.slice(0, limit)
+  const finalSelected = selected.slice(0, limit)
+
+  if (!diagnostic) {
+    return finalSelected
+  }
+
+  const exclusions: NearMissRecord[] = []
+  if (remaining.length > 0) {
+    const selectedWithEmbeddings = finalSelected.filter(item =>
+      item.record.embedding && item.record.embedding.length > 0
+    )
+    for (const candidate of remaining) {
+      let maxSim = -Infinity
+      let similarTo: string | undefined
+      for (const chosen of selectedWithEmbeddings) {
+        const sim = cosineSimilarity(chosen.record.embedding!, candidate.record.embedding!)
+        if (sim > maxSim) {
+          maxSim = sim
+          similarTo = chosen.record.id
+        }
+      }
+      const mmr = lambda * candidate.score - (1 - lambda) * maxSim
+      const reason: ExclusionReason = {
+        reason: 'mmr_diversity_penalty',
+        threshold: lastSelectedMmr,
+        actual: mmr,
+        gap: lastSelectedMmr - mmr,
+        similarTo,
+        similarityScore: maxSim
+      }
+      exclusions.push({ record: candidate, exclusionReasons: [reason] })
+    }
+  }
+
+  return { selected: finalSelected, exclusions }
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {

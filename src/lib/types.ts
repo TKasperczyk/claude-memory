@@ -177,9 +177,14 @@ export type ScoredRecord = HybridSearchResult
 
 export interface ExclusionReason {
   reason: 'score_below_threshold' | 'similarity_below_threshold' | 'semantic_only_score_below_threshold'
+    | 'mmr_diversity_penalty' | 'exceeded_max_records' | 'exceeded_token_budget'
   threshold: number
   actual: number
   gap: number
+  similarTo?: string
+  similarityScore?: number
+  rank?: number
+  projectedTokens?: number
 }
 
 export interface NearMissRecord {
@@ -190,6 +195,12 @@ export interface NearMissRecord {
 export interface DiagnosticSearchResults {
   qualified: ScoredRecord[]
   nearMisses: NearMissRecord[]
+}
+
+export interface DiagnosticContextResult {
+  context: string
+  injectedRecords: ScoredRecord[]
+  exclusions: NearMissRecord[]
 }
 
 // Hook input types (from Claude Code)
