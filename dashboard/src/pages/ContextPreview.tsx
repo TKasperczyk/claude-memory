@@ -1,11 +1,26 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
-import { previewContext, type MemoryRecord, type PreviewResponse } from '@/lib/api'
+import {
+  RETRIEVAL_FIELDS,
+  SettingsPanel,
+  buildSettingsOverride,
+  toFormState,
+  type RetrievalSettingsFormState
+} from '@/components/SettingsPanel'
+import {
+  previewContext,
+  updateSettings,
+  type MemoryRecord,
+  type PreviewResponse,
+  type RetrievalSettings
+} from '@/lib/api'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
+import { useSettings, useSettingsDefaults } from '@/hooks/queries'
 
 type PreviewLocationState = {
   prompt?: string
@@ -32,7 +47,9 @@ function highlightContext(str: string): string {
   return out
 }
 
+
 export default function ContextPreview() {
+  const queryClient = useQueryClient()
   const location = useLocation()
   const locationState = location.state as PreviewLocationState | null
   const previewPrompt = typeof locationState?.prompt === 'string' ? locationState.prompt : ''
@@ -44,6 +61,39 @@ export default function ContextPreview() {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<MemoryRecord | null>(null)
 
+  // Settings state
+  const { data: savedSettings, isPending: settingsPending } = useSettings()
+  const { data: defaultsResponse } = useSettingsDefaults()
+  const defaultSettings = defaultsResponse?.settings ?? null
+  const [settingsForm, setSettingsForm] = useState<RetrievalSettingsFormState>(() =>
+    toFormState(savedSettings ?? defaultSettings ?? null)
+  )
+  const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  // Sync settings form when saved settings load
+  useEffect(() => {
+    if (savedSettings) {
+      setSettingsForm(toFormState(savedSettings))
+    }
+  }, [savedSettings])
+
+  const isFormEmpty = useMemo(() => (
+    RETRIEVAL_FIELDS.every(field => settingsForm[field.key].trim() === '')
+  ), [settingsForm])
+
+  useEffect(() => {
+    if (!savedSettings && defaultSettings && isFormEmpty) {
+      setSettingsForm(toFormState(defaultSettings))
+    }
+  }, [defaultSettings, isFormEmpty, savedSettings])
+
+  // Clear save message after delay
+  useEffect(() => {
+    if (!saveMessage) return
+    const timer = setTimeout(() => setSaveMessage(null), 3500)
+    return () => clearTimeout(timer)
+  }, [saveMessage])
+
   useEffect(() => {
     if (!previewPrompt && !previewCwd) return
     setPrompt(previewPrompt)
@@ -51,6 +101,52 @@ export default function ContextPreview() {
     setResult(null)
     setError(null)
   }, [previewPrompt, previewCwd])
+
+  // Compute if we have overrides
+  const effectiveSettings = savedSettings ?? defaultSettings
+  const settingsValidation = useMemo(() => {
+    if (!effectiveSettings) {
+      return { override: undefined, errors: {}, hasOverride: false, isDirty: false, values: {} }
+    }
+    return buildSettingsOverride(settingsForm, effectiveSettings as RetrievalSettings)
+  }, [effectiveSettings, settingsForm])
+  const {
+    override: settingsOverride,
+    errors: settingsErrors,
+    hasOverride,
+    isDirty,
+    values: parsedValues
+  } = settingsValidation
+  const hasErrors = Object.keys(settingsErrors).length > 0
+
+  const saveMutation = useMutation({
+    mutationFn: updateSettings,
+    onSuccess: data => {
+      queryClient.setQueryData(['settings'], data)
+      setSettingsForm(toFormState(data))
+      setSaveMessage({ type: 'success', text: 'Settings saved.' })
+    },
+    onError: err => {
+      setSaveMessage({ type: 'error', text: (err as Error).message || 'Failed to save settings.' })
+    }
+  })
+
+  const handleSaveSettings = () => {
+    if (!effectiveSettings) return
+    if (hasErrors) {
+      setSaveMessage({ type: 'error', text: 'Fix invalid values before applying.' })
+      return
+    }
+    saveMutation.mutate(parsedValues)
+  }
+
+  const handleResetSettings = () => {
+    if (savedSettings) {
+      setSettingsForm(toFormState(savedSettings))
+    } else if (defaultSettings) {
+      setSettingsForm(toFormState(defaultSettings))
+    }
+  }
 
   const handlePreview = async () => {
     const trimmed = prompt.trim()
@@ -63,7 +159,11 @@ export default function ContextPreview() {
     setLoading(true)
     setError(null)
     try {
-      const response = await previewContext({ prompt: trimmed, cwd: cwd.trim() || undefined })
+      const response = await previewContext({
+        prompt: trimmed,
+        cwd: cwd.trim() || undefined,
+        settings: settingsOverride
+      })
       setResult(response)
     } catch (err) {
       setError((err as Error).message || 'Failed to preview context')
@@ -71,6 +171,8 @@ export default function ContextPreview() {
       setLoading(false)
     }
   }
+
+  const previewDisabled = loading || settingsPending
 
   return (
     <div className="space-y-6">
@@ -107,7 +209,7 @@ export default function ContextPreview() {
           </div>
           <button
             onClick={handlePreview}
-            disabled={loading}
+            disabled={previewDisabled}
             className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
           >
             {loading ? <ButtonSpinner size="sm" /> : <Play className="w-4 h-4" />}
@@ -119,6 +221,27 @@ export default function ContextPreview() {
           <div className="text-sm text-destructive">{error}</div>
         )}
       </div>
+
+      {/* Retrieval Settings */}
+      <SettingsPanel
+        fields={RETRIEVAL_FIELDS}
+        variant="compact"
+        collapsible
+        title="Retrieval Settings"
+        description="Adjust thresholds and limits for this preview (not saved until you apply)"
+        values={settingsForm}
+        onChange={(key, value) => setSettingsForm(prev => ({ ...prev, [key]: value }))}
+        savedValues={effectiveSettings ?? undefined}
+        errors={settingsErrors}
+        onSave={handleSaveSettings}
+        onReset={handleResetSettings}
+        isSaving={saveMutation.isPending}
+        saveDisabled={saveMutation.isPending || !hasOverride || hasErrors}
+        resetDisabled={!isDirty}
+        saveLabel="Apply Settings"
+        status={saveMessage}
+        disabled={settingsPending}
+      />
 
       {/* Results */}
       {result && (

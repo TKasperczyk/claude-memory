@@ -25,6 +25,7 @@ import { findGitRoot } from '../../src/lib/context.js'
 import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
 import { loadConfig } from '../../src/lib/config.js'
 import {
+  coerceRetrievalSettings,
   getDefaultMaintenanceSettings,
   getDefaultSettings,
   loadSettings,
@@ -707,10 +708,14 @@ app.post('/api/reset-collection', async (_req, res) => {
 // Preview context injection for a prompt (uses same logic as pre-prompt hook)
 app.post('/api/preview', async (req, res) => {
   try {
-    const { prompt, cwd = '/tmp' } = req.body
+    const { prompt, cwd = '/tmp', settings: rawSettingsOverride } = req.body
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt required' })
     }
+
+    const settingsOverride = isPlainObject(rawSettingsOverride)
+      ? coerceRetrievalSettings(rawSettingsOverride as Record<string, unknown>, loadSettings())
+      : undefined
 
     // Use the same handlePrePrompt function as the actual hook
     const result = await handlePrePrompt({
@@ -718,7 +723,7 @@ app.post('/api/preview', async (req, res) => {
       prompt,
       cwd,
       session_id: 'preview'
-    }, CONFIG)
+    }, CONFIG, { settingsOverride })
 
     res.json({
       signals: result.signals,

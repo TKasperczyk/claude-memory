@@ -145,7 +145,7 @@ function coerceSettings(value: unknown, fallback: Settings): Settings {
   }
 }
 
-function coerceRetrievalSettings(value: Record<string, unknown>, fallback: RetrievalSettings): RetrievalSettings {
+export function coerceRetrievalSettings(value: Record<string, unknown>, fallback: RetrievalSettings): RetrievalSettings {
   return {
     minSemanticSimilarity: coerceFloat(value.minSemanticSimilarity, fallback.minSemanticSimilarity, 0, 1),
     minScore: coerceFloat(value.minScore, fallback.minScore, 0, 1),

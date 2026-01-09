@@ -537,7 +537,11 @@ export function searchMemories(params: {
   return request(`/search?${search.toString()}`)
 }
 
-export function previewContext(payload: { prompt: string; cwd?: string }): Promise<PreviewResponse> {
+export function previewContext(payload: {
+  prompt: string
+  cwd?: string
+  settings?: Partial<RetrievalSettings>
+}): Promise<PreviewResponse> {
   return request('/preview', {
     method: 'POST',
     body: JSON.stringify(payload)

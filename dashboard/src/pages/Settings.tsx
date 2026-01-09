@@ -3,91 +3,19 @@ import { ChevronDown, ChevronRight, RotateCcw, Save } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
+import { RETRIEVAL_FIELDS, SettingsPanel, type RetrievalSettingsFormState, type SettingsField } from '@/components/SettingsPanel'
 import { useSettings, useSettingsDefaults } from '@/hooks/queries'
 import { resetSettings, updateSettings, type Settings } from '@/lib/api'
 
 type SettingsKey = keyof Settings
 type FormState = Record<SettingsKey, string>
-type SettingsField = {
-  key: SettingsKey
-  label: string
-  description: string
-  step: number
-  min?: number
-  max?: number
-  kind: 'float' | 'int'
-}
 
 type SettingsGroup = {
   id: string
   label: string
   description?: string
-  fields: SettingsField[]
+  fields: SettingsField<SettingsKey>[]
 }
-
-const RETRIEVAL_FIELDS: SettingsField[] = [
-  {
-    key: 'minSemanticSimilarity',
-    label: 'Min semantic similarity',
-    description: 'Drop semantic matches below this cosine similarity.',
-    step: 0.01,
-    min: 0,
-    max: 1,
-    kind: 'float'
-  },
-  {
-    key: 'minScore',
-    label: 'Min hybrid score',
-    description: 'Threshold for non-keyword matches in hybrid retrieval.',
-    step: 0.01,
-    min: 0,
-    max: 1,
-    kind: 'float'
-  },
-  {
-    key: 'minSemanticOnlyScore',
-    label: 'Min semantic-only score',
-    description: 'Score cutoff when only semantic search is used.',
-    step: 0.01,
-    min: 0,
-    max: 1,
-    kind: 'float'
-  },
-  {
-    key: 'maxRecords',
-    label: 'Max records',
-    description: 'Maximum memories injected per prompt.',
-    step: 1,
-    min: 1,
-    kind: 'int'
-  },
-  {
-    key: 'maxTokens',
-    label: 'Max tokens',
-    description: 'Token budget for the injected context block.',
-    step: 50,
-    min: 1,
-    kind: 'int'
-  },
-  {
-    key: 'mmrLambda',
-    label: 'MMR lambda',
-    description: 'Balance relevance vs. diversity (1.0 = relevance).',
-    step: 0.01,
-    min: 0,
-    max: 1,
-    kind: 'float'
-  },
-  {
-    key: 'usageRatioWeight',
-    label: 'Usage ratio weight',
-    description: 'Boost memories with high usefulness ratings.',
-    step: 0.01,
-    min: 0,
-    max: 1,
-    kind: 'float'
-  }
-]
 
 const MAINTENANCE_GROUPS: SettingsGroup[] = [
   {
@@ -367,7 +295,10 @@ const MAINTENANCE_GROUPS: SettingsGroup[] = [
   }
 ]
 
-const ALL_FIELDS = [...RETRIEVAL_FIELDS, ...MAINTENANCE_GROUPS.flatMap(group => group.fields)]
+const ALL_FIELDS: SettingsField<SettingsKey>[] = [
+  ...RETRIEVAL_FIELDS,
+  ...MAINTENANCE_GROUPS.flatMap(group => group.fields)
+]
 
 function toFormState(settings: Partial<Settings> | null): FormState {
   return ALL_FIELDS.reduce((acc, field) => {
@@ -434,6 +365,12 @@ export default function Settings() {
   const isDirty = initialForm
     ? ALL_FIELDS.some(field => form[field.key] !== initialForm[field.key])
     : true
+  const retrievalForm = useMemo(() => {
+    return RETRIEVAL_FIELDS.reduce((acc, field) => {
+      acc[field.key] = form[field.key]
+      return acc
+    }, {} as RetrievalSettingsFormState)
+  }, [form])
 
   const saveMutation = useMutation({
     mutationFn: updateSettings,
@@ -476,31 +413,6 @@ export default function Settings() {
     setOpenGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }))
   }
 
-  const renderField = (field: SettingsField) => {
-    const defaultValue = defaultSettings?.[field.key]
-    return (
-      <div key={field.key} className="space-y-2">
-        <div>
-          <label className="block text-sm font-medium">{field.label}</label>
-          <p className="text-xs text-muted-foreground">{field.description}</p>
-          <p className="text-xs text-muted-foreground">
-            Default: {defaultValue ?? '—'}
-          </p>
-        </div>
-        <input
-          type="number"
-          value={form[field.key]}
-          onChange={e => setForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-          step={field.step}
-          min={field.min}
-          max={field.max}
-          disabled={isPending}
-          className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
-        />
-      </div>
-    )
-  }
-
   return (
     <div className="space-y-6">
       <PageHeader
@@ -525,16 +437,18 @@ export default function Settings() {
           </div>
         )}
 
-        <div>
-          <div className="text-sm font-semibold">Retrieval settings</div>
-          <p className="text-xs text-muted-foreground">
-            Control similarity filters and injected context limits.
-          </p>
-        </div>
-
-        <div className="grid gap-5 md:grid-cols-2">
-          {RETRIEVAL_FIELDS.map(renderField)}
-        </div>
+        <SettingsPanel
+          fields={RETRIEVAL_FIELDS}
+          variant="full"
+          collapsible={false}
+          title="Retrieval settings"
+          description="Control similarity filters and injected context limits."
+          values={retrievalForm}
+          onChange={(key, value) => setForm(prev => ({ ...prev, [key]: value }))}
+          defaultValues={defaultSettings ?? undefined}
+          disabled={isPending}
+          gridClassName="grid gap-5 md:grid-cols-2"
+        />
       </div>
 
       <div className="p-6 rounded-xl border border-border bg-card space-y-5">
@@ -569,9 +483,15 @@ export default function Settings() {
 
                 <div className={`accordion-content ${isOpen ? 'open' : ''}`}>
                   <div className="accordion-inner">
-                    <div className="grid gap-5 md:grid-cols-2 px-4 pb-4">
-                      {group.fields.map(renderField)}
-                    </div>
+                    <SettingsPanel
+                      fields={group.fields}
+                      values={form}
+                      onChange={(key, value) => setForm(prev => ({ ...prev, [key]: value }))}
+                      defaultValues={defaultSettings ?? undefined}
+                      disabled={isPending}
+                      variant="full"
+                      containerClassName="px-4 pb-4"
+                    />
                   </div>
                 </div>
               </div>

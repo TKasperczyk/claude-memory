@@ -43,7 +43,7 @@ export interface PrePromptResult {
 export async function handlePrePrompt(
   input: PrePromptInput,
   config: Config = DEFAULT_CONFIG,
-  options: { projectRoot?: string } = {}
+  options: { projectRoot?: string; settingsOverride?: Partial<RetrievalSettings> } = {}
 ): Promise<PrePromptResult> {
   if (!input.prompt || !input.prompt.trim()) {
     return {
@@ -56,7 +56,10 @@ export async function handlePrePrompt(
   }
 
   const signals = extractSignals(input.prompt, input.cwd, options.projectRoot)
-  const settings = loadSettings()
+  const baseSettings = loadSettings()
+  const settings: RetrievalSettings = options.settingsOverride
+    ? { ...baseSettings, ...options.settingsOverride }
+    : baseSettings
   const runtimeConfig = applySettingsToConfig(config, settings)
 
   const result = await runWithTimeout(async (signal) => {
