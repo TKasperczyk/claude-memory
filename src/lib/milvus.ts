@@ -13,8 +13,13 @@ import {
   EMBEDDING_DIM,
   SIMILARITY_THRESHOLDS,
   type Config,
+  type DiagnosticSearchResults,
+  type ExclusionReason,
   type HybridSearchParams,
+  type HybridSearchParamsWithDiagnostic,
+  type HybridSearchParamsWithoutDiagnostic,
   type HybridSearchResult,
+  type NearMissRecord,
   type MemoryRecord,
   type RecordScope,
   type RecordType
@@ -548,9 +553,21 @@ export async function countRecords(
 }
 
 export async function hybridSearch(
+  params: HybridSearchParamsWithDiagnostic,
+  config?: Config
+): Promise<DiagnosticSearchResults>;
+export async function hybridSearch(
+  params: HybridSearchParamsWithoutDiagnostic,
+  config?: Config
+): Promise<HybridSearchResult[]>;
+export async function hybridSearch(
+  params: HybridSearchParams,
+  config?: Config
+): Promise<HybridSearchResult[] | DiagnosticSearchResults>;
+export async function hybridSearch(
   params: HybridSearchParams,
   config: Config = DEFAULT_CONFIG
-): Promise<HybridSearchResult[]> {
+): Promise<HybridSearchResult[] | DiagnosticSearchResults> {
   try {
     await ensureClient(config)
 
@@ -559,6 +576,7 @@ export async function hybridSearch(
       throw new Error('Search aborted')
     }
 
+    const diagnostic = Boolean(params.diagnostic)
     const trimmedQuery = params.query.trim()
     const limit = params.limit ?? 10
     const vectorWeight = params.vectorWeight ?? 0.7
@@ -566,8 +584,11 @@ export async function hybridSearch(
     const minSimilarity = params.minSimilarity ?? 0
     const minScore = params.minScore ?? 0.45
     const usageRatioWeight = params.usageRatioWeight ?? 0.2
-    const vectorLimit = params.vectorLimit ?? limit
-    const keywordLimit = params.keywordLimit ?? limit
+    const diagnosticLimit = diagnostic ? Math.max(limit * 3, limit + 20) : limit
+    const vectorLimitBase = params.vectorLimit ?? limit
+    const keywordLimitBase = params.keywordLimit ?? limit
+    const vectorLimit = diagnostic ? Math.max(vectorLimitBase, diagnosticLimit) : vectorLimitBase
+    const keywordLimit = diagnostic ? Math.max(keywordLimitBase, diagnosticLimit) : keywordLimitBase
     const shouldApplyMinScore = vectorWeight > 0
 
     const baseFilter = buildFilter({
@@ -583,6 +604,42 @@ export async function hybridSearch(
       : OUTPUT_FIELDS
 
     const combined = new Map<string, { record: MemoryRecord; similarity: number; keywordMatch: boolean }>()
+    const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
+
+    const buildScoredRecord = (
+      entry: { record: MemoryRecord; similarity: number; keywordMatch: boolean }
+    ): HybridSearchResult => {
+      const baseScore = (entry.keywordMatch ? keywordWeight : 0) + (entry.similarity * vectorWeight)
+      const usageRatio = computeUsageRatio(entry.record)
+      const score = baseScore + (usageRatio * usageRatioWeight)
+      return {
+        record: entry.record,
+        similarity: entry.similarity,
+        keywordMatch: entry.keywordMatch,
+        score
+      }
+    }
+
+    const buildExclusionReason = (
+      reason: ExclusionReason['reason'],
+      threshold: number,
+      actual: number
+    ): ExclusionReason => ({
+      reason,
+      threshold,
+      actual,
+      gap: threshold - actual
+    })
+
+    const addNearMiss = (record: HybridSearchResult, reason: ExclusionReason): void => {
+      if (!nearMisses) return
+      const existing = nearMisses.get(record.record.id)
+      if (existing) {
+        existing.exclusionReasons.push(reason)
+        return
+      }
+      nearMisses.set(record.record.id, { record, exclusionReasons: [reason] })
+    }
 
     if (trimmedQuery.length > 0 && keywordWeight > 0) {
       if (abortSignal?.aborted) {
@@ -621,7 +678,20 @@ export async function hybridSearch(
 
       for (const row of searchResults.results ?? []) {
         const similarity = row.score ?? 0
-        if (similarity < minSimilarity) continue
+        if (similarity < minSimilarity) {
+          if (diagnostic) {
+            const record = parseRecordFromRow(row)
+            if (!record) continue
+            if (!combined.has(record.id)) {
+              const scored = buildScoredRecord({ record, similarity, keywordMatch: false })
+              addNearMiss(
+                scored,
+                buildExclusionReason('similarity_below_threshold', minSimilarity, similarity)
+              )
+            }
+          }
+          continue
+        }
         const record = parseRecordFromRow(row)
         if (!record) continue
         const existing = combined.get(record.id)
@@ -633,26 +703,39 @@ export async function hybridSearch(
       }
     }
 
-    const results: HybridSearchResult[] = Array.from(combined.values()).map(entry => {
-      const baseScore = (entry.keywordMatch ? keywordWeight : 0) + (entry.similarity * vectorWeight)
-      const usageRatio = computeUsageRatio(entry.record)
-      const score = baseScore + (usageRatio * usageRatioWeight)
-      return {
-        record: entry.record,
-        similarity: entry.similarity,
-        keywordMatch: entry.keywordMatch,
-        score
-      }
-    })
+    const results: HybridSearchResult[] = Array.from(combined.values()).map(buildScoredRecord)
 
     results.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score
       return b.similarity - a.similarity
     })
 
-    return results
+    if (diagnostic && shouldApplyMinScore) {
+      for (const result of results) {
+        if (!result.keywordMatch && result.score < minScore) {
+          const scoreReason: ExclusionReason['reason'] = result.keywordMatch
+            ? 'score_below_threshold'
+            : 'semantic_only_score_below_threshold'
+          addNearMiss(result, buildExclusionReason(scoreReason, minScore, result.score))
+        }
+      }
+    }
+
+    const qualified = results
       .filter(r => !shouldApplyMinScore || r.keywordMatch || r.score >= minScore)
       .slice(0, limit)
+
+    if (diagnostic) {
+      for (const result of qualified) {
+        nearMisses?.delete(result.record.id)
+      }
+      return {
+        qualified,
+        nearMisses: Array.from(nearMisses?.values() ?? [])
+      }
+    }
+
+    return qualified
   } catch (error) {
     console.error('[claude-memory] hybridSearch failed:', error)
     throw error

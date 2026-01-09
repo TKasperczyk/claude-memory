@@ -135,7 +135,7 @@ export interface InjectionSessionRecord {
   lastStatus?: InjectionStatus // Status of last injection attempt
 }
 
-export interface HybridSearchParams {
+export interface HybridSearchParamsBase {
   query: string
   limit?: number
   project?: string
@@ -154,11 +154,42 @@ export interface HybridSearchParams {
   signal?: AbortSignal
 }
 
+export type HybridSearchParamsWithDiagnostic = HybridSearchParamsBase & {
+  diagnostic: true
+}
+
+export type HybridSearchParamsWithoutDiagnostic = HybridSearchParamsBase & {
+  diagnostic?: false | undefined
+}
+
+export type HybridSearchParams =
+  | HybridSearchParamsWithDiagnostic
+  | HybridSearchParamsWithoutDiagnostic
+
 export interface HybridSearchResult {
   record: MemoryRecord
   score: number
   similarity: number
   keywordMatch: boolean
+}
+
+export type ScoredRecord = HybridSearchResult
+
+export interface ExclusionReason {
+  reason: 'score_below_threshold' | 'similarity_below_threshold' | 'semantic_only_score_below_threshold'
+  threshold: number
+  actual: number
+  gap: number
+}
+
+export interface NearMissRecord {
+  record: ScoredRecord
+  exclusionReasons: ExclusionReason[]
+}
+
+export interface DiagnosticSearchResults {
+  qualified: ScoredRecord[]
+  nearMisses: NearMissRecord[]
 }
 
 // Hook input types (from Claude Code)
