@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   fetchExtractions,
   fetchHookStatus,
+  fetchInstallationStatus,
   fetchMemories,
   fetchMemoryTypes,
   fetchSettings,
@@ -11,6 +12,7 @@ import {
   searchMemories,
   type ExtractionListResponse,
   type HookStatusResponse,
+  type InstallationStatusResponse,
   type MemoryListResponse,
   type RecordType,
   type Settings,
@@ -137,5 +139,12 @@ export function useHookStatus() {
   return useQuery<HookStatusResponse>({
     queryKey: ['hooksStatus'],
     queryFn: fetchHookStatus
+  })
+}
+
+export function useInstallationStatus() {
+  return useQuery<InstallationStatusResponse>({
+    queryKey: ['installationStatus'],
+    queryFn: fetchInstallationStatus
   })
 }

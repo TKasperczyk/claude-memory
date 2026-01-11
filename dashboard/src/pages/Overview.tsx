@@ -5,8 +5,8 @@ import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import StatsCard from '@/components/StatsCard'
 import Skeleton from '@/components/Skeleton'
-import { useHookStatus, useStats } from '@/hooks/queries'
-import { installHooks, resetCollection, uninstallHooks, type HookEvent, type RecordType } from '@/lib/api'
+import { useInstallationStatus, useStats } from '@/hooks/queries'
+import { installAll, resetCollection, uninstallAll, type HookEvent, type RecordType } from '@/lib/api'
 
 const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   command: { label: 'Commands', color: '#2dd4bf' },
@@ -151,13 +151,13 @@ function TopListSkeleton({ title }: { title: string }) {
 export default function Overview() {
   const queryClient = useQueryClient()
   const { data, error, isPending, refetch } = useStats()
-  const { data: hookStatus, error: hookError, isPending: hookPending } = useHookStatus()
+  const { data: installationStatus, error: installationError, isPending: installationPending } = useInstallationStatus()
   const [resetOpen, setResetOpen] = useState(false)
   const [resetInput, setResetInput] = useState('')
   const [resetError, setResetError] = useState<string | null>(null)
   const [resetNotice, setResetNotice] = useState<string | null>(null)
   const [resetRunning, setResetRunning] = useState(false)
-  const [hookNotice, setHookNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [installNotice, setInstallNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [uninstallOpen, setUninstallOpen] = useState(false)
   const [uninstallError, setUninstallError] = useState<string | null>(null)
 
@@ -168,10 +168,10 @@ export default function Overview() {
   }, [resetNotice])
 
   useEffect(() => {
-    if (!hookNotice) return
-    const timer = setTimeout(() => setHookNotice(null), 4000)
+    if (!installNotice) return
+    const timer = setTimeout(() => setInstallNotice(null), 4000)
     return () => clearTimeout(timer)
-  }, [hookNotice])
+  }, [installNotice])
 
   const resetReady = resetInput.trim() === 'RESET'
 
@@ -204,29 +204,31 @@ export default function Overview() {
   }
 
   const installMutation = useMutation({
-    mutationFn: installHooks,
+    mutationFn: installAll,
     onSuccess: () => {
-      setHookNotice({ type: 'success', text: 'Hooks installed successfully.' })
+      setInstallNotice({ type: 'success', text: 'Installation completed successfully.' })
+      queryClient.invalidateQueries({ queryKey: ['installationStatus'] })
       queryClient.invalidateQueries({ queryKey: ['hooksStatus'] })
     },
     onError: (err) => {
-      const message = err instanceof Error ? err.message : 'Failed to install hooks'
-      setHookNotice({ type: 'error', text: message })
+      const message = err instanceof Error ? err.message : 'Failed to install'
+      setInstallNotice({ type: 'error', text: message })
     }
   })
 
   const uninstallMutation = useMutation({
-    mutationFn: uninstallHooks,
+    mutationFn: uninstallAll,
     onSuccess: () => {
-      setHookNotice({ type: 'success', text: 'Hooks uninstalled successfully.' })
+      setInstallNotice({ type: 'success', text: 'Installation removed successfully.' })
       setUninstallError(null)
       setUninstallOpen(false)
+      queryClient.invalidateQueries({ queryKey: ['installationStatus'] })
       queryClient.invalidateQueries({ queryKey: ['hooksStatus'] })
     },
     onError: (err) => {
-      const message = err instanceof Error ? err.message : 'Failed to uninstall hooks'
+      const message = err instanceof Error ? err.message : 'Failed to uninstall'
       setUninstallError(message)
-      setHookNotice({ type: 'error', text: message })
+      setInstallNotice({ type: 'error', text: message })
     }
   })
 
@@ -270,14 +272,28 @@ export default function Overview() {
     : []
 
   const usagePercent = data ? Math.round(data.avgUsageRatio * 100) : 0
-  const hookData = hookStatus?.hooks ?? null
-  const hooksLoading = hookPending && !hookStatus
-  const hasHookStatus = Boolean(hookData)
-  const allHooksInstalled = hasHookStatus && HOOK_ITEMS.every(item => hookData![item.key]?.installed)
-  const anyHooksInstalled = hasHookStatus && HOOK_ITEMS.some(item => hookData![item.key]?.installed)
-  const hasMissingHooks = hasHookStatus && HOOK_ITEMS.some(item => !hookData![item.key]?.installed)
-  const hookErrorMessage = hookError instanceof Error ? hookError.message : 'Failed to load hook status'
-  const showHookRecovery = Boolean(hookError) && !hooksLoading && !hasHookStatus
+  const hookData = installationStatus?.hooks ?? null
+  const commandData = installationStatus?.commands ?? null
+  const commandEntries = commandData ? Object.entries(commandData) : []
+  const installationLoading = installationPending && !installationStatus
+  const hasInstallationStatus = Boolean(installationStatus)
+  const hasCommands = commandEntries.length > 0
+  const allHooksInstalled = hasInstallationStatus && HOOK_ITEMS.every(item => hookData?.[item.key]?.installed)
+  const anyHooksInstalled = hasInstallationStatus && HOOK_ITEMS.some(item => hookData?.[item.key]?.installed)
+  const hasMissingHooks = hasInstallationStatus && HOOK_ITEMS.some(item => !hookData?.[item.key]?.installed)
+  const allCommandsInstalled = !hasCommands
+    ? true
+    : commandEntries.every(([, entry]) => entry.installed && !entry.modified)
+  const anyCommandsInstalled = hasCommands && commandEntries.some(([, entry]) => entry.installed)
+  const hasMissingCommands = hasCommands && commandEntries.some(([, entry]) => !entry.installed)
+  const hasModifiedCommands = hasCommands && commandEntries.some(([, entry]) => entry.modified)
+  const allInstalled = hasInstallationStatus && allHooksInstalled && allCommandsInstalled
+  const anyInstalled = hasInstallationStatus && (anyHooksInstalled || anyCommandsInstalled)
+  const hasInstallIssues = hasInstallationStatus && (hasMissingHooks || hasMissingCommands || hasModifiedCommands)
+  const installationErrorMessage = installationError instanceof Error
+    ? installationError.message
+    : 'Failed to load installation status'
+  const showInstallationRecovery = Boolean(installationError) && !installationLoading && !hasInstallationStatus
 
   return (
     <div className="space-y-8">
@@ -348,25 +364,25 @@ export default function Overview() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Link2 className="w-4 h-4 text-muted-foreground" />
-            <h2 className="section-header">Hook configuration</h2>
+            <h2 className="section-header">Installation</h2>
           </div>
-          {hasHookStatus && (
+          {hasInstallationStatus && (
             <span
               className={`px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wide ${
-                allHooksInstalled
+                allInstalled
                   ? 'bg-emerald-500/15 text-emerald-300'
                   : 'bg-amber-500/15 text-amber-300'
               }`}
             >
-              {allHooksInstalled ? 'Active' : 'Needs configuration'}
+              {allInstalled ? 'Active' : 'Needs configuration'}
             </span>
           )}
         </div>
 
-        {showHookRecovery && (
+        {showInstallationRecovery && (
           <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 space-y-2">
-            <p className="text-sm text-destructive">Unable to read hook settings.</p>
-            <p className="text-xs text-muted-foreground">{hookErrorMessage}</p>
+            <p className="text-sm text-destructive">Unable to read installation status.</p>
+            <p className="text-xs text-muted-foreground">{installationErrorMessage}</p>
             <button
               onClick={() => installMutation.mutate()}
               disabled={installMutation.isPending}
@@ -384,7 +400,7 @@ export default function Overview() {
           </div>
         )}
 
-        {hooksLoading && (
+        {installationLoading && (
           <div className="space-y-2">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-4 w-56" />
@@ -392,31 +408,71 @@ export default function Overview() {
           </div>
         )}
 
-        {!hooksLoading && hasHookStatus && (
+        {!installationLoading && hasInstallationStatus && (
           <>
             <p className="text-sm text-muted-foreground">
-              {allHooksInstalled
-                ? 'All claude-memory hooks are installed.'
-                : 'Install missing hooks to enable automatic memory extraction and injection.'}
+              {allInstalled
+                ? 'All claude-memory hooks and commands are installed.'
+                : 'Install missing hooks and commands to enable automatic memory extraction, injection, and /memory.'}
             </p>
-            <div className="space-y-2">
-              {HOOK_ITEMS.map(item => {
-                const installed = hookData![item.key]?.installed
-                return (
-                  <div key={item.key} className="flex items-center gap-2 text-sm">
-                    {installed ? (
-                      <Check className="w-4 h-4 text-emerald-400" />
-                    ) : (
-                      <X className="w-4 h-4 text-destructive" />
-                    )}
-                    <span className="font-medium">{item.label}</span>
-                    <span className="text-xs text-muted-foreground">({item.script})</span>
-                  </div>
-                )
-              })}
+            <div className="space-y-4">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Hooks
+                </div>
+                <div className="mt-2 space-y-2">
+                  {HOOK_ITEMS.map(item => {
+                    const installed = hookData?.[item.key]?.installed
+                    return (
+                      <div key={item.key} className="flex items-center gap-2 text-sm">
+                        {installed ? (
+                          <Check className="w-4 h-4 text-emerald-400" />
+                        ) : (
+                          <X className="w-4 h-4 text-destructive" />
+                        )}
+                        <span className="font-medium">{item.label}</span>
+                        <span className="text-xs text-muted-foreground">({item.script})</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Commands
+                </div>
+                <div className="mt-2 space-y-2">
+                  {commandEntries.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No commands found.</p>
+                  ) : (
+                    commandEntries.map(([name, entry]) => {
+                      const displayName = name.startsWith('/') ? name.slice(1) : name
+                      const statusLabel = entry.modified
+                        ? 'modified by user'
+                        : entry.installed
+                          ? 'installed'
+                          : 'not installed'
+                      const StatusIcon = entry.modified ? AlertTriangle : entry.installed ? Check : X
+                      const iconClass = entry.modified
+                        ? 'text-amber-400'
+                        : entry.installed
+                          ? 'text-emerald-400'
+                          : 'text-destructive'
+                      return (
+                        <div key={name} className="flex items-center gap-2 text-sm">
+                          <StatusIcon className={`w-4 h-4 ${iconClass}`} />
+                          <span className="font-medium">{displayName}</span>
+                          <span className="text-xs text-muted-foreground">({statusLabel})</span>
+                          <span className="text-xs text-muted-foreground">({entry.path})</span>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
             </div>
 
-            {hasMissingHooks && (
+            {hasInstallIssues && (
               <button
                 onClick={() => installMutation.mutate()}
                 disabled={installMutation.isPending}
@@ -428,19 +484,19 @@ export default function Overview() {
                     Installing...
                   </>
                 ) : (
-                  'Install Missing Hooks'
+                  hasModifiedCommands ? 'Repair Installation' : 'Install Missing Items'
                 )}
               </button>
             )}
 
-            {anyHooksInstalled && (
+            {anyInstalled && (
               <div className="flex items-center justify-end">
                 <button
                   onClick={openUninstall}
                   disabled={uninstallMutation.isPending}
                   className="h-8 px-3 rounded-md border border-border bg-background text-xs text-muted-foreground hover:text-destructive hover:border-destructive/40 transition-base disabled:opacity-50"
                 >
-                  Uninstall Hooks
+                  Uninstall
                 </button>
               </div>
             )}
@@ -448,9 +504,9 @@ export default function Overview() {
           </>
         )}
 
-        {hookNotice && (
-          <div className={`text-sm ${hookNotice.type === 'success' ? 'text-emerald-400' : 'text-destructive'}`}>
-            {hookNotice.text}
+        {installNotice && (
+          <div className={`text-sm ${installNotice.type === 'success' ? 'text-emerald-400' : 'text-destructive'}`}>
+            {installNotice.text}
           </div>
         )}
       </section>
@@ -544,7 +600,7 @@ export default function Overview() {
                   <AlertTriangle className="h-5 w-5" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-semibold">Uninstall Memory Hooks?</h2>
+                  <h2 className="text-lg font-semibold">Uninstall Memory Integration?</h2>
                   <p className="text-sm text-muted-foreground">
                     This will disable the claude-memory system.
                   </p>
@@ -559,10 +615,13 @@ export default function Overview() {
                   <li>
                     Memory extraction will stop <span className="text-xs text-muted-foreground">(New learnings won&apos;t be saved)</span>
                   </li>
+                  <li>
+                    The /memory command will be removed <span className="text-xs text-muted-foreground">(Command entry disappears)</span>
+                  </li>
                 </ul>
                 <p>
                   Existing memories remain in the database and can be accessed via the dashboard.
-                  You can reinstall hooks anytime.
+                  You can reinstall anytime.
                 </p>
               </div>
               {uninstallError && (
