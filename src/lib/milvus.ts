@@ -1409,6 +1409,24 @@ function escapeLikeValue(value: string): string {
   return escapeFilterValue(escapedWildcards)
 }
 
+/**
+ * Get all ancestor paths for a directory, including the path itself.
+ * E.g., "/home/user/foo/bar" -> ["/home/user/foo/bar", "/home/user/foo", "/home/user", "/home"]
+ */
+function getAncestorPaths(dirPath: string): string[] {
+  const paths: string[] = []
+  let current = dirPath
+
+  while (current && current !== '/') {
+    paths.push(current)
+    const parent = path.dirname(current)
+    if (parent === current) break // Reached root
+    current = parent
+  }
+
+  return paths
+}
+
 export function buildFilter(filters: {
   project?: string
   includeGlobal?: boolean
@@ -1423,7 +1441,15 @@ export function buildFilter(filters: {
   const scopeParts: string[] = []
 
   if (filters.project) {
-    scopeParts.push(`project == "${escapeFilterValue(filters.project)}"`)
+    // Match memories from the current project OR any ancestor directory
+    // This allows memories stored at /home/user to match when user is in /home/user/subdir
+    const ancestorPaths = getAncestorPaths(filters.project)
+    if (ancestorPaths.length === 1) {
+      scopeParts.push(`project == "${escapeFilterValue(ancestorPaths[0])}"`)
+    } else {
+      const pathList = ancestorPaths.map(p => `"${escapeFilterValue(p)}"`).join(', ')
+      scopeParts.push(`project in [${pathList}]`)
+    }
   }
 
   if (filters.domain) {
