@@ -158,6 +158,12 @@ export interface HookStatusEntry {
   expected: string
 }
 
+export interface CommandStatusEntry {
+  installed: boolean
+  modified: boolean
+  path: string
+}
+
 export interface HookStatusResponse {
   hooks: Record<HookEvent, HookStatusEntry>
 }
@@ -165,6 +171,15 @@ export interface HookStatusResponse {
 export interface HookInstallResponse {
   success: boolean
   hooks: Record<HookEvent, HookStatusEntry>
+}
+
+export interface InstallationStatusResponse {
+  hooks: Record<HookEvent, HookStatusEntry>
+  commands: Record<string, CommandStatusEntry>
+}
+
+export interface InstallationMutationResponse extends InstallationStatusResponse {
+  success: boolean
 }
 
 export interface SearchResult {
@@ -494,6 +509,18 @@ export function installHooks(): Promise<HookInstallResponse> {
 
 export function uninstallHooks(): Promise<HookInstallResponse> {
   return requestWithStatus('/hooks/uninstall', { method: 'POST' })
+}
+
+export function fetchInstallationStatus(): Promise<InstallationStatusResponse> {
+  return requestWithStatus('/installation/status')
+}
+
+export function installAll(): Promise<InstallationMutationResponse> {
+  return requestWithStatus('/installation/install', { method: 'POST' })
+}
+
+export function uninstallAll(): Promise<InstallationMutationResponse> {
+  return requestWithStatus('/installation/uninstall', { method: 'POST' })
 }
 
 export function fetchMemories(params: {

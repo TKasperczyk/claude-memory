@@ -2,170 +2,58 @@
 
 Technical knowledge persistence for Claude Code. Extracts memories from session transcripts and injects relevant context into new sessions.
 
-## Architecture Overview
+## Purpose
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Claude Code Session                         │
-├─────────────────────────────────────────────────────────────────┤
-│  UserPromptSubmit ──► pre-prompt.ts ──► Milvus search ──► inject│
-│                                                                 │
-│  SessionEnd/PreCompact ──► post-session.ts (launcher, 2ms)      │
-│                               └──► post-session-worker.ts       │
-│                                     (detached, does extraction) │
-└─────────────────────────────────────────────────────────────────┘
-```
+Claude Code sessions are stateless - each conversation starts fresh. This project adds persistent memory by:
+1. **Extracting** learnings from completed sessions (commands, errors, discoveries, procedures, warnings)
+2. **Storing** them in a vector database (Milvus) with embeddings for semantic search
+3. **Injecting** relevant memories into new sessions via Claude Code hooks
+
+The goal is to help Claude avoid repeating mistakes, remember project-specific knowledge, and build on past successes.
+
+## Architecture
+
+**Hooks** (in `src/hooks/`):
+- `UserPromptSubmit` → Search Milvus, inject relevant memories as `<prior-knowledge>`
+- `SessionEnd`/`PreCompact` → Extract memories from transcript, dedupe, store
+
+The SessionEnd hook uses a launcher+worker pattern because Claude Code cancels slow hooks. The launcher spawns a detached worker and exits immediately (<10ms), while the worker does the actual extraction in the background.
+
+**Core tech:**
+- Milvus for vector storage + hybrid search (semantic + keyword)
+- Local embedding model (Qwen3) via OpenAI-compatible API
+- Anthropic API for extraction (Haiku) and reviews (Opus)
+- React + Vite dashboard for visualization and maintenance
+
+**Key patterns:**
+- MMR (Maximal Marginal Relevance) for diverse result selection
+- Usage tracking to boost memories that prove helpful
+- Configurable thresholds in `~/.claude-memory/settings.json`
+- OAuth support with auto-refresh for Anthropic API access
 
 ## Memory Types
 
-| Type | Description | Key Fields |
-|------|-------------|------------|
-| `command` | Shell commands with outcomes | `command`, `exitCode`, `outcome`, `resolution` |
-| `error` | Error patterns and fixes | `errorText`, `errorType`, `cause`, `resolution` |
-| `discovery` | Codebase/system discoveries | `what`, `where`, `evidence`, `confidence` |
-| `procedure` | Multi-step workflows | `name`, `steps`, `prerequisites`, `verification` |
+| Type | Purpose |
+|------|---------|
+| `command` | Shell commands with outcomes and resolutions |
+| `error` | Error patterns with causes and fixes |
+| `discovery` | Codebase/system facts learned during sessions |
+| `procedure` | Multi-step workflows that worked |
+| `warning` | Anti-patterns synthesized from repeated failures |
 
-## Hooks
-
-### pre-prompt.ts
-- **Event**: `UserPromptSubmit`
-- **Purpose**: Search Milvus for relevant memories, inject into context
-- **Latency-critical**: Has 4s timeout, emits context before tracking updates
-- **Tracking**: Records injected memory IDs for usefulness rating
-
-### post-session.ts (launcher)
-- **Events**: `SessionEnd`, `PreCompact`
-- **Purpose**: Spawn detached worker and exit immediately
-- **Critical timing**: Must exit in <10ms or Claude Code cancels it
-- **Implementation**:
-  - Reads stdin synchronously (small ~300 byte payload)
-  - Writes to temp file `~/.claude-memory/hook-input-{pid}.json`
-  - Spawns worker with `stdio: ['ignore', 'ignore', 'ignore']`
-  - Worker inherits NO file descriptors (critical - any inherited fd blocks Claude Code)
-
-### post-session-worker.ts
-- **Runs detached** in background after launcher exits
-- **Extraction**: Parse transcript → LLM extraction → dedupe against Milvus → store
-- **Usefulness rating**: Rate injected memories against transcript, increment `usageCount`
-
-## Usage Metrics
-
-| Field | Meaning | Updated By |
-|-------|---------|------------|
-| `retrievalCount` | Times memory was injected | pre-prompt.ts |
-| `usageCount` | Times rated as helpful | post-session-worker.ts |
-| `successCount` | Command successes / error resolutions | Extraction |
-| `failureCount` | Command failures / new errors | Extraction |
-
-**Usage ratio**: `min(usageCount / max(retrievalCount, 1), 1.0)` adds 0.2 boost to search ranking.
-
-## Session Tracking
-
-Injected memories are tracked in `~/.claude-memory/sessions/{session_id}.json`:
-```json
-{
-  "sessionId": "abc123",
-  "createdAt": 1704067200000,
-  "memories": [
-    { "id": "mem_xyz", "snippet": "...", "injectedAt": 1704067200000 }
-  ]
-}
-```
-
-Post-session worker reads this file to know which memories to rate for usefulness.
-
-## Configuration
-
-Environment variables:
-- `CC_MEMORIES_ADDRESS` - Milvus address (default: `localhost:19530`)
-- `CC_MEMORIES_COLLECTION` - Collection name (default: `cc_memories`)
-- `CC_EMBEDDINGS_URL` - Embedding API URL (default: `http://127.0.0.1:1234/v1`)
-- `CC_EMBEDDINGS_MODEL` - Embedding model (default: `text-embedding-qwen3-embedding-8b`)
-- `CC_EXTRACTION_MODEL` - Extraction model (default: `claude-haiku-4-5-20251001`)
-- `CLAUDE_MEMORY_DEBUG` - Set to `1` for debug logging to `~/.claude-memory/debug.log`
-
-## Development
-
-```bash
-pnpm install
-pnpm build          # Compile TypeScript
-pnpm test           # Run tests
-pnpm test:watch     # Watch mode
-```
-
-### Debug Logging
-
-Set `CLAUDE_MEMORY_DEBUG=1` in your hook configuration. Logs go to:
-- stderr (captured by Claude Code)
-- `~/.claude-memory/debug.log` (persistent file)
-
-Log format: `[launcher|worker] {timestamp} +{elapsed}ms {message}`
-
-## Key Implementation Details
-
-### Hook Exit Timing
-The SessionEnd hook launcher MUST exit immediately. Claude Code waits for the hook process, and slow hooks get cancelled. Solution:
-1. Read stdin synchronously (avoid async event loop)
-2. Write payload to temp file
-3. Spawn worker with ALL stdio ignored
-4. Exit immediately (~2ms)
-
-### Embedding Dimension
-Milvus collection uses 4096-dimensional embeddings (Qwen3 compatible). Embedding dimension is enforced at insert/update time.
-
-### Deduplication
-Before inserting, `findSimilar()` checks for existing records with >0.9 cosine similarity. Duplicates update counters instead of creating new records.
+Each memory has scope (global/project), usage metrics, and a `sourceExcerpt` citing the transcript.
 
 ## Dashboard
 
-Web-based dashboard for viewing memories, stats, and testing context injection.
+Web UI for inspecting and maintaining the memory pool:
+- **Simulator**: Test what memories would inject for a prompt
+- **Extractions/Sessions**: Review extraction quality with Opus
+- **Maintenance**: Run deprecation, consolidation, and promotion operations
+- **Settings**: Tune retrieval and maintenance thresholds
 
-```bash
-cd dashboard
-pnpm install
-pnpm start          # Runs server (port 3001) + Vite dev (port 5173)
-```
+## Development Notes
 
-### Views
-- **Overview**: Aggregate stats, memory counts by type/project/domain, usage metrics
-- **Memory Pool**: Filterable/searchable list of all memories with detail view
-- **Context Preview**: Input a prompt, see what would be injected
-
-### API Endpoints
-- `GET /api/stats` - Aggregate statistics
-- `GET /api/memories` - List memories with filtering (type, project, deprecated)
-- `GET /api/memories/:id` - Get single memory
-- `GET /api/search?q=...` - Hybrid search
-- `POST /api/preview` - Preview context injection for a prompt
-
-## File Structure
-
-```
-src/
-├── hooks/
-│   ├── pre-prompt.ts          # Memory injection hook
-│   ├── post-session.ts        # Launcher (fast exit)
-│   └── post-session-worker.ts # Background extraction
-├── lib/
-│   ├── types.ts               # Record schemas, config types
-│   ├── milvus.ts              # Vector DB operations
-│   ├── embed.ts               # Embedding API client
-│   ├── extract.ts             # LLM extraction + usefulness rating
-│   ├── context.ts             # Signal extraction, context building
-│   ├── transcript.ts          # Transcript parsing
-│   ├── session-tracking.ts    # Injected memory tracking
-│   ├── promotions.ts          # Discovery → Procedure promotion
-│   └── maintenance.ts         # Maintenance operations
-├── maintenance.ts             # CLI maintenance entry point
-dashboard/
-├── server/
-│   └── index.ts               # Express API server
-├── src/
-│   ├── components/            # React components
-│   ├── hooks/                 # React hooks
-│   ├── lib/                   # Utilities
-│   ├── pages/                 # Page components
-│   ├── App.tsx                # Main app
-│   └── main.tsx               # Entry point
-└── package.json
-```
+- Hooks must be fast - avoid blocking I/O in the launcher path
+- Embeddings are 4096-dimensional (Qwen3); dimension is enforced at insert time
+- Record schemas are centralized in `src/lib/record-schema.ts` for consistency between extraction and review
+- Auth falls back through: env vars → Claude Code credentials → kira credentials
