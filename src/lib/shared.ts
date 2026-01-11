@@ -1,59 +1,29 @@
 import { type MemoryRecord } from './types.js'
 
-export const KNOWN_COMMANDS = new Set([
-  'npm',
-  'pnpm',
-  'yarn',
-  'bun',
-  'npx',
-  'node',
-  'deno',
-  'python',
-  'python3',
-  'pip',
-  'pip3',
-  'uv',
-  'poetry',
-  'cargo',
-  'rustc',
-  'go',
-  'dotnet',
-  'mvn',
-  'gradle',
-  'javac',
-  'java',
-  'git',
-  'docker',
-  'kubectl',
-  'helm',
-  'terraform',
-  'ansible',
-  'make',
-  'cmake',
-  'ninja',
-  'rg',
-  'grep',
-  'sed',
-  'awk',
-  'curl',
-  'wget',
-  'sudo',
-  'env',
-  'ssh',
-  'scp',
-  'systemctl',
-  'journalctl',
-  'ps',
-  'kill',
-  'chmod',
-  'chown',
-  'ls',
-  'cat',
-  'cp',
-  'mv',
-  'rm',
-  'find'
-])
+/**
+ * Check if a string looks like a command line.
+ * Uses heuristics rather than a hardcoded list to support any command.
+ */
+export function looksLikeCommand(line: string): boolean {
+  const trimmed = line.trim()
+  if (!trimmed) return false
+
+  // Path-based executables
+  if (trimmed.startsWith('./') || trimmed.startsWith('/') || trimmed.startsWith('~/')) {
+    return true
+  }
+
+  const first = trimmed.split(/\s+/)[0]
+  if (!first) return false
+
+  // Valid command names: alphanumeric with dashes/underscores, no special chars
+  // This matches: npm, runpodctl, docker-compose, python3, etc.
+  if (/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(first)) {
+    return true
+  }
+
+  return false
+}
 
 export function normalizeStep(step: string): string {
   return step

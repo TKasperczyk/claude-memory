@@ -6,7 +6,7 @@ import path from 'path'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { queryRecords } from './milvus.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
-import { KNOWN_COMMANDS, normalizeStep, truncateWithTail } from './shared.js'
+import { looksLikeCommand, normalizeStep, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
 
 const QUERY_PAGE_SIZE = 500
@@ -1153,15 +1153,7 @@ function formatProcedureSteps(steps: string[]): string[] {
   return lines
 }
 
-function looksLikeCommand(step: string): boolean {
-  if (!step) return false
-  const trimmed = step.trim()
-  if (!trimmed) return false
-  if (trimmed.startsWith('./') || trimmed.startsWith('/') || trimmed.startsWith('~/')) return true
-  const first = trimmed.split(/\s+/)[0]
-  if (!first) return false
-  return KNOWN_COMMANDS.has(first)
-}
+// looksLikeCommand is imported from shared.ts
 
 function groupDiscoveries(
   records: DiscoveryRecord[]

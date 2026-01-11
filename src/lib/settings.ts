@@ -44,6 +44,7 @@ export interface MaintenanceSettings {
   warningClusterLimit: number
   warningSynthesisMinFailures: number
   warningSynthesisBatchSize: number
+  warningSynthesisRecheckDays: number
   // Procedure
   procedureStepCheckCount: number
   // Similarity thresholds
@@ -94,6 +95,7 @@ export function getDefaultMaintenanceSettings(): MaintenanceSettings {
     warningClusterLimit: 5,
     warningSynthesisMinFailures: 2,
     warningSynthesisBatchSize: 10,
+    warningSynthesisRecheckDays: 30,
     procedureStepCheckCount: 3,
     extractionDedupThreshold: SIMILARITY_THRESHOLDS.EXTRACTION_DEDUP,
     reviewSimilarThreshold: SIMILARITY_THRESHOLDS.REVIEW_SIMILAR,
@@ -196,6 +198,7 @@ function coerceMaintenanceSettings(value: Record<string, unknown>, fallback: Mai
     warningClusterLimit: coerceInt(value.warningClusterLimit, fallback.warningClusterLimit, 1),
     warningSynthesisMinFailures: coerceInt(value.warningSynthesisMinFailures, fallback.warningSynthesisMinFailures, 1),
     warningSynthesisBatchSize: coerceInt(value.warningSynthesisBatchSize, fallback.warningSynthesisBatchSize, 1),
+    warningSynthesisRecheckDays: coerceInt(value.warningSynthesisRecheckDays, fallback.warningSynthesisRecheckDays, 1),
     procedureStepCheckCount: coerceInt(value.procedureStepCheckCount, fallback.procedureStepCheckCount, 1),
     extractionDedupThreshold: coerceFloat(value.extractionDedupThreshold, fallback.extractionDedupThreshold, 0, 1),
     reviewSimilarThreshold: coerceFloat(value.reviewSimilarThreshold, fallback.reviewSimilarThreshold, 0, 1),

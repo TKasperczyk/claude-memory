@@ -60,6 +60,7 @@ const OUTPUT_FIELDS = [
   'last_generalization_check',
   'last_global_check',
   'last_conflict_check',
+  'last_warning_synthesis_check',
   'source_session_id',
   'source_excerpt'
 ]
@@ -83,6 +84,7 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
     await ensureGeneralizationFields(config)
     await ensureGlobalCheckField(config)
     await ensureConflictField(config)
+    await ensureWarningSynthesisField(config)
     await ensureSourceFields(config)
   }
 
@@ -856,6 +858,7 @@ async function createCollection(config: Config): Promise<void> {
       { name: 'last_generalization_check', data_type: DataType.Int64 },
       { name: 'last_global_check', data_type: DataType.Int64 },
       { name: 'last_conflict_check', data_type: DataType.Int64 },
+      { name: 'last_warning_synthesis_check', data_type: DataType.Int64 },
       { name: 'source_session_id', data_type: DataType.VarChar, max_length: SOURCE_SESSION_ID_MAX_LENGTH, nullable: true },
       { name: 'source_excerpt', data_type: DataType.VarChar, max_length: SOURCE_EXCERPT_MAX_LENGTH, nullable: true },
       { name: 'embedding', data_type: DataType.FloatVector, dim: EMBEDDING_DIM }
@@ -1023,6 +1026,34 @@ async function ensureConflictField(config: Config): Promise<void> {
   }
 }
 
+async function ensureWarningSynthesisField(config: Config): Promise<void> {
+  if (!client) throw new Error('Milvus client not initialized')
+
+  try {
+    const description = await client.describeCollection({
+      collection_name: config.milvus.collection
+    })
+
+    const fields = description.schema?.fields ?? []
+    const fieldNames = new Set(fields.map(field => field.name))
+    if (fieldNames.has('last_warning_synthesis_check')) return
+
+    const result = await client.addCollectionFields({
+      collection_name: config.milvus.collection,
+      fields: [{ name: 'last_warning_synthesis_check', data_type: DataType.Int64, nullable: true }]
+    })
+
+    if (result.error_code !== 'Success') {
+      console.error(`[claude-memory] Failed to add warning synthesis field: ${result.reason}`)
+      return
+    }
+
+    console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_warning_synthesis_check`)
+  } catch (error) {
+    console.error('[claude-memory] Failed to ensure warning synthesis field:', error)
+  }
+}
+
 async function ensureSourceFields(config: Config): Promise<void> {
   if (!client) throw new Error('Milvus client not initialized')
 
@@ -1091,6 +1122,7 @@ async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<Row
     last_generalization_check: toInt64(normalized.lastGeneralizationCheck, 0),
     last_global_check: toInt64(normalized.lastGlobalCheck, 0),
     last_conflict_check: toInt64(normalized.lastConflictCheck, 0),
+    last_warning_synthesis_check: toInt64(normalized.lastWarningSynthesisCheck, 0),
     source_session_id: sourceSessionId ? truncateString(sourceSessionId, SOURCE_SESSION_ID_MAX_LENGTH) : null,
     source_excerpt: sourceExcerpt ? truncateString(sourceExcerpt, SOURCE_EXCERPT_MAX_LENGTH) : null,
     embedding
@@ -1339,6 +1371,10 @@ function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord | null {
       (row.last_conflict_check as number | string | undefined) ?? parsed.lastConflictCheck,
       0
     ),
+    lastWarningSynthesisCheck: toInt64(
+      (row.last_warning_synthesis_check as number | string | undefined) ?? parsed.lastWarningSynthesisCheck,
+      0
+    ),
     sourceSessionId: coerceOptionalString(row.source_session_id) ?? parsed.sourceSessionId,
     sourceExcerpt: coerceOptionalString(row.source_excerpt) ?? parsed.sourceExcerpt
   } as MemoryRecord
@@ -1409,24 +1445,6 @@ function escapeLikeValue(value: string): string {
   return escapeFilterValue(escapedWildcards)
 }
 
-/**
- * Get all ancestor paths for a directory, including the path itself.
- * E.g., "/home/user/foo/bar" -> ["/home/user/foo/bar", "/home/user/foo", "/home/user", "/home"]
- */
-function getAncestorPaths(dirPath: string): string[] {
-  const paths: string[] = []
-  let current = dirPath
-
-  while (current && current !== '/') {
-    paths.push(current)
-    const parent = path.dirname(current)
-    if (parent === current) break // Reached root
-    current = parent
-  }
-
-  return paths
-}
-
 export function buildFilter(filters: {
   project?: string
   includeGlobal?: boolean
@@ -1441,15 +1459,7 @@ export function buildFilter(filters: {
   const scopeParts: string[] = []
 
   if (filters.project) {
-    // Match memories from the current project OR any ancestor directory
-    // This allows memories stored at /home/user to match when user is in /home/user/subdir
-    const ancestorPaths = getAncestorPaths(filters.project)
-    if (ancestorPaths.length === 1) {
-      scopeParts.push(`project == "${escapeFilterValue(ancestorPaths[0])}"`)
-    } else {
-      const pathList = ancestorPaths.map(p => `"${escapeFilterValue(p)}"`).join(', ')
-      scopeParts.push(`project in [${pathList}]`)
-    }
+    scopeParts.push(`project == "${escapeFilterValue(filters.project)}"`)
   }
 
   if (filters.domain) {

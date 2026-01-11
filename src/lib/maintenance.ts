@@ -17,7 +17,8 @@ import {
   type WarningSeverity
 } from './types.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
-import { buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
+import { embed } from './embed.js'
+import { buildEmbeddingInput, buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
 import { loadSettings, type MaintenanceSettings } from './settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import {
@@ -55,89 +56,6 @@ export const GLOBAL_PROMOTION_RECHECK_DAYS = 30
 const GLOBAL_PROMOTION_MIN_SUCCESS_COUNT = 2
 const GLOBAL_PROMOTION_MIN_USAGE_RATIO = 0.3
 const GLOBAL_PROMOTION_MIN_RETRIEVALS_FOR_USAGE_RATIO = 3
-const GLOBAL_TOOL_KEYWORDS = [
-  'npm',
-  'pnpm',
-  'yarn',
-  'bun',
-  'npx',
-  'node',
-  'nodejs',
-  'deno',
-  'python',
-  'python3',
-  'pip',
-  'pip3',
-  'pipx',
-  'uv',
-  'poetry',
-  'cargo',
-  'rustc',
-  'git',
-  'docker',
-  'docker-compose',
-  'kubectl',
-  'helm',
-  'terraform',
-  'ansible',
-  'dotnet',
-  'mvn',
-  'gradle',
-  'javac',
-  'java'
-]
-const GLOBAL_COMMAND_TOOLS = new Set(GLOBAL_TOOL_KEYWORDS)
-const GLOBAL_DISCOVERY_KEYWORDS = [
-  'javascript',
-  'typescript',
-  'node',
-  'nodejs',
-  'python',
-  'rust',
-  'golang',
-  'java',
-  'kotlin',
-  'c#',
-  'c++',
-  'ruby',
-  'php',
-  'swift',
-  'scala',
-  'elixir',
-  'erlang',
-  'bash',
-  'shell',
-  'zsh',
-  'sql',
-  'postgres',
-  'postgresql',
-  'mysql',
-  'sqlite',
-  'react',
-  'vue',
-  'angular',
-  'svelte',
-  'next.js',
-  'nuxt',
-  'express',
-  'fastify',
-  'django',
-  'flask',
-  'rails',
-  'laravel',
-  'spring',
-  'grpc',
-  'graphql'
-]
-const GENERIC_COMMAND_FLAGS = new Set(['--help', '-h', '--version', '-v', '-V', '--info', '--list'])
-const GENERIC_SUBCOMMANDS = new Set(['help', 'version', 'info', 'list'])
-const PACKAGE_MANAGER_TOOLS = new Set(['npm', 'pnpm', 'yarn', 'bun'])
-const PACKAGE_MANAGER_SCRIPT_SUBCOMMANDS = new Set(['run', 'test', 'build', 'lint', 'start', 'dev', 'serve', 'check', 'format'])
-const FILE_EXTENSION_REGEX = /\.(json|yml|yaml|toml|lock|md|txt|ini|cfg|conf|sh|py|rs|go|java|js|ts|tsx|jsx|c|cc|cpp|h|hpp)$/i
-const PATH_TEXT_REGEX = /(^|\s)(\.{1,2}[\\/]|~\/|[A-Za-z]:[\\/]|\/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/
-const GLOBAL_TOOL_REGEXES = GLOBAL_TOOL_KEYWORDS.map(buildKeywordRegex)
-const GLOBAL_DISCOVERY_REGEXES = GLOBAL_DISCOVERY_KEYWORDS.map(buildKeywordRegex)
-
 function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
   return settings ?? loadSettings()
 }
@@ -147,6 +65,7 @@ const WARNING_SYNTHESIS_MIN_FAILURES = 2
 const WARNING_SYNTHESIS_BATCH_SIZE = 10
 const WARNING_SYNTHESIS_MAX_TOKENS = 800
 const WARNING_SYNTHESIS_TOOL_NAME = 'emit_warning'
+const WARNING_SYNTHESIS_DEDUP_THRESHOLD = 0.9
 
 const GENERALIZATION_PROMPT = `Evaluate this memory record for reusability across different contexts.
 
@@ -1176,30 +1095,27 @@ function buildConsolidationFilter(record: MemoryRecord): string {
   }) ?? 'deprecated == false'
 }
 
+/**
+ * Check if a record is a candidate for global promotion based on usage metrics.
+ * The actual decision is made by the LLM in checkGlobalPromotion().
+ */
 function isGlobalCandidate(record: MemoryRecord, settings: MaintenanceSettings): boolean {
-  if (!passesGlobalPromotionHeuristics(record, settings)) return false
-  switch (record.type) {
-    case 'error':
-      return isGlobalErrorCandidate(record)
-    case 'command':
-      return isGlobalCommandCandidate(record)
-    case 'discovery':
-      return isGlobalDiscoveryCandidate(record)
-    default:
-      return false
+  // Only command, error, and discovery types can be promoted
+  if (record.type !== 'command' && record.type !== 'error' && record.type !== 'discovery') {
+    return false
   }
-}
 
-function passesGlobalPromotionHeuristics(record: MemoryRecord, settings: MaintenanceSettings): boolean {
   const successCount = record.successCount ?? 0
   const usageCount = record.usageCount ?? 0
+
+  // Commands need successful executions, other types need usage
   if (record.type === 'command') {
     if (successCount < settings.globalPromotionMinSuccessCount) return false
   } else if (usageCount < settings.globalPromotionMinSuccessCount) {
     return false
   }
-  if (recordHasPathReference(record)) return false
 
+  // Check usage ratio if we have enough retrievals
   const retrievalCount = record.retrievalCount ?? 0
   if (retrievalCount >= settings.globalPromotionMinRetrievalsForUsageRatio) {
     const ratio = usageCount / retrievalCount
@@ -1207,106 +1123,6 @@ function passesGlobalPromotionHeuristics(record: MemoryRecord, settings: Mainten
   }
 
   return true
-}
-
-function recordHasPathReference(record: MemoryRecord): boolean {
-  switch (record.type) {
-    case 'command':
-      return hasPathReference([record.command, record.resolution, record.truncatedOutput])
-    case 'error':
-      return hasPathReference([record.errorText, record.cause, record.resolution, record.context.file])
-    case 'discovery':
-      return hasPathReference([record.what, record.where, record.evidence])
-    default:
-      return false
-  }
-}
-
-function hasPathReference(values: Array<string | undefined>): boolean {
-  const combined = normalizeMatchText(values.filter(Boolean).join(' '))
-  if (!combined) return false
-  return PATH_TEXT_REGEX.test(combined)
-}
-
-function isGlobalErrorCandidate(record: Extract<MemoryRecord, { type: 'error' }>): boolean {
-  const resolution = normalizeMatchText(record.resolution ?? '')
-  const errorText = normalizeMatchText(record.errorText ?? '')
-  const tool = normalizeMatchText(record.context.tool ?? '')
-  if (resolution && matchesAnyRegex(resolution, GLOBAL_TOOL_REGEXES)) return true
-  if (errorText && matchesAnyRegex(errorText, GLOBAL_TOOL_REGEXES)) return true
-  if (tool && matchesAnyRegex(tool, GLOBAL_TOOL_REGEXES)) return true
-  return false
-}
-
-function isGlobalCommandCandidate(record: Extract<MemoryRecord, { type: 'command' }>): boolean {
-  const parsed = parseCommandLine(record.command)
-  if (!parsed.executable) return false
-
-  const executable = parsed.executable.toLowerCase()
-  if (looksLikePath(executable) || executable.includes('\\')) return false
-  if (!GLOBAL_COMMAND_TOOLS.has(executable)) return false
-
-  const args = parsed.args
-  if (args.some(isPathLikeToken)) return false
-  if (isPackageManagerScript(executable, args)) return false
-
-  const nonFlagArgs = args.filter(arg => !arg.startsWith('-'))
-  if (hasGenericFlag(args)) return true
-  if (nonFlagArgs.length <= 1) return true
-
-  return false
-}
-
-function isGlobalDiscoveryCandidate(record: Extract<MemoryRecord, { type: 'discovery' }>): boolean {
-  const combined = normalizeMatchText([record.what, record.where, record.evidence].filter(Boolean).join(' '))
-  if (!combined) return false
-  if (PATH_TEXT_REGEX.test(combined)) return false
-  return matchesAnyRegex(combined, GLOBAL_DISCOVERY_REGEXES)
-}
-
-function normalizeMatchText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim()
-}
-
-function matchesAnyRegex(value: string, regexes: RegExp[]): boolean {
-  return regexes.some(regex => regex.test(value))
-}
-
-function buildKeywordRegex(keyword: string): RegExp {
-  const escaped = escapeRegExp(keyword)
-  return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, 'i')
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function hasGenericFlag(args: string[]): boolean {
-  for (const arg of args) {
-    if (GENERIC_COMMAND_FLAGS.has(arg)) return true
-    if (!arg.startsWith('-') && GENERIC_SUBCOMMANDS.has(arg)) return true
-  }
-  return false
-}
-
-function isPackageManagerScript(executable: string, args: string[]): boolean {
-  if (!PACKAGE_MANAGER_TOOLS.has(executable)) return false
-  const nonFlagArgs = args.filter(arg => !arg.startsWith('-'))
-  return nonFlagArgs.some(arg => PACKAGE_MANAGER_SCRIPT_SUBCOMMANDS.has(arg))
-}
-
-function isPathLikeToken(token: string): boolean {
-  const raw = stripQuotes(token)
-  if (!raw) return false
-  if (raw.startsWith('-') && !raw.includes('=')) return false
-
-  const candidate = raw.includes('=') ? raw.split('=', 2)[1] : raw
-  if (!candidate) return false
-
-  if (candidate.startsWith('./') || candidate.startsWith('../') || candidate.startsWith('~/')) return true
-  if (candidate.includes('/') || candidate.includes('\\')) return true
-  if (FILE_EXTENSION_REGEX.test(candidate)) return true
-  return false
 }
 
 function levenshteinDistance(a: string, b: string, maxDistance?: number): number {
@@ -1790,11 +1606,13 @@ export interface WarningSynthesisResult {
 }
 
 export type WarningSynthesisAction = {
-  type: 'created' | 'skipped'
-  warningId?: string
-  avoid?: string
-  sourceRecordIds: string[]
-  reason?: string
+  type: 'update'
+  recordId?: string
+  snippet: string
+  reason: string
+  details?: {
+    sourceRecordIds: string[]
+  }
 }
 
 export async function findWarningCandidates(
@@ -1806,17 +1624,26 @@ export async function findWarningCandidates(
   const resolvedMinFailures = typeof minFailures === 'number'
     ? minFailures
     : maintenance.warningSynthesisMinFailures
-  // Query high-failure records that haven't been synthesized into warnings yet
+
+  // Only consider records not recently checked for warning synthesis
+  const recheckCutoff = Date.now() - maintenance.warningSynthesisRecheckDays * 24 * 60 * 60 * 1000
+  const recheckCutoffValue = Math.trunc(recheckCutoff)
+
+  // Query high-failure records and filter in code to include null/zero check timestamps.
   const filter = `deprecated == false && failure_count >= ${resolvedMinFailures} && type in ["command", "error"]`
   const records = await fetchRecords(filter, config, true)
+  const eligible = records.filter(record => {
+    const lastCheck = record.lastWarningSynthesisCheck ?? 0
+    return lastCheck === 0 || lastCheck < recheckCutoffValue
+  })
 
-  if (records.length === 0) return []
+  if (eligible.length === 0) return []
 
   // Group similar records by embedding similarity
   const candidates: WarningCandidate[] = []
   const processed = new Set<string>()
 
-  for (const record of records) {
+  for (const record of eligible) {
     if (processed.has(record.id)) continue
     if (!record.embedding || record.embedding.length !== EMBEDDING_DIM) continue
 
@@ -1928,6 +1755,57 @@ export async function synthesizeWarning(
   return { warning, sourceRecordIds }
 }
 
+async function findSimilarWarning(
+  warning: WarningRecord,
+  config: Config = DEFAULT_CONFIG,
+  threshold: number = WARNING_SYNTHESIS_DEDUP_THRESHOLD
+): Promise<{ record: WarningRecord; similarity: number } | null> {
+  const embedding = warning.embedding ?? await embed(buildEmbeddingInput(warning), config)
+  warning.embedding = embedding
+
+  const filter = buildFilter({
+    project: warning.project,
+    domain: warning.domain,
+    type: 'warning',
+    includeGlobal: true,
+    excludeDeprecated: true
+  })
+
+  const matches = await vectorSearchSimilar(
+    embedding,
+    {
+      filter,
+      limit: 1,
+      similarityThreshold: threshold
+    },
+    config
+  )
+
+  const match = matches[0]
+  if (!match || match.record.type !== 'warning') return null
+  return { record: match.record as WarningRecord, similarity: match.similarity }
+}
+
+async function markWarningSynthesisSources(
+  sourceRecordIds: string[],
+  checkedAt: number,
+  config: Config
+): Promise<string[]> {
+  const failedIds: string[] = []
+
+  for (const sourceId of sourceRecordIds) {
+    try {
+      const updated = await updateRecord(sourceId, { lastWarningSynthesisCheck: checkedAt }, config)
+      if (!updated) failedIds.push(sourceId)
+    } catch (error) {
+      failedIds.push(sourceId)
+      console.error(`[claude-memory] Failed to mark warning synthesis check for ${sourceId}:`, error)
+    }
+  }
+
+  return failedIds
+}
+
 export async function runWarningSynthesis(
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG,
@@ -1967,12 +1845,41 @@ export async function runWarningSynthesis(
       try {
         const result = await synthesizeWarning(candidate, config)
 
+        if (!dryRun) {
+          const checkedAt = Date.now()
+          const failedIds = await markWarningSynthesisSources(result.sourceRecordIds, checkedAt, config)
+          if (failedIds.length > 0) {
+            errors += 1
+            actions.push({
+              type: 'update',
+              snippet: truncateSnippet(result.sourceRecordIds.join(', ')),
+              reason: `skipped: failed to mark ${failedIds.length} source record${failedIds.length === 1 ? '' : 's'}`,
+              details: { sourceRecordIds: result.sourceRecordIds }
+            })
+            continue
+          }
+        }
+
         if (!result.warning) {
           skipped += 1
           actions.push({
-            type: 'skipped',
-            sourceRecordIds: result.sourceRecordIds,
-            reason: result.reason
+            type: 'update',
+            snippet: truncateSnippet(result.sourceRecordIds.join(', ')),
+            reason: `skipped: ${result.reason ?? 'no warning generated'}`,
+            details: { sourceRecordIds: result.sourceRecordIds }
+          })
+          continue
+        }
+
+        const duplicate = await findSimilarWarning(result.warning, config)
+        if (duplicate) {
+          const percent = Math.round(duplicate.similarity * 100)
+          skipped += 1
+          actions.push({
+            type: 'update',
+            snippet: truncateSnippet(result.warning.avoid),
+            reason: `skipped: similar warning exists (${percent}%)`,
+            details: { sourceRecordIds: result.sourceRecordIds }
           })
           continue
         }
@@ -1980,19 +1887,21 @@ export async function runWarningSynthesis(
         if (dryRun) {
           created += 1
           actions.push({
-            type: 'created',
-            warningId: result.warning.id,
-            avoid: result.warning.avoid,
-            sourceRecordIds: result.sourceRecordIds
+            type: 'update',
+            // No recordId in dry run - the warning wasn't actually inserted
+            snippet: truncateSnippet(result.warning.avoid),
+            reason: `warning: ${result.warning.avoid}`,
+            details: { sourceRecordIds: result.sourceRecordIds }
           })
         } else {
           await insertRecord(result.warning, config)
           created += 1
           actions.push({
-            type: 'created',
-            warningId: result.warning.id,
-            avoid: result.warning.avoid,
-            sourceRecordIds: result.sourceRecordIds
+            type: 'update',
+            recordId: result.warning.id,
+            snippet: truncateSnippet(result.warning.avoid),
+            reason: `warning: ${result.warning.avoid}`,
+            details: { sourceRecordIds: result.sourceRecordIds }
           })
         }
       } catch (error) {

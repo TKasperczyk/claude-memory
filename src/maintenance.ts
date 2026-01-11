@@ -562,16 +562,8 @@ export async function runWarningSynthesis(
   const maintenance = resolveMaintenanceSettings(settings)
   try {
     const result = await runWarningSynthesisInternal(dryRun, config, maintenance)
-    const actions: MaintenanceAction[] = result.actions
-      .filter(action => action.type === 'created')
-      .map(action => ({
-        type: 'update' as MaintenanceActionType,
-        recordId: action.warningId,
-        snippet: action.avoid ? `warning: ${truncateSnippet(action.avoid)}` : 'warning',
-        reason: `synthesized from ${action.sourceRecordIds.length} failures`,
-        details: { sourceRecordIds: action.sourceRecordIds }
-      }))
-    return { actions, summary: result.summary, candidates: result.candidates }
+    // Actions are already in MaintenanceAction format from the library
+    return { actions: result.actions, summary: result.summary, candidates: result.candidates }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return { actions: [], summary: {}, candidates: [], error: message }

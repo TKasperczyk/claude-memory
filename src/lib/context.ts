@@ -11,7 +11,7 @@ import {
   type ScoredRecord,
   type WarningRecord
 } from './types.js'
-import { KNOWN_COMMANDS } from './shared.js'
+import { looksLikeCommand } from './shared.js'
 import { buildExclusionReason } from './diagnostics.js'
 
 export interface ContextSignals {
@@ -617,12 +617,7 @@ function pickErrorLine(lines: string[]): string {
   return lines[lines.length - 1].trim()
 }
 
-function looksLikeCommand(line: string): boolean {
-  const first = line.split(/\s+/)[0]
-  if (!first) return false
-  if (first.startsWith('./')) return true
-  return KNOWN_COMMANDS.has(first)
-}
+// looksLikeCommand is imported from shared.ts
 
 function inferDomain(root: string): string | undefined {
   if (!root) return undefined
