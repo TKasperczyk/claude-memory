@@ -1,5 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
+import fs from 'fs'
+import { homedir } from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { initMilvus, hybridSearch } from '../lib/milvus.js'
@@ -599,6 +601,52 @@ function truncateText(value: string, maxLength: number): string {
   return value.slice(0, maxLength - 3) + '...'
 }
 
+const SKIP_MARKER = '<!-- claude-memory:skip-injection -->'
+
+/**
+ * Check if injection should be skipped for this prompt.
+ *
+ * Checks:
+ * 1. If prompt content contains the skip marker directly
+ * 2. If prompt is a slash command whose file contains the skip marker
+ */
+function shouldSkipInjection(prompt: string): boolean {
+  // Direct marker check (for expanded command content)
+  if (prompt.includes(SKIP_MARKER)) {
+    return true
+  }
+
+  // Check if it's a slash command
+  const trimmed = prompt.trim()
+  const match = trimmed.match(/^\/([a-zA-Z0-9_-]+)(?:\s|$)/)
+  if (!match) {
+    return false
+  }
+
+  const commandName = match[1]
+
+  // Check user commands directory
+  const userCommandPath = path.join(homedir(), '.claude', 'commands', `${commandName}.md`)
+  if (commandFileHasSkipMarker(userCommandPath)) {
+    return true
+  }
+
+  // Could also check project commands (.claude/commands/) if needed
+  // but user commands are the primary use case for now
+
+  return false
+}
+
+function commandFileHasSkipMarker(filePath: string): boolean {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8')
+    return content.includes(SKIP_MARKER)
+  } catch {
+    // File doesn't exist or can't be read - don't skip
+    return false
+  }
+}
+
 async function runWithTimeout<T>(
   task: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number
@@ -670,11 +718,10 @@ async function main(): Promise<void> {
     return
   }
 
-  // Skip injection for /memory command (raw input before expansion)
-  // and for expanded content with skip marker
-  const trimmedPrompt = payload.prompt.trim()
-  if (trimmedPrompt === '/memory' || payload.prompt.includes('<!-- claude-memory:skip-injection -->')) {
-    console.error('[claude-memory] Memory command detected; skipping injection.')
+  // Skip injection if prompt contains skip marker (expanded command content)
+  // or if it's a slash command whose file contains the skip marker
+  if (shouldSkipInjection(payload.prompt)) {
+    console.error('[claude-memory] Skip marker detected; skipping injection.')
     return
   }
 
