@@ -56,6 +56,8 @@ const MEMORY_COMMAND_CONTENT = `---
 description: Show injected prior knowledge from this session
 ---
 
+<!-- claude-memory:skip-injection -->
+
 Display the full contents of the <prior-knowledge> section that was injected at the start of this conversation. Show it exactly as it appears, formatted nicely, without summarizing or omitting anything.
 `
 

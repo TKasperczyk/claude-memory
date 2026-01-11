@@ -670,6 +670,12 @@ async function main(): Promise<void> {
     return
   }
 
+  // Skip injection for prompts that contain the skip marker (e.g., /memory command)
+  if (payload.prompt.includes('<!-- claude-memory:skip-injection -->')) {
+    console.error('[claude-memory] Skip marker detected; skipping injection.')
+    return
+  }
+
   const projectRoot = findGitRoot(payload.cwd)
   const configRoot = projectRoot ?? payload.cwd
   const config = loadConfig(configRoot)
