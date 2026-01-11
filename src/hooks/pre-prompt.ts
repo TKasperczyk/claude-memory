@@ -1,9 +1,8 @@
 #!/usr/bin/env -S npx tsx
 
-import fs from 'fs'
-import { homedir } from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { SKIP_MARKER, getCommandFilePath, readFileIfExists } from '../lib/claude-commands.js'
 import { initMilvus, hybridSearch } from '../lib/milvus.js'
 import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { embed } from '../lib/embed.js'
@@ -601,8 +600,6 @@ function truncateText(value: string, maxLength: number): string {
   return value.slice(0, maxLength - 3) + '...'
 }
 
-const SKIP_MARKER = '<!-- claude-memory:skip-injection -->'
-
 /**
  * Check if injection should be skipped for this prompt.
  *
@@ -626,7 +623,7 @@ function shouldSkipInjection(prompt: string): boolean {
   const commandName = match[1]
 
   // Check user commands directory
-  const userCommandPath = path.join(homedir(), '.claude', 'commands', `${commandName}.md`)
+  const userCommandPath = getCommandFilePath(commandName)
   if (commandFileHasSkipMarker(userCommandPath)) {
     return true
   }
@@ -639,8 +636,8 @@ function shouldSkipInjection(prompt: string): boolean {
 
 function commandFileHasSkipMarker(filePath: string): boolean {
   try {
-    const content = fs.readFileSync(filePath, 'utf-8')
-    return content.includes(SKIP_MARKER)
+    const content = readFileIfExists(filePath)
+    return content !== null && content.includes(SKIP_MARKER)
   } catch {
     // File doesn't exist or can't be read - don't skip
     return false

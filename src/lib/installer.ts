@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import { SKIP_MARKER, getCommandFilePath, readFileIfExists } from './claude-commands.js'
 import { isPlainObject } from './parsing.js'
 
 export interface InstallationStatus {
@@ -56,7 +57,7 @@ const MEMORY_COMMAND_CONTENT = `---
 description: Show injected prior knowledge from this session
 ---
 
-<!-- claude-memory:skip-injection -->
+${SKIP_MARKER}
 
 Display the full contents of the <prior-knowledge> section that was injected at the start of this conversation. Show it exactly as it appears, formatted nicely, without summarizing or omitting anything.
 `
@@ -336,10 +337,9 @@ function writeClaudeSettingsFile(settingsPath: string, settings: Record<string, 
 }
 
 function getCommandEntries(claudeSettingsPath: string): CommandEntry[] {
-  const commandsRoot = path.join(path.dirname(claudeSettingsPath), 'commands')
   return Object.entries(COMMAND_DEFINITIONS).map(([key, definition]) => ({
     key,
-    path: path.join(commandsRoot, definition.filename),
+    path: getCommandFilePath(definition.filename, claudeSettingsPath),
     content: definition.content
   }))
 }
@@ -355,16 +355,6 @@ function buildCommandStatus(entries: CommandEntry[]): Record<string, CommandStat
     }
   }
   return status
-}
-
-function readFileIfExists(filePath: string): string | null {
-  try {
-    return fs.readFileSync(filePath, 'utf-8')
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code === 'ENOENT') return null
-    throw error
-  }
 }
 
 function removeFileIfExists(filePath: string): void {
