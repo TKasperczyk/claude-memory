@@ -670,9 +670,11 @@ async function main(): Promise<void> {
     return
   }
 
-  // Skip injection for prompts that contain the skip marker (e.g., /memory command)
-  if (payload.prompt.includes('<!-- claude-memory:skip-injection -->')) {
-    console.error('[claude-memory] Skip marker detected; skipping injection.')
+  // Skip injection for /memory command (raw input before expansion)
+  // and for expanded content with skip marker
+  const trimmedPrompt = payload.prompt.trim()
+  if (trimmedPrompt === '/memory' || payload.prompt.includes('<!-- claude-memory:skip-injection -->')) {
+    console.error('[claude-memory] Memory command detected; skipping injection.')
     return
   }
 
