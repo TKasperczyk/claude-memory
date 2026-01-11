@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
+import { sanitizeRunId } from './shared.js'
 import { type RecordType } from './types.js'
 
 export interface ExtractionRecordSummary {
@@ -26,12 +27,12 @@ export interface ExtractionRun {
 const EXTRACTIONS_DIR = path.join(homedir(), '.claude-memory', 'extractions')
 const DEFAULT_DAYS_TO_KEEP = 1
 
-export function getExtractionRunPath(runId: string): string {
+function getExtractionRunPath(runId: string): string {
   const safeId = sanitizeRunId(runId)
   return path.join(EXTRACTIONS_DIR, `${safeId}.json`)
 }
 
-export function cleanupOldExtractionLogs(daysToKeep: number = DEFAULT_DAYS_TO_KEEP): void {
+function cleanupOldExtractionLogs(daysToKeep: number = DEFAULT_DAYS_TO_KEEP): void {
   if (!fs.existsSync(EXTRACTIONS_DIR)) return
 
   const cutoff = Date.now() - Math.max(daysToKeep, 0) * 24 * 60 * 60 * 1000
@@ -101,10 +102,6 @@ export function getExtractionRun(runId: string): ExtractionRun | null {
   }
 }
 
-function sanitizeRunId(runId: string): string {
-  return runId.replace(/[\\/]/g, '_')
-}
-
 function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | null {
   if (!isPlainObject(value)) return null
   const record = value
@@ -171,5 +168,7 @@ function deriveSummaryFromRecord(type: RecordType | undefined, record: Record<st
       return asTrimmedString(record.what)
     case 'procedure':
       return asTrimmedString(record.name)
+    case 'warning':
+      return asTrimmedString(record.avoid) ?? asTrimmedString(record.useInstead)
   }
 }

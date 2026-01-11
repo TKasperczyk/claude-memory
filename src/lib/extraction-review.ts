@@ -2,8 +2,8 @@ import Anthropic from '@anthropic-ai/sdk'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { embedBatch } from './embed.js'
 import { getExtractionRun } from './extraction-log.js'
-import { escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.js'
-import { asString, isPlainObject } from './parsing.js'
+import { escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
+import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { getSchemaDescription } from './record-schema.js'
 import { clampScore, coerceReviewIssue, parseOverallAccuracy } from './review-coercion.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
@@ -87,8 +87,6 @@ const REVIEW_TOOL: Anthropic.Tool = {
   }
 }
 
-type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
-
 type ReviewPayload = {
   overallAccuracy: ExtractionReview['overallAccuracy']
   accuracyScore: number
@@ -110,7 +108,7 @@ export async function reviewExtraction(
   if (extractedIds.length === 0) {
     throw new Error('No extracted record IDs in this run. This may be an older extraction log or a run with only duplicates.')
   }
-  const records = await fetchRecordsByIds(extractedIds, config)
+  const records = await fetchRecordsByIds(extractedIds, config, { includeEmbeddings: true })
   if (records.length === 0) {
     throw new Error('Could not fetch extracted records from Milvus. They may have been deleted.')
   }
@@ -177,29 +175,6 @@ export async function reviewExtraction(
     model: REVIEW_MODEL,
     durationMs: reviewedAt - startTime
   }
-}
-
-async function fetchRecordsByIds(ids: string[], config: Config): Promise<MemoryRecord[]> {
-  if (ids.length === 0) return []
-
-  const records: MemoryRecord[] = []
-  const batchSize = 1000
-
-  for (let i = 0; i < ids.length; i += batchSize) {
-    const batchIds = ids.slice(i, i + batchSize)
-    const idFilter = batchIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
-    const batch = await queryRecords({
-      filter: `id in [${idFilter}]`,
-      limit: batchIds.length,
-      includeEmbeddings: true
-    }, config)
-    records.push(...batch)
-  }
-
-  const byId = new Map(records.map(record => [record.id, record]))
-  return ids
-    .map(id => byId.get(id))
-    .filter((record): record is MemoryRecord => Boolean(record))
 }
 
 function collectTranscriptSegments(records: MemoryRecord[]): string[] {
@@ -418,14 +393,4 @@ function parseAccuracyScore(value: unknown): number | null {
     if (Number.isFinite(parsed)) return clampScore(parsed)
   }
   return null
-}
-
-function isToolUseBlock(value: unknown): value is ToolUseBlock {
-  return (
-    isPlainObject(value)
-    && value.type === 'tool_use'
-    && typeof value.id === 'string'
-    && typeof value.name === 'string'
-    && 'input' in value
-  )
 }

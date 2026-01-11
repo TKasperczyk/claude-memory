@@ -1,3 +1,4 @@
+import fs from 'fs'
 import { type MemoryRecord } from './types.js'
 
 /**
@@ -51,6 +52,22 @@ export function buildExactText(record: MemoryRecord): string {
 
 export function normalizeExactText(value: string): string {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+}
+
+export function readFileIfExists(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+export function sanitizeRunId(runId: string): string {
+  return runId.replace(/[\\/]/g, '_')
+}
+
+export function sanitizeSessionId(sessionId: string): string {
+  return sessionId.replace(/[\\/]/g, '_')
 }
 
 export function escapeFilterValue(value: string): string {

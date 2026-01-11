@@ -6,7 +6,7 @@ import path from 'path'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { queryRecords } from './milvus.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
-import { looksLikeCommand, normalizeStep, truncateWithTail } from './shared.js'
+import { looksLikeCommand, normalizeStep, readFileIfExists, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
 
 const QUERY_PAGE_SIZE = 500
@@ -524,16 +524,6 @@ function formatDiffPath(targetFile: string, root: string): string {
     return normalizedTarget.slice(normalizedRoot.length + 1)
   }
   return normalizedTarget
-}
-
-function readFileIfExists(targetFile: string): string | null {
-  if (!fs.existsSync(targetFile)) return null
-  try {
-    return fs.readFileSync(targetFile, 'utf-8')
-  } catch (error) {
-    console.error(`[claude-memory] Failed to read target file for promotion (${targetFile}):`, error)
-    return null
-  }
 }
 
 function coalesceSuggestedContent(suggested: string | undefined, fallback: string): string {

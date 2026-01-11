@@ -2,10 +2,10 @@ import Anthropic from '@anthropic-ai/sdk'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { extractSignals, stripNoiseWords, type ContextSignals } from './context.js'
 import { embedBatch } from './embed.js'
-import { buildFilter, escapeFilterValue, queryRecords, vectorSearchSimilar } from './milvus.js'
+import { buildFilter, escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
-import { asString, isPlainObject } from './parsing.js'
+import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { clampScore, parseInjectionVerdict, parseOverallRelevance } from './review-coercion.js'
 import { DEFAULT_CONFIG, type Config, type InjectedMemoryEntry, type MemoryRecord } from './types.js'
 
@@ -99,8 +99,6 @@ const REVIEW_TOOL: Anthropic.Tool = {
     }
   }
 }
-
-type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
 
 type ReviewPayload = {
   overallRelevance: InjectionReview['overallRelevance']
@@ -250,28 +248,6 @@ function buildReviewSignals(prompt: string, projectRoot: string | undefined): Co
     projectName: undefined,
     domain: undefined
   }
-}
-
-async function fetchRecordsByIds(ids: string[], config: Config): Promise<MemoryRecord[]> {
-  if (ids.length === 0) return []
-
-  const records: MemoryRecord[] = []
-  const batchSize = 1000
-
-  for (let i = 0; i < ids.length; i += batchSize) {
-    const batchIds = ids.slice(i, i + batchSize)
-    const idFilter = batchIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
-    const batch = await queryRecords({
-      filter: `id in [${idFilter}]`,
-      limit: batchIds.length
-    }, config)
-    records.push(...batch)
-  }
-
-  const byId = new Map(records.map(record => [record.id, record]))
-  return ids
-    .map(id => byId.get(id))
-    .filter((record): record is MemoryRecord => Boolean(record))
 }
 
 function buildInjectedPayload(
@@ -540,14 +516,4 @@ function coerceMissedMemory(value: unknown): MissedMemory | null {
     snippet,
     reason
   }
-}
-
-function isToolUseBlock(value: unknown): value is ToolUseBlock {
-  return (
-    isPlainObject(value)
-    && value.type === 'tool_use'
-    && typeof value.id === 'string'
-    && typeof value.name === 'string'
-    && 'input' in value
-  )
 }

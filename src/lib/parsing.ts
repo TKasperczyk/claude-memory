@@ -51,7 +51,13 @@ export function asStringArray(value: unknown): string[] {
 }
 
 export function asRecordType(value: unknown): RecordType | undefined {
-  if (value === 'command' || value === 'error' || value === 'discovery' || value === 'procedure') {
+  if (
+    value === 'command'
+    || value === 'error'
+    || value === 'discovery'
+    || value === 'procedure'
+    || value === 'warning'
+  ) {
     return value
   }
   return undefined

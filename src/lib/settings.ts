@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
+import { isPlainObject } from './parsing.js'
 import { SIMILARITY_THRESHOLDS } from './types.js'
 
 export interface RetrievalSettings {
@@ -233,8 +234,4 @@ function parseNumber(value: unknown): number | null {
     if (Number.isFinite(parsed)) return parsed
   }
   return null
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

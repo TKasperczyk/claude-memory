@@ -158,13 +158,6 @@ export const RECORD_TYPE_DEFINITIONS: Record<string, RecordTypeDefinition> = {
 }
 
 /**
- * Get the list of valid record type names.
- */
-export function getRecordTypes(): string[] {
-  return Object.keys(RECORD_TYPE_DEFINITIONS)
-}
-
-/**
  * Generate the JSON schema oneOf array for the extraction tool.
  */
 export function getRecordSchemaOneOf(): JsonSchema[] {

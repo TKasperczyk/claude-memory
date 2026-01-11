@@ -2,7 +2,8 @@
 
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { SKIP_MARKER, getCommandFilePath, readFileIfExists } from '../lib/claude-commands.js'
+import { SKIP_MARKER, getCommandFilePath } from '../lib/claude-commands.js'
+import { readFileIfExists } from '../lib/shared.js'
 import { initMilvus, hybridSearch } from '../lib/milvus.js'
 import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { embed } from '../lib/embed.js'

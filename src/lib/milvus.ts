@@ -503,6 +503,33 @@ export async function queryRecords(
   }
 }
 
+export async function fetchRecordsByIds(
+  ids: string[],
+  config: Config = DEFAULT_CONFIG,
+  options: { includeEmbeddings?: boolean } = {}
+): Promise<MemoryRecord[]> {
+  if (ids.length === 0) return []
+
+  const records: MemoryRecord[] = []
+  const batchSize = 1000
+
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const batchIds = ids.slice(i, i + batchSize)
+    const idFilter = batchIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
+    const batch = await queryRecords({
+      filter: `id in [${idFilter}]`,
+      limit: batchIds.length,
+      includeEmbeddings: options.includeEmbeddings
+    }, config)
+    records.push(...batch)
+  }
+
+  const byId = new Map(records.map(record => [record.id, record]))
+  return ids
+    .map(id => byId.get(id))
+    .filter((record): record is MemoryRecord => Boolean(record))
+}
+
 export async function* iterateRecords(
   options: {
     filter?: string

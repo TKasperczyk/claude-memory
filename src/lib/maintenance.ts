@@ -42,17 +42,17 @@ const LOW_USAGE_HIGH_RETRIEVAL_MIN = 10
 const CONTRADICTION_SIMILARITY_THRESHOLD = 0.75
 const CONTRADICTION_SEARCH_LIMIT = 8
 const GENERALIZATION_MAX_TOKENS = 800
-export const CONTRADICTION_BATCH_SIZE = 15
+const CONTRADICTION_BATCH_SIZE = 15
 const CONTRADICTION_MAX_TOKENS = 600
 const CONFLICT_SIMILARITY_THRESHOLD = 0.85
-export const CONFLICT_CHECK_BATCH_SIZE = 10
+const CONFLICT_CHECK_BATCH_SIZE = 10
 const CONFLICT_ADJUDICATION_MAX_TOKENS = 600
 const CONFLICT_ADJUDICATION_MODEL = 'claude-haiku-4-5-20251001'
 const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
-export const GLOBAL_PROMOTION_BATCH_SIZE = 20
+const GLOBAL_PROMOTION_BATCH_SIZE = 20
 const GLOBAL_PROMOTION_MAX_TOKENS = 400
 export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
-export const GLOBAL_PROMOTION_RECHECK_DAYS = 30
+const GLOBAL_PROMOTION_RECHECK_DAYS = 30
 const GLOBAL_PROMOTION_MIN_SUCCESS_COUNT = 2
 const GLOBAL_PROMOTION_MIN_USAGE_RATIO = 0.3
 const GLOBAL_PROMOTION_MIN_RETRIEVALS_FOR_USAGE_RATIO = 3
@@ -207,12 +207,12 @@ const CONFLICT_ADJUDICATION_TOOL: Anthropic.Tool = {
 
 let cachedAnthropicClient: Awaited<ReturnType<typeof createAnthropicClient>> | undefined
 
-export interface ValidityResult {
+interface ValidityResult {
   valid: boolean
   reason?: string
 }
 
-export interface ConsolidationResult {
+interface ConsolidationResult {
   keptId: string
   deprecatedIds: string[]
   successCount: number
@@ -228,24 +228,24 @@ export interface ContradictionPair {
   similarity: number
 }
 
-export interface ContradictionResult {
+interface ContradictionResult {
   verdict: 'keep_newer' | 'keep_older' | 'keep_both' | 'merge'
   reason?: string
   mergedRecord?: Partial<MemoryRecord>
 }
 
-export interface ConflictPair {
+interface ConflictPair {
   newRecord: MemoryRecord
   existingRecord: MemoryRecord
 }
 
-export interface GeneralizationResult {
+interface GeneralizationResult {
   shouldGeneralize: boolean
   generalizedRecord?: Partial<MemoryRecord>
   reason?: string
 }
 
-export interface GlobalPromotionResult {
+interface GlobalPromotionResult {
   shouldPromote: boolean
   confidence: 'high' | 'medium' | 'low'
   reason?: string
@@ -266,12 +266,12 @@ export interface MaintenanceCandidateGroup {
   records: MaintenanceCandidateRecord[]
 }
 
-export interface ConsolidationClusterMember {
+interface ConsolidationClusterMember {
   record: MemoryRecord
   similarity: number
 }
 
-export type ConsolidationCluster = MemoryRecord[] & {
+type ConsolidationCluster = MemoryRecord[] & {
   seedId: string
   members: ConsolidationClusterMember[]
 }
@@ -340,7 +340,7 @@ export async function findLowUsageHighRetrieval(
   return records.filter(record => (record.usageCount ?? 0) === 0)
 }
 
-export async function findNewConflicts(
+async function findNewConflicts(
   config: Config = DEFAULT_CONFIG,
   settings?: MaintenanceSettings
 ): Promise<ConflictPair[]> {
@@ -639,7 +639,7 @@ export async function findContradictionPairs(
  * Resolve a contradiction by deprecating the older record.
  * The newer record is assumed to supersede it.
  */
-export async function resolveContradiction(
+async function resolveContradiction(
   pair: ContradictionPair,
   config: Config = DEFAULT_CONFIG
 ): Promise<boolean> {
@@ -672,7 +672,7 @@ export async function checkContradiction(
   return parseContradictionResponse(rawText)
 }
 
-export async function resolveContradictionWithLLM(
+async function resolveContradictionWithLLM(
   pair: ContradictionPair,
   result: ContradictionResult,
   config: Config = DEFAULT_CONFIG
@@ -709,7 +709,7 @@ export async function resolveContradictionWithLLM(
   }
 }
 
-export async function resolveConflictWithLlm(
+async function resolveConflictWithLLM(
   pair: ConflictPair,
   config: Config
 ): Promise<{ verdict: 'supersedes' | 'variant' | 'hallucination'; reason: string }> {
@@ -861,7 +861,7 @@ export async function runConflictResolution(
         if (deprecatedNewIds.has(newId) || failedNewIds.has(newId)) continue
 
         try {
-          const verdict = await resolveConflictWithLlm(pair, config)
+          const verdict = await resolveConflictWithLLM(pair, config)
           checked += 1
 
           if (verdict.verdict === 'supersedes') {
@@ -940,7 +940,7 @@ export async function runConflictResolution(
   }
 }
 
-export async function checkGeneralization(
+async function checkGeneralization(
   record: MemoryRecord,
   config: Config
 ): Promise<GeneralizationResult> {
@@ -984,7 +984,7 @@ export async function checkGeneralization(
   }
 }
 
-export async function generalizeRecord(
+async function generalizeRecord(
   id: string,
   updates: Partial<MemoryRecord>,
   config: Config
@@ -1594,18 +1594,18 @@ export function isConfidenceSufficient(actual: string, minimum: string): boolean
 // Warning Synthesis
 // =============================================================================
 
-export interface WarningCandidate {
+interface WarningCandidate {
   records: MemoryRecord[]
   totalFailures: number
 }
 
-export interface WarningSynthesisResult {
+interface WarningSynthesisResult {
   warning: WarningRecord | null
   sourceRecordIds: string[]
   reason?: string
 }
 
-export type WarningSynthesisAction = {
+type WarningSynthesisAction = {
   type: 'update'
   recordId?: string
   snippet: string
@@ -1615,7 +1615,7 @@ export type WarningSynthesisAction = {
   }
 }
 
-export async function findWarningCandidates(
+async function findWarningCandidates(
   minFailures: number | undefined = undefined,
   config: Config = DEFAULT_CONFIG,
   settings?: MaintenanceSettings
@@ -1678,7 +1678,7 @@ export async function findWarningCandidates(
   return candidates
 }
 
-export async function synthesizeWarning(
+async function synthesizeWarning(
   candidate: WarningCandidate,
   config: Config = DEFAULT_CONFIG
 ): Promise<WarningSynthesisResult> {

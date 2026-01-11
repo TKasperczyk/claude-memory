@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
-import { SKIP_MARKER, getCommandFilePath, readFileIfExists } from './claude-commands.js'
+import { SKIP_MARKER, getCommandFilePath } from './claude-commands.js'
+import { readFileIfExists } from './shared.js'
 import { isPlainObject } from './parsing.js'
 
 export interface InstallationStatus {

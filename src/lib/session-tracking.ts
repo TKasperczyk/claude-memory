@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, isPlainObject } from './parsing.js'
+import { sanitizeSessionId } from './shared.js'
 import {
   type InjectedMemoryEntry,
   type InjectionPromptEntry,
@@ -11,9 +12,9 @@ import {
 } from './types.js'
 
 const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
-const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure):/i
+const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure|warning):/i
 
-export function getSessionTrackingPath(sessionId: string): string {
+function getSessionTrackingPath(sessionId: string): string {
   const safeId = sanitizeSessionId(sessionId)
   return path.join(SESSIONS_DIR, `${safeId}.json`)
 }
@@ -126,10 +127,6 @@ export function removeSessionTracking(sessionId: string): void {
   } catch (error) {
     console.error('[claude-memory] Failed to remove session tracking file:', error)
   }
-}
-
-function sanitizeSessionId(sessionId: string): string {
-  return sessionId.replace(/[\\/]/g, '_')
 }
 
 function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessionRecord | null {

@@ -6,6 +6,7 @@ import { getDomainExamples, type DomainExample } from './milvus.js'
 import { stripNoiseWords } from './context.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { getRecordSchemaOneOf } from './record-schema.js'
+import { isToolUseBlock, type ToolUseBlock } from './parsing.js'
 
 export interface ExtractionContext {
   sessionId: string
@@ -132,8 +133,6 @@ const EMIT_USEFULNESS_TOOL: Anthropic.Tool = {
     }
   }
 }
-
-type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
 
 export async function extractRecords(
   transcript: Transcript,
@@ -372,16 +371,6 @@ function truncateBlock(value: string, maxLength: number): string {
   const head = value.slice(0, Math.max(0, maxLength - 200))
   const tail = value.slice(-200)
   return `${head}\n...[truncated]...\n${tail}`
-}
-
-function isToolUseBlock(value: unknown): value is ToolUseBlock {
-  return (
-    isPlainObject(value) &&
-    value.type === 'tool_use' &&
-    typeof value.id === 'string' &&
-    typeof value.name === 'string' &&
-    'input' in value
-  )
 }
 
 function coerceExtractionResult(input: unknown, context: ExtractionContext): MemoryRecord[] {

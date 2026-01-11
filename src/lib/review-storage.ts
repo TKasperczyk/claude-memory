@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { type ExtractionReview, type ExtractionReviewIssue } from './extraction-review.js'
 import { type InjectedMemoryVerdict, type InjectionReview, type MissedMemory } from './injection-review.js'
 import { asInteger, asNumber, asString, isPlainObject } from './parsing.js'
+import { sanitizeRunId, sanitizeSessionId } from './shared.js'
 import {
   clampScore,
   coerceReviewIssue,
@@ -70,14 +71,6 @@ export function getInjectionReview(sessionId: string): InjectionReview | null {
     console.error('[claude-memory] Failed to read injection review:', error)
     return null
   }
-}
-
-function sanitizeRunId(runId: string): string {
-  return runId.replace(/[\\/]/g, '_')
-}
-
-function sanitizeSessionId(sessionId: string): string {
-  return sessionId.replace(/[\\/]/g, '_')
 }
 
 function coerceReview(value: unknown, runId: string): ExtractionReview | null {
