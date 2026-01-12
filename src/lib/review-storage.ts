@@ -3,15 +3,19 @@ import path from 'path'
 import { homedir } from 'os'
 import { type ExtractionReview, type ExtractionReviewIssue } from './extraction-review.js'
 import { type InjectedMemoryVerdict, type InjectionReview, type MissedMemory } from './injection-review.js'
-import { asInteger, asNumber, asString, isPlainObject } from './parsing.js'
+import { asBoolean, asInteger, asNumber, asString, isPlainObject } from './parsing.js'
 import { sanitizeRunId, sanitizeSessionId } from './shared.js'
 import {
   clampScore,
+  coerceMaintenanceActionReviewItem,
   coerceReviewIssue,
+  coerceSettingsRecommendation,
   parseInjectionVerdict,
+  parseMaintenanceAssessment,
   parseOverallAccuracy,
   parseOverallRelevance
 } from './review-coercion.js'
+import { type MaintenanceReview } from '../../shared/types.js'
 
 const REVIEWS_DIR = path.join(homedir(), '.claude-memory', 'reviews')
 
@@ -69,6 +73,36 @@ export function getInjectionReview(sessionId: string): InjectionReview | null {
     return coerceInjectionReview(parsed, sessionId)
   } catch (error) {
     console.error('[claude-memory] Failed to read injection review:', error)
+    return null
+  }
+}
+
+export function getMaintenanceReviewPath(resultId: string, operation: string): string {
+  const safeOperation = sanitizeRunId(operation)
+  const safeId = sanitizeRunId(resultId)
+  return path.join(REVIEWS_DIR, `maintenance-${safeOperation}-${safeId}.json`)
+}
+
+export function saveMaintenanceReview(review: MaintenanceReview): void {
+  try {
+    fs.mkdirSync(REVIEWS_DIR, { recursive: true })
+    const filePath = getMaintenanceReviewPath(review.resultId, review.operation)
+    fs.writeFileSync(filePath, JSON.stringify(review, null, 2))
+  } catch (error) {
+    console.error('[claude-memory] Failed to write maintenance review:', error)
+  }
+}
+
+export function getMaintenanceReview(resultId: string, operation: string): MaintenanceReview | null {
+  const filePath = getMaintenanceReviewPath(resultId, operation)
+  if (!fs.existsSync(filePath)) return null
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8')
+    const parsed = JSON.parse(raw) as unknown
+    return coerceMaintenanceReview(parsed, resultId, operation)
+  } catch (error) {
+    console.error('[claude-memory] Failed to read maintenance review:', error)
     return null
   }
 }
@@ -132,6 +166,47 @@ function coerceInjectionReview(value: unknown, sessionId: string): InjectionRevi
     relevanceScore: clampScore(relevanceScore),
     injectedVerdicts,
     missedMemories,
+    summary,
+    model,
+    durationMs
+  }
+}
+
+function coerceMaintenanceReview(value: unknown, resultId: string, operation: string): MaintenanceReview | null {
+  if (!isPlainObject(value)) return null
+  const record = value
+
+  const summary = asString(record.summary)?.trim() ?? ''
+  const overallAssessment = parseMaintenanceAssessment(record.overallAssessment)
+  const assessmentScore = asNumber(record.assessmentScore) ?? 0
+  const reviewedAt = asInteger(record.reviewedAt) ?? 0
+  const model = asString(record.model) ?? 'unknown'
+  const durationMs = asInteger(record.durationMs) ?? 0
+  const dryRun = asBoolean(record.dryRun) ?? false
+
+  const actionVerdicts = Array.isArray(record.actionVerdicts)
+    ? record.actionVerdicts
+      .map(coerceMaintenanceActionReviewItem)
+      .filter((item): item is MaintenanceReview['actionVerdicts'][number] => Boolean(item))
+    : []
+
+  const settingsRecommendations = Array.isArray(record.settingsRecommendations)
+    ? record.settingsRecommendations
+      .map(coerceSettingsRecommendation)
+      .filter((item): item is MaintenanceReview['settingsRecommendations'][number] => Boolean(item))
+    : []
+
+  if (!overallAssessment) return null
+
+  return {
+    resultId: asString(record.resultId) ?? resultId,
+    operation: asString(record.operation) ?? operation,
+    dryRun,
+    reviewedAt,
+    overallAssessment,
+    assessmentScore: clampScore(assessmentScore),
+    actionVerdicts,
+    settingsRecommendations,
     summary,
     model,
     durationMs

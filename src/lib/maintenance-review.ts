@@ -1,0 +1,466 @@
+import Anthropic from '@anthropic-ai/sdk'
+import { createHash } from 'crypto'
+import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import { fetchRecordsByIds } from './milvus.js'
+import { loadSettings, type MaintenanceSettings } from './settings.js'
+import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
+import {
+  clampScore,
+  coerceMaintenanceActionReviewItem,
+  coerceSettingsRecommendation,
+  parseMaintenanceAssessment
+} from './review-coercion.js'
+import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
+import type { MaintenanceReview, OperationResult, MaintenanceAction, MaintenanceCandidateGroup } from '../../shared/types.js'
+
+export type { MaintenanceReview } from '../../shared/types.js'
+
+const REVIEW_MODEL = 'claude-opus-4-5-20251101'
+const REVIEW_TOOL_NAME = 'emit_maintenance_review'
+const REVIEW_MAX_TOKENS = 3000
+const REVIEW_MAX_ACTIONS = 30
+const REVIEW_MAX_CANDIDATE_GROUPS = 20
+const REVIEW_MAX_CANDIDATE_RECORDS = 20
+const REVIEW_MAX_RECORDS = 60
+const REVIEW_MAX_RECORD_DETAILS = 30
+const REVIEW_MAX_ACTION_DIFF_CHARS = 2000
+
+const OPERATION_PROMPTS: Record<string, string> = {
+  'stale-check': 'This operation identifies records unused for 90+ days. Goal: Deprecate truly obsolete records while preserving valuable niche knowledge. Key question: Are deprecated records truly obsolete?',
+  'low-usage': 'This operation deprecates records with poor usage ratios. Goal: Remove memories that consistently fail to help. Key question: Are these bad memories or valuable niche knowledge?',
+  'low-usage-deprecation': 'This operation deprecates records with zero usage despite retrievals. Goal: Remove memories that never provide value.',
+  'consolidation': 'This operation merges near-duplicate records. Goal: Reduce redundancy while keeping the best version. Key question: Were the right records kept?',
+  'conflict-resolution': 'This operation resolves conflicts between new and existing records. Goal: Deprecate superseded knowledge. Key question: Are the LLM verdicts correct?',
+  'warning-synthesis': 'This operation creates warning records from repeated failures. Goal: Extract actionable warnings. Key question: Are synthesized warnings useful?',
+  'global-promotion': 'This operation elevates project-scoped records to global scope. Goal: Share universal knowledge. Key question: Are promoted records truly universal?',
+  'promotion-suggestions': 'This operation generates CLAUDE.md and skill file suggestions. Goal: Surface high-value memories for documentation.'
+}
+
+const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
+  'stale-check': ['staleDays', 'discoveryMaxAgeDays'],
+  'low-usage': ['lowUsageMinRetrievals', 'lowUsageRatioThreshold'],
+  'low-usage-deprecation': ['lowUsageHighRetrievalMin'],
+  'consolidation': ['consolidationThreshold', 'consolidationTextSimilarityRatio', 'consolidationSearchLimit'],
+  'conflict-resolution': ['conflictSimilarityThreshold', 'conflictCheckBatchSize'],
+  'warning-synthesis': ['warningSynthesisMinFailures', 'warningClusterSimilarityThreshold'],
+  'global-promotion': [
+    'globalPromotionMinSuccessCount',
+    'globalPromotionMinUsageRatio',
+    'globalPromotionMinRetrievalsForUsageRatio',
+    'globalPromotionBatchSize',
+    'globalPromotionRecheckDays'
+  ],
+  'promotion-suggestions': []
+}
+
+const REVIEW_SYSTEM_PROMPT = `You are reviewing a maintenance operation result.
+
+Rules:
+- Output ONLY via the tool call "${REVIEW_TOOL_NAME}" exactly once.
+- Evaluate each action against the operation's goal.
+- "correct" = action aligns with goal, "questionable" = uncertain/borderline, "incorrect" = action contradicts goal
+- Consider whether settings thresholds are appropriate.
+- Be concrete and specific in reasons.
+`
+
+const REVIEW_TOOL: Anthropic.Tool = {
+  name: REVIEW_TOOL_NAME,
+  description: 'Emit a maintenance review with action verdicts and settings recommendations.',
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['overallAssessment', 'assessmentScore', 'actionVerdicts', 'settingsRecommendations', 'summary'],
+    properties: {
+      resultId: { type: 'string' },
+      operation: { type: 'string' },
+      dryRun: { type: 'boolean' },
+      reviewedAt: { type: 'number' },
+      overallAssessment: { type: 'string', enum: ['good', 'concerning', 'poor'] },
+      assessmentScore: { type: 'number' },
+      actionVerdicts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['action', 'snippet', 'verdict', 'reason'],
+          properties: {
+            recordId: { type: 'string' },
+            action: { type: 'string', enum: ['deprecate', 'update', 'merge', 'promote', 'suggestion'] },
+            snippet: { type: 'string' },
+            verdict: { type: 'string', enum: ['correct', 'questionable', 'incorrect'] },
+            reason: { type: 'string' }
+          }
+        }
+      },
+      settingsRecommendations: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['setting', 'currentValue', 'recommendation', 'reason'],
+          properties: {
+            setting: { type: 'string' },
+            currentValue: { type: ['string', 'number'] },
+            recommendation: { type: 'string', enum: ['too_aggressive', 'too_lenient', 'appropriate'] },
+            suggestedValue: { type: ['string', 'number'] },
+            reason: { type: 'string' }
+          }
+        }
+      },
+      summary: { type: 'string' },
+      model: { type: 'string' },
+      durationMs: { type: 'number' }
+    }
+  }
+}
+
+type ReviewPayload = {
+  overallAssessment: MaintenanceReview['overallAssessment']
+  assessmentScore: number
+  actionVerdicts: MaintenanceReview['actionVerdicts']
+  settingsRecommendations: MaintenanceReview['settingsRecommendations']
+  summary: string
+}
+
+export async function reviewMaintenanceResult(
+  result: OperationResult,
+  config: Config = DEFAULT_CONFIG
+): Promise<MaintenanceReview> {
+  const startTime = Date.now()
+  const resultId = buildResultId(result)
+  const settings = loadSettings()
+
+  const recordIds = collectRecordIds(result)
+  let records: MemoryRecord[] = []
+  if (recordIds.length > 0) {
+    try {
+      records = await fetchRecordsByIds(recordIds, config)
+    } catch (error) {
+      console.error('[claude-memory] Failed to fetch maintenance records for review:', error)
+    }
+  }
+
+  const client = await createAnthropicClient()
+  if (!client) {
+    throw new Error('No authentication available for maintenance review. Set ANTHROPIC_API_KEY or run kira login.')
+  }
+
+  const prompt = buildReviewPrompt(result, records, settings)
+
+  const response = await client.messages.create({
+    model: REVIEW_MODEL,
+    max_tokens: Math.min(REVIEW_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: REVIEW_SYSTEM_PROMPT }
+    ],
+    messages: [{ role: 'user', content: prompt }],
+    tools: [REVIEW_TOOL],
+    tool_choice: { type: 'tool', name: REVIEW_TOOL_NAME }
+  })
+
+  const toolInput = response.content.find((block): block is ToolUseBlock =>
+    isToolUseBlock(block) && block.name === REVIEW_TOOL_NAME
+  )?.input
+
+  if (!toolInput) {
+    throw new Error('Review tool call missing in response.')
+  }
+
+  const payload = coerceReviewPayload(toolInput)
+  if (!payload) {
+    throw new Error('Review response invalid or incomplete.')
+  }
+
+  const reviewedAt = Date.now()
+  return {
+    resultId,
+    operation: result.operation,
+    dryRun: result.dryRun,
+    reviewedAt,
+    overallAssessment: payload.overallAssessment,
+    assessmentScore: payload.assessmentScore,
+    actionVerdicts: payload.actionVerdicts,
+    settingsRecommendations: payload.settingsRecommendations,
+    summary: payload.summary,
+    model: REVIEW_MODEL,
+    durationMs: reviewedAt - startTime
+  }
+}
+
+function buildResultId(result: OperationResult): string {
+  const payload = JSON.stringify({
+    operation: result.operation,
+    dryRun: result.dryRun,
+    duration: result.duration,
+    summary: result.summary,
+    actionCount: result.actions.length,
+    candidateCount: result.candidates.length,
+    error: result.error ?? null
+  })
+  return createHash('sha256').update(payload).digest('hex').slice(0, 16)
+}
+
+function collectRecordIds(result: OperationResult): string[] {
+  const recordIds = new Set<string>()
+
+  for (const action of result.actions) {
+    if (action.recordId) recordIds.add(action.recordId)
+
+    if (!isPlainObject(action.details)) continue
+    const details = action.details
+
+    const keptId = asString(details.keptId)
+    if (keptId) recordIds.add(keptId)
+
+    const candidateId = asString(details.candidateId)
+    if (candidateId) recordIds.add(candidateId)
+
+    const existingId = asString(details.existingId)
+    if (existingId) recordIds.add(existingId)
+
+    if (Array.isArray(details.deprecatedIds)) {
+      for (const id of details.deprecatedIds) {
+        if (typeof id === 'string' && id.trim()) recordIds.add(id)
+      }
+    }
+  }
+
+  for (const group of result.candidates) {
+    for (const record of group.records) {
+      if (record.id) recordIds.add(record.id)
+    }
+  }
+
+  return Array.from(recordIds)
+}
+
+function buildReviewPrompt(
+  result: OperationResult,
+  records: MemoryRecord[],
+  settings: MaintenanceSettings
+): string {
+  const actionPayload = result.actions.slice(0, REVIEW_MAX_ACTIONS).map(formatReviewAction)
+  const actionOverflow = Math.max(0, result.actions.length - actionPayload.length)
+  const candidatePayload = result.candidates
+    .slice(0, REVIEW_MAX_CANDIDATE_GROUPS)
+    .map(formatCandidateGroup)
+  const candidateOverflow = Math.max(0, result.candidates.length - candidatePayload.length)
+  const recordPayload = records
+    .slice(0, REVIEW_MAX_RECORDS)
+    .map((record, index) =>
+      index < REVIEW_MAX_RECORD_DETAILS ? formatReviewRecord(record) : formatReviewRecordSnippet(record)
+    )
+  const recordOverflow = Math.max(0, records.length - recordPayload.length)
+  const recordSnippetCount = Math.max(0, recordPayload.length - Math.min(recordPayload.length, REVIEW_MAX_RECORD_DETAILS))
+  const operationPrompt = result.operation === 'stale-check'
+    ? `This operation identifies records unused for ${settings.staleDays}+ days. Goal: Deprecate truly obsolete records while preserving valuable niche knowledge. Key question: Are deprecated records truly obsolete?`
+    : OPERATION_PROMPTS[result.operation] ?? 'Review this maintenance operation result.'
+
+  const settingsKeys = OPERATION_SETTINGS[result.operation] ?? []
+  const settingsPayload = settingsKeys.map(setting => ({
+    setting,
+    value: settings[setting] ?? null
+  }))
+
+  const recordIds = collectRecordIds(result)
+  const recordMap = new Map(records.map(record => [record.id, record]))
+  const missingRecordIds = recordIds.filter(id => !recordMap.has(id))
+
+  return `Maintenance operation:
+- operation: ${result.operation}
+- dry_run: ${result.dryRun}
+- duration_ms: ${result.duration}
+- error: ${result.error ?? 'none'}
+
+Operation goal:
+${operationPrompt}
+
+Relevant settings (JSON):
+${JSON.stringify(settingsPayload, null, 2)}
+
+Summary metrics (JSON):
+${JSON.stringify(result.summary, null, 2)}
+
+Actions (JSON):
+${JSON.stringify(actionPayload, null, 2)}
+Actions omitted: ${actionOverflow}
+
+Candidate groups (JSON):
+${JSON.stringify(candidatePayload, null, 2)}
+Candidate groups omitted: ${candidateOverflow}
+
+Records (JSON):
+${JSON.stringify(recordPayload, null, 2)}
+Record snippets: ${recordSnippetCount}
+Records omitted: ${recordOverflow}
+
+Missing record IDs (JSON):
+${JSON.stringify(missingRecordIds, null, 2)}
+`
+}
+
+function formatReviewAction(action: MaintenanceAction): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    action: action.type,
+    snippet: action.snippet,
+    reason: action.reason
+  }
+
+  if (action.recordId) payload.recordId = action.recordId
+  if (action.details) {
+    const details = { ...action.details }
+    if (typeof details.diff === 'string') {
+      details.diff = truncateWithTail(details.diff, REVIEW_MAX_ACTION_DIFF_CHARS)
+    }
+    payload.details = details
+  }
+
+  return payload
+}
+
+function formatCandidateGroup(group: MaintenanceCandidateGroup): Record<string, unknown> {
+  const records = group.records.slice(0, REVIEW_MAX_CANDIDATE_RECORDS)
+  const omittedRecords = Math.max(0, group.records.length - records.length)
+  const payload: Record<string, unknown> = {
+    id: group.id,
+    label: group.label,
+    reason: group.reason,
+    records: records.map(record => ({
+      id: record.id,
+      type: record.type,
+      snippet: record.snippet,
+      reason: record.reason,
+      details: record.details
+    }))
+  }
+  if (omittedRecords > 0) payload.omittedRecords = omittedRecords
+  return payload
+}
+
+function formatReviewRecordSnippet(record: MemoryRecord): Record<string, unknown> {
+  return {
+    id: record.id,
+    type: record.type,
+    summary: truncateSnippet(buildRecordSnippet(record), 160),
+    scope: record.scope,
+    project: record.project,
+    domain: record.domain,
+    truncated: true
+  }
+}
+
+function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
+  const base = {
+    id: record.id,
+    type: record.type,
+    summary: truncateSnippet(buildRecordSnippet(record), 160),
+    scope: record.scope,
+    project: record.project,
+    domain: record.domain,
+    timestamp: record.timestamp,
+    lastUsed: record.lastUsed,
+    retrievalCount: record.retrievalCount,
+    usageCount: record.usageCount,
+    successCount: record.successCount,
+    failureCount: record.failureCount,
+    deprecated: record.deprecated,
+    generalized: record.generalized,
+    lastGeneralizationCheck: record.lastGeneralizationCheck,
+    lastGlobalCheck: record.lastGlobalCheck,
+    lastConflictCheck: record.lastConflictCheck,
+    lastWarningSynthesisCheck: record.lastWarningSynthesisCheck
+  }
+
+  switch (record.type) {
+    case 'command':
+      return {
+        ...base,
+        command: record.command,
+        exitCode: record.exitCode,
+        outcome: record.outcome,
+        truncatedOutput: record.truncatedOutput,
+        resolution: record.resolution,
+        context: record.context
+      }
+    case 'error':
+      return {
+        ...base,
+        errorText: record.errorText,
+        errorType: record.errorType,
+        cause: record.cause,
+        resolution: record.resolution,
+        context: record.context
+      }
+    case 'discovery':
+      return {
+        ...base,
+        what: record.what,
+        where: record.where,
+        evidence: record.evidence,
+        confidence: record.confidence
+      }
+    case 'procedure':
+      return {
+        ...base,
+        name: record.name,
+        steps: record.steps,
+        prerequisites: record.prerequisites,
+        verification: record.verification,
+        context: record.context
+      }
+    case 'warning':
+      return {
+        ...base,
+        avoid: record.avoid,
+        useInstead: record.useInstead,
+        reason: record.reason,
+        severity: record.severity,
+        sourceRecordIds: record.sourceRecordIds
+      }
+  }
+}
+
+function coerceReviewPayload(input: unknown): ReviewPayload | null {
+  if (!isPlainObject(input)) return null
+  const record = input
+
+  const overallAssessment = parseMaintenanceAssessment(record.overallAssessment)
+  const assessmentScore = parseAssessmentScore(record.assessmentScore)
+  const summary = asString(record.summary)?.trim() ?? ''
+
+  const actionVerdicts = Array.isArray(record.actionVerdicts)
+    ? record.actionVerdicts
+      .map(coerceMaintenanceActionReviewItem)
+      .filter((item): item is MaintenanceReview['actionVerdicts'][number] => Boolean(item))
+    : []
+
+  const settingsRecommendations = Array.isArray(record.settingsRecommendations)
+    ? record.settingsRecommendations
+      .map(coerceSettingsRecommendation)
+      .filter((item): item is MaintenanceReview['settingsRecommendations'][number] => Boolean(item))
+    : []
+
+  if (!overallAssessment || assessmentScore === null || summary === '') return null
+
+  return {
+    overallAssessment,
+    assessmentScore,
+    actionVerdicts,
+    settingsRecommendations,
+    summary
+  }
+}
+
+function parseAssessmentScore(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return clampScore(value)
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return clampScore(parsed)
+  }
+  return null
+}
