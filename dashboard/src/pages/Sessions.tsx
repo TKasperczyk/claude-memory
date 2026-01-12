@@ -49,13 +49,9 @@ function getInjectionRatioBadge(injectionCount: number, promptCount: number): { 
   return { badge: 'bg-red-500/15 text-red-300', label, title }
 }
 
-const RELEVANCE_STYLES: Record<InjectionReview['overallRelevance'], { badge: string; label: string }> = {
-  excellent: {
-    badge: 'bg-emerald-500/15 text-emerald-300',
-    label: 'Excellent'
-  },
+const RATING_STYLES: Record<InjectionReview['overallRating'], { badge: string; label: string }> = {
   good: {
-    badge: 'bg-sky-500/15 text-sky-300',
+    badge: 'bg-emerald-500/15 text-emerald-300',
     label: 'Good'
   },
   mixed: {
@@ -63,7 +59,7 @@ const RELEVANCE_STYLES: Record<InjectionReview['overallRelevance'], { badge: str
     label: 'Mixed'
   },
   poor: {
-    badge: 'bg-destructive/15 text-destructive',
+    badge: 'bg-red-500/15 text-red-300',
     label: 'Poor'
   }
 }
@@ -497,8 +493,8 @@ export default function Sessions() {
                           {review ? (
                             <div className="space-y-3">
                               <div className="flex flex-wrap items-center gap-3">
-                                <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RELEVANCE_STYLES[review.overallRelevance].badge}`}>
-                                  {RELEVANCE_STYLES[review.overallRelevance].label}
+                                <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RATING_STYLES[review.overallRating].badge}`}>
+                                  {RATING_STYLES[review.overallRating].label}
                                 </span>
                                 <span className="text-xs text-muted-foreground">
                                   Relevance score <span className="font-semibold tabular-nums text-foreground">{review.relevanceScore}</span>

@@ -5,7 +5,7 @@ import { getExtractionRun } from './extraction-log.js'
 import { escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { getSchemaDescription } from './record-schema.js'
-import { clampScore, coerceReviewIssue, parseOverallAccuracy } from './review-coercion.js'
+import { clampScore, coerceReviewIssue, parseReviewRating } from './review-coercion.js'
 import { formatSimilarRecord } from './review-formatters.js'
 import { truncateWithTail } from './shared.js'
 import { loadSettings } from './settings.js'
@@ -31,6 +31,7 @@ Rules:
 - For missed issues, use suggestedFix to describe what should have been extracted.
 - Check extracted records against similar existing memories; flag duplicates with type "duplicate".
 - Be precise and concrete in descriptions and suggested fixes.
+- overallRating must be exactly one of: good, mixed, poor
 `
 
 // Schema description is now generated from record-schema.ts
@@ -38,15 +39,15 @@ const EXTRACTION_SCHEMA_DESCRIPTION = `Record types:\n${getSchemaDescription()}\
 
 const REVIEW_TOOL: Anthropic.Tool = {
   name: REVIEW_TOOL_NAME,
-  description: 'Emit an extraction quality review with issues (including duplicates) and accuracy rating.',
+  description: 'Emit an extraction quality review with issues (including duplicates) and an overall rating.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['overallAccuracy', 'accuracyScore', 'issues', 'summary'],
+    required: ['overallRating', 'accuracyScore', 'issues', 'summary'],
     properties: {
       runId: { type: 'string' },
       reviewedAt: { type: 'number' },
-      overallAccuracy: { type: 'string', enum: ['good', 'acceptable', 'poor'] },
+      overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
       accuracyScore: { type: 'number' },
       issues: {
         type: 'array',
@@ -72,7 +73,7 @@ const REVIEW_TOOL: Anthropic.Tool = {
 }
 
 type ReviewPayload = {
-  overallAccuracy: ExtractionReview['overallAccuracy']
+  overallRating: ExtractionReview['overallRating']
   accuracyScore: number
   issues: ExtractionReviewIssue[]
   summary: string
@@ -152,7 +153,7 @@ export async function reviewExtraction(
   return {
     runId,
     reviewedAt,
-    overallAccuracy: payload.overallAccuracy,
+    overallRating: payload.overallRating,
     accuracyScore: payload.accuracyScore,
     issues: payload.issues,
     summary: payload.summary,
@@ -338,17 +339,17 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
   if (!isPlainObject(input)) return null
   const record = input
 
-  const overallAccuracy = parseOverallAccuracy(record.overallAccuracy)
+  const overallRating = parseReviewRating(record.overallRating ?? record.overallAccuracy)
   const accuracyScore = parseAccuracyScore(record.accuracyScore)
   const summary = asString(record.summary)?.trim() ?? ''
   const issues = Array.isArray(record.issues)
     ? record.issues.map(coerceReviewIssue).filter((issue): issue is ExtractionReviewIssue => Boolean(issue))
     : []
 
-  if (!overallAccuracy || accuracyScore === null || summary === '') return null
+  if (!overallRating || accuracyScore === null || summary === '') return null
 
   return {
-    overallAccuracy,
+    overallRating,
     accuracyScore,
     issues,
     summary

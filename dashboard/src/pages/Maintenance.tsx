@@ -65,17 +65,17 @@ const ACTION_STYLES: Record<MaintenanceActionType, { badge: string; dot: string;
   }
 }
 
-const ASSESSMENT_STYLES: Record<MaintenanceReview['overallAssessment'], { badge: string; label: string }> = {
+const RATING_STYLES: Record<MaintenanceReview['overallRating'], { badge: string; label: string }> = {
   good: {
     badge: 'bg-emerald-500/15 text-emerald-300',
     label: 'Good'
   },
-  concerning: {
+  mixed: {
     badge: 'bg-amber-500/15 text-amber-300',
-    label: 'Concerning'
+    label: 'Mixed'
   },
   poor: {
-    badge: 'bg-destructive/15 text-destructive',
+    badge: 'bg-red-500/15 text-red-300',
     label: 'Poor'
   }
 }
@@ -754,8 +754,8 @@ function MaintenanceReviewDisplay({
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${ASSESSMENT_STYLES[review.overallAssessment].badge}`}>
-          {ASSESSMENT_STYLES[review.overallAssessment].label}
+        <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RATING_STYLES[review.overallRating].badge}`}>
+          {RATING_STYLES[review.overallRating].label}
         </span>
         <span className="text-xs text-muted-foreground">
           Assessment score <span className="font-semibold tabular-nums text-foreground">{review.assessmentScore}</span>

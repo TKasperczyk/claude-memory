@@ -8,7 +8,7 @@ import {
   clampScore,
   coerceMaintenanceActionReviewItem,
   coerceSettingsRecommendation,
-  parseMaintenanceAssessment
+  parseReviewRating
 } from './review-coercion.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
@@ -71,7 +71,7 @@ Rules:
 - Output ONLY via the tool call "${REVIEW_TOOL_NAME}" exactly once.
 - Evaluate each action against the operation's goal.
 - "correct" = action aligns with goal, "questionable" = uncertain/borderline, "incorrect" = action contradicts goal
-- overallAssessment must be one of: good, concerning, poor
+- overallRating must be exactly one of: good, mixed, poor
 - assessmentScore must be a 0-100 number
 - Always include a concise summary string
 - Consider whether settings thresholds are appropriate.
@@ -80,17 +80,17 @@ Rules:
 
 const REVIEW_TOOL: Anthropic.Tool = {
   name: REVIEW_TOOL_NAME,
-  description: 'Emit a maintenance review with action verdicts and settings recommendations.',
+  description: 'Emit a maintenance review with action verdicts, settings recommendations, and an overall rating.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['overallAssessment', 'assessmentScore', 'actionVerdicts', 'settingsRecommendations', 'summary'],
+    required: ['overallRating', 'assessmentScore', 'actionVerdicts', 'settingsRecommendations', 'summary'],
     properties: {
       resultId: { type: 'string' },
       operation: { type: 'string' },
       dryRun: { type: 'boolean' },
       reviewedAt: { type: 'number' },
-      overallAssessment: { type: 'string', enum: ['good', 'concerning', 'poor'] },
+      overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
       assessmentScore: { type: 'number' },
       actionVerdicts: {
         type: 'array',
@@ -130,7 +130,7 @@ const REVIEW_TOOL: Anthropic.Tool = {
 }
 
 type ReviewPayload = {
-  overallAssessment: MaintenanceReview['overallAssessment']
+  overallRating: MaintenanceReview['overallRating']
   assessmentScore: number
   actionVerdicts: MaintenanceReview['actionVerdicts']
   settingsRecommendations: MaintenanceReview['settingsRecommendations']
@@ -197,7 +197,7 @@ export async function reviewMaintenanceResult(
     operation: result.operation,
     dryRun: result.dryRun,
     reviewedAt,
-    overallAssessment: payload.overallAssessment,
+    overallRating: payload.overallRating,
     assessmentScore: payload.assessmentScore,
     actionVerdicts: payload.actionVerdicts,
     settingsRecommendations: payload.settingsRecommendations,
@@ -449,7 +449,7 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
   if (!isPlainObject(input)) return null
   const record = input
 
-  const overallAssessment = parseMaintenanceAssessment(record.overallAssessment)
+  const overallRating = parseReviewRating(record.overallRating ?? record.overallAssessment)
   const assessmentScore = parseAssessmentScore(record.assessmentScore)
   const summary = coerceSummary(record.summary)
 
@@ -465,10 +465,10 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
       .filter((item): item is MaintenanceReview['settingsRecommendations'][number] => Boolean(item))
     : []
 
-  if (!overallAssessment || assessmentScore === null) return null
+  if (!overallRating || assessmentScore === null) return null
 
   return {
-    overallAssessment,
+    overallRating,
     assessmentScore,
     actionVerdicts,
     settingsRecommendations,
@@ -514,8 +514,9 @@ function describeReviewPayloadIssues(input: unknown): string[] {
   if (!isPlainObject(input)) return ['tool input is not an object']
 
   const issues: string[] = []
-  if (!parseMaintenanceAssessment(input.overallAssessment)) {
-    issues.push(`overallAssessment invalid: ${safeStringify(input.overallAssessment)}`)
+  const overallRating = input.overallRating ?? input.overallAssessment
+  if (!parseReviewRating(overallRating)) {
+    issues.push(`overallRating invalid: ${safeStringify(overallRating)}`)
   }
   if (parseAssessmentScore(input.assessmentScore) === null) {
     issues.push(`assessmentScore invalid: ${safeStringify(input.assessmentScore)}`)

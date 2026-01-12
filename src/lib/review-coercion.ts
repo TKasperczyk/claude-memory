@@ -1,11 +1,11 @@
-import type { ExtractionReview, ExtractionReviewIssue } from './extraction-review.js'
+import type { ExtractionReviewIssue } from './extraction-review.js'
 import type {
   InjectedMemoryVerdict,
   MaintenanceActionReviewItem,
-  MaintenanceAssessment,
   MaintenanceActionVerdict,
   MaintenanceSettingsRecommendation,
   MissedMemory,
+  ReviewRating,
   SettingsRecommendation
 } from '../../shared/types.js'
 import { asNumber, asString, isPlainObject } from './parsing.js'
@@ -37,11 +37,23 @@ export function coerceReviewIssue(value: unknown): ExtractionReviewIssue | null 
   return issue
 }
 
-export function parseOverallAccuracy(value: unknown): ExtractionReview['overallAccuracy'] | null {
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase()
-    if (normalized === 'good' || normalized === 'acceptable' || normalized === 'poor') return normalized
+export function parseReviewRating(value: unknown): ReviewRating | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase().replace(/[.!,;:]+$/, '')
+
+  if (normalized === 'good' || normalized === 'excellent') return 'good'
+  if (
+    normalized === 'mixed'
+    || normalized === 'acceptable'
+    || normalized === 'concerning'
+    || normalized === 'questionable'
+    || normalized === 'moderate'
+    || normalized === 'partial'
+  ) {
+    return 'mixed'
   }
+  if (normalized === 'poor' || normalized === 'bad' || normalized === 'incorrect') return 'poor'
+
   return null
 }
 
@@ -75,18 +87,7 @@ export function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)))
 }
 
-export type InjectionOverallRelevance = 'excellent' | 'good' | 'mixed' | 'poor'
 export type InjectionVerdict = 'relevant' | 'partially_relevant' | 'irrelevant' | 'unknown'
-
-export function parseOverallRelevance(value: unknown): InjectionOverallRelevance | null {
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase()
-    if (normalized === 'excellent' || normalized === 'good' || normalized === 'mixed' || normalized === 'poor') {
-      return normalized
-    }
-  }
-  return null
-}
 
 export function parseInjectionVerdict(value: unknown): InjectionVerdict | null {
   if (typeof value === 'string') {
@@ -139,15 +140,6 @@ export function coerceMissedMemory(value: unknown): MissedMemory | null {
   }
 }
 
-export function parseMaintenanceAssessment(value: unknown): MaintenanceAssessment | null {
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase().replace(/[.!,;:]+$/, '')
-    if (normalized === 'good') return 'good'
-    if (normalized === 'concerning' || normalized === 'questionable' || normalized === 'mixed') return 'concerning'
-    if (normalized === 'poor' || normalized === 'bad' || normalized === 'incorrect') return 'poor'
-  }
-  return null
-}
 
 export function parseMaintenanceActionVerdict(value: unknown): MaintenanceActionVerdict | null {
   if (typeof value === 'string') {

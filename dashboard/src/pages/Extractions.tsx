@@ -22,17 +22,17 @@ import { formatExtractionReview } from '@/lib/review-format'
 
 const PAGE_SIZE = 25
 
-const ACCURACY_STYLES: Record<ExtractionReview['overallAccuracy'], { badge: string; label: string }> = {
+const RATING_STYLES: Record<ExtractionReview['overallRating'], { badge: string; label: string }> = {
   good: {
     badge: 'bg-emerald-500/15 text-emerald-300',
     label: 'Good'
   },
-  acceptable: {
+  mixed: {
     badge: 'bg-amber-500/15 text-amber-300',
-    label: 'Acceptable'
+    label: 'Mixed'
   },
   poor: {
-    badge: 'bg-destructive/15 text-destructive',
+    badge: 'bg-red-500/15 text-red-300',
     label: 'Poor'
   }
 }
@@ -343,8 +343,8 @@ export default function Extractions() {
                         {review ? (
                           <div className="space-y-3">
                             <div className="flex flex-wrap items-center gap-3">
-                              <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${ACCURACY_STYLES[review.overallAccuracy].badge}`}>
-                                {ACCURACY_STYLES[review.overallAccuracy].label}
+                              <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RATING_STYLES[review.overallRating].badge}`}>
+                                {RATING_STYLES[review.overallRating].label}
                               </span>
                               <span className="text-xs text-muted-foreground">
                                 Accuracy score <span className="font-semibold tabular-nums text-foreground">{review.accuracyScore}</span>

@@ -7,7 +7,7 @@ import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { formatSimilarRecord } from './review-formatters.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
-import { clampScore, coerceInjectedVerdict, coerceMissedMemory, parseOverallRelevance } from './review-coercion.js'
+import { clampScore, coerceInjectedVerdict, coerceMissedMemory, parseReviewRating } from './review-coercion.js'
 import { DEFAULT_CONFIG, type Config, type InjectedMemoryEntry, type MemoryRecord } from './types.js'
 import type { InjectedMemoryVerdict, InjectionReview, MissedMemory } from '../../shared/types.js'
 
@@ -29,20 +29,21 @@ Rules:
 - "irrelevant" means it should not have been injected.
 - Identify missed memories only from the provided candidate list.
 - Provide a concise, actionable summary of what to improve.
+- overallRating must be exactly one of: good, mixed, poor
 `
 
 const REVIEW_TOOL: Anthropic.Tool = {
   name: REVIEW_TOOL_NAME,
-  description: 'Emit an injection quality review with relevance ratings and missed candidates.',
+  description: 'Emit an injection quality review with an overall rating and missed candidates.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['overallRelevance', 'relevanceScore', 'injectedVerdicts', 'missedMemories', 'summary'],
+    required: ['overallRating', 'relevanceScore', 'injectedVerdicts', 'missedMemories', 'summary'],
     properties: {
       sessionId: { type: 'string' },
       prompt: { type: 'string' },
       reviewedAt: { type: 'number' },
-      overallRelevance: { type: 'string', enum: ['excellent', 'good', 'mixed', 'poor'] },
+      overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
       relevanceScore: { type: 'number' },
       injectedVerdicts: {
         type: 'array',
@@ -79,7 +80,7 @@ const REVIEW_TOOL: Anthropic.Tool = {
 }
 
 type ReviewPayload = {
-  overallRelevance: InjectionReview['overallRelevance']
+  overallRating: InjectionReview['overallRating']
   relevanceScore: number
   injectedVerdicts: InjectedMemoryVerdict[]
   missedMemories: MissedMemory[]
@@ -170,7 +171,7 @@ export async function reviewInjection(
     sessionId,
     prompt,
     reviewedAt,
-    overallRelevance: payload.overallRelevance,
+    overallRating: payload.overallRating,
     relevanceScore: payload.relevanceScore,
     injectedVerdicts,
     missedMemories: payload.missedMemories,
@@ -415,7 +416,7 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
   if (!isPlainObject(input)) return null
   const record = input
 
-  const overallRelevance = parseOverallRelevance(record.overallRelevance)
+  const overallRating = parseReviewRating(record.overallRating ?? record.overallRelevance)
   const relevanceScore = parseRelevanceScore(record.relevanceScore)
   const summary = asString(record.summary)?.trim() ?? ''
   const injectedVerdicts = Array.isArray(record.injectedVerdicts)
@@ -425,10 +426,10 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
     ? record.missedMemories.map(coerceMissedMemory).filter((item): item is MissedMemory => Boolean(item))
     : []
 
-  if (!overallRelevance || relevanceScore === null || summary === '') return null
+  if (!overallRating || relevanceScore === null || summary === '') return null
 
   return {
-    overallRelevance,
+    overallRating,
     relevanceScore,
     injectedVerdicts,
     missedMemories,

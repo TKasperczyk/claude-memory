@@ -224,10 +224,12 @@ export interface ExtractionReviewIssue {
   suggestedFix?: string
 }
 
+export type ReviewRating = 'good' | 'mixed' | 'poor'
+
 export interface ExtractionReview {
   runId: string
   reviewedAt: number
-  overallAccuracy: 'good' | 'acceptable' | 'poor'
+  overallRating: ReviewRating
   accuracyScore: number
   issues: ExtractionReviewIssue[]
   summary: string
@@ -252,7 +254,7 @@ export interface InjectionReview {
   sessionId: string
   prompt: string
   reviewedAt: number
-  overallRelevance: 'excellent' | 'good' | 'mixed' | 'poor'
+  overallRating: ReviewRating
   relevanceScore: number
   injectedVerdicts: InjectedMemoryVerdict[]
   missedMemories: MissedMemory[]
@@ -262,7 +264,7 @@ export interface InjectionReview {
 }
 
 // Maintenance review types
-export type MaintenanceAssessment = 'good' | 'concerning' | 'poor'
+export type MaintenanceAssessment = ReviewRating
 export type MaintenanceActionVerdict = 'correct' | 'questionable' | 'incorrect'
 export type SettingsRecommendation = 'too_aggressive' | 'too_lenient' | 'appropriate'
 
@@ -287,7 +289,7 @@ export interface MaintenanceReview {
   operation: string
   dryRun: boolean
   reviewedAt: number
-  overallAssessment: MaintenanceAssessment
+  overallRating: ReviewRating
   assessmentScore: number
   actionVerdicts: MaintenanceActionReviewItem[]
   settingsRecommendations: MaintenanceSettingsRecommendation[]

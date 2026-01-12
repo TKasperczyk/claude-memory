@@ -84,7 +84,7 @@ export function formatExtractionReview(
   lines.push('')
 
   lines.push('## Review Summary')
-  lines.push(`- Overall accuracy: ${review.overallAccuracy.toUpperCase()}`)
+  lines.push(`- Overall rating: ${review.overallRating.toUpperCase()}`)
   lines.push(`- Accuracy score: ${review.accuracyScore}/100`)
   lines.push(`- Model: ${review.model}`)
   lines.push(`- Review duration: ${review.durationMs}ms`)
@@ -174,7 +174,7 @@ export function formatInjectionReview(
   lines.push('')
 
   lines.push('## Review Summary')
-  lines.push(`- Overall relevance: ${review.overallRelevance.toUpperCase()}`)
+  lines.push(`- Overall rating: ${review.overallRating.toUpperCase()}`)
   lines.push(`- Relevance score: ${review.relevanceScore}/100`)
   lines.push(`- Model: ${review.model}`)
   lines.push(`- Review duration: ${review.durationMs}ms`)
@@ -277,7 +277,7 @@ export function formatMaintenanceReview(
   lines.push('')
 
   lines.push('## Review Summary')
-  lines.push(`- Overall assessment: ${review.overallAssessment.toUpperCase()}`)
+  lines.push(`- Overall rating: ${review.overallRating.toUpperCase()}`)
   lines.push(`- Assessment score: ${review.assessmentScore}/100`)
   lines.push(`- Model: ${review.model}`)
   lines.push(`- Review duration: ${review.durationMs}ms`)

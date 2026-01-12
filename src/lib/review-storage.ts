@@ -12,9 +12,7 @@ import {
   coerceMaintenanceActionReviewItem,
   coerceReviewIssue,
   coerceSettingsRecommendation,
-  parseMaintenanceAssessment,
-  parseOverallAccuracy,
-  parseOverallRelevance
+  parseReviewRating
 } from './review-coercion.js'
 import { type MaintenanceReview } from '../../shared/types.js'
 
@@ -91,7 +89,7 @@ function coerceExtractionReview(value: unknown, runId: string): ExtractionReview
   const record = value
 
   const summary = asString(record.summary)?.trim() ?? ''
-  const overallAccuracy = parseOverallAccuracy(record.overallAccuracy)
+  const overallRating = parseReviewRating(record.overallRating ?? record.overallAccuracy)
   const accuracyScore = asNumber(record.accuracyScore) ?? 0
   const reviewedAt = asInteger(record.reviewedAt) ?? 0
   const model = asString(record.model) ?? 'unknown'
@@ -101,12 +99,12 @@ function coerceExtractionReview(value: unknown, runId: string): ExtractionReview
     ? record.issues.map(coerceReviewIssue).filter((issue): issue is ExtractionReviewIssue => Boolean(issue))
     : []
 
-  if (!overallAccuracy) return null
+  if (!overallRating) return null
 
   return {
     runId: asString(record.runId) ?? runId,
     reviewedAt,
-    overallAccuracy,
+    overallRating,
     accuracyScore: clampScore(accuracyScore),
     issues,
     summary,
@@ -120,7 +118,7 @@ function coerceInjectionReview(value: unknown, sessionId: string): InjectionRevi
   const record = value
 
   const summary = asString(record.summary)?.trim() ?? ''
-  const overallRelevance = parseOverallRelevance(record.overallRelevance)
+  const overallRating = parseReviewRating(record.overallRating ?? record.overallRelevance)
   const relevanceScore = asNumber(record.relevanceScore) ?? 0
   const reviewedAt = asInteger(record.reviewedAt) ?? 0
   const model = asString(record.model) ?? 'unknown'
@@ -135,13 +133,13 @@ function coerceInjectionReview(value: unknown, sessionId: string): InjectionRevi
     ? record.missedMemories.map(coerceMissedMemory).filter((item): item is MissedMemory => Boolean(item))
     : []
 
-  if (!overallRelevance) return null
+  if (!overallRating) return null
 
   return {
     sessionId: asString(record.sessionId) ?? sessionId,
     prompt,
     reviewedAt,
-    overallRelevance,
+    overallRating,
     relevanceScore: clampScore(relevanceScore),
     injectedVerdicts,
     missedMemories,
@@ -156,7 +154,7 @@ function coerceMaintenanceReview(value: unknown, resultId: string, operation: st
   const record = value
 
   const summary = asString(record.summary)?.trim() ?? ''
-  const overallAssessment = parseMaintenanceAssessment(record.overallAssessment)
+  const overallRating = parseReviewRating(record.overallRating ?? record.overallAssessment)
   const assessmentScore = asNumber(record.assessmentScore) ?? 0
   const reviewedAt = asInteger(record.reviewedAt) ?? 0
   const model = asString(record.model) ?? 'unknown'
@@ -175,14 +173,14 @@ function coerceMaintenanceReview(value: unknown, resultId: string, operation: st
       .filter((item): item is MaintenanceReview['settingsRecommendations'][number] => Boolean(item))
     : []
 
-  if (!overallAssessment) return null
+  if (!overallRating) return null
 
   return {
     resultId: asString(record.resultId) ?? resultId,
     operation: asString(record.operation) ?? operation,
     dryRun,
     reviewedAt,
-    overallAssessment,
+    overallRating,
     assessmentScore: clampScore(assessmentScore),
     actionVerdicts,
     settingsRecommendations,
