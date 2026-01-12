@@ -6,7 +6,7 @@ import { buildFilter, escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar 
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
-import { clampScore, parseInjectionVerdict, parseOverallRelevance } from './review-coercion.js'
+import { clampScore, coerceInjectedVerdict, coerceMissedMemory, parseOverallRelevance } from './review-coercion.js'
 import { DEFAULT_CONFIG, type Config, type InjectedMemoryEntry, type MemoryRecord } from './types.js'
 import type { InjectedMemoryVerdict, InjectionReview, MissedMemory } from '../../shared/types.js'
 
@@ -457,40 +457,4 @@ function parseRelevanceScore(value: unknown): number | null {
     if (Number.isFinite(parsed)) return clampScore(parsed)
   }
   return null
-}
-
-function coerceInjectedVerdict(value: unknown): InjectedMemoryVerdict | null {
-  if (!isPlainObject(value)) return null
-  const record = value
-
-  const id = asString(record.id)?.trim()
-  const snippet = asString(record.snippet)?.trim()
-  const verdict = parseInjectionVerdict(record.verdict)
-  const reason = asString(record.reason)?.trim()
-
-  if (!id || !snippet || !verdict || !reason) return null
-
-  return {
-    id,
-    snippet,
-    verdict,
-    reason
-  }
-}
-
-function coerceMissedMemory(value: unknown): MissedMemory | null {
-  if (!isPlainObject(value)) return null
-  const record = value
-
-  const id = asString(record.id)?.trim()
-  const snippet = asString(record.snippet)?.trim()
-  const reason = asString(record.reason)?.trim()
-
-  if (!id || !snippet || !reason) return null
-
-  return {
-    id,
-    snippet,
-    reason
-  }
 }

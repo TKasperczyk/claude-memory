@@ -7,10 +7,11 @@ import { asBoolean, asInteger, asNumber, asString, isPlainObject } from './parsi
 import { sanitizeRunId, sanitizeSessionId } from './shared.js'
 import {
   clampScore,
+  coerceInjectedVerdict,
+  coerceMissedMemory,
   coerceMaintenanceActionReviewItem,
   coerceReviewIssue,
   coerceSettingsRecommendation,
-  parseInjectionVerdict,
   parseMaintenanceAssessment,
   parseOverallAccuracy,
   parseOverallRelevance
@@ -210,41 +211,5 @@ function coerceMaintenanceReview(value: unknown, resultId: string, operation: st
     summary,
     model,
     durationMs
-  }
-}
-
-function coerceInjectedVerdict(value: unknown): InjectedMemoryVerdict | null {
-  if (!isPlainObject(value)) return null
-  const record = value
-
-  const id = asString(record.id)?.trim()
-  const snippet = asString(record.snippet)?.trim()
-  const verdict = parseInjectionVerdict(record.verdict)
-  const reason = asString(record.reason)?.trim()
-
-  if (!id || !snippet || !verdict || !reason) return null
-
-  return {
-    id,
-    snippet,
-    verdict,
-    reason
-  }
-}
-
-function coerceMissedMemory(value: unknown): MissedMemory | null {
-  if (!isPlainObject(value)) return null
-  const record = value
-
-  const id = asString(record.id)?.trim()
-  const snippet = asString(record.snippet)?.trim()
-  const reason = asString(record.reason)?.trim()
-
-  if (!id || !snippet || !reason) return null
-
-  return {
-    id,
-    snippet,
-    reason
   }
 }

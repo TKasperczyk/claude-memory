@@ -1,9 +1,11 @@
 import type { ExtractionReview, ExtractionReviewIssue } from './extraction-review.js'
 import type {
+  InjectedMemoryVerdict,
   MaintenanceActionReviewItem,
   MaintenanceAssessment,
   MaintenanceActionVerdict,
   MaintenanceSettingsRecommendation,
+  MissedMemory,
   SettingsRecommendation
 } from '../../shared/types.js'
 import { asNumber, asString, isPlainObject } from './parsing.js'
@@ -99,6 +101,42 @@ export function parseInjectionVerdict(value: unknown): InjectionVerdict | null {
     }
   }
   return null
+}
+
+export function coerceInjectedVerdict(value: unknown): InjectedMemoryVerdict | null {
+  if (!isPlainObject(value)) return null
+  const record = value
+
+  const id = asString(record.id)?.trim()
+  const snippet = asString(record.snippet)?.trim()
+  const verdict = parseInjectionVerdict(record.verdict)
+  const reason = asString(record.reason)?.trim()
+
+  if (!id || !snippet || !verdict || !reason) return null
+
+  return {
+    id,
+    snippet,
+    verdict,
+    reason
+  }
+}
+
+export function coerceMissedMemory(value: unknown): MissedMemory | null {
+  if (!isPlainObject(value)) return null
+  const record = value
+
+  const id = asString(record.id)?.trim()
+  const snippet = asString(record.snippet)?.trim()
+  const reason = asString(record.reason)?.trim()
+
+  if (!id || !snippet || !reason) return null
+
+  return {
+    id,
+    snippet,
+    reason
+  }
 }
 
 export function parseMaintenanceAssessment(value: unknown): MaintenanceAssessment | null {
