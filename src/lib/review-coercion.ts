@@ -141,7 +141,7 @@ export function coerceMissedMemory(value: unknown): MissedMemory | null {
 
 export function parseMaintenanceAssessment(value: unknown): MaintenanceAssessment | null {
   if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase()
+    const normalized = value.trim().toLowerCase().replace(/[.!,;:]+$/, '')
     if (normalized === 'good' || normalized === 'concerning' || normalized === 'poor') return normalized
   }
   return null

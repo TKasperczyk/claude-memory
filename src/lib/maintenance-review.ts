@@ -71,6 +71,9 @@ Rules:
 - Output ONLY via the tool call "${REVIEW_TOOL_NAME}" exactly once.
 - Evaluate each action against the operation's goal.
 - "correct" = action aligns with goal, "questionable" = uncertain/borderline, "incorrect" = action contradicts goal
+- overallAssessment must be one of: good, concerning, poor
+- assessmentScore must be a 0-100 number
+- Always include a concise summary string
 - Consider whether settings thresholds are appropriate.
 - Be concrete and specific in reasons.
 `
@@ -182,6 +185,9 @@ export async function reviewMaintenanceResult(
 
   const payload = coerceReviewPayload(toolInput)
   if (!payload) {
+    const issues = describeReviewPayloadIssues(toolInput)
+    const snapshot = truncateWithTail(safeStringify(toolInput), 2000)
+    console.error('[claude-memory] Maintenance review payload invalid:', { issues, input: snapshot })
     throw new Error('Review response invalid or incomplete.')
   }
 
@@ -445,7 +451,7 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
 
   const overallAssessment = parseMaintenanceAssessment(record.overallAssessment)
   const assessmentScore = parseAssessmentScore(record.assessmentScore)
-  const summary = asString(record.summary)?.trim() ?? ''
+  const summary = coerceSummary(record.summary)
 
   const actionVerdicts = Array.isArray(record.actionVerdicts)
     ? record.actionVerdicts
@@ -459,14 +465,14 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
       .filter((item): item is MaintenanceReview['settingsRecommendations'][number] => Boolean(item))
     : []
 
-  if (!overallAssessment || assessmentScore === null || summary === '') return null
+  if (!overallAssessment || assessmentScore === null) return null
 
   return {
     overallAssessment,
     assessmentScore,
     actionVerdicts,
     settingsRecommendations,
-    summary
+    summary: summary || ''
   }
 }
 
@@ -475,8 +481,57 @@ function parseAssessmentScore(value: unknown): number | null {
     return clampScore(value)
   }
   if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value)
+    const trimmed = value.trim()
+    const parsed = Number(trimmed)
     if (Number.isFinite(parsed)) return clampScore(parsed)
+    const match = trimmed.match(/-?\d+(\.\d+)?/)
+    if (match) {
+      const extracted = Number(match[0])
+      if (Number.isFinite(extracted)) return clampScore(extracted)
+    }
   }
   return null
+}
+
+function coerceSummary(value: unknown): string {
+  const summary = asString(value)?.trim()
+  if (summary) return summary
+
+  if (Array.isArray(value)) {
+    const parts = value.map(entry => asString(entry)?.trim()).filter(Boolean)
+    if (parts.length > 0) return parts.join('\n')
+  }
+
+  if (isPlainObject(value)) {
+    const text = asString(value.text)?.trim()
+    if (text) return text
+  }
+
+  return ''
+}
+
+function describeReviewPayloadIssues(input: unknown): string[] {
+  if (!isPlainObject(input)) return ['tool input is not an object']
+
+  const issues: string[] = []
+  if (!parseMaintenanceAssessment(input.overallAssessment)) {
+    issues.push(`overallAssessment invalid: ${safeStringify(input.overallAssessment)}`)
+  }
+  if (parseAssessmentScore(input.assessmentScore) === null) {
+    issues.push(`assessmentScore invalid: ${safeStringify(input.assessmentScore)}`)
+  }
+  if (!coerceSummary(input.summary)) {
+    issues.push('summary missing or empty')
+  }
+
+  return issues.length ? issues : ['unknown validation failure']
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value)
+    return typeof serialized === 'string' ? serialized : String(value)
+  } catch {
+    return String(value)
+  }
 }
