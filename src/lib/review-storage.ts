@@ -20,33 +20,39 @@ import { type MaintenanceReview } from '../../shared/types.js'
 
 const REVIEWS_DIR = path.join(homedir(), '.claude-memory', 'reviews')
 
+function saveReviewFile<T>(filePath: string, review: T): void {
+  try {
+    fs.mkdirSync(REVIEWS_DIR, { recursive: true })
+    fs.writeFileSync(filePath, JSON.stringify(review, null, 2))
+  } catch (error) {
+    console.error('[claude-memory] Failed to write review:', error)
+  }
+}
+
+function loadReviewFile<T>(filePath: string, coerce: (data: unknown) => T | null): T | null {
+  if (!fs.existsSync(filePath)) return null
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown
+    return coerce(data)
+  } catch (error) {
+    console.error('[claude-memory] Failed to read review:', error)
+    return null
+  }
+}
+
 export function getReviewPath(runId: string): string {
   const safeId = sanitizeRunId(runId)
   return path.join(REVIEWS_DIR, `${safeId}.json`)
 }
 
 export function saveReview(review: ExtractionReview): void {
-  try {
-    fs.mkdirSync(REVIEWS_DIR, { recursive: true })
-    const filePath = getReviewPath(review.runId)
-    fs.writeFileSync(filePath, JSON.stringify(review, null, 2))
-  } catch (error) {
-    console.error('[claude-memory] Failed to write extraction review:', error)
-  }
+  const filePath = getReviewPath(review.runId)
+  saveReviewFile(filePath, review)
 }
 
 export function getReview(runId: string): ExtractionReview | null {
   const filePath = getReviewPath(runId)
-  if (!fs.existsSync(filePath)) return null
-
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8')
-    const parsed = JSON.parse(raw) as unknown
-    return coerceReview(parsed, runId)
-  } catch (error) {
-    console.error('[claude-memory] Failed to read extraction review:', error)
-    return null
-  }
+  return loadReviewFile(filePath, (data) => coerceExtractionReview(data, runId))
 }
 
 export function getInjectionReviewPath(sessionId: string): string {
@@ -55,27 +61,13 @@ export function getInjectionReviewPath(sessionId: string): string {
 }
 
 export function saveInjectionReview(review: InjectionReview): void {
-  try {
-    fs.mkdirSync(REVIEWS_DIR, { recursive: true })
-    const filePath = getInjectionReviewPath(review.sessionId)
-    fs.writeFileSync(filePath, JSON.stringify(review, null, 2))
-  } catch (error) {
-    console.error('[claude-memory] Failed to write injection review:', error)
-  }
+  const filePath = getInjectionReviewPath(review.sessionId)
+  saveReviewFile(filePath, review)
 }
 
 export function getInjectionReview(sessionId: string): InjectionReview | null {
   const filePath = getInjectionReviewPath(sessionId)
-  if (!fs.existsSync(filePath)) return null
-
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8')
-    const parsed = JSON.parse(raw) as unknown
-    return coerceInjectionReview(parsed, sessionId)
-  } catch (error) {
-    console.error('[claude-memory] Failed to read injection review:', error)
-    return null
-  }
+  return loadReviewFile(filePath, (data) => coerceInjectionReview(data, sessionId))
 }
 
 export function getMaintenanceReviewPath(resultId: string, operation: string): string {
@@ -85,30 +77,16 @@ export function getMaintenanceReviewPath(resultId: string, operation: string): s
 }
 
 export function saveMaintenanceReview(review: MaintenanceReview): void {
-  try {
-    fs.mkdirSync(REVIEWS_DIR, { recursive: true })
-    const filePath = getMaintenanceReviewPath(review.resultId, review.operation)
-    fs.writeFileSync(filePath, JSON.stringify(review, null, 2))
-  } catch (error) {
-    console.error('[claude-memory] Failed to write maintenance review:', error)
-  }
+  const filePath = getMaintenanceReviewPath(review.resultId, review.operation)
+  saveReviewFile(filePath, review)
 }
 
 export function getMaintenanceReview(resultId: string, operation: string): MaintenanceReview | null {
   const filePath = getMaintenanceReviewPath(resultId, operation)
-  if (!fs.existsSync(filePath)) return null
-
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8')
-    const parsed = JSON.parse(raw) as unknown
-    return coerceMaintenanceReview(parsed, resultId, operation)
-  } catch (error) {
-    console.error('[claude-memory] Failed to read maintenance review:', error)
-    return null
-  }
+  return loadReviewFile(filePath, (data) => coerceMaintenanceReview(data, resultId, operation))
 }
 
-function coerceReview(value: unknown, runId: string): ExtractionReview | null {
+function coerceExtractionReview(value: unknown, runId: string): ExtractionReview | null {
   if (!isPlainObject(value)) return null
   const record = value
 
