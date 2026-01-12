@@ -337,6 +337,14 @@ export function formatMaintenanceReview(
   lines.push('```json')
   lines.push(JSON.stringify(result.summary, null, 2))
   lines.push('```')
+  lines.push('')
+  lines.push('## Analysis Guidance')
+  lines.push('')
+  lines.push('When analyzing this review, consider:')
+  lines.push('1. Are the action verdicts appropriate given the operation\'s goal?')
+  lines.push('2. Are any questionable/incorrect actions actually correct for this operation?')
+  lines.push('3. Are the settings recommendations actionable and specific?')
+  lines.push('4. Should any thresholds be adjusted based on this review?')
 
   return lines.join('\n')
 }

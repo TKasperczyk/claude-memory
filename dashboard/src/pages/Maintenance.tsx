@@ -9,6 +9,7 @@ import {
   ApiError,
   applyMaintenanceSuggestion,
   fetchMaintenanceOperations,
+  fetchMaintenanceReview,
   runMaintenance,
   runMaintenanceReview,
   type ConflictVerdict,
@@ -168,6 +169,27 @@ function buildActionKey(operation: MaintenanceOperation, action: MaintenanceActi
   const targetFile = typeof action.details?.targetFile === 'string' ? action.details?.targetFile : ''
   const actionType = typeof action.details?.action === 'string' ? action.details?.action : ''
   return `${operation}:${action.recordId ?? 'unknown'}:${actionType}:${targetFile}:${index}`
+}
+
+async function buildResultId(result: OperationResult): Promise<string> {
+  const actionIds = result.actions.map(action => action.recordId).filter(Boolean).join(',')
+  const candidateIds = result.candidates
+    .map(group => {
+      const recordIds = group.records.map(record => record.id).filter(Boolean).join(',')
+      return `${group.id}:${recordIds}`
+    })
+    .join('|')
+  const payload = [
+    result.operation,
+    String(result.dryRun),
+    JSON.stringify(result.summary),
+    actionIds,
+    candidateIds
+  ].join('|')
+  const data = new TextEncoder().encode(payload)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(byte => byte.toString(16).padStart(2, '0')).join('').slice(0, 16)
 }
 
 function getSuggestionPayload(action: MaintenanceAction): {
@@ -876,14 +898,41 @@ function ResultPanel({
   const candidateCount = candidateGroups.reduce((total, group) => total + group.records.length, 0)
   const [review, setReview] = useState<MaintenanceReview | null>(null)
   const [reviewLoading, setReviewLoading] = useState(false)
+  const [cacheLoading, setCacheLoading] = useState(false)
   const [reviewError, setReviewError] = useState<string | null>(null)
   const isReviewRunning = reviewLoading
-  const isReviewPending = reviewLoading && !review
+  const isReviewPending = (reviewLoading || cacheLoading) && !review
 
   useEffect(() => {
+    let isActive = true
     setReview(null)
     setReviewError(null)
     setReviewLoading(false)
+    setCacheLoading(false)
+
+    const loadCachedReview = async () => {
+      setCacheLoading(true)
+      try {
+        const resultId = await buildResultId(result)
+        const cached = await fetchMaintenanceReview(result.operation, resultId)
+        if (!isActive) return
+        if (cached) {
+          setReview(cached)
+        }
+      } catch (error) {
+        if (!isActive) return
+        const message = error instanceof Error ? error.message : 'Failed to load cached review'
+        setReviewError(message)
+      } finally {
+        if (isActive) setCacheLoading(false)
+      }
+    }
+
+    void loadCachedReview()
+
+    return () => {
+      isActive = false
+    }
   }, [result])
 
   const handleReview = async () => {

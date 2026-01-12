@@ -869,6 +869,10 @@ app.post('/api/maintenance/:operation/review', async (req, res) => {
     const { operation } = req.params
     const body = req.body
 
+    if (!MAINTENANCE_OPERATIONS.includes(operation as MaintenanceOperation)) {
+      return res.status(400).json({ error: 'Unknown operation' })
+    }
+
     if (!body || !body.result) {
       return res.status(400).json({ error: 'Result required' })
     }
@@ -885,8 +889,14 @@ app.post('/api/maintenance/:operation/review', async (req, res) => {
       })
     }
 
+    const normalizedResult = {
+      ...result,
+      actions: Array.isArray(result.actions) ? result.actions : [],
+      candidates: Array.isArray(result.candidates) ? result.candidates : []
+    }
+
     await ensureInitialized()
-    const review = await reviewMaintenanceResult(result, CONFIG)
+    const review = await reviewMaintenanceResult(normalizedResult, CONFIG)
     saveMaintenanceReview(review)
     res.json(review)
   } catch (error) {

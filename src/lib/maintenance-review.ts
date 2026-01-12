@@ -38,12 +38,23 @@ const OPERATION_PROMPTS: Record<string, string> = {
 }
 
 const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
-  'stale-check': ['staleDays', 'discoveryMaxAgeDays'],
+  'stale-check': ['staleDays', 'discoveryMaxAgeDays', 'procedureStepCheckCount'],
   'low-usage': ['lowUsageMinRetrievals', 'lowUsageRatioThreshold'],
   'low-usage-deprecation': ['lowUsageHighRetrievalMin'],
-  'consolidation': ['consolidationThreshold', 'consolidationTextSimilarityRatio', 'consolidationSearchLimit'],
+  'consolidation': [
+    'consolidationThreshold',
+    'consolidationTextSimilarityRatio',
+    'consolidationSearchLimit',
+    'consolidationMaxClusterSize'
+  ],
   'conflict-resolution': ['conflictSimilarityThreshold', 'conflictCheckBatchSize'],
-  'warning-synthesis': ['warningSynthesisMinFailures', 'warningClusterSimilarityThreshold'],
+  'warning-synthesis': [
+    'warningSynthesisMinFailures',
+    'warningClusterSimilarityThreshold',
+    'warningClusterLimit',
+    'warningSynthesisBatchSize',
+    'warningSynthesisRecheckDays'
+  ],
   'global-promotion': [
     'globalPromotionMinSuccessCount',
     'globalPromotionMinUsageRatio',
@@ -190,16 +201,21 @@ export async function reviewMaintenanceResult(
   }
 }
 
-function buildResultId(result: OperationResult): string {
-  const payload = JSON.stringify({
-    operation: result.operation,
-    dryRun: result.dryRun,
-    duration: result.duration,
-    summary: result.summary,
-    actionCount: result.actions.length,
-    candidateCount: result.candidates.length,
-    error: result.error ?? null
-  })
+export function buildResultId(result: OperationResult): string {
+  const actionIds = result.actions.map(action => action.recordId).filter(Boolean).join(',')
+  const candidateIds = result.candidates
+    .map(group => {
+      const recordIds = group.records.map(record => record.id).filter(Boolean).join(',')
+      return `${group.id}:${recordIds}`
+    })
+    .join('|')
+  const payload = [
+    result.operation,
+    String(result.dryRun),
+    JSON.stringify(result.summary),
+    actionIds,
+    candidateIds
+  ].join('|')
   return createHash('sha256').update(payload).digest('hex').slice(0, 16)
 }
 
