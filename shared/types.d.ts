@@ -261,6 +261,41 @@ export interface InjectionReview {
   durationMs: number
 }
 
+// Maintenance review types
+export type MaintenanceAssessment = 'good' | 'concerning' | 'poor'
+export type MaintenanceActionVerdict = 'correct' | 'questionable' | 'incorrect'
+export type SettingsRecommendation = 'too_aggressive' | 'too_lenient' | 'appropriate'
+
+export interface MaintenanceActionReviewItem {
+  recordId?: string
+  action: MaintenanceActionType
+  snippet: string
+  verdict: MaintenanceActionVerdict
+  reason: string
+}
+
+export interface MaintenanceSettingsRecommendation {
+  setting: string
+  currentValue: string | number
+  recommendation: SettingsRecommendation
+  suggestedValue?: string | number
+  reason: string
+}
+
+export interface MaintenanceReview {
+  resultId: string
+  operation: string
+  dryRun: boolean
+  reviewedAt: number
+  overallAssessment: MaintenanceAssessment
+  assessmentScore: number
+  actionVerdicts: MaintenanceActionReviewItem[]
+  settingsRecommendations: MaintenanceSettingsRecommendation[]
+  summary: string
+  model: string
+  durationMs: number
+}
+
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
 export type ConflictVerdict = 'supersedes' | 'variant' | 'hallucination'
 

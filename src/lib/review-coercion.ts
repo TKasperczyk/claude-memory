@@ -1,5 +1,12 @@
 import type { ExtractionReview, ExtractionReviewIssue } from './extraction-review.js'
-import { asString, isPlainObject } from './parsing.js'
+import type {
+  MaintenanceActionReviewItem,
+  MaintenanceAssessment,
+  MaintenanceActionVerdict,
+  MaintenanceSettingsRecommendation,
+  SettingsRecommendation
+} from '../../shared/types.js'
+import { asNumber, asString, isPlainObject } from './parsing.js'
 
 export function coerceReviewIssue(value: unknown): ExtractionReviewIssue | null {
   if (!isPlainObject(value)) return null
@@ -92,4 +99,93 @@ export function parseInjectionVerdict(value: unknown): InjectionVerdict | null {
     }
   }
   return null
+}
+
+export function parseMaintenanceAssessment(value: unknown): MaintenanceAssessment | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'good' || normalized === 'concerning' || normalized === 'poor') return normalized
+  }
+  return null
+}
+
+export function parseMaintenanceActionVerdict(value: unknown): MaintenanceActionVerdict | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'correct' || normalized === 'questionable' || normalized === 'incorrect') return normalized
+  }
+  return null
+}
+
+export function parseSettingsRecommendation(value: unknown): SettingsRecommendation | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'too_aggressive' || normalized === 'too_lenient' || normalized === 'appropriate') {
+      return normalized
+    }
+  }
+  return null
+}
+
+export function coerceMaintenanceActionReviewItem(value: unknown): MaintenanceActionReviewItem | null {
+  if (!isPlainObject(value)) return null
+  const record = value
+
+  const action = asString(record.action)?.trim().toLowerCase()
+  if (
+    action !== 'deprecate'
+    && action !== 'update'
+    && action !== 'merge'
+    && action !== 'promote'
+    && action !== 'suggestion'
+  ) {
+    return null
+  }
+  const snippet = asString(record.snippet)?.trim()
+  const verdict = parseMaintenanceActionVerdict(record.verdict)
+  const reason = asString(record.reason)?.trim()
+
+  if (!snippet || !verdict || !reason) return null
+
+  const item: MaintenanceActionReviewItem = {
+    action,
+    snippet,
+    verdict,
+    reason
+  }
+
+  const recordId = asString(record.recordId)?.trim()
+  if (recordId) item.recordId = recordId
+
+  return item
+}
+
+export function coerceSettingsRecommendation(value: unknown): MaintenanceSettingsRecommendation | null {
+  if (!isPlainObject(value)) return null
+  const record = value
+
+  const setting = asString(record.setting)?.trim()
+  const recommendation = parseSettingsRecommendation(record.recommendation)
+  const reason = asString(record.reason)?.trim()
+
+  const currentValueNumber = asNumber(record.currentValue)
+  const currentValueString = asString(record.currentValue)?.trim()
+  const currentValue = currentValueNumber ?? (currentValueString ? currentValueString : null)
+
+  const suggestedValueNumber = asNumber(record.suggestedValue)
+  const suggestedValueString = asString(record.suggestedValue)?.trim()
+  const suggestedValue = suggestedValueNumber ?? (suggestedValueString ? suggestedValueString : null)
+
+  if (!setting || !recommendation || !reason || currentValue === null) return null
+
+  const item: MaintenanceSettingsRecommendation = {
+    setting,
+    currentValue,
+    recommendation,
+    reason
+  }
+
+  if (suggestedValue !== null) item.suggestedValue = suggestedValue
+
+  return item
 }
