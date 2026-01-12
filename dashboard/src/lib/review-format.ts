@@ -7,7 +7,9 @@ import type {
   ExtractionReview,
   ExtractionRun,
   InjectionReview,
+  MaintenanceReview,
   MemoryRecord,
+  OperationResult,
   SessionRecord
 } from './api'
 
@@ -255,6 +257,86 @@ export function formatInjectionReview(
   lines.push('4. Are the retrieval trigger scores calibrated correctly?')
   lines.push('5. Should certain memory types be weighted differently?')
   lines.push('6. Are there patterns in what gets missed vs what gets irrelevantly included?')
+
+  return lines.join('\n')
+}
+
+export function formatMaintenanceReview(
+  result: OperationResult,
+  review: MaintenanceReview
+): string {
+  const lines: string[] = []
+
+  lines.push('# Maintenance Review Report')
+  lines.push('')
+  lines.push('## Operation')
+  lines.push(`- Operation: ${review.operation}`)
+  lines.push(`- Mode: ${review.dryRun ? 'dry-run' : 'execute'}`)
+  lines.push(`- Duration: ${result.duration}ms`)
+  lines.push(`- Action count: ${result.actions.length}`)
+  lines.push('')
+
+  lines.push('## Review Summary')
+  lines.push(`- Overall assessment: ${review.overallAssessment.toUpperCase()}`)
+  lines.push(`- Assessment score: ${review.assessmentScore}/100`)
+  lines.push(`- Model: ${review.model}`)
+  lines.push(`- Review duration: ${review.durationMs}ms`)
+  lines.push('')
+  lines.push(`**Summary**: ${review.summary}`)
+  lines.push('')
+
+  lines.push('## Action Verdicts')
+  lines.push('')
+  if (review.actionVerdicts.length === 0) {
+    lines.push('No action verdicts returned.')
+    lines.push('')
+  } else {
+    const byVerdict: Record<string, typeof review.actionVerdicts> = {}
+    for (const verdict of review.actionVerdicts) {
+      byVerdict[verdict.verdict] = byVerdict[verdict.verdict] || []
+      byVerdict[verdict.verdict].push(verdict)
+    }
+
+    for (const verdict of ['correct', 'questionable', 'incorrect'] as const) {
+      const items = byVerdict[verdict]
+      if (!items?.length) continue
+
+      lines.push(`### ${verdict.toUpperCase()} (${items.length})`)
+      lines.push('')
+      for (const item of items) {
+        lines.push(`**Action**: ${item.action}`)
+        if (item.recordId) {
+          lines.push(`**Record ID**: ${item.recordId}`)
+        }
+        lines.push(`**Snippet**: ${item.snippet}`)
+        lines.push(`**Reason**: ${item.reason}`)
+        lines.push('')
+      }
+    }
+  }
+
+  lines.push('## Settings Recommendations')
+  lines.push('')
+  if (review.settingsRecommendations.length === 0) {
+    lines.push('No settings recommendations.')
+    lines.push('')
+  } else {
+    for (const rec of review.settingsRecommendations) {
+      lines.push(`**Setting**: ${rec.setting}`)
+      lines.push(`**Current value**: ${rec.currentValue}`)
+      lines.push(`**Recommendation**: ${rec.recommendation}`)
+      if (rec.suggestedValue !== undefined) {
+        lines.push(`**Suggested value**: ${rec.suggestedValue}`)
+      }
+      lines.push(`**Reason**: ${rec.reason}`)
+      lines.push('')
+    }
+  }
+
+  lines.push('## Original Result Summary (JSON)')
+  lines.push('```json')
+  lines.push(JSON.stringify(result.summary, null, 2))
+  lines.push('```')
 
   return lines.join('\n')
 }

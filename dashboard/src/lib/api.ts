@@ -8,6 +8,7 @@ import type {
   InjectionReview,
   InjectionSessionRecord,
   MaintenanceOperationInfo,
+  MaintenanceReview,
   MaintenanceSettings,
   MemoryRecord,
   NearMissRecord,
@@ -41,6 +42,7 @@ export type {
   MaintenanceCandidateRecord,
   MaintenanceMergeRecord,
   MaintenanceOperationInfo,
+  MaintenanceReview,
   MaintenanceSettings,
   MemoryRecord,
   MemoryStats,
@@ -395,6 +397,28 @@ export function runMaintenance(operation: string, dryRun: boolean): Promise<Oper
   return request('/maintenance/run', {
     method: 'POST',
     body: JSON.stringify({ operation, dryRun })
+  })
+}
+
+export async function fetchMaintenanceReview(
+  operation: string,
+  resultId: string
+): Promise<MaintenanceReview | null> {
+  const response = await fetch(`/api/maintenance/${operation}/review/${resultId}`)
+  if (response.status === 404) return null
+  if (!response.ok) {
+    throw new Error(await response.text() || `Request failed (${response.status})`)
+  }
+  return response.json() as Promise<MaintenanceReview>
+}
+
+export function runMaintenanceReview(
+  operation: string,
+  result: OperationResult
+): Promise<MaintenanceReview> {
+  return request(`/maintenance/${operation}/review`, {
+    method: 'POST',
+    body: JSON.stringify({ result })
   })
 }
 

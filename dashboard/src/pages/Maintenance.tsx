@@ -1,25 +1,28 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { Check, Circle, Eye, Loader2, Play } from 'lucide-react'
+import { Check, Circle, Copy, Eye, Loader2, Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
-import { formatDuration } from '@/lib/format'
+import { formatDateTime, formatDuration } from '@/lib/format'
 import {
   ApiError,
   applyMaintenanceSuggestion,
   fetchMaintenanceOperations,
   runMaintenance,
+  runMaintenanceReview,
   type ConflictVerdict,
   type MaintenanceAction,
   type MaintenanceActionType,
   type MaintenanceCandidateGroup,
   type MaintenanceCandidateRecord,
   type MaintenanceOperationInfo,
+  type MaintenanceReview,
   type OperationResult
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
+import { formatMaintenanceReview } from '@/lib/review-format'
 
 type MaintenanceOperation = MaintenanceOperationInfo['key']
 
@@ -57,6 +60,54 @@ const ACTION_STYLES: Record<MaintenanceActionType, { badge: string; dot: string;
     badge: 'bg-amber-500/15 text-amber-300',
     dot: 'bg-amber-400',
     label: 'Suggestion'
+  }
+}
+
+const ASSESSMENT_STYLES: Record<MaintenanceReview['overallAssessment'], { badge: string; label: string }> = {
+  good: {
+    badge: 'bg-emerald-500/15 text-emerald-300',
+    label: 'Good'
+  },
+  concerning: {
+    badge: 'bg-amber-500/15 text-amber-300',
+    label: 'Concerning'
+  },
+  poor: {
+    badge: 'bg-destructive/15 text-destructive',
+    label: 'Poor'
+  }
+}
+
+const VERDICT_STYLES: Record<MaintenanceReview['actionVerdicts'][number]['verdict'], { badge: string; label: string }> = {
+  correct: {
+    badge: 'bg-emerald-500/15 text-emerald-300',
+    label: 'Correct'
+  },
+  questionable: {
+    badge: 'bg-amber-500/15 text-amber-300',
+    label: 'Questionable'
+  },
+  incorrect: {
+    badge: 'bg-destructive/15 text-destructive',
+    label: 'Incorrect'
+  }
+}
+
+const SETTINGS_RECOMMENDATION_STYLES: Record<
+  MaintenanceReview['settingsRecommendations'][number]['recommendation'],
+  { badge: string; label: string }
+> = {
+  too_aggressive: {
+    badge: 'bg-amber-500/15 text-amber-300',
+    label: 'Too aggressive'
+  },
+  too_lenient: {
+    badge: 'bg-destructive/15 text-destructive',
+    label: 'Too lenient'
+  },
+  appropriate: {
+    badge: 'bg-emerald-500/15 text-emerald-300',
+    label: 'Appropriate'
   }
 }
 
@@ -623,6 +674,190 @@ function CandidateGroup({
   )
 }
 
+function ReviewSkeleton() {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <Skeleton className="h-4 w-16" />
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="h-3 w-28" />
+      </div>
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-5/6" />
+      <Skeleton className="h-4 w-4/6" />
+    </div>
+  )
+}
+
+function MaintenanceReviewDisplay({
+  result,
+  review,
+  onSelect
+}: {
+  result: OperationResult
+  review: MaintenanceReview
+  onSelect?: (id: string) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const verdictGroups: Record<string, typeof review.actionVerdicts> = {}
+
+  for (const verdict of review.actionVerdicts) {
+    verdictGroups[verdict.verdict] = verdictGroups[verdict.verdict] || []
+    verdictGroups[verdict.verdict].push(verdict)
+  }
+
+  const handleCopy = async () => {
+    const text = formatMaintenanceReview(result, review)
+    await navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-muted-foreground">Opus review</div>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
+          title="Copy review for Claude analysis"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3 h-3 text-emerald-400" />
+              Copied
+            </>
+          ) : (
+            <>
+              <Copy className="w-3 h-3" />
+              Copy Review
+            </>
+          )}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${ASSESSMENT_STYLES[review.overallAssessment].badge}`}>
+          {ASSESSMENT_STYLES[review.overallAssessment].label}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          Assessment score <span className="font-semibold tabular-nums text-foreground">{review.assessmentScore}</span>
+        </span>
+        <span className="text-xs text-muted-foreground">
+          Reviewed {formatDateTime(review.reviewedAt)}
+        </span>
+      </div>
+      <div className="text-sm text-foreground">{review.summary}</div>
+
+      <details className="rounded-md border border-border bg-secondary/20 p-3">
+        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Action verdicts ({review.actionVerdicts.length})
+        </summary>
+        <div className="mt-3 space-y-3">
+          {review.actionVerdicts.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No action verdicts returned.</div>
+          ) : (
+            (['correct', 'questionable', 'incorrect'] as const).map(verdict => {
+              const items = verdictGroups[verdict]
+              if (!items?.length) return null
+              return (
+                <div key={verdict} className="space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                    {VERDICT_STYLES[verdict].label} ({items.length})
+                  </div>
+                  <div className="space-y-2">
+                    {items.map((item, index) => {
+                      const actionStyle = ACTION_STYLES[item.action]
+                      const verdictStyle = VERDICT_STYLES[item.verdict]
+                      const itemSelectable = Boolean(item.recordId && onSelect)
+                      const itemClasses = `rounded-md border border-border bg-secondary/30 p-3 transition-base ${
+                        itemSelectable ? 'cursor-pointer hover:bg-secondary/50' : ''
+                      }`
+
+                      const content = (
+                        <>
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${verdictStyle.badge}`}>
+                              {verdictStyle.label}
+                            </span>
+                            <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${actionStyle.badge}`}>
+                              {actionStyle.label}
+                            </span>
+                            {item.recordId && (
+                              <span className="text-[11px] text-muted-foreground font-mono">{item.recordId}</span>
+                            )}
+                          </div>
+                          <div className="text-sm text-foreground">{item.snippet}</div>
+                          <div className="text-xs text-muted-foreground mt-1">{item.reason}</div>
+                        </>
+                      )
+
+                      if (itemSelectable && item.recordId) {
+                        const recordId = item.recordId
+                        return (
+                          <button
+                            key={`${recordId}-${index}`}
+                            type="button"
+                            onClick={() => onSelect?.(recordId)}
+                            className={`w-full text-left ${itemClasses}`}
+                          >
+                            {content}
+                          </button>
+                        )
+                      }
+
+                      return (
+                        <div key={`${item.action}-${index}`} className={itemClasses}>
+                          {content}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+      </details>
+
+      <details className="rounded-md border border-border bg-secondary/20 p-3">
+        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Settings recommendations ({review.settingsRecommendations.length})
+        </summary>
+        <div className="mt-3 space-y-2">
+          {review.settingsRecommendations.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No settings recommendations.</div>
+          ) : (
+            review.settingsRecommendations.map((rec, index) => {
+              const style = SETTINGS_RECOMMENDATION_STYLES[rec.recommendation]
+              return (
+                <div key={`${rec.setting}-${index}`} className="rounded-md border border-border bg-secondary/30 p-3 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${style.badge}`}>
+                      {style.label}
+                    </span>
+                    <span className="text-[11px] text-muted-foreground font-mono">{rec.setting}</span>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Current value <span className="font-mono text-foreground">{rec.currentValue}</span>
+                  </div>
+                  {rec.suggestedValue !== undefined && (
+                    <div className="text-xs text-muted-foreground">
+                      Suggested value <span className="font-mono text-foreground">{rec.suggestedValue}</span>
+                    </div>
+                  )}
+                  <div className="text-xs text-muted-foreground">{rec.reason}</div>
+                </div>
+              )
+            })
+          )}
+        </div>
+      </details>
+    </div>
+  )
+}
+
 function ResultPanel({
   result,
   onSelect,
@@ -639,13 +874,49 @@ function ResultPanel({
   const summaryEntries = Object.entries(result.summary)
   const candidateGroups = result.candidates ?? []
   const candidateCount = candidateGroups.reduce((total, group) => total + group.records.length, 0)
+  const [review, setReview] = useState<MaintenanceReview | null>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+  const isReviewRunning = reviewLoading
+  const isReviewPending = reviewLoading && !review
+
+  useEffect(() => {
+    setReview(null)
+    setReviewError(null)
+    setReviewLoading(false)
+  }, [result])
+
+  const handleReview = async () => {
+    setReviewError(null)
+    setReviewLoading(true)
+    try {
+      const response = await runMaintenanceReview(result.operation, result)
+      setReview(response)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to run review'
+      setReviewError(message)
+    } finally {
+      setReviewLoading(false)
+    }
+  }
 
   return (
     <div className="mt-4 space-y-4 rounded-lg border border-border bg-background/40 p-4">
       <h4 className="section-header">Results</h4>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-xs text-muted-foreground">
-          {result.dryRun ? 'Preview' : 'Executed'} in {formatDuration(result.duration)}
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          <span>
+            {result.dryRun ? 'Preview' : 'Executed'} in {formatDuration(result.duration)}
+          </span>
+          <button
+            type="button"
+            onClick={handleReview}
+            disabled={reviewLoading}
+            className="inline-flex items-center gap-2 h-7 px-2.5 text-[11px] rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
+          >
+            {isReviewRunning && <ButtonSpinner size="xs" />}
+            {isReviewRunning ? 'Reviewing...' : 'Review with Opus'}
+          </button>
         </div>
         <div className="text-xs text-muted-foreground">
           {result.actions.length} actions
@@ -680,6 +951,22 @@ function ResultPanel({
             ))}
           </div>
         </details>
+      )}
+
+      {reviewError && (
+        <div className="text-xs text-destructive">{reviewError}</div>
+      )}
+
+      {review ? (
+        <MaintenanceReviewDisplay result={result} review={review} onSelect={onSelect} />
+      ) : (
+        <div className="rounded-lg border border-border bg-background/40 p-4">
+          {isReviewPending ? (
+            <ReviewSkeleton />
+          ) : (
+            <div className="text-xs text-muted-foreground">No review yet.</div>
+          )}
+        </div>
       )}
 
       {result.actions.length === 0 ? (
