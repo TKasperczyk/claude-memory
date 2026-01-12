@@ -22,6 +22,7 @@ import {
   type OperationResult
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import { formatMaintenanceReview } from '@/lib/review-format'
 
@@ -720,19 +721,12 @@ function MaintenanceReviewDisplay({
   review: MaintenanceReview
   onSelect?: (id: string) => void
 }) {
-  const [copied, setCopied] = useState(false)
+  const { copy, isCopied } = useCopyToClipboard(2000)
   const verdictGroups: Record<string, typeof review.actionVerdicts> = {}
 
   for (const verdict of review.actionVerdicts) {
     verdictGroups[verdict.verdict] = verdictGroups[verdict.verdict] || []
     verdictGroups[verdict.verdict].push(verdict)
-  }
-
-  const handleCopy = async () => {
-    const text = formatMaintenanceReview(result, review)
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
   }
 
   return (
@@ -741,11 +735,11 @@ function MaintenanceReviewDisplay({
         <div className="text-xs text-muted-foreground">Opus review</div>
         <button
           type="button"
-          onClick={handleCopy}
+          onClick={() => copy(result.operation, formatMaintenanceReview(result, review))}
           className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
           title="Copy review for Claude analysis"
         >
-          {copied ? (
+          {isCopied(result.operation) ? (
             <>
               <Check className="w-3 h-3 text-emerald-400" />
               Copied

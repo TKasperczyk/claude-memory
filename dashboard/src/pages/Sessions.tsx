@@ -4,6 +4,7 @@ import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import { useSessions } from '@/hooks/queries'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
@@ -270,7 +271,7 @@ export default function Sessions() {
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
-  const [copied, setCopied] = useState<Record<string, boolean>>({})
+  const { copy, isCopied } = useCopyToClipboard(2000)
   const { data, error, isPending } = useSessions()
   const sessions = data?.sessions ?? []
   const errorMessage = error instanceof Error ? error.message : 'Failed to load sessions'
@@ -349,15 +350,6 @@ export default function Sessions() {
     } finally {
       setReviewRunning(prev => ({ ...prev, [sessionId]: false }))
     }
-  }
-
-  const handleCopy = async (session: SessionRecord, review: InjectionReview) => {
-    const text = formatInjectionReview(session, review)
-    await navigator.clipboard.writeText(text)
-    setCopied(prev => ({ ...prev, [session.sessionId]: true }))
-    setTimeout(() => {
-      setCopied(prev => ({ ...prev, [session.sessionId]: false }))
-    }, 2000)
   }
 
   const handleSendToSimulator = (prompt: string, cwd?: string) => {
@@ -469,12 +461,12 @@ export default function Sessions() {
                             </div>
                             <div className="flex items-center gap-2">
                               {review && (
-                                <button
-                                  onClick={() => handleCopy(session, review)}
+                              <button
+                                  onClick={() => copy(session.sessionId, formatInjectionReview(session, review))}
                                   className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
                                   title="Copy review for Claude analysis"
                                 >
-                                  {copied[session.sessionId] ? (
+                                  {isCopied(session.sessionId) ? (
                                     <>
                                       <Check className="w-3 h-3 text-emerald-400" />
                                       Copied

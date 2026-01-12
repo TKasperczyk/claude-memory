@@ -4,6 +4,7 @@ import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import { useExtractions } from '@/hooks/queries'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import Skeleton from '@/components/Skeleton'
 import {
@@ -140,7 +141,7 @@ export default function Extractions() {
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
-  const [copied, setCopied] = useState<Record<string, boolean>>({})
+  const { copy, isCopied } = useCopyToClipboard(2000)
   const loadSeqRef = useRef(0)
 
   const { data, error, isPending, isFetching } = useExtractions({ page, limit: PAGE_SIZE })
@@ -200,15 +201,6 @@ export default function Extractions() {
     } finally {
       setReviewRunning(prev => ({ ...prev, [runId]: false }))
     }
-  }
-
-  const handleCopy = async (run: ExtractionRun, runRecords: MemoryRecord[], review: ExtractionReview) => {
-    const text = formatExtractionReview(run, runRecords, review)
-    await navigator.clipboard.writeText(text)
-    setCopied(prev => ({ ...prev, [run.runId]: true }))
-    setTimeout(() => {
-      setCopied(prev => ({ ...prev, [run.runId]: false }))
-    }, 2000)
   }
 
   const pageInfo = () => {
@@ -316,11 +308,11 @@ export default function Extractions() {
                           <div className="flex items-center gap-2">
                             {review && (
                               <button
-                                onClick={() => handleCopy(run, runRecords, review)}
+                                onClick={() => copy(run.runId, formatExtractionReview(run, runRecords, review))}
                                 className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
                                 title="Copy review for Claude analysis"
                               >
-                                {copied[run.runId] ? (
+                                {isCopied(run.runId) ? (
                                   <>
                                     <Check className="w-3 h-3 text-emerald-400" />
                                     Copied
