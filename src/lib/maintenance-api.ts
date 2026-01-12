@@ -3,6 +3,7 @@ import { findGitRoot } from './context.js'
 import { buildPromotionDiffs } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { loadSettings, type MaintenanceSettings } from './settings.js'
+import type { MaintenanceOperationInfo, OperationResult } from '../../shared/types.js'
 import {
   runStaleCheck,
   runLowUsageDeprecation,
@@ -64,20 +65,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     description: 'Generate CLAUDE.md and skill recommendations',
     allowExecute: false
   }
-] as const
+] as const satisfies MaintenanceOperationInfo[]
 
 export type MaintenanceOperation = typeof MAINTENANCE_OPERATION_DEFINITIONS[number]['key']
 export type MaintenanceOperationDefinition = typeof MAINTENANCE_OPERATION_DEFINITIONS[number]
 
-export interface OperationResult {
-  operation: string
-  dryRun: boolean
-  actions: MaintenanceAction[]
-  summary: Record<string, number>
-  candidates: MaintenanceRunResult['candidates']
-  duration: number
-  error?: string
-}
+export type { OperationResult } from '../../shared/types.js'
 
 export const MAINTENANCE_OPERATIONS: MaintenanceOperation[] =
   MAINTENANCE_OPERATION_DEFINITIONS.map(definition => definition.key) as MaintenanceOperation[]

@@ -4,7 +4,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { SKIP_MARKER, getCommandFilePath } from '../lib/claude-commands.js'
 import { readFileIfExists } from '../lib/shared.js'
-import { initMilvus, hybridSearch } from '../lib/milvus.js'
+import { closeMilvus, initMilvus, hybridSearch } from '../lib/milvus.js'
 import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { embed } from '../lib/embed.js'
 import { loadConfig } from '../lib/config.js'
@@ -86,39 +86,48 @@ export async function handlePrePrompt(
   const diagnostic = options.diagnostic === true
 
   const result = await runWithTimeout(async (signal) => {
-    await initMilvus(runtimeConfig)
-    const searchResult = await searchMemories(
-      input.prompt,
-      signals,
-      runtimeConfig,
-      settings,
-      input.cwd,
-      signal,
-      { diagnostic }
-    )
-    const results = searchResult.results
-    if (diagnostic) {
-      const contextResult = buildContext(results, runtimeConfig, {
-        diagnostic: true,
-        mmrExclusions: searchResult.diagnostics?.mmrExclusions
-      })
-      return {
-        context: contextResult.context || null,
-        results,
-        injectedRecords: contextResult.injectedRecords.map(item => item.record),
-        diagnostics: searchResult.diagnostics
-          ? { search: searchResult.diagnostics.search, context: contextResult }
-          : undefined
+    const unregister = registerAbortCleanup(signal, () => {
+      void closeMilvus()
+    })
+    try {
+      await initMilvus(runtimeConfig)
+      const searchResult = await searchMemories(
+        input.prompt,
+        signals,
+        runtimeConfig,
+        settings,
+        input.cwd,
+        signal,
+        { diagnostic }
+      )
+      const results = searchResult.results
+      if (diagnostic) {
+        const contextResult = buildContext(results, runtimeConfig, {
+          diagnostic: true,
+          mmrExclusions: searchResult.diagnostics?.mmrExclusions
+        })
+        return {
+          context: contextResult.context || null,
+          results,
+          injectedRecords: contextResult.injectedRecords.map(item => item.record),
+          diagnostics: searchResult.diagnostics
+            ? { search: searchResult.diagnostics.search, context: contextResult }
+            : undefined
+        }
       }
-    }
 
-    if (results.length === 0) {
-      return { context: null, results, injectedRecords: [] }
-    }
+      if (results.length === 0) {
+        return { context: null, results, injectedRecords: [] }
+      }
 
-    const { context, records: injectedRecords } = buildContext(results, runtimeConfig)
-    return { context: context || null, results, injectedRecords }
-  }, PREPROMPT_TIMEOUT_MS)
+      const { context, records: injectedRecords } = buildContext(results, runtimeConfig)
+      return { context: context || null, results, injectedRecords }
+    } finally {
+      unregister()
+    }
+  }, PREPROMPT_TIMEOUT_MS, () => {
+    void closeMilvus()
+  })
 
   if (!result.completed) {
     return {
@@ -645,9 +654,22 @@ function commandFileHasSkipMarker(filePath: string): boolean {
   }
 }
 
+function registerAbortCleanup(signal: AbortSignal, cleanup: () => void): () => void {
+  const onAbort = (): void => {
+    cleanup()
+  }
+  if (signal.aborted) {
+    onAbort()
+    return () => {}
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  return () => signal.removeEventListener('abort', onAbort)
+}
+
 async function runWithTimeout<T>(
   task: (signal: AbortSignal) => Promise<T>,
-  timeoutMs: number
+  timeoutMs: number,
+  onTimeout?: () => void
 ): Promise<{ completed: boolean; value?: T }> {
   let timeoutId: NodeJS.Timeout | null = null
   const controller = new AbortController()
@@ -655,6 +677,13 @@ async function runWithTimeout<T>(
     const timeoutPromise = new Promise<{ completed: boolean }>(resolve => {
       timeoutId = setTimeout(() => {
         controller.abort()
+        if (onTimeout) {
+          try {
+            onTimeout()
+          } catch (error) {
+            console.error('[claude-memory] Timeout cleanup failed:', error)
+          }
+        }
         resolve({ completed: false })
       }, timeoutMs)
     })
@@ -705,61 +734,64 @@ async function main(): Promise<void> {
   const payload = await readHookInput()
   if (!payload) return
 
-  if (payload.hook_event_name !== 'UserPromptSubmit') {
-    console.error('[claude-memory] Unexpected hook event:', payload.hook_event_name)
-    return
-  }
-
-  if (!payload.prompt || !payload.prompt.trim()) {
-    console.error('[claude-memory] Empty prompt; skipping injection.')
-    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'empty_prompt')
-    return
-  }
-
-  // Skip injection if prompt contains skip marker (expanded command content)
-  // or if it's a slash command whose file contains the skip marker
-  if (shouldSkipInjection(payload.prompt)) {
-    console.error('[claude-memory] Skip marker detected; skipping injection.')
-    return
-  }
-
-  const projectRoot = findGitRoot(payload.cwd)
-  const configRoot = projectRoot ?? payload.cwd
-  const config = loadConfig(configRoot)
-
-  const result = await handlePrePrompt(payload, config, { projectRoot })
-
-  if (result.timedOut) {
-    console.error(`[claude-memory] Pre-prompt timed out after ${PREPROMPT_TIMEOUT_MS}ms; skipping injection.`)
-    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout')
-    return
-  }
-
-  if (result.results.length === 0) {
-    console.error('[claude-memory] No matching memories found.')
-    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches')
-    return
-  }
-
-  if (!result.context) {
-    console.error('[claude-memory] Context empty after formatting.')
-    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches')
-    return
-  }
-
-  let injected = false
   try {
-    await writeStdout(result.context)
-    injected = true
-  } catch (error) {
-    console.error('[claude-memory] Failed to write injected context:', error)
-  }
+    if (payload.hook_event_name !== 'UserPromptSubmit') {
+      console.error('[claude-memory] Unexpected hook event:', payload.hook_event_name)
+      return
+    }
 
-  if (injected) {
-    trackSession(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt, 'injected')
-    scheduleHardExit()
-  } else {
-    trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error')
+    if (!payload.prompt || !payload.prompt.trim()) {
+      console.error('[claude-memory] Empty prompt; skipping injection.')
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'empty_prompt')
+      return
+    }
+
+    // Skip injection if prompt contains skip marker (expanded command content)
+    // or if it's a slash command whose file contains the skip marker
+    if (shouldSkipInjection(payload.prompt)) {
+      console.error('[claude-memory] Skip marker detected; skipping injection.')
+      return
+    }
+
+    const projectRoot = findGitRoot(payload.cwd)
+    const configRoot = projectRoot ?? payload.cwd
+    const config = loadConfig(configRoot)
+
+    const result = await handlePrePrompt(payload, config, { projectRoot })
+
+    if (result.timedOut) {
+      console.error(`[claude-memory] Pre-prompt timed out after ${PREPROMPT_TIMEOUT_MS}ms; skipping injection.`)
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout')
+      return
+    }
+
+    if (result.results.length === 0) {
+      console.error('[claude-memory] No matching memories found.')
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches')
+      return
+    }
+
+    if (!result.context) {
+      console.error('[claude-memory] Context empty after formatting.')
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches')
+      return
+    }
+
+    let injected = false
+    try {
+      await writeStdout(result.context)
+      injected = true
+    } catch (error) {
+      console.error('[claude-memory] Failed to write injected context:', error)
+    }
+
+    if (injected) {
+      trackSession(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt, 'injected')
+    } else {
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error')
+    }
+  } finally {
+    await closeMilvus()
   }
 }
 
@@ -813,9 +845,13 @@ function writeStdout(value: string): Promise<void> {
   })
 }
 
-function scheduleHardExit(): void {
-  const timer = setTimeout(() => process.exit(0), 50)
-  timer.unref()
+let hardExitTimer: NodeJS.Timeout | null = null
+
+function scheduleHardExit(exitCode?: number): void {
+  if (hardExitTimer) return
+  const code = typeof exitCode === 'number' ? exitCode : (process.exitCode ?? 0)
+  hardExitTimer = setTimeout(() => process.exit(code), 50)
+  hardExitTimer.unref()
 }
 
 // Only run main when executed directly (not imported)
@@ -829,5 +865,8 @@ if (isMainModule) {
     .catch(error => {
       console.error('[claude-memory] pre-prompt failed:', error)
       process.exitCode = 2
+    })
+    .finally(() => {
+      scheduleHardExit(typeof process.exitCode === 'number' ? process.exitCode : undefined)
     })
 }

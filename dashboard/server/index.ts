@@ -31,10 +31,9 @@ import {
   getDefaultSettings,
   loadSettings,
   resetSettings,
-  saveSettings,
-  type Settings
+  saveSettings
 } from '../../src/lib/settings.js'
-import { type MemoryRecord, type NearMissRecord, type RecordType } from '../../src/lib/types.js'
+import type { MemoryRecord, NearMissRecord, RecordType, Settings } from '../../shared/types.js'
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
 import { reviewExtraction } from '../../src/lib/extraction-review.js'
 import { reviewInjection } from '../../src/lib/injection-review.js'
@@ -60,7 +59,7 @@ const app = express()
 const PORT = process.env.PORT ?? 3001
 const CONFIG_ROOT = findGitRoot(process.cwd()) ?? process.cwd()
 const CONFIG = loadConfig(CONFIG_ROOT)
-const MEMORY_TYPES: RecordType[] = ['command', 'error', 'discovery', 'procedure']
+const MEMORY_TYPES: RecordType[] = ['command', 'error', 'discovery', 'procedure', 'warning']
 const SUGGESTION_ALLOWED_ROOTS = [
   path.resolve(CONFIG_ROOT),
   path.resolve(homedir(), '.claude', 'skills')

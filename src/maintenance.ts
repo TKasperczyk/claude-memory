@@ -27,34 +27,11 @@ import { DEFAULT_CONFIG, type Config } from './lib/types.js'
 import { loadSettings, type MaintenanceSettings } from './lib/settings.js'
 import { updateRecord } from './lib/milvus.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from './lib/shared.js'
+import type { MaintenanceAction, MaintenanceActionDetails, MaintenanceActionType, MaintenanceMergeRecord } from '../shared/types.js'
 
 export { runConflictResolution }
 
-export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
-
-export interface MaintenanceMergeRecord {
-  id: string
-  snippet: string | null
-}
-
-export interface MaintenanceActionDetails {
-  keptId?: string
-  deprecatedIds?: string[]
-  deprecatedRecords?: MaintenanceMergeRecord[]
-  before?: string
-  after?: string
-  newerId?: string
-  similarity?: number
-  [key: string]: unknown
-}
-
-export interface MaintenanceAction {
-  type: MaintenanceActionType
-  recordId?: string
-  snippet: string
-  reason: string
-  details?: MaintenanceActionDetails
-}
+export type { MaintenanceAction, MaintenanceActionDetails, MaintenanceActionType, MaintenanceMergeRecord } from '../shared/types.js'
 
 export interface MaintenanceRunResult {
   actions: MaintenanceAction[]

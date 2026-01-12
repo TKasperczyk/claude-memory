@@ -25,6 +25,7 @@ import {
   type RecordScope,
   type RecordType
 } from './types.js'
+import type { MemoryStats } from '../../shared/types.js'
 
 export { escapeFilterValue }
 
@@ -102,6 +103,18 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
   })
 }
 
+export async function closeMilvus(): Promise<void> {
+  if (!client) return
+  try {
+    await client.closeConnection()
+  } catch (error) {
+    console.error('[claude-memory] Failed to close Milvus connection:', error)
+  } finally {
+    client = null
+    activeConfig = null
+  }
+}
+
 export async function insertRecord(
   record: MemoryRecord,
   config: Config = DEFAULT_CONFIG,
@@ -143,7 +156,7 @@ export async function updateRecord(
     const merged = mergeRecords(existing, updates)
     merged.id = id
 
-    const shouldReembed = needsEmbeddingRefresh(updates)
+    const shouldReembed = needsEmbeddingRefresh(existing, merged)
     if (shouldReembed && updates.timestamp === undefined) {
       merged.timestamp = Date.now()
     }
@@ -195,7 +208,7 @@ export async function incrementRecordCounters(
     const merged = mergeRecords(existing, updates)
     merged.id = id
 
-    const shouldReembed = needsEmbeddingRefresh(updates)
+    const shouldReembed = needsEmbeddingRefresh(existing, merged)
     if (shouldReembed && updates.timestamp === undefined) {
       merged.timestamp = Date.now()
     }
@@ -305,13 +318,7 @@ export async function getRecord(
   }
 }
 
-export interface MemoryStats {
-  id: string
-  retrievalCount: number
-  usageCount: number
-  successCount: number
-  failureCount: number
-}
+export type { MemoryStats } from '../../shared/types.js'
 
 export async function getRecordStats(
   ids: string[],
@@ -461,6 +468,7 @@ export async function queryRecords(
     const orderBy = options.orderBy
 
     if (orderBy) {
+      // Milvus query API doesn't support ordering; stream and keep only the top slice in memory (still a full scan).
       const iterator = await client!.queryIterator({
         collection_name: config.milvus.collection,
         filter,
@@ -468,22 +476,40 @@ export async function queryRecords(
         batchSize: QUERY_ITERATOR_BATCH_SIZE
       })
 
-      const rows: MemoryRecord[] = []
+      const targetCount = Math.max(0, offset + limit)
+      if (targetCount === 0) return []
+
+      const ordered: MemoryRecord[] = []
+      const compare = (a: MemoryRecord, b: MemoryRecord): number => {
+        const diff = (a.timestamp ?? 0) - (b.timestamp ?? 0)
+        if (diff !== 0) return orderBy === 'timestamp_desc' ? -diff : diff
+        return a.id.localeCompare(b.id)
+      }
+      const insertSorted = (record: MemoryRecord): void => {
+        let low = 0
+        let high = ordered.length
+        while (low < high) {
+          const mid = Math.floor((low + high) / 2)
+          if (compare(record, ordered[mid]) < 0) {
+            high = mid
+          } else {
+            low = mid + 1
+          }
+        }
+        ordered.splice(low, 0, record)
+        if (ordered.length > targetCount) {
+          ordered.pop()
+        }
+      }
       for await (const batch of iterator) {
         if (!Array.isArray(batch)) continue
         for (const row of batch) {
           const record = parseRecordFromRow(row as Record<string, unknown>)
-          if (record) rows.push(record)
+          if (record) insertSorted(record)
         }
       }
 
-      rows.sort((a, b) => {
-        const diff = (a.timestamp ?? 0) - (b.timestamp ?? 0)
-        if (diff !== 0) return orderBy === 'timestamp_desc' ? -diff : diff
-        return a.id.localeCompare(b.id)
-      })
-
-      return rows.slice(offset, offset + limit)
+      return ordered.slice(offset, offset + limit)
     }
 
     const result = await client!.query({
@@ -1114,7 +1140,7 @@ async function ensureSourceFields(config: Config): Promise<void> {
   }
 }
 
-async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<RowData> {
+export async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<RowData> {
   const normalized = normalizeRecord(record)
   const content = serializeRecord(normalized)
   if (content.length > CONTENT_MAX_LENGTH) {
@@ -1210,10 +1236,33 @@ export function buildEmbeddingInput(
   exactTextRaw?: string,
   content?: string
 ): string {
-  const candidate = exactTextRaw ?? buildExactText(record)
-  const trimmed = candidate.trim()
-  if (trimmed.length > 0) return trimmed
+  const exactText = (exactTextRaw ?? buildExactText(record)).trim()
+  const supplemental = buildSupplementalEmbeddingText(record)
+  const combined = [exactText, supplemental].filter(part => part && part.length > 0).join('\n').trim()
+  if (combined.length > 0) return combined
   return content ?? serializeRecord(record)
+}
+
+function buildSupplementalEmbeddingText(record: MemoryRecord): string | undefined {
+  switch (record.type) {
+    case 'command':
+      return joinEmbeddingParts([record.resolution])
+    case 'error':
+      return joinEmbeddingParts([record.cause, record.resolution])
+    case 'discovery':
+      return joinEmbeddingParts([record.evidence])
+    case 'procedure':
+      return joinEmbeddingParts([record.prerequisites?.join('\n'), record.verification])
+    case 'warning':
+      return undefined
+  }
+}
+
+function joinEmbeddingParts(parts: Array<string | undefined>): string | undefined {
+  const filtered = parts
+    .map(part => (typeof part === 'string' ? part.trim() : ''))
+    .filter(part => part.length > 0)
+  return filtered.length > 0 ? filtered.join('\n') : undefined
 }
 
 function serializeRecord(record: MemoryRecord): string {
@@ -1453,18 +1502,8 @@ function mergeRecords(existing: MemoryRecord, updates: Partial<MemoryRecord>): M
   return merged
 }
 
-function needsEmbeddingRefresh(updates: Partial<MemoryRecord>): boolean {
-  const embeddingFields = new Set([
-    'type',
-    'command',
-    'errorText',
-    'what',
-    'where',
-    'name',
-    'steps'
-  ])
-
-  return Object.keys(updates).some(key => embeddingFields.has(key))
+function needsEmbeddingRefresh(existing: MemoryRecord, updated: MemoryRecord): boolean {
+  return buildEmbeddingInput(existing) !== buildEmbeddingInput(updated)
 }
 
 function escapeLikeValue(value: string): string {

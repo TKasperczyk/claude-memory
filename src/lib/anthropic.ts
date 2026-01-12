@@ -40,6 +40,55 @@ function reverseToolNameTransform(name: string): string {
   return name.charAt(0).toLowerCase() + name.slice(1)
 }
 
+function mutateToolUseNames(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  let changed = false
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (mutateToolUseNames(entry)) changed = true
+    }
+    return changed
+  }
+
+  const record = value as Record<string, unknown>
+  if (record.type === 'tool_use' && typeof record.name === 'string') {
+    const original = reverseToolNameTransform(record.name)
+    if (original !== record.name) {
+      record.name = original
+      changed = true
+    }
+  }
+
+  for (const key of Object.keys(record)) {
+    if (mutateToolUseNames(record[key])) changed = true
+  }
+
+  return changed
+}
+
+function transformSseEvent(event: string): string {
+  if (!event.includes('data:')) return event
+  const lines = event.split('\n')
+  const transformed = lines.map(line => {
+    if (!line.startsWith('data:')) return line
+    const prefixMatch = line.match(/^data:\s*/)
+    const prefix = prefixMatch ? prefixMatch[0] : 'data: '
+    const data = line.slice(prefix.length)
+    if (!data || data === '[DONE]') return line
+    try {
+      const parsed = JSON.parse(data) as unknown
+      if (mutateToolUseNames(parsed)) {
+        return `${prefix}${JSON.stringify(parsed)}`
+      }
+      return line
+    } catch {
+      return line
+    }
+  })
+  return transformed.join('\n')
+}
+
 /**
  * Create a fetch wrapper for OAuth requests that:
  * 1. Adds ?beta=true to /v1/messages requests
@@ -136,23 +185,28 @@ function createOAuthFetch(): typeof fetch {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       const encoder = new TextEncoder()
+      let buffer = ''
 
       const stream = new ReadableStream({
         async pull(controller) {
           const { done, value } = await reader.read()
           if (done) {
+            if (buffer.length > 0) {
+              const flushed = transformSseEvent(buffer)
+              controller.enqueue(encoder.encode(flushed))
+              buffer = ''
+            }
             controller.close()
             return
           }
 
-          let text = decoder.decode(value, { stream: true })
-          // Transform tool names in streaming response (tool_use blocks)
-          // Pattern: "name": "Capitalized_name" -> "name": "capitalized_name"
-          text = text.replace(/"name"\s*:\s*"([A-Z][^"]+)"/g, (_match, name: string) => {
-            const original = reverseToolNameTransform(name)
-            return `"name": "${original}"`
-          })
-          controller.enqueue(encoder.encode(text))
+          buffer += decoder.decode(value, { stream: true })
+          const events = buffer.split(/\r?\n\r?\n/)
+          buffer = events.pop() ?? ''
+          if (events.length > 0) {
+            const transformed = events.map(transformSseEvent).join('\n\n') + '\n\n'
+            controller.enqueue(encoder.encode(transformed))
+          }
         }
       })
 

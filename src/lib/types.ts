@@ -1,6 +1,8 @@
 // Record type definitions for Claude Memory
 // See PLAN.md for full schemas
 
+import type { NearMissRecord, RecordType, ScoredRecord } from '../../shared/types.js'
+
 export const EMBEDDING_DIM = 4096
 
 // Similarity thresholds - defaults that can be overridden via settings.
@@ -15,126 +17,27 @@ export const SIMILARITY_THRESHOLDS = {
   REVIEW_DUPLICATE_WARNING: 0.8
 } as const
 
-export type RecordType = 'command' | 'error' | 'discovery' | 'procedure' | 'warning'
-export type RecordScope = 'global' | 'project'
-
-export interface BaseRecord {
-  id: string
-  type: RecordType
-  scope?: RecordScope
-  timestamp?: number
-  sourceSessionId?: string
-  sourceExcerpt?: string
-  project?: string
-  domain?: string
-  successCount?: number
-  failureCount?: number
-  retrievalCount?: number
-  usageCount?: number
-  lastUsed?: number
-  deprecated?: boolean
-  generalized?: boolean
-  lastGeneralizationCheck?: number
-  lastGlobalCheck?: number
-  lastConflictCheck?: number
-  lastWarningSynthesisCheck?: number
-  embedding?: number[]
-}
-
-export interface CommandRecord extends BaseRecord {
-  type: 'command'
-  command: string
-  exitCode: number
-  truncatedOutput?: string
-  context: {
-    project: string
-    cwd: string
-    intent: string
-  }
-  outcome: 'success' | 'failure' | 'partial'
-  resolution?: string
-}
-
-export interface ErrorRecord extends BaseRecord {
-  type: 'error'
-  errorText: string
-  errorType: string
-  cause?: string
-  resolution: string
-  context: {
-    project: string
-    file?: string
-    tool?: string
-  }
-}
-
-export interface DiscoveryRecord extends BaseRecord {
-  type: 'discovery'
-  what: string
-  where: string
-  evidence: string
-  confidence: 'verified' | 'inferred' | 'tentative'
-}
-
-export interface ProcedureRecord extends BaseRecord {
-  type: 'procedure'
-  name: string
-  steps: string[]
-  context: {
-    project?: string
-    domain: string
-  }
-  prerequisites?: string[]
-  verification?: string
-}
-
-export type WarningSeverity = 'caution' | 'warning' | 'critical'
-
-export interface WarningRecord extends BaseRecord {
-  type: 'warning'
-  avoid: string              // What NOT to do
-  useInstead: string         // The alternative
-  reason: string             // Why it fails
-  severity: WarningSeverity
-  sourceRecordIds?: string[] // Original failures (if synthesized)
-  synthesizedAt?: number     // When created
-}
-
-export type MemoryRecord = CommandRecord | ErrorRecord | DiscoveryRecord | ProcedureRecord | WarningRecord
-
-export interface InjectedMemoryEntry {
-  id: string
-  snippet: string
-  type?: RecordType
-  injectedAt: number
-  prompt?: string
-  // Retrieval trigger info
-  similarity?: number    // Semantic similarity score (0-1)
-  keywordMatch?: boolean // Whether it was found via keyword search
-  score?: number         // Combined relevance score
-}
-
-export type InjectionStatus = 'injected' | 'no_matches' | 'empty_prompt' | 'timeout' | 'error'
-
-export interface InjectionPromptEntry {
-  text: string
-  timestamp: number
-  status: InjectionStatus
-  memoryCount: number
-}
-
-export interface InjectionSessionRecord {
-  sessionId: string
-  createdAt: number
-  lastActivity: number
-  cwd?: string
-  memories: InjectedMemoryEntry[]
-  prompts?: InjectionPromptEntry[]
-  // Track injection attempts, not just successes
-  promptCount?: number        // Total prompts in this session
-  injectionCount?: number     // Prompts that got memories injected
-  lastStatus?: InjectionStatus // Status of last injection attempt
-}
+export type {
+  BaseRecord,
+  CommandRecord,
+  DiscoveryRecord,
+  ErrorRecord,
+  ExclusionReason,
+  HybridSearchResult,
+  InjectedMemoryEntry,
+  InjectionPromptEntry,
+  InjectionSessionRecord,
+  InjectionStatus,
+  MemoryRecord,
+  NearMissRecord,
+  ProcedureRecord,
+  RecordScope,
+  RecordType,
+  ScoredRecord,
+  SearchResult,
+  WarningRecord,
+  WarningSeverity
+} from '../../shared/types.js'
 
 export interface HybridSearchParamsBase {
   query: string
@@ -166,32 +69,6 @@ export type HybridSearchParamsWithoutDiagnostic = HybridSearchParamsBase & {
 export type HybridSearchParams =
   | HybridSearchParamsWithDiagnostic
   | HybridSearchParamsWithoutDiagnostic
-
-export interface HybridSearchResult {
-  record: MemoryRecord
-  score: number
-  similarity: number
-  keywordMatch: boolean
-}
-
-export type ScoredRecord = HybridSearchResult
-
-export interface ExclusionReason {
-  reason: 'score_below_threshold' | 'similarity_below_threshold' | 'semantic_only_score_below_threshold'
-    | 'mmr_diversity_penalty' | 'exceeded_max_records' | 'exceeded_token_budget'
-  threshold: number
-  actual: number
-  gap: number
-  similarTo?: string
-  similarityScore?: number
-  rank?: number
-  projectedTokens?: number
-}
-
-export interface NearMissRecord {
-  record: ScoredRecord
-  exclusionReasons: ExclusionReason[]
-}
 
 export interface DiagnosticSearchResults {
   qualified: ScoredRecord[]

@@ -3,26 +3,9 @@ import path from 'path'
 import { homedir } from 'os'
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
 import { sanitizeRunId } from './shared.js'
-import { type RecordType } from './types.js'
+import type { ExtractionRecordSummary, ExtractionRun, RecordType } from '../../shared/types.js'
 
-export interface ExtractionRecordSummary {
-  id: string
-  type: RecordType
-  summary: string
-  timestamp?: number
-}
-
-export interface ExtractionRun {
-  runId: string
-  sessionId: string
-  transcriptPath: string
-  timestamp: number
-  recordCount: number
-  parseErrorCount: number
-  extractedRecordIds: string[]
-  extractedRecords?: ExtractionRecordSummary[]
-  duration: number
-}
+export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
 
 const EXTRACTIONS_DIR = path.join(homedir(), '.claude-memory', 'extractions')
 const DEFAULT_DAYS_TO_KEEP = 1

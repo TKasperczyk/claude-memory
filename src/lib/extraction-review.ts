@@ -9,26 +9,9 @@ import { clampScore, coerceReviewIssue, parseOverallAccuracy } from './review-co
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
 import { loadSettings } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
+import type { ExtractionReview, ExtractionReviewIssue } from '../../shared/types.js'
 
-export interface ExtractionReviewIssue {
-  recordId?: string
-  type: 'inaccurate' | 'partial' | 'hallucinated' | 'missed' | 'duplicate'
-  severity: 'critical' | 'major' | 'minor'
-  description: string
-  evidence: string
-  suggestedFix?: string
-}
-
-export interface ExtractionReview {
-  runId: string
-  reviewedAt: number
-  overallAccuracy: 'good' | 'acceptable' | 'poor'
-  accuracyScore: number
-  issues: ExtractionReviewIssue[]
-  summary: string
-  model: string
-  durationMs: number
-}
+export type { ExtractionReview, ExtractionReviewIssue } from '../../shared/types.js'
 
 const REVIEW_MODEL = 'claude-opus-4-5-20251101'
 const REVIEW_TOOL_NAME = 'emit_review'

@@ -3,25 +3,9 @@ import path from 'path'
 import { SKIP_MARKER, getCommandFilePath } from './claude-commands.js'
 import { readFileIfExists } from './shared.js'
 import { isPlainObject } from './parsing.js'
+import type { CommandStatus, HookEvent, HookStatus, InstallationStatus } from '../../shared/types.js'
 
-export interface InstallationStatus {
-  hooks: Record<HookEvent, HookStatus>
-  commands: Record<string, CommandStatus>
-}
-
-export interface HookStatus {
-  installed: boolean
-  configured: string | null
-  expected: string
-}
-
-export interface CommandStatus {
-  installed: boolean
-  modified: boolean
-  path: string
-}
-
-export type HookEvent = keyof typeof HOOK_SCRIPTS
+export type { CommandStatus, HookEvent, HookStatus, InstallationStatus } from '../../shared/types.js'
 
 type HookDefinition = {
   script: string
@@ -48,11 +32,11 @@ export class ClaudeSettingsError extends Error {
 
 const CLAUDE_HOOK_TIMEOUT_SECONDS = 5
 
-const HOOK_SCRIPTS = {
+const HOOK_SCRIPTS: Record<HookEvent, string> = {
   UserPromptSubmit: 'pre-prompt.js',
   SessionEnd: 'post-session.js',
   PreCompact: 'post-session.js'
-} as const
+}
 
 const MEMORY_COMMAND_CONTENT = `---
 description: Show injected prior knowledge from this session

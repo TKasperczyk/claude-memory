@@ -8,32 +8,9 @@ import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { clampScore, parseInjectionVerdict, parseOverallRelevance } from './review-coercion.js'
 import { DEFAULT_CONFIG, type Config, type InjectedMemoryEntry, type MemoryRecord } from './types.js'
+import type { InjectedMemoryVerdict, InjectionReview, MissedMemory } from '../../shared/types.js'
 
-export interface InjectedMemoryVerdict {
-  id: string
-  snippet: string
-  verdict: 'relevant' | 'partially_relevant' | 'irrelevant' | 'unknown'
-  reason: string
-}
-
-export interface MissedMemory {
-  id: string
-  snippet: string
-  reason: string
-}
-
-export interface InjectionReview {
-  sessionId: string
-  prompt: string
-  reviewedAt: number
-  overallRelevance: 'excellent' | 'good' | 'mixed' | 'poor'
-  relevanceScore: number
-  injectedVerdicts: InjectedMemoryVerdict[]
-  missedMemories: MissedMemory[]
-  summary: string
-  model: string
-  durationMs: number
-}
+export type { InjectedMemoryVerdict, InjectionReview, MissedMemory } from '../../shared/types.js'
 
 const REVIEW_MODEL = 'claude-opus-4-5-20251101'
 const REVIEW_TOOL_NAME = 'emit_injection_review'

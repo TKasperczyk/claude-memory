@@ -3,58 +3,9 @@ import path from 'path'
 import { homedir } from 'os'
 import { isPlainObject } from './parsing.js'
 import { SIMILARITY_THRESHOLDS } from './types.js'
+import type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
 
-export interface RetrievalSettings {
-  minSemanticSimilarity: number
-  minScore: number
-  minSemanticOnlyScore: number
-  maxRecords: number
-  maxTokens: number
-  mmrLambda: number
-  usageRatioWeight: number
-}
-
-export interface MaintenanceSettings {
-  // Stale/Age
-  staleDays: number
-  discoveryMaxAgeDays: number
-  // Low Usage
-  lowUsageMinRetrievals: number
-  lowUsageRatioThreshold: number
-  lowUsageHighRetrievalMin: number
-  // Consolidation
-  consolidationSearchLimit: number
-  consolidationMaxClusterSize: number
-  consolidationThreshold: number
-  consolidationTextSimilarityRatio: number
-  // Conflict Resolution
-  conflictSimilarityThreshold: number
-  conflictCheckBatchSize: number
-  // Contradiction (legacy)
-  contradictionSimilarityThreshold: number
-  contradictionSearchLimit: number
-  contradictionBatchSize: number
-  // Global Promotion
-  globalPromotionBatchSize: number
-  globalPromotionRecheckDays: number
-  globalPromotionMinSuccessCount: number
-  globalPromotionMinUsageRatio: number
-  globalPromotionMinRetrievalsForUsageRatio: number
-  // Warning Synthesis
-  warningClusterSimilarityThreshold: number
-  warningClusterLimit: number
-  warningSynthesisMinFailures: number
-  warningSynthesisBatchSize: number
-  warningSynthesisRecheckDays: number
-  // Procedure
-  procedureStepCheckCount: number
-  // Similarity thresholds
-  extractionDedupThreshold: number
-  reviewSimilarThreshold: number
-  reviewDuplicateWarningThreshold: number
-}
-
-export type Settings = RetrievalSettings & MaintenanceSettings
+export type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
 
 const SETTINGS_DIR = path.join(homedir(), '.claude-memory')
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json')

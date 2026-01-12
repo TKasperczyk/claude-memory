@@ -16,6 +16,7 @@ import {
   type WarningRecord,
   type WarningSeverity
 } from './types.js'
+import type { MaintenanceCandidateGroup, MaintenanceCandidateRecord } from '../../shared/types.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { embed } from './embed.js'
 import { buildEmbeddingInput, buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
@@ -30,32 +31,16 @@ import {
   truncateSnippet
 } from './shared.js'
 
-const STALE_DAYS = 90
-const DISCOVERY_MAX_AGE_DAYS = 180
+export type { MaintenanceCandidateGroup, MaintenanceCandidateRecord } from '../../shared/types.js'
+
 const QUERY_PAGE_SIZE = 500
-const PROCEDURE_STEP_CHECK_COUNT = 3
-const CONSOLIDATION_SEARCH_LIMIT = 12
-const CONSOLIDATION_MAX_CLUSTER_SIZE = 8
-const LOW_USAGE_MIN_RETRIEVALS = 5
-const LOW_USAGE_RATIO_THRESHOLD = 0.1
-const LOW_USAGE_HIGH_RETRIEVAL_MIN = 10
-const CONTRADICTION_SIMILARITY_THRESHOLD = 0.75
-const CONTRADICTION_SEARCH_LIMIT = 8
 const GENERALIZATION_MAX_TOKENS = 800
-const CONTRADICTION_BATCH_SIZE = 15
 const CONTRADICTION_MAX_TOKENS = 600
-const CONFLICT_SIMILARITY_THRESHOLD = 0.85
-const CONFLICT_CHECK_BATCH_SIZE = 10
 const CONFLICT_ADJUDICATION_MAX_TOKENS = 600
 const CONFLICT_ADJUDICATION_MODEL = 'claude-haiku-4-5-20251001'
 const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
-const GLOBAL_PROMOTION_BATCH_SIZE = 20
 const GLOBAL_PROMOTION_MAX_TOKENS = 400
 export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
-const GLOBAL_PROMOTION_RECHECK_DAYS = 30
-const GLOBAL_PROMOTION_MIN_SUCCESS_COUNT = 2
-const GLOBAL_PROMOTION_MIN_USAGE_RATIO = 0.3
-const GLOBAL_PROMOTION_MIN_RETRIEVALS_FOR_USAGE_RATIO = 3
 function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
   return settings ?? loadSettings()
 }
@@ -249,21 +234,6 @@ interface GlobalPromotionResult {
   shouldPromote: boolean
   confidence: 'high' | 'medium' | 'low'
   reason?: string
-}
-
-export interface MaintenanceCandidateRecord {
-  id: string
-  type: RecordType
-  snippet: string
-  reason: string
-  details?: Record<string, number | string | boolean>
-}
-
-export interface MaintenanceCandidateGroup {
-  id: string
-  label: string
-  reason?: string
-  records: MaintenanceCandidateRecord[]
 }
 
 interface ConsolidationClusterMember {

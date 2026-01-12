@@ -13,10 +13,57 @@ import {
 
 const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
 const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure|warning):/i
+const LOCK_RETRY_DELAY_MS = 25
+const LOCK_MAX_WAIT_MS = 1000
+const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4))
 
 function getSessionTrackingPath(sessionId: string): string {
   const safeId = sanitizeSessionId(sessionId)
   return path.join(SESSIONS_DIR, `${safeId}.json`)
+}
+
+function getSessionLockPath(sessionId: string): string {
+  return `${getSessionTrackingPath(sessionId)}.lock`
+}
+
+function sleep(ms: number): void {
+  Atomics.wait(LOCK_SLEEP, 0, 0, ms)
+}
+
+function withSessionLock<T>(sessionId: string, action: () => T): T {
+  const lockPath = getSessionLockPath(sessionId)
+  const start = Date.now()
+  let fd: number | null = null
+
+  while (fd === null) {
+    try {
+      fd = fs.openSync(lockPath, 'wx')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'EEXIST') {
+        throw error
+      }
+      if (Date.now() - start >= LOCK_MAX_WAIT_MS) {
+        throw new Error(`Timed out waiting for session lock: ${lockPath}`)
+      }
+      sleep(LOCK_RETRY_DELAY_MS)
+    }
+  }
+
+  try {
+    return action()
+  } finally {
+    try {
+      fs.closeSync(fd)
+    } catch {
+      // Ignore close errors
+    }
+    try {
+      fs.unlinkSync(lockPath)
+    } catch {
+      // Ignore unlink errors
+    }
+  }
 }
 
 export function loadSessionTracking(sessionId: string): InjectionSessionRecord | null {
@@ -54,32 +101,34 @@ export function appendSessionTracking(
   if (typeof prompt === 'string') {
     entries = entries.map(e => ({ ...e, prompt }))
   }
-  const existing = loadSessionTracking(sessionId)
-  const now = Date.now()
+  return withSessionLock(sessionId, () => {
+    const existing = loadSessionTracking(sessionId)
+    const now = Date.now()
 
-  const prevPromptCount = existing?.promptCount ?? existing?.prompts?.length ?? 0
-  const prevInjectionCount = existing?.injectionCount ?? countPromptInjections(existing?.prompts)
-  const didInject = status === 'injected' && entries.length > 0
-  const promptEntry: InjectionPromptEntry = {
-    text: typeof prompt === 'string' ? prompt : '',
-    timestamp: now,
-    status,
-    memoryCount: entries.length
-  }
+    const prevPromptCount = existing?.promptCount ?? existing?.prompts?.length ?? 0
+    const prevInjectionCount = existing?.injectionCount ?? countPromptInjections(existing?.prompts)
+    const didInject = status === 'injected' && entries.length > 0
+    const promptEntry: InjectionPromptEntry = {
+      text: typeof prompt === 'string' ? prompt : '',
+      timestamp: now,
+      status,
+      memoryCount: entries.length
+    }
 
-  const record: InjectionSessionRecord = {
-    sessionId,
-    createdAt: existing?.createdAt ?? now,
-    lastActivity: now,
-    cwd: cwd ?? existing?.cwd,
-    memories: [...(existing?.memories ?? []), ...entries],
-    prompts: [...(existing?.prompts ?? []), promptEntry],
-    promptCount: prevPromptCount + 1,
-    injectionCount: prevInjectionCount + (didInject ? 1 : 0),
-    lastStatus: status
-  }
-  saveSessionTracking(record)
-  return record
+    const record: InjectionSessionRecord = {
+      sessionId,
+      createdAt: existing?.createdAt ?? now,
+      lastActivity: now,
+      cwd: cwd ?? existing?.cwd,
+      memories: [...(existing?.memories ?? []), ...entries],
+      prompts: [...(existing?.prompts ?? []), promptEntry],
+      promptCount: prevPromptCount + 1,
+      injectionCount: prevInjectionCount + (didInject ? 1 : 0),
+      lastStatus: status
+    }
+    saveSessionTracking(record)
+    return record
+  })
 }
 
 export function listAllSessions(): InjectionSessionRecord[] {
