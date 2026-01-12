@@ -6,7 +6,8 @@ import { escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './mil
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { getSchemaDescription } from './record-schema.js'
 import { clampScore, coerceReviewIssue, parseOverallAccuracy } from './review-coercion.js'
-import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
+import { formatSimilarRecord } from './review-formatters.js'
+import { truncateWithTail } from './shared.js'
 import { loadSettings } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import type { ExtractionReview, ExtractionReviewIssue } from '../../shared/types.js'
@@ -330,19 +331,6 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
         severity: record.severity,
         sourceRecordIds: record.sourceRecordIds
       }
-  }
-}
-
-function formatSimilarRecord(record: MemoryRecord, similarity: number): Record<string, unknown> {
-  const summary = truncateSnippet(buildRecordSnippet(record), 160)
-  return {
-    id: record.id,
-    type: record.type,
-    similarity: Number(similarity.toFixed(3)),
-    summary,
-    project: record.project,
-    domain: record.domain,
-    scope: record.scope
   }
 }
 

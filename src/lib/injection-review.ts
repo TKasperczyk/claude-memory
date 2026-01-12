@@ -5,6 +5,7 @@ import { embedBatch } from './embed.js'
 import { buildFilter, escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
+import { formatSimilarRecord } from './review-formatters.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { clampScore, coerceInjectedVerdict, coerceMissedMemory, parseOverallRelevance } from './review-coercion.js'
 import { DEFAULT_CONFIG, type Config, type InjectedMemoryEntry, type MemoryRecord } from './types.js'
@@ -370,19 +371,6 @@ ${JSON.stringify(injectedPayload, null, 2)}
 Similar non-injected memories (JSON):
 ${JSON.stringify(similarPayload, null, 2)}
 `
-}
-
-function formatSimilarRecord(record: MemoryRecord, similarity: number): Record<string, unknown> {
-  const summary = truncateSnippet(buildRecordSnippet(record), 160)
-  return {
-    id: record.id,
-    type: record.type,
-    similarity: Number(similarity.toFixed(3)),
-    summary,
-    project: record.project,
-    domain: record.domain,
-    scope: record.scope
-  }
 }
 
 function normalizeInjectedVerdicts(
