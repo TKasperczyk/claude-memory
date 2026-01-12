@@ -37,7 +37,15 @@ import type { MemoryRecord, NearMissRecord, RecordType, Settings } from '../../s
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
 import { reviewExtraction } from '../../src/lib/extraction-review.js'
 import { reviewInjection } from '../../src/lib/injection-review.js'
-import { getInjectionReview, getReview, saveInjectionReview, saveReview } from '../../src/lib/review-storage.js'
+import { reviewMaintenanceResult } from '../../src/lib/maintenance-review.js'
+import {
+  getInjectionReview,
+  getMaintenanceReview,
+  getReview,
+  saveInjectionReview,
+  saveMaintenanceReview,
+  saveReview
+} from '../../src/lib/review-storage.js'
 import {
   ClaudeSettingsError,
   getHookStatus,
@@ -837,6 +845,54 @@ app.post('/api/extractions/:runId/review', async (req, res) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error('Extraction review error:', error)
     res.status(500).json({ error: message || 'Failed to run extraction review' })
+  }
+})
+
+// Get cached maintenance review if available
+app.get('/api/maintenance/:operation/review/:resultId', (req, res) => {
+  try {
+    const { operation, resultId } = req.params
+    const review = getMaintenanceReview(resultId, operation)
+    if (!review) {
+      return res.status(404).json({ error: 'Review not found' })
+    }
+    res.json(review)
+  } catch (error) {
+    console.error('Maintenance review error:', error)
+    res.status(500).json({ error: 'Failed to get maintenance review' })
+  }
+})
+
+// Trigger Opus review for a maintenance result
+app.post('/api/maintenance/:operation/review', async (req, res) => {
+  try {
+    const { operation } = req.params
+    const body = req.body
+
+    if (!body || !body.result) {
+      return res.status(400).json({ error: 'Result required' })
+    }
+
+    const { result } = body
+
+    if (!result || !result.operation) {
+      return res.status(400).json({ error: 'Result required' })
+    }
+
+    if (result.operation !== operation) {
+      return res.status(400).json({
+        error: `Operation mismatch: URL says '${operation}' but result has '${result.operation}'`
+      })
+    }
+
+    await ensureInitialized()
+    const review = await reviewMaintenanceResult(result, CONFIG)
+    saveMaintenanceReview(review)
+    res.json(review)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('Maintenance review error:', error)
+    res.status(500).json({ error: message || 'Failed to run maintenance review' })
   }
 })
 
