@@ -12,6 +12,7 @@ import {
   fetchMaintenanceReview,
   runMaintenance,
   runMaintenanceReview,
+  updateSetting,
   type ConflictVerdict,
   type MaintenanceAction,
   type MaintenanceActionType,
@@ -19,7 +20,8 @@ import {
   type MaintenanceCandidateRecord,
   type MaintenanceOperationInfo,
   type MaintenanceReview,
-  type OperationResult
+  type OperationResult,
+  type Settings
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -36,6 +38,8 @@ type ConfirmState =
 type BulkProgressState = 'pending' | 'running' | 'completed'
 type ApplyStatus = { state: 'loading' | 'success' | 'error'; message?: string }
 type ApplyConfirmState = { key: string; action: MaintenanceAction } | null
+type SettingsRecommendationItem = MaintenanceReview['settingsRecommendations'][number]
+type SettingsApplyConfirmState = { key: string; recommendation: SettingsRecommendationItem } | null
 
 const ACTION_STYLES: Record<MaintenanceActionType, { badge: string; dot: string; label: string }> = {
   deprecate: {
@@ -170,6 +174,15 @@ function buildActionKey(operation: MaintenanceOperation, action: MaintenanceActi
   const targetFile = typeof action.details?.targetFile === 'string' ? action.details?.targetFile : ''
   const actionType = typeof action.details?.action === 'string' ? action.details?.action : ''
   return `${operation}:${action.recordId ?? 'unknown'}:${actionType}:${targetFile}:${index}`
+}
+
+function buildSettingsRecommendationKey(
+  operation: MaintenanceOperation,
+  recommendation: SettingsRecommendationItem,
+  index: number
+): string {
+  const suggestedValue = recommendation.suggestedValue === undefined ? 'none' : String(recommendation.suggestedValue)
+  return `${operation}:${recommendation.setting}:${suggestedValue}:${index}`
 }
 
 async function buildResultId(result: OperationResult): Promise<string> {
@@ -715,14 +728,23 @@ function ReviewSkeleton() {
 function MaintenanceReviewDisplay({
   result,
   review,
-  onSelect
+  onSelect,
+  onApplySetting,
+  settingsApplyStatuses,
+  settingsAppliedValues,
+  applyDisabled = false
 }: {
   result: OperationResult
   review: MaintenanceReview
   onSelect?: (id: string) => void
+  onApplySetting?: (key: string, recommendation: SettingsRecommendationItem) => void
+  settingsApplyStatuses?: Record<string, ApplyStatus>
+  settingsAppliedValues?: Record<string, string | number>
+  applyDisabled?: boolean
 }) {
   const { copy, isCopied } = useCopyToClipboard(2000)
   const verdictGroups: Record<string, typeof review.actionVerdicts> = {}
+  const operationKey = result.operation as MaintenanceOperation
 
   for (const verdict of review.actionVerdicts) {
     verdictGroups[verdict.verdict] = verdictGroups[verdict.verdict] || []
@@ -847,6 +869,14 @@ function MaintenanceReviewDisplay({
           ) : (
             review.settingsRecommendations.map((rec, index) => {
               const style = SETTINGS_RECOMMENDATION_STYLES[rec.recommendation]
+              const hasSuggestion = rec.suggestedValue !== undefined
+              const applyKey = hasSuggestion
+                ? buildSettingsRecommendationKey(operationKey, rec, index)
+                : ''
+              const status = applyKey ? settingsApplyStatuses?.[applyKey] : undefined
+              const isApplying = status?.state === 'loading'
+              const isApplied = status?.state === 'success'
+              const currentValue = settingsAppliedValues?.[rec.setting] ?? rec.currentValue
               return (
                 <div key={`${rec.setting}-${index}`} className="rounded-md border border-border bg-secondary/30 p-3 space-y-1">
                   <div className="flex flex-wrap items-center gap-2 mb-1">
@@ -854,9 +884,27 @@ function MaintenanceReviewDisplay({
                       {style.label}
                     </span>
                     <span className="text-[11px] text-muted-foreground font-mono">{rec.setting}</span>
+                    {isApplied && (
+                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300">
+                        <Check className="w-3 h-3" aria-hidden="true" />
+                        Applied
+                      </span>
+                    )}
+                    {hasSuggestion && (
+                      <span className="ml-auto flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onApplySetting?.(applyKey, rec)}
+                          disabled={applyDisabled || isApplying || isApplied}
+                          className="flex items-center gap-2 h-7 px-2.5 rounded-md border border-border bg-background text-[11px] uppercase tracking-wide disabled:opacity-50 hover:bg-secondary/60 transition-base"
+                        >
+                          {isApplying ? <ButtonSpinner size="xs" /> : 'Apply'}
+                        </button>
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Current value <span className="font-mono text-foreground">{rec.currentValue}</span>
+                    Current value <span className="font-mono text-foreground">{currentValue}</span>
                   </div>
                   {rec.suggestedValue !== undefined && (
                     <div className="text-xs text-muted-foreground">
@@ -864,6 +912,11 @@ function MaintenanceReviewDisplay({
                     </div>
                   )}
                   <div className="text-xs text-muted-foreground">{rec.reason}</div>
+                  {status?.message && (
+                    <div className={`text-xs ${status.state === 'error' ? 'text-destructive' : 'text-emerald-300'}`}>
+                      {status.message}
+                    </div>
+                  )}
                 </div>
               )
             })
@@ -879,13 +932,19 @@ function ResultPanel({
   onSelect,
   onApply,
   applyStatuses,
-  applyDisabled = false
+  applyDisabled = false,
+  onApplySetting,
+  settingsApplyStatuses,
+  settingsAppliedValues
 }: {
   result: OperationResult
   onSelect?: (id: string) => void
   onApply?: (key: string, action: MaintenanceAction) => void
   applyStatuses?: Record<string, ApplyStatus>
   applyDisabled?: boolean
+  onApplySetting?: (key: string, recommendation: SettingsRecommendationItem) => void
+  settingsApplyStatuses?: Record<string, ApplyStatus>
+  settingsAppliedValues?: Record<string, string | number>
 }) {
   const summaryEntries = Object.entries(result.summary)
   const candidateGroups = result.candidates ?? []
@@ -1001,7 +1060,15 @@ function ResultPanel({
       )}
 
       {review ? (
-        <MaintenanceReviewDisplay result={result} review={review} onSelect={onSelect} />
+        <MaintenanceReviewDisplay
+          result={result}
+          review={review}
+          onSelect={onSelect}
+          onApplySetting={onApplySetting}
+          settingsApplyStatuses={settingsApplyStatuses}
+          settingsAppliedValues={settingsAppliedValues}
+          applyDisabled={applyDisabled}
+        />
       ) : (
         <div className="rounded-lg border border-border bg-background/40 p-4">
           {isReviewPending ? (
@@ -1055,6 +1122,10 @@ export default function Maintenance() {
   const [applyStatuses, setApplyStatuses] = useState<Record<string, ApplyStatus>>({})
   const [applyError, setApplyError] = useState<string | null>(null)
   const [applyConflict, setApplyConflict] = useState(false)
+  const [settingsApplyConfirm, setSettingsApplyConfirm] = useState<SettingsApplyConfirmState>(null)
+  const [settingsApplyStatuses, setSettingsApplyStatuses] = useState<Record<string, ApplyStatus>>({})
+  const [settingsAppliedValues, setSettingsAppliedValues] = useState<Record<string, string | number>>({})
+  const [settingsApplyError, setSettingsApplyError] = useState<string | null>(null)
   const {
     selectedId,
     selected,
@@ -1070,6 +1141,11 @@ export default function Maintenance() {
   const applyPayload = activeApply ? getSuggestionPayload(activeApply.action) : null
   const applyStats = applyPayload ? getDiffStats(applyPayload.diff) : null
   const applyBlocked = Boolean(applyStats?.hasDeletion)
+  const activeSettingsApply = settingsApplyConfirm
+  const activeSettingsApplyKey = activeSettingsApply?.key ?? ''
+  const settingsApplyLoading = activeSettingsApplyKey
+    ? settingsApplyStatuses[activeSettingsApplyKey]?.state === 'loading'
+    : false
 
   useEffect(() => {
     if (operations.length === 0) return
@@ -1192,6 +1268,12 @@ export default function Maintenance() {
     setApplyConflict(false)
   }
 
+  const requestSettingApply = (key: string, recommendation: SettingsRecommendationItem) => {
+    if (recommendation.suggestedValue === undefined) return
+    setSettingsApplyConfirm({ key, recommendation })
+    setSettingsApplyError(null)
+  }
+
   const handleApplySuggestion = async (overwrite = false) => {
     if (!applyConfirm) return
     const currentApply = applyConfirm
@@ -1228,6 +1310,46 @@ export default function Maintenance() {
         [currentApply.key]: { state: 'error', message }
       }))
       setApplyError(message)
+    }
+  }
+
+  const handleApplySetting = async () => {
+    if (!settingsApplyConfirm) return
+    const currentApply = settingsApplyConfirm
+    const { recommendation } = currentApply
+    if (recommendation.suggestedValue === undefined) {
+      setSettingsApplyError('Suggested value is missing.')
+      return
+    }
+
+    setSettingsApplyError(null)
+    setSettingsApplyStatuses(prev => ({
+      ...prev,
+      [currentApply.key]: { state: 'loading' }
+    }))
+
+    try {
+      const updatedSettings = await updateSetting(recommendation.setting, recommendation.suggestedValue)
+      const updatedValue = updatedSettings[recommendation.setting as keyof Settings]
+      const resolvedValue = (typeof updatedValue === 'string' || typeof updatedValue === 'number')
+        ? updatedValue
+        : recommendation.suggestedValue
+      setSettingsAppliedValues(prev => ({
+        ...prev,
+        [recommendation.setting]: resolvedValue
+      }))
+      setSettingsApplyStatuses(prev => ({
+        ...prev,
+        [currentApply.key]: { state: 'success', message: `Updated to ${resolvedValue}.` }
+      }))
+      setSettingsApplyConfirm(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update setting'
+      setSettingsApplyStatuses(prev => ({
+        ...prev,
+        [currentApply.key]: { state: 'error', message }
+      }))
+      setSettingsApplyError(message)
     }
   }
 
@@ -1432,6 +1554,9 @@ export default function Maintenance() {
                   onSelect={selectMemory}
                   onApply={requestApply}
                   applyStatuses={applyStatuses}
+                  onApplySetting={requestSettingApply}
+                  settingsApplyStatuses={settingsApplyStatuses}
+                  settingsAppliedValues={settingsAppliedValues}
                   applyDisabled={isDisabled}
                 />
               )}
@@ -1572,6 +1697,76 @@ export default function Maintenance() {
                   className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
                 >
                   {applyLoading ? (
+                    <>
+                      <ButtonSpinner size="md" />
+                      Applying...
+                    </>
+                  ) : (
+                    'Apply'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {settingsApplyConfirm && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/60 panel-backdrop open"
+            onClick={() => {
+              if (settingsApplyLoading) return
+              setSettingsApplyConfirm(null)
+              setSettingsApplyError(null)
+            }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center px-4">
+            <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4">
+              <div>
+                <h2 className="text-lg font-semibold">Apply setting change</h2>
+                <p className="text-sm text-muted-foreground">
+                  Confirm the update before applying Opus's recommendation.
+                </p>
+              </div>
+              {(() => {
+                const recommendation = settingsApplyConfirm.recommendation
+                const currentValue = settingsAppliedValues[recommendation.setting] ?? recommendation.currentValue
+                return (
+                  <div className="space-y-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs uppercase tracking-wide text-muted-foreground">Setting</span>
+                      <span className="font-mono text-xs text-foreground">{recommendation.setting}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Current value <span className="font-mono text-foreground">{currentValue}</span>
+                      <span className="mx-1">-&gt;</span>
+                      New value <span className="font-mono text-foreground">{recommendation.suggestedValue}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">{recommendation.reason}</div>
+                  </div>
+                )
+              })()}
+              {settingsApplyError && (
+                <div className="text-sm text-destructive">{settingsApplyError}</div>
+              )}
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => {
+                    setSettingsApplyConfirm(null)
+                    setSettingsApplyError(null)
+                  }}
+                  disabled={settingsApplyLoading}
+                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleApplySetting}
+                  disabled={settingsApplyLoading}
+                  className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
+                >
+                  {settingsApplyLoading ? (
                     <>
                       <ButtonSpinner size="md" />
                       Applying...
