@@ -661,7 +661,9 @@ export default function Settings() {
         <SettingsPanel
           fields={RETRIEVAL_FIELDS}
           variant="full"
-          collapsible={false}
+          collapsible
+          size="sm"
+          defaultOpen
           title="Retrieval settings"
           description="Control similarity filters and injected context limits."
           values={retrievalForm}
