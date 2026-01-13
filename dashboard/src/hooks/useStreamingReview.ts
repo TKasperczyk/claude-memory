@@ -45,6 +45,7 @@ export function useStreamingReview<TResult>(
   const mountedRef = useRef(true)
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
       mountedRef.current = false
       abortRef.current?.abort()
@@ -159,7 +160,11 @@ export function useStreamingReview<TResult>(
           }
 
           if (parsed.thinking) {
-            setThinking(prev => (isActive() ? prev + parsed.thinking : prev))
+            const chunk = parsed.thinking
+            setThinking(prev => {
+              if (!isActive()) return prev
+              return prev + chunk
+            })
           }
 
           if (parsed.result) {
