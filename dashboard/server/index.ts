@@ -36,9 +36,9 @@ import {
 } from '../../src/lib/settings.js'
 import type { MemoryRecord, NearMissRecord, RecordType, Settings } from '../../shared/types.js'
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
-import { reviewExtraction } from '../../src/lib/extraction-review.js'
-import { reviewInjection } from '../../src/lib/injection-review.js'
-import { reviewMaintenanceResult } from '../../src/lib/maintenance-review.js'
+import { reviewExtraction, reviewExtractionStreaming } from '../../src/lib/extraction-review.js'
+import { reviewInjection, reviewInjectionStreaming } from '../../src/lib/injection-review.js'
+import { reviewMaintenanceResult, reviewMaintenanceResultStreaming } from '../../src/lib/maintenance-review.js'
 import {
   getInjectionReview,
   getMaintenanceReview,
@@ -775,6 +775,49 @@ app.post('/api/sessions/:sessionId/review', async (req, res) => {
       return res.status(404).json({ error: 'Session not found' })
     }
 
+    const wantsStream = req.query.stream === 'true'
+    if (wantsStream) {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.flushHeaders()
+
+      const abortController = new AbortController()
+      req.on('close', () => {
+        abortController.abort()
+      })
+
+      const send = (payload: unknown) => {
+        if (abortController.signal.aborted || res.writableEnded) return
+        res.write(`data: ${JSON.stringify(payload)}\n\n`)
+      }
+      const onThinking = (chunk: string) => {
+        if (!chunk || abortController.signal.aborted || res.writableEnded) return
+        send({ thinking: chunk })
+      }
+
+      try {
+        await ensureInitialized()
+        const review = await reviewInjectionStreaming(sessionId, CONFIG, onThinking, abortController.signal)
+        saveInjectionReview(review)
+        send({ result: review })
+        if (!abortController.signal.aborted && !res.writableEnded) {
+          res.write('data: [DONE]\n\n')
+        }
+      } catch (error) {
+        if (abortController.signal.aborted) return
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('Injection review error:', error)
+        send({ error: message || 'Failed to run injection review' })
+        if (!abortController.signal.aborted && !res.writableEnded) {
+          res.write('data: [DONE]\n\n')
+        }
+      } finally {
+        res.end()
+      }
+      return
+    }
+
     await ensureInitialized()
     const review = await reviewInjection(sessionId, CONFIG)
     saveInjectionReview(review)
@@ -869,6 +912,49 @@ app.post('/api/extractions/:runId/review', async (req, res) => {
       return res.status(404).json({ error: 'Extraction run not found' })
     }
 
+    const wantsStream = req.query.stream === 'true'
+    if (wantsStream) {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.flushHeaders()
+
+      const abortController = new AbortController()
+      req.on('close', () => {
+        abortController.abort()
+      })
+
+      const send = (payload: unknown) => {
+        if (abortController.signal.aborted || res.writableEnded) return
+        res.write(`data: ${JSON.stringify(payload)}\n\n`)
+      }
+      const onThinking = (chunk: string) => {
+        if (!chunk || abortController.signal.aborted || res.writableEnded) return
+        send({ thinking: chunk })
+      }
+
+      try {
+        await ensureInitialized()
+        const review = await reviewExtractionStreaming(runId, CONFIG, onThinking, abortController.signal)
+        saveReview(review)
+        send({ result: review })
+        if (!abortController.signal.aborted && !res.writableEnded) {
+          res.write('data: [DONE]\n\n')
+        }
+      } catch (error) {
+        if (abortController.signal.aborted) return
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('Extraction review error:', error)
+        send({ error: message || 'Failed to run extraction review' })
+        if (!abortController.signal.aborted && !res.writableEnded) {
+          res.write('data: [DONE]\n\n')
+        }
+      } finally {
+        res.end()
+      }
+      return
+    }
+
     await ensureInitialized()
     const review = await reviewExtraction(runId, CONFIG)
     saveReview(review)
@@ -925,6 +1011,49 @@ app.post('/api/maintenance/:operation/review', async (req, res) => {
       ...result,
       actions: Array.isArray(result.actions) ? result.actions : [],
       candidates: Array.isArray(result.candidates) ? result.candidates : []
+    }
+
+    const wantsStream = req.query.stream === 'true'
+    if (wantsStream) {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.flushHeaders()
+
+      const abortController = new AbortController()
+      req.on('close', () => {
+        abortController.abort()
+      })
+
+      const send = (payload: unknown) => {
+        if (abortController.signal.aborted || res.writableEnded) return
+        res.write(`data: ${JSON.stringify(payload)}\n\n`)
+      }
+      const onThinking = (chunk: string) => {
+        if (!chunk || abortController.signal.aborted || res.writableEnded) return
+        send({ thinking: chunk })
+      }
+
+      try {
+        await ensureInitialized()
+        const review = await reviewMaintenanceResultStreaming(normalizedResult, CONFIG, onThinking, abortController.signal)
+        saveMaintenanceReview(review)
+        send({ result: review })
+        if (!abortController.signal.aborted && !res.writableEnded) {
+          res.write('data: [DONE]\n\n')
+        }
+      } catch (error) {
+        if (abortController.signal.aborted) return
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('Maintenance review error:', error)
+        send({ error: message || 'Failed to run maintenance review' })
+        if (!abortController.signal.aborted && !res.writableEnded) {
+          res.write('data: [DONE]\n\n')
+        }
+      } finally {
+        res.end()
+      }
+      return
     }
 
     await ensureInitialized()

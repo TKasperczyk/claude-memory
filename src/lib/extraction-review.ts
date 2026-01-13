@@ -1,12 +1,12 @@
-import Anthropic from '@anthropic-ai/sdk'
-import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import type Anthropic from '@anthropic-ai/sdk'
 import { embedBatch } from './embed.js'
 import { getExtractionRun } from './extraction-log.js'
 import { escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
-import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { asString, isPlainObject } from './parsing.js'
 import { getSchemaDescription } from './record-schema.js'
 import { clampScore, coerceReviewIssue, parseReviewRating } from './review-coercion.js'
 import { formatSimilarRecord } from './review-formatters.js'
+import { executeReview, executeReviewStreaming, type ThinkingCallback } from './review-framework.js'
 import { truncateWithTail } from './shared.js'
 import { loadSettings } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
@@ -37,38 +37,35 @@ Rules:
 // Schema description is now generated from record-schema.ts
 const EXTRACTION_SCHEMA_DESCRIPTION = `Record types:\n${getSchemaDescription()}\n`
 
-const REVIEW_TOOL: Anthropic.Tool = {
-  name: REVIEW_TOOL_NAME,
-  description: 'Emit an extraction quality review with issues (including duplicates) and an overall rating.',
-  input_schema: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['overallRating', 'accuracyScore', 'issues', 'summary'],
-    properties: {
-      runId: { type: 'string' },
-      reviewedAt: { type: 'number' },
-      overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
-      accuracyScore: { type: 'number' },
-      issues: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['type', 'severity', 'description', 'evidence'],
-          properties: {
-            recordId: { type: 'string' },
-            type: { type: 'string', enum: ['inaccurate', 'partial', 'hallucinated', 'missed', 'duplicate'] },
-            severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
-            description: { type: 'string' },
-            evidence: { type: 'string' },
-            suggestedFix: { type: 'string' }
-          }
+const REVIEW_TOOL_DESCRIPTION = 'Emit an extraction quality review with issues (including duplicates) and an overall rating.'
+const REVIEW_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['overallRating', 'accuracyScore', 'issues', 'summary'],
+  properties: {
+    runId: { type: 'string' },
+    reviewedAt: { type: 'number' },
+    overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
+    accuracyScore: { type: 'number' },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['type', 'severity', 'description', 'evidence'],
+        properties: {
+          recordId: { type: 'string' },
+          type: { type: 'string', enum: ['inaccurate', 'partial', 'hallucinated', 'missed', 'duplicate'] },
+          severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
+          description: { type: 'string' },
+          evidence: { type: 'string' },
+          suggestedFix: { type: 'string' }
         }
-      },
-      summary: { type: 'string' },
-      model: { type: 'string' },
-      durationMs: { type: 'number' }
-    }
+      }
+    },
+    summary: { type: 'string' },
+    model: { type: 'string' },
+    durationMs: { type: 'number' }
   }
 }
 
@@ -113,43 +110,24 @@ export async function reviewExtraction(
     console.error('[claude-memory] Failed to fetch similar memories for review:', error)
   }
 
-  const client = await createAnthropicClient()
-  if (!client) {
-    throw new Error('No authentication available for extraction review. Set ANTHROPIC_API_KEY or run kira login.')
-  }
-
-  const prompt = buildReviewPrompt(run, records, similarMemories, {
-    reviewSimilarThreshold,
-    reviewDuplicateWarningThreshold
-  })
-
-  const response = await client.messages.create({
+  const { payload, reviewedAt, model, durationMs } = await executeReview({
+    run,
+    records,
+    similarMemories,
+    thresholds: { reviewSimilarThreshold, reviewDuplicateWarningThreshold }
+  }, {
+    toolName: REVIEW_TOOL_NAME,
+    toolDescription: REVIEW_TOOL_DESCRIPTION,
+    toolSchema: REVIEW_TOOL_SCHEMA,
+    maxTokens: REVIEW_MAX_TOKENS,
+    systemPrompt: REVIEW_SYSTEM_PROMPT,
     model: REVIEW_MODEL,
-    max_tokens: Math.min(REVIEW_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
-    system: [
-      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: REVIEW_SYSTEM_PROMPT }
-    ],
-    messages: [{ role: 'user', content: prompt }],
-    tools: [REVIEW_TOOL],
-    tool_choice: { type: 'tool', name: REVIEW_TOOL_NAME }
-  })
+    buildPrompt: buildExtractionReviewPrompt,
+    coercePayload: coerceReviewPayload,
+    authErrorMessage: 'No authentication available for extraction review. Set ANTHROPIC_API_KEY or run kira login.',
+    startedAt: startTime
+  }, config)
 
-  const toolInput = response.content.find((block): block is ToolUseBlock =>
-    isToolUseBlock(block) && block.name === REVIEW_TOOL_NAME
-  )?.input
-
-  if (!toolInput) {
-    throw new Error('Review tool call missing in response.')
-  }
-
-  const payload = coerceReviewPayload(toolInput)
-  if (!payload) {
-    throw new Error('Review response invalid or incomplete.')
-  }
-
-  const reviewedAt = Date.now()
   return {
     runId,
     reviewedAt,
@@ -157,8 +135,74 @@ export async function reviewExtraction(
     accuracyScore: payload.accuracyScore,
     issues: payload.issues,
     summary: payload.summary,
+    model,
+    durationMs
+  }
+}
+
+export async function reviewExtractionStreaming(
+  runId: string,
+  config: Config,
+  onThinking: ThinkingCallback,
+  abortSignal?: AbortSignal
+): Promise<ExtractionReview> {
+  const startTime = Date.now()
+  const run = getExtractionRun(runId)
+  if (!run) {
+    throw new Error('Extraction run not found.')
+  }
+
+  const extractedIds = run.extractedRecordIds ?? []
+  if (extractedIds.length === 0) {
+    throw new Error('No extracted record IDs in this run. This may be an older extraction log or a run with only duplicates.')
+  }
+  const records = await fetchRecordsByIds(extractedIds, config, { includeEmbeddings: true })
+  if (records.length === 0) {
+    throw new Error('Could not fetch extracted records from Milvus. They may have been deleted.')
+  }
+
+  const { reviewSimilarThreshold, reviewDuplicateWarningThreshold } = loadSettings()
+
+  let similarMemories: Array<{ record: MemoryRecord; similarity: number }> = []
+  try {
+    const transcriptSegments = collectTranscriptSegments(records)
+    similarMemories = await collectSimilarMemories(
+      transcriptSegments,
+      extractedIds,
+      config,
+      reviewSimilarThreshold
+    )
+  } catch (error) {
+    console.error('[claude-memory] Failed to fetch similar memories for review:', error)
+  }
+
+  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming({
+    run,
+    records,
+    similarMemories,
+    thresholds: { reviewSimilarThreshold, reviewDuplicateWarningThreshold }
+  }, {
+    toolName: REVIEW_TOOL_NAME,
+    toolDescription: REVIEW_TOOL_DESCRIPTION,
+    toolSchema: REVIEW_TOOL_SCHEMA,
+    maxTokens: REVIEW_MAX_TOKENS,
+    systemPrompt: REVIEW_SYSTEM_PROMPT,
     model: REVIEW_MODEL,
-    durationMs: reviewedAt - startTime
+    buildPrompt: buildExtractionReviewPrompt,
+    coercePayload: coerceReviewPayload,
+    authErrorMessage: 'No authentication available for extraction review. Set ANTHROPIC_API_KEY or run kira login.',
+    startedAt: startTime
+  }, config, onThinking, abortSignal)
+
+  return {
+    runId,
+    reviewedAt,
+    overallRating: payload.overallRating,
+    accuracyScore: payload.accuracyScore,
+    issues: payload.issues,
+    summary: payload.summary,
+    model,
+    durationMs
   }
 }
 
@@ -232,12 +276,13 @@ function buildExcludeFilter(excludeIds: string[]): string {
   return parts.join(' && ')
 }
 
-function buildReviewPrompt(
-  run: { runId: string; sessionId: string; transcriptPath: string; recordCount: number; parseErrorCount: number },
-  records: MemoryRecord[],
-  similar: Array<{ record: MemoryRecord; similarity: number }>,
+function buildExtractionReviewPrompt(input: {
+  run: { runId: string; sessionId: string; transcriptPath: string; recordCount: number; parseErrorCount: number }
+  records: MemoryRecord[]
+  similarMemories: Array<{ record: MemoryRecord; similarity: number }>
   thresholds: { reviewSimilarThreshold: number; reviewDuplicateWarningThreshold: number }
-): string {
+}): string {
+  const { run, records, similarMemories, thresholds } = input
   const recordPayload = records.map(formatReviewRecord)
   const transcriptPayload = records.map(record => ({
     recordId: record.id,
@@ -245,8 +290,8 @@ function buildReviewPrompt(
   }))
   const duplicateThreshold = thresholds.reviewDuplicateWarningThreshold
   const similarThreshold = thresholds.reviewSimilarThreshold
-  const potentialDuplicates = similar.filter(entry => entry.similarity >= duplicateThreshold)
-  const relatedMemories = similar.filter(entry => entry.similarity < duplicateThreshold)
+  const potentialDuplicates = similarMemories.filter(entry => entry.similarity >= duplicateThreshold)
+  const relatedMemories = similarMemories.filter(entry => entry.similarity < duplicateThreshold)
   const duplicatePayload = potentialDuplicates.map(entry => formatSimilarRecord(entry.record, entry.similarity))
   const relatedPayload = relatedMemories.map(entry => formatSimilarRecord(entry.record, entry.similarity))
   const duplicatePercent = Math.round(duplicateThreshold * 100)

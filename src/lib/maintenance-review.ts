@@ -1,6 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
 import { createHash } from 'crypto'
-import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { fetchRecordsByIds } from './milvus.js'
 import { loadSettings, type MaintenanceSettings } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
@@ -10,7 +9,8 @@ import {
   coerceSettingsRecommendation,
   parseReviewRating
 } from './review-coercion.js'
-import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { asString, isPlainObject } from './parsing.js'
+import { executeReview, executeReviewStreaming, type ThinkingCallback } from './review-framework.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
 import type { MaintenanceReview, OperationResult, MaintenanceAction, MaintenanceCandidateGroup } from '../../shared/types.js'
 
@@ -78,54 +78,51 @@ Rules:
 - Be concrete and specific in reasons.
 `
 
-const REVIEW_TOOL: Anthropic.Tool = {
-  name: REVIEW_TOOL_NAME,
-  description: 'Emit a maintenance review with action verdicts, settings recommendations, and an overall rating.',
-  input_schema: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['overallRating', 'assessmentScore', 'actionVerdicts', 'settingsRecommendations', 'summary'],
-    properties: {
-      resultId: { type: 'string' },
-      operation: { type: 'string' },
-      dryRun: { type: 'boolean' },
-      reviewedAt: { type: 'number' },
-      overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
-      assessmentScore: { type: 'number' },
-      actionVerdicts: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['action', 'snippet', 'verdict', 'reason'],
-          properties: {
-            recordId: { type: 'string' },
-            action: { type: 'string', enum: ['deprecate', 'update', 'merge', 'promote', 'suggestion'] },
-            snippet: { type: 'string' },
-            verdict: { type: 'string', enum: ['correct', 'questionable', 'incorrect'] },
-            reason: { type: 'string' }
-          }
+const REVIEW_TOOL_DESCRIPTION = 'Emit a maintenance review with action verdicts, settings recommendations, and an overall rating.'
+const REVIEW_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['overallRating', 'assessmentScore', 'actionVerdicts', 'settingsRecommendations', 'summary'],
+  properties: {
+    resultId: { type: 'string' },
+    operation: { type: 'string' },
+    dryRun: { type: 'boolean' },
+    reviewedAt: { type: 'number' },
+    overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
+    assessmentScore: { type: 'number' },
+    actionVerdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['action', 'snippet', 'verdict', 'reason'],
+        properties: {
+          recordId: { type: 'string' },
+          action: { type: 'string', enum: ['deprecate', 'update', 'merge', 'promote', 'suggestion'] },
+          snippet: { type: 'string' },
+          verdict: { type: 'string', enum: ['correct', 'questionable', 'incorrect'] },
+          reason: { type: 'string' }
         }
-      },
-      settingsRecommendations: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['setting', 'currentValue', 'recommendation', 'reason'],
-          properties: {
-            setting: { type: 'string' },
-            currentValue: { type: ['string', 'number'] },
-            recommendation: { type: 'string', enum: ['too_aggressive', 'too_lenient', 'appropriate'] },
-            suggestedValue: { type: ['string', 'number'] },
-            reason: { type: 'string' }
-          }
+      }
+    },
+    settingsRecommendations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['setting', 'currentValue', 'recommendation', 'reason'],
+        properties: {
+          setting: { type: 'string' },
+          currentValue: { type: ['string', 'number'] },
+          recommendation: { type: 'string', enum: ['too_aggressive', 'too_lenient', 'appropriate'] },
+          suggestedValue: { type: ['string', 'number'] },
+          reason: { type: 'string' }
         }
-      },
-      summary: { type: 'string' },
-      model: { type: 'string' },
-      durationMs: { type: 'number' }
-    }
+      }
+    },
+    summary: { type: 'string' },
+    model: { type: 'string' },
+    durationMs: { type: 'number' }
   }
 }
 
@@ -155,43 +152,28 @@ export async function reviewMaintenanceResult(
     }
   }
 
-  const client = await createAnthropicClient()
-  if (!client) {
-    throw new Error('No authentication available for maintenance review. Set ANTHROPIC_API_KEY or run kira login.')
-  }
-
-  const prompt = buildReviewPrompt(result, records, settings)
-
-  const response = await client.messages.create({
+  const { payload, reviewedAt, model, durationMs } = await executeReview({
+    result,
+    records,
+    settings
+  }, {
+    toolName: REVIEW_TOOL_NAME,
+    toolDescription: REVIEW_TOOL_DESCRIPTION,
+    toolSchema: REVIEW_TOOL_SCHEMA,
+    maxTokens: REVIEW_MAX_TOKENS,
+    systemPrompt: REVIEW_SYSTEM_PROMPT,
     model: REVIEW_MODEL,
-    max_tokens: Math.min(REVIEW_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
-    system: [
-      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: REVIEW_SYSTEM_PROMPT }
-    ],
-    messages: [{ role: 'user', content: prompt }],
-    tools: [REVIEW_TOOL],
-    tool_choice: { type: 'tool', name: REVIEW_TOOL_NAME }
-  })
+    buildPrompt: buildMaintenanceReviewPrompt,
+    coercePayload: coerceReviewPayload,
+    authErrorMessage: 'No authentication available for maintenance review. Set ANTHROPIC_API_KEY or run kira login.',
+    startedAt: startTime,
+    onInvalidPayload: toolInput => {
+      const issues = describeReviewPayloadIssues(toolInput)
+      const snapshot = truncateWithTail(safeStringify(toolInput), 2000)
+      console.error('[claude-memory] Maintenance review payload invalid:', { issues, input: snapshot })
+    }
+  }, config)
 
-  const toolInput = response.content.find((block): block is ToolUseBlock =>
-    isToolUseBlock(block) && block.name === REVIEW_TOOL_NAME
-  )?.input
-
-  if (!toolInput) {
-    throw new Error('Review tool call missing in response.')
-  }
-
-  const payload = coerceReviewPayload(toolInput)
-  if (!payload) {
-    const issues = describeReviewPayloadIssues(toolInput)
-    const snapshot = truncateWithTail(safeStringify(toolInput), 2000)
-    console.error('[claude-memory] Maintenance review payload invalid:', { issues, input: snapshot })
-    throw new Error('Review response invalid or incomplete.')
-  }
-
-  const reviewedAt = Date.now()
   return {
     resultId,
     operation: result.operation,
@@ -202,8 +184,65 @@ export async function reviewMaintenanceResult(
     actionVerdicts: payload.actionVerdicts,
     settingsRecommendations: payload.settingsRecommendations,
     summary: payload.summary,
+    model,
+    durationMs
+  }
+}
+
+export async function reviewMaintenanceResultStreaming(
+  result: OperationResult,
+  config: Config,
+  onThinking: ThinkingCallback,
+  abortSignal?: AbortSignal
+): Promise<MaintenanceReview> {
+  const startTime = Date.now()
+  const resultId = buildResultId(result)
+  const settings = loadSettings()
+
+  const recordIds = collectRecordIds(result)
+  let records: MemoryRecord[] = []
+  if (recordIds.length > 0) {
+    try {
+      records = await fetchRecordsByIds(recordIds, config)
+    } catch (error) {
+      console.error('[claude-memory] Failed to fetch maintenance records for review:', error)
+    }
+  }
+
+  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming({
+    result,
+    records,
+    settings
+  }, {
+    toolName: REVIEW_TOOL_NAME,
+    toolDescription: REVIEW_TOOL_DESCRIPTION,
+    toolSchema: REVIEW_TOOL_SCHEMA,
+    maxTokens: REVIEW_MAX_TOKENS,
+    systemPrompt: REVIEW_SYSTEM_PROMPT,
     model: REVIEW_MODEL,
-    durationMs: reviewedAt - startTime
+    buildPrompt: buildMaintenanceReviewPrompt,
+    coercePayload: coerceReviewPayload,
+    authErrorMessage: 'No authentication available for maintenance review. Set ANTHROPIC_API_KEY or run kira login.',
+    startedAt: startTime,
+    onInvalidPayload: toolInput => {
+      const issues = describeReviewPayloadIssues(toolInput)
+      const snapshot = truncateWithTail(safeStringify(toolInput), 2000)
+      console.error('[claude-memory] Maintenance review payload invalid:', { issues, input: snapshot })
+    }
+  }, config, onThinking, abortSignal)
+
+  return {
+    resultId,
+    operation: result.operation,
+    dryRun: result.dryRun,
+    reviewedAt,
+    overallRating: payload.overallRating,
+    assessmentScore: payload.assessmentScore,
+    actionVerdicts: payload.actionVerdicts,
+    settingsRecommendations: payload.settingsRecommendations,
+    summary: payload.summary,
+    model,
+    durationMs
   }
 }
 
@@ -259,11 +298,12 @@ function collectRecordIds(result: OperationResult): string[] {
   return Array.from(recordIds)
 }
 
-function buildReviewPrompt(
-  result: OperationResult,
-  records: MemoryRecord[],
+function buildMaintenanceReviewPrompt(input: {
+  result: OperationResult
+  records: MemoryRecord[]
   settings: MaintenanceSettings
-): string {
+}): string {
+  const { result, records, settings } = input
   const actionPayload = result.actions.slice(0, REVIEW_MAX_ACTIONS).map(formatReviewAction)
   const actionOverflow = Math.max(0, result.actions.length - actionPayload.length)
   const candidatePayload = result.candidates

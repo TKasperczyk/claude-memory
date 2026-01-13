@@ -1,13 +1,13 @@
-import Anthropic from '@anthropic-ai/sdk'
-import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import type Anthropic from '@anthropic-ai/sdk'
 import { extractSignals, stripNoiseWords, type ContextSignals } from './context.js'
 import { embedBatch } from './embed.js'
 import { buildFilter, escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { formatSimilarRecord } from './review-formatters.js'
-import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { asString, isPlainObject } from './parsing.js'
 import { clampScore, coerceInjectedVerdict, coerceMissedMemory, parseReviewRating } from './review-coercion.js'
+import { executeReview, executeReviewStreaming, type ThinkingCallback } from './review-framework.js'
 import { DEFAULT_CONFIG, type Config, type InjectedMemoryEntry, type MemoryRecord } from './types.js'
 import type { InjectedMemoryVerdict, InjectionReview, MissedMemory } from '../../shared/types.js'
 
@@ -32,50 +32,47 @@ Rules:
 - overallRating must be exactly one of: good, mixed, poor
 `
 
-const REVIEW_TOOL: Anthropic.Tool = {
-  name: REVIEW_TOOL_NAME,
-  description: 'Emit an injection quality review with an overall rating and missed candidates.',
-  input_schema: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['overallRating', 'relevanceScore', 'injectedVerdicts', 'missedMemories', 'summary'],
-    properties: {
-      sessionId: { type: 'string' },
-      prompt: { type: 'string' },
-      reviewedAt: { type: 'number' },
-      overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
-      relevanceScore: { type: 'number' },
-      injectedVerdicts: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['id', 'snippet', 'verdict', 'reason'],
-          properties: {
-            id: { type: 'string' },
-            snippet: { type: 'string' },
-            verdict: { type: 'string', enum: ['relevant', 'partially_relevant', 'irrelevant'] },
-            reason: { type: 'string' }
-          }
+const REVIEW_TOOL_DESCRIPTION = 'Emit an injection quality review with an overall rating and missed candidates.'
+const REVIEW_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['overallRating', 'relevanceScore', 'injectedVerdicts', 'missedMemories', 'summary'],
+  properties: {
+    sessionId: { type: 'string' },
+    prompt: { type: 'string' },
+    reviewedAt: { type: 'number' },
+    overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
+    relevanceScore: { type: 'number' },
+    injectedVerdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'snippet', 'verdict', 'reason'],
+        properties: {
+          id: { type: 'string' },
+          snippet: { type: 'string' },
+          verdict: { type: 'string', enum: ['relevant', 'partially_relevant', 'irrelevant'] },
+          reason: { type: 'string' }
         }
-      },
-      missedMemories: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['id', 'snippet', 'reason'],
-          properties: {
-            id: { type: 'string' },
-            snippet: { type: 'string' },
-            reason: { type: 'string' }
-          }
+      }
+    },
+    missedMemories: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'snippet', 'reason'],
+        properties: {
+          id: { type: 'string' },
+          snippet: { type: 'string' },
+          reason: { type: 'string' }
         }
-      },
-      summary: { type: 'string' },
-      model: { type: 'string' },
-      durationMs: { type: 'number' }
-    }
+      }
+    },
+    summary: { type: 'string' },
+    model: { type: 'string' },
+    durationMs: { type: 'number' }
   }
 }
 
@@ -124,12 +121,7 @@ export async function reviewInjection(
     console.error('[claude-memory] Failed to fetch similar memories for injection review:', error)
   }
 
-  const client = await createAnthropicClient()
-  if (!client) {
-    throw new Error('No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.')
-  }
-
-  const reviewPrompt = buildReviewPrompt({
+  const { payload, reviewedAt, model, durationMs } = await executeReview({
     sessionId,
     prompt,
     cwd: session.cwd ?? projectRoot,
@@ -137,36 +129,20 @@ export async function reviewInjection(
     signals,
     injectedPayload,
     similarMemories
-  })
-
-  const response = await client.messages.create({
+  }, {
+    toolName: REVIEW_TOOL_NAME,
+    toolDescription: REVIEW_TOOL_DESCRIPTION,
+    toolSchema: REVIEW_TOOL_SCHEMA,
+    maxTokens: REVIEW_MAX_TOKENS,
+    systemPrompt: REVIEW_SYSTEM_PROMPT,
     model: REVIEW_MODEL,
-    max_tokens: Math.min(REVIEW_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
-    system: [
-      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: REVIEW_SYSTEM_PROMPT }
-    ],
-    messages: [{ role: 'user', content: reviewPrompt }],
-    tools: [REVIEW_TOOL],
-    tool_choice: { type: 'tool', name: REVIEW_TOOL_NAME }
-  })
-
-  const toolInput = response.content.find((block): block is ToolUseBlock =>
-    isToolUseBlock(block) && block.name === REVIEW_TOOL_NAME
-  )?.input
-
-  if (!toolInput) {
-    throw new Error('Review tool call missing in response.')
-  }
-
-  const payload = coerceReviewPayload(toolInput)
-  if (!payload) {
-    throw new Error('Review response invalid or incomplete.')
-  }
+    buildPrompt: buildInjectionReviewPrompt,
+    coercePayload: coerceReviewPayload,
+    authErrorMessage: 'No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.',
+    startedAt: startTime
+  }, config)
 
   const injectedVerdicts = normalizeInjectedVerdicts(payload.injectedVerdicts, injection.entries)
-  const reviewedAt = Date.now()
   return {
     sessionId,
     prompt,
@@ -176,8 +152,83 @@ export async function reviewInjection(
     injectedVerdicts,
     missedMemories: payload.missedMemories,
     summary: payload.summary,
+    model,
+    durationMs
+  }
+}
+
+export async function reviewInjectionStreaming(
+  sessionId: string,
+  config: Config,
+  onThinking: ThinkingCallback,
+  abortSignal?: AbortSignal
+): Promise<InjectionReview> {
+  const startTime = Date.now()
+  const session = loadSessionTracking(sessionId)
+  if (!session) {
+    throw new Error('Session not found.')
+  }
+
+  const injection = selectLatestInjection(session.memories)
+  if (!injection) {
+    throw new Error('No injected memories with prompts found for review.')
+  }
+
+  const prompt = injection.prompt.trim()
+  if (!prompt) {
+    throw new Error('No prompt available for injection review.')
+  }
+
+  const injectedIds = injection.entries.map(entry => entry.id)
+  const records = await fetchRecordsByIds(injectedIds, config)
+  const injectedPayload = buildInjectedPayload(injection.entries, records)
+  if (injectedPayload.length === 0) {
+    throw new Error('Injected memories missing for review.')
+  }
+
+  const projectRoot = resolveReviewProjectRoot(session.cwd, records)
+  const signals = buildReviewSignals(prompt, projectRoot)
+
+  let similarMemories: Array<{ record: MemoryRecord; similarity: number }> = []
+  try {
+    similarMemories = await collectSimilarMemories(prompt, signals, injectedIds, projectRoot, config)
+  } catch (error) {
+    console.error('[claude-memory] Failed to fetch similar memories for injection review:', error)
+  }
+
+  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming({
+    sessionId,
+    prompt,
+    cwd: session.cwd ?? projectRoot,
+    injectedAt: injection.injectedAt,
+    signals,
+    injectedPayload,
+    similarMemories
+  }, {
+    toolName: REVIEW_TOOL_NAME,
+    toolDescription: REVIEW_TOOL_DESCRIPTION,
+    toolSchema: REVIEW_TOOL_SCHEMA,
+    maxTokens: REVIEW_MAX_TOKENS,
+    systemPrompt: REVIEW_SYSTEM_PROMPT,
     model: REVIEW_MODEL,
-    durationMs: reviewedAt - startTime
+    buildPrompt: buildInjectionReviewPrompt,
+    coercePayload: coerceReviewPayload,
+    authErrorMessage: 'No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.',
+    startedAt: startTime
+  }, config, onThinking, abortSignal)
+
+  const injectedVerdicts = normalizeInjectedVerdicts(payload.injectedVerdicts, injection.entries)
+  return {
+    sessionId,
+    prompt,
+    reviewedAt,
+    overallRating: payload.overallRating,
+    relevanceScore: payload.relevanceScore,
+    injectedVerdicts,
+    missedMemories: payload.missedMemories,
+    summary: payload.summary,
+    model,
+    durationMs
   }
 }
 
@@ -340,7 +391,7 @@ function buildSimilarFilter(signals: ContextSignals, excludeIds: string[], cwd: 
   return parts.join(' && ')
 }
 
-function buildReviewPrompt(args: {
+function buildInjectionReviewPrompt(args: {
   sessionId: string
   prompt: string
   cwd?: string

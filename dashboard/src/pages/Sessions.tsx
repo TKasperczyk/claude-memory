@@ -3,15 +3,16 @@ import { useNavigate } from 'react-router-dom'
 import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
+import ThinkingPanel from '@/components/ThinkingPanel'
 import { useSessions } from '@/hooks/queries'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
+import { useStreamingReview } from '@/hooks/useStreamingReview'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
 import { formatDateTime } from '@/lib/format'
 import {
   fetchInjectionReview,
-  runInjectionReview,
   type InjectedMemoryVerdict,
   type InjectionReview,
   type InjectionStatus,
@@ -251,6 +252,170 @@ function ReviewSkeleton() {
   )
 }
 
+function SessionReviewPanel({
+  session,
+  review,
+  reviewLoadingState,
+  reviewError,
+  hasReviewLoaded,
+  onSelect,
+  onReviewUpdate,
+  onReviewError,
+  copy,
+  isCopied
+}: {
+  session: SessionRecord
+  review: InjectionReview | null
+  reviewLoadingState: boolean
+  reviewError?: string
+  hasReviewLoaded: boolean
+  onSelect: (recordId: string) => void
+  onReviewUpdate: (sessionId: string, nextReview: InjectionReview) => void
+  onReviewError: (sessionId: string, message: string) => void
+  copy: (id: string, value: string) => void
+  isCopied: (id: string) => boolean
+}) {
+  const { trigger, thinking, isStreaming } = useStreamingReview<InjectionReview>({
+    endpoint: `/api/sessions/${session.sessionId}/review`,
+    onComplete: (nextReview) => {
+      onReviewUpdate(session.sessionId, nextReview)
+      onReviewError(session.sessionId, '')
+    },
+    onError: (err) => {
+      onReviewError(session.sessionId, err.message || 'Failed to run review')
+    }
+  })
+
+  const handleReview = () => {
+    onReviewError(session.sessionId, '')
+    trigger()
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-muted-foreground">
+          Opus review
+        </div>
+        <div className="flex items-center gap-2">
+          {review && (
+            <button
+              onClick={() => copy(session.sessionId, formatInjectionReview(session, review))}
+              className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
+              title="Copy review for Claude analysis"
+            >
+              {isCopied(session.sessionId) ? (
+                <>
+                  <Check className="w-3 h-3 text-emerald-400" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3 h-3" />
+                  Copy Review
+                </>
+              )}
+            </button>
+          )}
+          <button
+            onClick={handleReview}
+            disabled={isStreaming}
+            className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
+          >
+            {isStreaming && <ButtonSpinner size="xs" />}
+            {isStreaming ? 'Reviewing...' : 'Review with Opus'}
+          </button>
+        </div>
+      </div>
+
+      <ThinkingPanel thinking={thinking} isStreaming={isStreaming} />
+
+      {reviewError && (
+        <div className="text-xs text-destructive">{reviewError}</div>
+      )}
+
+      {review ? (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RATING_STYLES[review.overallRating].badge}`}>
+              {RATING_STYLES[review.overallRating].label}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Relevance score <span className="font-semibold tabular-nums text-foreground">{review.relevanceScore}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Reviewed {formatDateTime(review.reviewedAt)}
+            </span>
+          </div>
+          <div className="text-sm text-foreground">{review.summary}</div>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              Injected verdicts
+            </div>
+            {review.injectedVerdicts.length === 0 ? (
+              <div className="text-xs text-muted-foreground">No verdicts returned.</div>
+            ) : (
+              <div className="space-y-2">
+                {review.injectedVerdicts.map((verdict, index) => (
+                  <button
+                    key={`${verdict.id}-${index}`}
+                    type="button"
+                    onClick={() => onSelect(verdict.id)}
+                    className="w-full text-left rounded-md border border-border bg-secondary/30 p-3 cursor-pointer hover:bg-secondary/50 transition-base"
+                  >
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${VERDICT_STYLES[verdict.verdict].badge}`}>
+                        {VERDICT_STYLES[verdict.verdict].label}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground font-mono">{verdict.id}</span>
+                    </div>
+                    <div className="text-sm text-foreground">{verdict.snippet}</div>
+                    <div className="text-xs text-muted-foreground mt-1">{verdict.reason}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {review.missedMemories.length > 0 ? (
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                Missed memories
+              </div>
+              <div className="space-y-2">
+                {review.missedMemories.map((missed, index) => (
+                  <button
+                    key={`${missed.id}-${index}`}
+                    type="button"
+                    onClick={() => onSelect(missed.id)}
+                    className="w-full text-left rounded-md border border-border bg-secondary/30 p-3 cursor-pointer hover:bg-secondary/50 transition-base"
+                  >
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Missed
+                      </span>
+                      <span className="text-[11px] text-muted-foreground font-mono">{missed.id}</span>
+                    </div>
+                    <div className="text-sm text-foreground">{missed.snippet}</div>
+                    <div className="text-xs text-muted-foreground mt-1">{missed.reason}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground">No missed memories flagged.</div>
+          )}
+        </div>
+      ) : hasReviewLoaded ? (
+        <div className="text-xs text-muted-foreground">No review yet.</div>
+      ) : reviewLoadingState ? (
+        <ReviewSkeleton />
+      ) : null}
+    </div>
+  )
+}
+
 export default function Sessions() {
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -265,7 +430,6 @@ export default function Sessions() {
   } = useSelectedMemory()
   const [reviewsBySession, setReviewsBySession] = useState<Record<string, InjectionReview | null>>({})
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
-  const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const { copy, isCopied } = useCopyToClipboard(2000)
   const { data, error, isPending } = useSessions()
@@ -334,18 +498,12 @@ export default function Sessions() {
     }
   }
 
-  const handleReview = async (sessionId: string) => {
-    setReviewRunning(prev => ({ ...prev, [sessionId]: true }))
-    setReviewErrors(prev => ({ ...prev, [sessionId]: '' }))
-    try {
-      const review = await runInjectionReview(sessionId)
-      setReviewsBySession(prev => ({ ...prev, [sessionId]: review }))
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to run review'
-      setReviewErrors(prev => ({ ...prev, [sessionId]: message }))
-    } finally {
-      setReviewRunning(prev => ({ ...prev, [sessionId]: false }))
-    }
+  const handleReviewUpdate = (sessionId: string, review: InjectionReview) => {
+    setReviewsBySession(prev => ({ ...prev, [sessionId]: review }))
+  }
+
+  const handleReviewError = (sessionId: string, message: string) => {
+    setReviewErrors(prev => ({ ...prev, [sessionId]: message }))
   }
 
   const handleSendToSimulator = (prompt: string, cwd?: string) => {
@@ -381,7 +539,6 @@ export default function Sessions() {
             const typeGroups = groupByType(memories)
             const review = reviewsBySession[session.sessionId]
             const reviewLoadingState = reviewLoading[session.sessionId] ?? false
-            const reviewRunningState = reviewRunning[session.sessionId] ?? false
             const reviewError = reviewErrors[session.sessionId]
             const hasReviewLoaded = Object.prototype.hasOwnProperty.call(reviewsBySession, session.sessionId)
 
@@ -450,125 +607,18 @@ export default function Sessions() {
                         </div>
                       )}
                       {memories.length > 0 && (
-                        <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div className="text-xs text-muted-foreground">
-                              Opus review
-                            </div>
-                            <div className="flex items-center gap-2">
-                              {review && (
-                              <button
-                                  onClick={() => copy(session.sessionId, formatInjectionReview(session, review))}
-                                  className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
-                                  title="Copy review for Claude analysis"
-                                >
-                                  {isCopied(session.sessionId) ? (
-                                    <>
-                                      <Check className="w-3 h-3 text-emerald-400" />
-                                      Copied
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Copy className="w-3 h-3" />
-                                      Copy Review
-                                    </>
-                                  )}
-                                </button>
-                              )}
-                              <button
-                                onClick={() => handleReview(session.sessionId)}
-                                disabled={reviewRunningState}
-                                className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
-                              >
-                                {reviewRunningState && <ButtonSpinner size="xs" />}
-                                {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
-                              </button>
-                            </div>
-                          </div>
-
-                          {reviewError && (
-                            <div className="text-xs text-destructive">{reviewError}</div>
-                          )}
-
-                          {review ? (
-                            <div className="space-y-3">
-                              <div className="flex flex-wrap items-center gap-3">
-                                <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RATING_STYLES[review.overallRating].badge}`}>
-                                  {RATING_STYLES[review.overallRating].label}
-                                </span>
-                                <span className="text-xs text-muted-foreground">
-                                  Relevance score <span className="font-semibold tabular-nums text-foreground">{review.relevanceScore}</span>
-                                </span>
-                                <span className="text-xs text-muted-foreground">
-                                  Reviewed {formatDateTime(review.reviewedAt)}
-                                </span>
-                              </div>
-                              <div className="text-sm text-foreground">{review.summary}</div>
-
-                              <div className="space-y-2">
-                                <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                                  Injected verdicts
-                                </div>
-                                {review.injectedVerdicts.length === 0 ? (
-                                  <div className="text-xs text-muted-foreground">No verdicts returned.</div>
-                                ) : (
-                                  <div className="space-y-2">
-                                    {review.injectedVerdicts.map((verdict, index) => (
-                                      <button
-                                        key={`${verdict.id}-${index}`}
-                                        type="button"
-                                        onClick={() => handleSelect(verdict.id)}
-                                        className="w-full text-left rounded-md border border-border bg-secondary/30 p-3 cursor-pointer hover:bg-secondary/50 transition-base"
-                                      >
-                                        <div className="flex flex-wrap items-center gap-2 mb-1">
-                                          <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${VERDICT_STYLES[verdict.verdict].badge}`}>
-                                            {VERDICT_STYLES[verdict.verdict].label}
-                                          </span>
-                                          <span className="text-[11px] text-muted-foreground font-mono">{verdict.id}</span>
-                                        </div>
-                                        <div className="text-sm text-foreground">{verdict.snippet}</div>
-                                        <div className="text-xs text-muted-foreground mt-1">{verdict.reason}</div>
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-
-                              {review.missedMemories.length > 0 ? (
-                                <div className="space-y-2">
-                                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                                    Missed memories
-                                  </div>
-                                  <div className="space-y-2">
-                                    {review.missedMemories.map((missed, index) => (
-                                      <button
-                                        key={`${missed.id}-${index}`}
-                                        type="button"
-                                        onClick={() => handleSelect(missed.id)}
-                                        className="w-full text-left rounded-md border border-border bg-secondary/30 p-3 cursor-pointer hover:bg-secondary/50 transition-base"
-                                      >
-                                        <div className="flex flex-wrap items-center gap-2 mb-1">
-                                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                                            Missed
-                                          </span>
-                                          <span className="text-[11px] text-muted-foreground font-mono">{missed.id}</span>
-                                        </div>
-                                        <div className="text-sm text-foreground">{missed.snippet}</div>
-                                        <div className="text-xs text-muted-foreground mt-1">{missed.reason}</div>
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="text-xs text-muted-foreground">No missed memories flagged.</div>
-                              )}
-                            </div>
-                          ) : hasReviewLoaded ? (
-                            <div className="text-xs text-muted-foreground">No review yet.</div>
-                          ) : reviewLoadingState ? (
-                            <ReviewSkeleton />
-                          ) : null}
-                        </div>
+                        <SessionReviewPanel
+                          session={session}
+                          review={review ?? null}
+                          reviewLoadingState={reviewLoadingState}
+                          reviewError={reviewError}
+                          hasReviewLoaded={hasReviewLoaded}
+                          onSelect={handleSelect}
+                          onReviewUpdate={handleReviewUpdate}
+                          onReviewError={handleReviewError}
+                          copy={copy}
+                          isCopied={isCopied}
+                        />
                       )}
 
                       {prompts.length > 0 && (

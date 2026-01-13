@@ -4,6 +4,7 @@ import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
+import ThinkingPanel from '@/components/ThinkingPanel'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import {
   ApiError,
@@ -11,7 +12,6 @@ import {
   fetchMaintenanceOperations,
   fetchMaintenanceReview,
   runMaintenance,
-  runMaintenanceReview,
   updateSetting,
   type ConflictVerdict,
   type MaintenanceAction,
@@ -26,6 +26,7 @@ import {
 import { useApi } from '@/hooks/useApi'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
+import { useStreamingReview } from '@/hooks/useStreamingReview'
 import { formatMaintenanceReview } from '@/lib/review-format'
 
 type MaintenanceOperation = MaintenanceOperationInfo['key']
@@ -950,18 +951,33 @@ function ResultPanel({
   const candidateGroups = result.candidates ?? []
   const candidateCount = candidateGroups.reduce((total, group) => total + group.records.length, 0)
   const [review, setReview] = useState<MaintenanceReview | null>(null)
-  const [reviewLoading, setReviewLoading] = useState(false)
   const [cacheLoading, setCacheLoading] = useState(false)
   const [reviewError, setReviewError] = useState<string | null>(null)
-  const isReviewRunning = reviewLoading
-  const isReviewPending = (reviewLoading || cacheLoading) && !review
+  const {
+    trigger: triggerReview,
+    thinking,
+    isStreaming,
+    reset: resetStreaming
+  } = useStreamingReview<MaintenanceReview>({
+    endpoint: `/api/maintenance/${result.operation}/review`,
+    body: { result },
+    onComplete: (nextReview) => {
+      setReview(nextReview)
+      setReviewError(null)
+    },
+    onError: (err) => {
+      setReviewError(err.message || 'Failed to run review')
+    }
+  })
+  const isReviewRunning = isStreaming
+  const isReviewPending = (isReviewRunning || cacheLoading) && !review
 
   useEffect(() => {
     let isActive = true
     setReview(null)
     setReviewError(null)
-    setReviewLoading(false)
     setCacheLoading(false)
+    resetStreaming()
 
     const loadCachedReview = async () => {
       setCacheLoading(true)
@@ -986,20 +1002,11 @@ function ResultPanel({
     return () => {
       isActive = false
     }
-  }, [result])
+  }, [result, resetStreaming])
 
   const handleReview = async () => {
     setReviewError(null)
-    setReviewLoading(true)
-    try {
-      const response = await runMaintenanceReview(result.operation, result)
-      setReview(response)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to run review'
-      setReviewError(message)
-    } finally {
-      setReviewLoading(false)
-    }
+    triggerReview()
   }
 
   return (
@@ -1013,7 +1020,7 @@ function ResultPanel({
           <button
             type="button"
             onClick={handleReview}
-            disabled={reviewLoading}
+            disabled={isReviewRunning}
             className="inline-flex items-center gap-2 h-7 px-2.5 text-[11px] rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
           >
             {isReviewRunning && <ButtonSpinner size="xs" />}
@@ -1054,6 +1061,8 @@ function ResultPanel({
           </div>
         </details>
       )}
+
+      <ThinkingPanel thinking={thinking} isStreaming={isReviewRunning} />
 
       {reviewError && (
         <div className="text-xs text-destructive">{reviewError}</div>

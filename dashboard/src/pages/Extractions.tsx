@@ -3,14 +3,15 @@ import { ChevronDown, ChevronRight, Check, Copy } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
+import ThinkingPanel from '@/components/ThinkingPanel'
 import { useExtractions } from '@/hooks/queries'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
+import { useStreamingReview } from '@/hooks/useStreamingReview'
 import Skeleton from '@/components/Skeleton'
 import {
   fetchExtractionReview,
   fetchExtractionRun,
-  runExtractionReview,
   type ExtractionReview,
   type ExtractionReviewIssue,
   type ExtractionRun,
@@ -109,6 +110,177 @@ function ReviewSkeleton() {
   )
 }
 
+function ExtractionReviewPanel({
+  run,
+  runRecords,
+  review,
+  reviewLoadingState,
+  reviewError,
+  hasReviewLoaded,
+  onSelect,
+  onReviewUpdate,
+  onReviewError,
+  copy,
+  isCopied
+}: {
+  run: ExtractionRun
+  runRecords: MemoryRecord[]
+  review: ExtractionReview | null
+  reviewLoadingState: boolean
+  reviewError?: string
+  hasReviewLoaded: boolean
+  onSelect: (recordId: string) => void
+  onReviewUpdate: (runId: string, nextReview: ExtractionReview) => void
+  onReviewError: (runId: string, message: string) => void
+  copy: (id: string, value: string) => void
+  isCopied: (id: string) => boolean
+}) {
+  const { trigger, thinking, isStreaming } = useStreamingReview<ExtractionReview>({
+    endpoint: `/api/extractions/${run.runId}/review`,
+    onComplete: (nextReview) => {
+      onReviewUpdate(run.runId, nextReview)
+      onReviewError(run.runId, '')
+    },
+    onError: (err) => {
+      onReviewError(run.runId, err.message || 'Failed to run review')
+    }
+  })
+
+  const handleReview = () => {
+    onReviewError(run.runId, '')
+    trigger()
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-muted-foreground">
+          Opus review
+        </div>
+        <div className="flex items-center gap-2">
+          {review && (
+            <button
+              onClick={() => copy(run.runId, formatExtractionReview(run, runRecords, review))}
+              className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
+              title="Copy review for Claude analysis"
+            >
+              {isCopied(run.runId) ? (
+                <>
+                  <Check className="w-3 h-3 text-emerald-400" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3 h-3" />
+                  Copy Review
+                </>
+              )}
+            </button>
+          )}
+          <button
+            onClick={handleReview}
+            disabled={isStreaming}
+            className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
+          >
+            {isStreaming && <ButtonSpinner size="xs" />}
+            {isStreaming ? 'Reviewing...' : 'Review with Opus'}
+          </button>
+        </div>
+      </div>
+
+      <ThinkingPanel thinking={thinking} isStreaming={isStreaming} />
+
+      {reviewError && (
+        <div className="text-xs text-destructive">{reviewError}</div>
+      )}
+
+      {review ? (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RATING_STYLES[review.overallRating].badge}`}>
+              {RATING_STYLES[review.overallRating].label}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Accuracy score <span className="font-semibold tabular-nums text-foreground">{review.accuracyScore}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Reviewed {formatDateTime(review.reviewedAt)}
+            </span>
+          </div>
+          <div className="text-sm text-foreground">{review.summary}</div>
+
+          {review.issues.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No issues flagged.</div>
+          ) : (
+            <div className="space-y-2">
+              {review.issues.map((issue, index) => {
+                const issueSelectable = Boolean(issue.recordId)
+                const issueClasses = `rounded-md border border-border bg-secondary/30 p-3 transition-base ${
+                  issueSelectable ? 'cursor-pointer hover:bg-secondary/50' : ''
+                }`
+
+                const issueContent = (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${SEVERITY_STYLES[issue.severity]}`}>
+                        {issue.severity}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {ISSUE_LABELS[issue.type]}
+                      </span>
+                      {issue.recordId && (
+                        <span className="text-[11px] text-muted-foreground font-mono">{issue.recordId}</span>
+                      )}
+                    </div>
+                    <div className="text-sm text-foreground">{issue.description}</div>
+                    <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap mt-1">
+                      {issue.evidence}
+                    </div>
+                    {issue.type === 'missed' && (
+                      <div className="text-xs text-emerald-300 font-mono mt-1">
+                        Suggested extraction: {issue.suggestedFix ?? issue.description}
+                      </div>
+                    )}
+                    {issue.type !== 'missed' && issue.suggestedFix && (
+                      <div className="text-xs text-muted-foreground font-mono mt-1">
+                        Suggested fix: {issue.suggestedFix}
+                      </div>
+                    )}
+                  </>
+                )
+
+                const recordId = issue.recordId
+                if (issueSelectable && recordId) {
+                  return (
+                    <button
+                      key={`${issue.type}-${recordId}-${index}`}
+                      type="button"
+                      onClick={() => onSelect(recordId)}
+                      className={`w-full text-left ${issueClasses}`}
+                    >
+                      {issueContent}
+                    </button>
+                  )
+                }
+
+                return (
+                  <div key={`${issue.type}-missing-${index}`} className={issueClasses}>
+                    {issueContent}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      ) : hasReviewLoaded ? (
+        <div className="text-xs text-muted-foreground">No review yet.</div>
+      ) : reviewLoadingState ? (
+        <ReviewSkeleton />
+      ) : null}
+    </div>
+  )
+}
+
 function RecordsSkeleton() {
   const items = Array.from({ length: 3 })
 
@@ -139,7 +311,6 @@ export default function Extractions() {
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
   const [reviewsByRun, setReviewsByRun] = useState<Record<string, ExtractionReview | null>>({})
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
-  const [reviewRunning, setReviewRunning] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const { copy, isCopied } = useCopyToClipboard(2000)
   const loadSeqRef = useRef(0)
@@ -189,18 +360,12 @@ export default function Extractions() {
     }
   }
 
-  const handleReview = async (runId: string) => {
-    setReviewRunning(prev => ({ ...prev, [runId]: true }))
-    setReviewErrors(prev => ({ ...prev, [runId]: '' }))
-    try {
-      const review = await runExtractionReview(runId)
-      setReviewsByRun(prev => ({ ...prev, [runId]: review }))
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to run review'
-      setReviewErrors(prev => ({ ...prev, [runId]: message }))
-    } finally {
-      setReviewRunning(prev => ({ ...prev, [runId]: false }))
-    }
+  const handleReviewUpdate = (runId: string, review: ExtractionReview) => {
+    setReviewsByRun(prev => ({ ...prev, [runId]: review }))
+  }
+
+  const handleReviewError = (runId: string, message: string) => {
+    setReviewErrors(prev => ({ ...prev, [runId]: message }))
   }
 
   const pageInfo = () => {
@@ -252,7 +417,6 @@ export default function Extractions() {
             const runError = runErrors[run.runId]
             const review = reviewsByRun[run.runId]
             const reviewLoadingState = reviewLoading[run.runId] ?? false
-            const reviewRunningState = reviewRunning[run.runId] ?? false
             const reviewError = reviewErrors[run.runId]
             const hasReviewLoaded = Object.prototype.hasOwnProperty.call(reviewsByRun, run.runId)
 
@@ -300,130 +464,19 @@ export default function Extractions() {
                         Transcript: <span className="font-mono break-all">{run.transcriptPath}</span>
                       </div>
 
-                      <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="text-xs text-muted-foreground">
-                            Opus review
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {review && (
-                              <button
-                                onClick={() => copy(run.runId, formatExtractionReview(run, runRecords, review))}
-                                className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
-                                title="Copy review for Claude analysis"
-                              >
-                                {isCopied(run.runId) ? (
-                                  <>
-                                    <Check className="w-3 h-3 text-emerald-400" />
-                                    Copied
-                                  </>
-                                ) : (
-                                  <>
-                                    <Copy className="w-3 h-3" />
-                                    Copy Review
-                                  </>
-                                )}
-                              </button>
-                            )}
-                            <button
-                              onClick={() => handleReview(run.runId)}
-                              disabled={reviewRunningState}
-                              className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
-                            >
-                              {reviewRunningState && <ButtonSpinner size="xs" />}
-                              {reviewRunningState ? 'Reviewing...' : 'Review with Opus'}
-                            </button>
-                          </div>
-                        </div>
-
-                        {reviewError && (
-                          <div className="text-xs text-destructive">{reviewError}</div>
-                        )}
-
-                        {review ? (
-                          <div className="space-y-3">
-                            <div className="flex flex-wrap items-center gap-3">
-                              <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${RATING_STYLES[review.overallRating].badge}`}>
-                                {RATING_STYLES[review.overallRating].label}
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                Accuracy score <span className="font-semibold tabular-nums text-foreground">{review.accuracyScore}</span>
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                Reviewed {formatDateTime(review.reviewedAt)}
-                              </span>
-                            </div>
-                            <div className="text-sm text-foreground">{review.summary}</div>
-
-                            {review.issues.length === 0 ? (
-                              <div className="text-xs text-muted-foreground">No issues flagged.</div>
-                            ) : (
-                              <div className="space-y-2">
-                                {review.issues.map((issue, index) => {
-                                  const issueSelectable = Boolean(issue.recordId)
-                                  const issueClasses = `rounded-md border border-border bg-secondary/30 p-3 transition-base ${
-                                    issueSelectable ? 'cursor-pointer hover:bg-secondary/50' : ''
-                                  }`
-
-                                  const issueContent = (
-                                    <>
-                                      <div className="flex flex-wrap items-center gap-2 mb-1">
-                                        <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${SEVERITY_STYLES[issue.severity]}`}>
-                                          {issue.severity}
-                                        </span>
-                                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                                          {ISSUE_LABELS[issue.type]}
-                                        </span>
-                                        {issue.recordId && (
-                                          <span className="text-[11px] text-muted-foreground font-mono">{issue.recordId}</span>
-                                        )}
-                                      </div>
-                                      <div className="text-sm text-foreground">{issue.description}</div>
-                                      <div className="text-xs text-muted-foreground font-mono whitespace-pre-wrap mt-1">
-                                        {issue.evidence}
-                                      </div>
-                                      {issue.type === 'missed' && (
-                                        <div className="text-xs text-emerald-300 font-mono mt-1">
-                                          Suggested extraction: {issue.suggestedFix ?? issue.description}
-                                        </div>
-                                      )}
-                                      {issue.type !== 'missed' && issue.suggestedFix && (
-                                        <div className="text-xs text-muted-foreground font-mono mt-1">
-                                          Suggested fix: {issue.suggestedFix}
-                                        </div>
-                                      )}
-                                    </>
-                                  )
-
-                                  const recordId = issue.recordId
-                                  if (issueSelectable && recordId) {
-                                    return (
-                                      <button
-                                        key={`${issue.type}-${recordId}-${index}`}
-                                        type="button"
-                                        onClick={() => handleSelect(recordId)}
-                                        className={`w-full text-left ${issueClasses}`}
-                                      >
-                                        {issueContent}
-                                      </button>
-                                    )
-                                  }
-
-                                  return (
-                                    <div key={`${issue.type}-missing-${index}`} className={issueClasses}>
-                                      {issueContent}
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        ) : hasReviewLoaded ? (
-                          <div className="text-xs text-muted-foreground">No review yet.</div>
-                        ) : reviewLoadingState ? (
-                          <ReviewSkeleton />
-                        ) : null}
-                      </div>
+                      <ExtractionReviewPanel
+                        run={run}
+                        runRecords={runRecords}
+                        review={review ?? null}
+                        reviewLoadingState={reviewLoadingState}
+                        reviewError={reviewError}
+                        hasReviewLoaded={hasReviewLoaded}
+                        onSelect={handleSelect}
+                        onReviewUpdate={handleReviewUpdate}
+                        onReviewError={handleReviewError}
+                        copy={copy}
+                        isCopied={isCopied}
+                      />
 
                       {isLoadingRecords ? (
                         <RecordsSkeleton />
