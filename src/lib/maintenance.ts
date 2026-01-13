@@ -37,7 +37,6 @@ const QUERY_PAGE_SIZE = 500
 const GENERALIZATION_MAX_TOKENS = 800
 const CONTRADICTION_MAX_TOKENS = 600
 const CONFLICT_ADJUDICATION_MAX_TOKENS = 600
-const CONFLICT_ADJUDICATION_MODEL = 'claude-haiku-4-5-20251001'
 const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
 const GLOBAL_PROMOTION_MAX_TOKENS = 400
 export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
@@ -691,7 +690,7 @@ async function resolveConflictWithLLM(
   const payload = JSON.stringify(buildConflictAdjudicationInput(pair), null, 2)
 
   const response = await client.messages.create({
-    model: CONFLICT_ADJUDICATION_MODEL,
+    model: config.extraction.model,
     max_tokens: Math.min(CONFLICT_ADJUDICATION_MAX_TOKENS, config.extraction.maxTokens),
     temperature: 0,
     system: [

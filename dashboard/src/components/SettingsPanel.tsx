@@ -1,17 +1,23 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactElement } from 'react'
 import { ChevronDown, ChevronRight, RotateCcw, Save } from 'lucide-react'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import { type RetrievalSettings } from '@/lib/api'
 import { cn } from '../lib/utils'
 
+type SettingsGroupMeta = {
+  label: string
+  description?: string
+}
+
 export type SettingsField<K extends string = string> = {
   key: K
   label: string
   description: string
-  step: number
+  step?: number
   min?: number
   max?: number
-  kind: 'float' | 'int'
+  kind: 'float' | 'int' | 'bool'
+  group?: SettingsGroupMeta
 }
 
 export type SettingsFormState<K extends string = string> = Record<K, string>
@@ -59,6 +65,33 @@ export function isSettingsModified<K extends string>({
   return false
 }
 
+const RETRIEVAL_GROUPS = {
+  similarity: {
+    label: 'Similarity thresholds',
+    description: 'Drop low-scoring matches before ranking.'
+  },
+  context: {
+    label: 'Context limits',
+    description: 'Cap the injected context size.'
+  },
+  ranking: {
+    label: 'Ranking weights',
+    description: 'Balance relevance, diversity, and usage boosts.'
+  },
+  haiku: {
+    label: 'Haiku query generation',
+    description: 'Use Haiku to resolve context-dependent queries.'
+  },
+  query: {
+    label: 'Query limits',
+    description: 'Limit keyword and semantic query construction.'
+  },
+  timeouts: {
+    label: 'Timeouts',
+    description: 'Abort slow pre-prompt steps.'
+  }
+} as const
+
 export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
   {
     key: 'minSemanticSimilarity',
@@ -67,7 +100,8 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     step: 0.01,
     min: 0,
     max: 1,
-    kind: 'float'
+    kind: 'float',
+    group: RETRIEVAL_GROUPS.similarity
   },
   {
     key: 'minScore',
@@ -76,7 +110,8 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     step: 0.01,
     min: 0,
     max: 1,
-    kind: 'float'
+    kind: 'float',
+    group: RETRIEVAL_GROUPS.similarity
   },
   {
     key: 'minSemanticOnlyScore',
@@ -85,7 +120,8 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     step: 0.01,
     min: 0,
     max: 1,
-    kind: 'float'
+    kind: 'float',
+    group: RETRIEVAL_GROUPS.similarity
   },
   {
     key: 'maxRecords',
@@ -94,7 +130,8 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     step: 1,
     min: 1,
     max: 20,
-    kind: 'int'
+    kind: 'int',
+    group: RETRIEVAL_GROUPS.context
   },
   {
     key: 'maxTokens',
@@ -103,7 +140,8 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     step: 50,
     min: 1,
     max: 10000,
-    kind: 'int'
+    kind: 'int',
+    group: RETRIEVAL_GROUPS.context
   },
   {
     key: 'mmrLambda',
@@ -112,7 +150,8 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     step: 0.01,
     min: 0,
     max: 1,
-    kind: 'float'
+    kind: 'float',
+    group: RETRIEVAL_GROUPS.ranking
   },
   {
     key: 'usageRatioWeight',
@@ -121,13 +160,79 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
     step: 0.01,
     min: 0,
     max: 1,
-    kind: 'float'
+    kind: 'float',
+    group: RETRIEVAL_GROUPS.ranking
+  },
+  {
+    key: 'enableHaikuRetrieval',
+    label: 'Enable Haiku retrieval',
+    description: 'Use Haiku to analyze conversation context and generate better queries.',
+    kind: 'bool',
+    group: RETRIEVAL_GROUPS.haiku
+  },
+  {
+    key: 'maxKeywordQueries',
+    label: 'Max keyword queries',
+    description: 'Maximum keyword queries generated per retrieval.',
+    step: 1,
+    min: 1,
+    kind: 'int',
+    group: RETRIEVAL_GROUPS.query
+  },
+  {
+    key: 'maxKeywordErrors',
+    label: 'Max keyword errors',
+    description: 'Max error patterns included as keyword queries.',
+    step: 1,
+    min: 1,
+    kind: 'int',
+    group: RETRIEVAL_GROUPS.query
+  },
+  {
+    key: 'maxKeywordCommands',
+    label: 'Max keyword commands',
+    description: 'Max commands included as keyword queries.',
+    step: 1,
+    min: 1,
+    kind: 'int',
+    group: RETRIEVAL_GROUPS.query
+  },
+  {
+    key: 'maxSemanticQueryChars',
+    label: 'Max semantic query chars',
+    description: 'Max characters allowed in the semantic query.',
+    step: 50,
+    min: 1,
+    kind: 'int',
+    group: RETRIEVAL_GROUPS.query
+  },
+  {
+    key: 'prePromptTimeoutMs',
+    label: 'Pre-prompt timeout (ms)',
+    description: 'Timeout for the entire pre-prompt hook.',
+    step: 100,
+    min: 1,
+    kind: 'int',
+    group: RETRIEVAL_GROUPS.timeouts
+  },
+  {
+    key: 'haikuQueryTimeoutMs',
+    label: 'Haiku query timeout (ms)',
+    description: 'Timeout for Haiku query generation.',
+    step: 100,
+    min: 1,
+    kind: 'int',
+    group: RETRIEVAL_GROUPS.timeouts
   }
 ]
 
-type FieldValidation = { value?: number; error?: string }
+type FieldValidation = { value?: number | boolean; error?: string }
 
 export function validateFieldValue(field: SettingsField, rawInput: string): FieldValidation {
+  if (field.kind === 'bool') {
+    return { value: rawInput === 'true' }
+  }
+
   const parsed = Number(rawInput)
   if (!Number.isFinite(parsed)) {
     return { error: 'Enter a number.' }
@@ -158,7 +263,13 @@ function clampValue(value: number, min: number, max: number): number {
 export function toFormState(settings: Partial<RetrievalSettings> | null): RetrievalSettingsFormState {
   return RETRIEVAL_FIELDS.reduce((acc, field) => {
     const value = settings?.[field.key]
-    acc[field.key] = typeof value === 'number' ? String(value) : ''
+    if (typeof value === 'number') {
+      acc[field.key] = String(value)
+    } else if (typeof value === 'boolean') {
+      acc[field.key] = String(value)
+    } else {
+      acc[field.key] = ''
+    }
     return acc
   }, {} as RetrievalSettingsFormState)
 }
@@ -314,6 +425,10 @@ export function SettingsPanel<K extends string>({
     ? 'text-[10px] text-muted-foreground leading-tight'
     : 'text-xs text-muted-foreground'
   const fieldContainerClass = variant === 'compact' ? 'space-y-1' : 'space-y-2'
+  const groupTitleClass = 'section-header'
+  const groupDescriptionClass = variant === 'compact'
+    ? 'text-[10px] text-muted-foreground leading-tight'
+    : 'text-xs text-muted-foreground'
   const valueInputBaseClass = variant === 'compact'
     ? 'h-7 w-[72px] px-2 rounded-md border border-border bg-background text-xs font-mono tabular-nums text-right focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
     : 'h-8 w-[90px] px-2 rounded-md border border-border bg-background text-sm font-mono tabular-nums text-right focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
@@ -354,6 +469,65 @@ export function SettingsPanel<K extends string>({
     const savedValue = savedValues?.[key]
     const defaultValue = defaultValues?.[key]
     const formValue = values[key] ?? ''
+
+    // Handle boolean fields with a toggle
+    if (field.kind === 'bool') {
+      const isChecked = formValue === 'true'
+      const savedBool = savedValue === true
+      const defaultBool = defaultValue === true
+      const isModified = shouldShowFieldModified && savedValue !== undefined && isChecked !== savedBool
+      const fieldId = `settings-field-${key}`
+      const labelId = `${fieldId}-label`
+
+      return (
+        <div key={field.key} className={fieldContainerClass}>
+          <div>
+            <div className="flex items-center gap-2">
+              <label className={fieldLabelClass} id={labelId}>{field.label}</label>
+              {isModified && <ModifiedBadge variant="field" />}
+              {savedValue !== undefined && isChecked !== savedBool && (
+                <button
+                  type="button"
+                  onClick={() => onChange(key, String(savedBool))}
+                  disabled={disabled}
+                  className={resetButtonClass}
+                  aria-label={`Reset ${field.label} to ${savedBool ? 'enabled' : 'disabled'}`}
+                  title="Reset to saved"
+                >
+                  <RotateCcw className={variant === 'compact' ? 'w-3 h-3' : 'w-3.5 h-3.5'} />
+                </button>
+              )}
+            </div>
+            <p className={fieldDescriptionClass}>{field.description}</p>
+            {shouldShowDefaults && (
+              <p className="text-xs text-muted-foreground">Default: {defaultBool ? 'On' : 'Off'}</p>
+            )}
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isChecked}
+            aria-labelledby={labelId}
+            onClick={() => onChange(key, String(!isChecked))}
+            disabled={disabled}
+            className={cn(
+              'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+              isChecked ? 'bg-primary' : 'bg-muted',
+              disabled && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            <span
+              className={cn(
+                'pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                isChecked ? 'translate-x-5' : 'translate-x-0'
+              )}
+            />
+          </button>
+        </div>
+      )
+    }
+
     const trimmedValue = formValue.trim()
     const fieldError = errors?.[key]
     const valueInputClassName = fieldError
@@ -500,6 +674,33 @@ export function SettingsPanel<K extends string>({
     )
   }
 
+  const fieldNodes: ReactElement[] = []
+  let lastGroupLabel: string | undefined
+  let groupIndex = 0
+
+  for (const field of fields) {
+    const groupLabel = field.group?.label
+    if (groupLabel && groupLabel !== lastGroupLabel) {
+      groupIndex += 1
+      fieldNodes.push(
+        <div
+          key={`settings-group-${groupIndex}-${groupLabel}`}
+          className={cn(
+            'col-span-full space-y-1',
+            groupIndex > 1 ? (variant === 'compact' ? 'pt-2' : 'pt-3') : ''
+          )}
+        >
+          <div className={groupTitleClass}>{groupLabel}</div>
+          {field.group?.description && (
+            <div className={groupDescriptionClass}>{field.group.description}</div>
+          )}
+        </div>
+      )
+    }
+    lastGroupLabel = groupLabel
+    fieldNodes.push(renderField(field))
+  }
+
   const actions = showActions ? (
     <div className={variant === 'compact'
       ? 'flex flex-wrap items-center gap-3 pt-2 border-t border-border'
@@ -539,7 +740,7 @@ export function SettingsPanel<K extends string>({
   const content = (
     <div className={contentClass}>
       <div className={gridClasses}>
-        {fields.map(renderField)}
+        {fieldNodes}
       </div>
       {actions}
     </div>

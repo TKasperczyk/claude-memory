@@ -161,6 +161,13 @@ export interface RetrievalSettings {
   maxTokens: number
   mmrLambda: number
   usageRatioWeight: number
+  enableHaikuRetrieval: boolean
+  maxKeywordQueries: number
+  maxKeywordErrors: number
+  maxKeywordCommands: number
+  prePromptTimeoutMs: number
+  haikuQueryTimeoutMs: number
+  maxSemanticQueryChars: number
 }
 
 export interface MaintenanceSettings {

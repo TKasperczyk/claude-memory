@@ -47,7 +47,6 @@ const QUERY_MAX_TOKENS = 500
 const MAX_CONTEXT_TURNS = 5
 const MAX_TURN_CHARS = 1200
 const MAX_TOOL_SNIPPET_CHARS = 400
-const HAIKU_MODEL = 'claude-haiku-4-20250514'
 
 const SYSTEM_PROMPT = `You generate search queries for a technical memory database.
 
@@ -109,8 +108,12 @@ export async function generateRetrievalQueryPlan(
   config: Config = DEFAULT_CONFIG,
   options: { signal?: AbortSignal; timeoutMs?: number; maxTurns?: number } = {}
 ): Promise<RetrievalQueryPlan | null> {
-  if (!prompt || !prompt.trim()) return null
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return null
+  if (!prompt || !prompt.trim()) {
+    return null
+  }
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return null
+  }
   if (options.signal?.aborted) return null
 
   const { signal, cleanup } = createTimeoutSignal(options.timeoutMs, options.signal)
@@ -134,7 +137,7 @@ export async function generateRetrievalQueryPlan(
     const userPrompt = buildUserPrompt(turns, prompt)
 
     const response = await client.messages.create({
-      model: HAIKU_MODEL,
+      model: config.extraction.model,
       max_tokens: Math.min(QUERY_MAX_TOKENS, config.extraction.maxTokens),
       temperature: 0,
       system: [
@@ -150,9 +153,11 @@ export async function generateRetrievalQueryPlan(
       isToolUseBlock(block) && block.name === TOOL_NAME
     )?.input
     if (!toolInput) return null
-    return coerceRetrievalQueryPlan(toolInput)
+    const plan = coerceRetrievalQueryPlan(toolInput)
+    return plan
   } catch (error) {
-    if (signal?.aborted || options.signal?.aborted) return null
+    const aborted = signal?.aborted || options.signal?.aborted
+    if (aborted) return null
     console.error('[claude-memory] Retrieval query generation failed:', error)
     return null
   } finally {

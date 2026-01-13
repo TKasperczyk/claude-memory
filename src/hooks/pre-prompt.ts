@@ -27,13 +27,6 @@ import {
 } from '../lib/types.js'
 import { appendSessionTracking } from '../lib/session-tracking.js'
 
-const MAX_KEYWORD_QUERIES = 4
-const MAX_KEYWORD_ERRORS = 2
-const MAX_KEYWORD_COMMANDS = 2
-const PREPROMPT_TIMEOUT_MS = 4000
-const HAIKU_QUERY_TIMEOUT_MS = 1500
-const MAX_SEMANTIC_QUERY_CHARS = 1200
-
 function applySettingsToConfig(config: Config, settings: RetrievalSettings): Config {
   return {
     ...config,
@@ -127,7 +120,7 @@ export async function handlePrePrompt(
     } finally {
       unregister()
     }
-  }, PREPROMPT_TIMEOUT_MS, () => {
+  }, settings.prePromptTimeoutMs, () => {
     void closeMilvus()
   })
 
@@ -178,12 +171,14 @@ async function searchMemories(
   const cleanPrompt = stripNoiseWords(prompt)
   const diagnostic = options.diagnostic === true
 
-  const queryPlan = await generateRetrievalQueryPlan(
-    prompt,
-    options.transcriptPath,
-    config,
-    { signal, timeoutMs: HAIKU_QUERY_TIMEOUT_MS }
-  )
+  const queryPlan = settings.enableHaikuRetrieval
+    ? await generateRetrievalQueryPlan(
+        prompt,
+        options.transcriptPath,
+        config,
+        { signal, timeoutMs: settings.haikuQueryTimeoutMs }
+      )
+    : null
   const resolvedPrompt = queryPlan?.resolvedQuery
     ? stripNoiseWords(queryPlan.resolvedQuery)
     : cleanPrompt
@@ -194,13 +189,13 @@ async function searchMemories(
     : { ...signals, domain: effectiveDomain }
 
   const keywordQueries = queryPlan
-    ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt)
-    : buildKeywordQueries(signals, cleanPrompt)
+    ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings)
+    : buildKeywordQueries(signals, cleanPrompt, settings)
 
   const semanticBase = queryPlan?.semanticQuery?.trim()
   const semanticQuery = semanticBase
-    ? normalizeSemanticQuery(semanticBase, signalsForQuery)
-    : buildSemanticQuery(cleanPrompt, signalsForQuery)
+    ? normalizeSemanticQuery(semanticBase, signalsForQuery, settings)
+    : buildSemanticQuery(cleanPrompt, signalsForQuery, settings)
   const scope = {
     project: signals.projectRoot ?? cwd,
     domain: signalsForQuery.domain
@@ -601,7 +596,11 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / denominator
 }
 
-function normalizeKeywordQueries(queries: string[], fallback: string): string[] {
+function normalizeKeywordQueries(
+  queries: string[],
+  fallback: string,
+  settings: RetrievalSettings
+): string[] {
   const trimmed = queries.map(query => query.trim()).filter(query => query.length > 0)
   const deduped: string[] = []
   const seen = new Set<string>()
@@ -616,11 +615,15 @@ function normalizeKeywordQueries(queries: string[], fallback: string): string[] 
     deduped.push(fallback.trim())
   }
 
-  if (deduped.length <= MAX_KEYWORD_QUERIES) return deduped
-  return deduped.slice(0, MAX_KEYWORD_QUERIES)
+  if (deduped.length <= settings.maxKeywordQueries) return deduped
+  return deduped.slice(0, settings.maxKeywordQueries)
 }
 
-function normalizeSemanticQuery(semanticQuery: string, signals: ContextSignals): string {
+function normalizeSemanticQuery(
+  semanticQuery: string,
+  signals: ContextSignals,
+  settings: RetrievalSettings
+): string {
   const trimmed = semanticQuery.trim()
   if (!trimmed) return ''
 
@@ -633,12 +636,16 @@ function normalizeSemanticQuery(semanticQuery: string, signals: ContextSignals):
     parts.push(`domain: ${signals.domain}`)
   }
 
-  return truncateText(parts.join('\n'), MAX_SEMANTIC_QUERY_CHARS)
+  return truncateText(parts.join('\n'), settings.maxSemanticQueryChars)
 }
 
-function buildKeywordQueries(signals: ContextSignals, cleanPrompt: string): string[] {
-  const errorQueries = signals.errors.slice(0, MAX_KEYWORD_ERRORS)
-  const commandQueries = signals.commands.slice(0, MAX_KEYWORD_COMMANDS)
+function buildKeywordQueries(
+  signals: ContextSignals,
+  cleanPrompt: string,
+  settings: RetrievalSettings
+): string[] {
+  const errorQueries = signals.errors.slice(0, settings.maxKeywordErrors)
+  const commandQueries = signals.commands.slice(0, settings.maxKeywordCommands)
   const queries = [...errorQueries, ...commandQueries]
 
   // Fallback: if no specific signals, use the prompt itself for keyword matching.
@@ -646,11 +653,15 @@ function buildKeywordQueries(signals: ContextSignals, cleanPrompt: string): stri
     queries.push(cleanPrompt.trim())
   }
 
-  if (queries.length <= MAX_KEYWORD_QUERIES) return queries
-  return queries.slice(0, MAX_KEYWORD_QUERIES)
+  if (queries.length <= settings.maxKeywordQueries) return queries
+  return queries.slice(0, settings.maxKeywordQueries)
 }
 
-function buildSemanticQuery(prompt: string, signals: ContextSignals): string {
+function buildSemanticQuery(
+  prompt: string,
+  signals: ContextSignals,
+  settings: RetrievalSettings
+): string {
   const trimmed = prompt.trim()
   if (!trimmed) return ''
 
@@ -658,7 +669,7 @@ function buildSemanticQuery(prompt: string, signals: ContextSignals): string {
   if (signals.projectName) parts.push(`project: ${signals.projectName}`)
   if (signals.domain) parts.push(`domain: ${signals.domain}`)
 
-  return truncateText(parts.join('\n'), MAX_SEMANTIC_QUERY_CHARS)
+  return truncateText(parts.join('\n'), settings.maxSemanticQueryChars)
 }
 
 function truncateText(value: string, maxLength: number): string {
@@ -812,11 +823,12 @@ async function main(): Promise<void> {
     const projectRoot = findGitRoot(payload.cwd)
     const configRoot = projectRoot ?? payload.cwd
     const config = loadConfig(configRoot)
+    const settings = loadSettings()
 
-    const result = await handlePrePrompt(payload, config, { projectRoot })
+    const result = await handlePrePrompt(payload, config, { projectRoot, settingsOverride: settings })
 
     if (result.timedOut) {
-      console.error(`[claude-memory] Pre-prompt timed out after ${PREPROMPT_TIMEOUT_MS}ms; skipping injection.`)
+      console.error(`[claude-memory] Pre-prompt timed out after ${settings.prePromptTimeoutMs}ms; skipping injection.`)
       trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout')
       return
     }

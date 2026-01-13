@@ -10,7 +10,9 @@ export type { MaintenanceSettings, RetrievalSettings, Settings } from '../../sha
 const SETTINGS_DIR = path.join(homedir(), '.claude-memory')
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json')
 
-type SettingRule = { kind: 'int' | 'float'; min?: number; max?: number }
+type NumericSettingRule = { kind: 'int' | 'float'; min?: number; max?: number }
+type BooleanSettingRule = { kind: 'bool' }
+type SettingRule = NumericSettingRule | BooleanSettingRule
 
 const SETTING_RULES = {
   minSemanticSimilarity: { kind: 'float', min: 0, max: 1 },
@@ -20,6 +22,13 @@ const SETTING_RULES = {
   maxTokens: { kind: 'int', min: 1, max: 10000 },
   mmrLambda: { kind: 'float', min: 0, max: 1 },
   usageRatioWeight: { kind: 'float', min: 0, max: 1 },
+  enableHaikuRetrieval: { kind: 'bool' },
+  maxKeywordQueries: { kind: 'int', min: 1 },
+  maxKeywordErrors: { kind: 'int', min: 1 },
+  maxKeywordCommands: { kind: 'int', min: 1 },
+  prePromptTimeoutMs: { kind: 'int', min: 1 },
+  haikuQueryTimeoutMs: { kind: 'int', min: 1 },
+  maxSemanticQueryChars: { kind: 'int', min: 1 },
   staleDays: { kind: 'int', min: 1 },
   discoveryMaxAgeDays: { kind: 'int', min: 1 },
   lowUsageMinRetrievals: { kind: 'int', min: 1 },
@@ -58,7 +67,14 @@ export function getDefaultRetrievalSettings(): RetrievalSettings {
     maxRecords: 5,
     maxTokens: 2000,
     mmrLambda: 0.7,
-    usageRatioWeight: 0.2
+    usageRatioWeight: 0.2,
+    enableHaikuRetrieval: false,
+    maxKeywordQueries: 4,
+    maxKeywordErrors: 2,
+    maxKeywordCommands: 2,
+    prePromptTimeoutMs: 5000,
+    haikuQueryTimeoutMs: 2500,
+    maxSemanticQueryChars: 1200
   }
 }
 
@@ -139,10 +155,16 @@ function coerceSettings(value: unknown, fallback: Settings): Settings {
   }
 }
 
-type SettingValidationResult = { ok: true; normalized: number } | { ok: false; error: string }
+type SettingValidationResult = { ok: true; normalized: number | boolean } | { ok: false; error: string }
 
 export function validateSettingValue(setting: keyof Settings, value: unknown): SettingValidationResult {
   const rule = SETTING_RULES[setting]
+  if (rule.kind === 'bool') {
+    if (typeof value === 'boolean') return { ok: true, normalized: value }
+    if (value === 'true') return { ok: true, normalized: true }
+    if (value === 'false') return { ok: true, normalized: false }
+    return { ok: false, error: 'value must be a boolean' }
+  }
   return validateNumericSetting(rule, value)
 }
 
@@ -182,6 +204,37 @@ export function coerceRetrievalSettings(value: Record<string, unknown>, fallback
       SETTING_RULES.usageRatioWeight,
       value.usageRatioWeight,
       fallback.usageRatioWeight
+    ),
+    enableHaikuRetrieval: coerceBooleanValue(value.enableHaikuRetrieval, fallback.enableHaikuRetrieval),
+    maxKeywordQueries: coerceSettingValue(
+      SETTING_RULES.maxKeywordQueries,
+      value.maxKeywordQueries,
+      fallback.maxKeywordQueries
+    ),
+    maxKeywordErrors: coerceSettingValue(
+      SETTING_RULES.maxKeywordErrors,
+      value.maxKeywordErrors,
+      fallback.maxKeywordErrors
+    ),
+    maxKeywordCommands: coerceSettingValue(
+      SETTING_RULES.maxKeywordCommands,
+      value.maxKeywordCommands,
+      fallback.maxKeywordCommands
+    ),
+    prePromptTimeoutMs: coerceSettingValue(
+      SETTING_RULES.prePromptTimeoutMs,
+      value.prePromptTimeoutMs,
+      fallback.prePromptTimeoutMs
+    ),
+    haikuQueryTimeoutMs: coerceSettingValue(
+      SETTING_RULES.haikuQueryTimeoutMs,
+      value.haikuQueryTimeoutMs,
+      fallback.haikuQueryTimeoutMs
+    ),
+    maxSemanticQueryChars: coerceSettingValue(
+      SETTING_RULES.maxSemanticQueryChars,
+      value.maxSemanticQueryChars,
+      fallback.maxSemanticQueryChars
     )
   }
 }
@@ -327,12 +380,19 @@ function coerceMaintenanceSettings(value: Record<string, unknown>, fallback: Mai
   }
 }
 
-function coerceSettingValue(rule: SettingRule, value: unknown, fallback: number): number {
+function coerceSettingValue(rule: NumericSettingRule, value: unknown, fallback: number): number {
   const validation = validateNumericSetting(rule, value)
-  return validation.ok ? validation.normalized : fallback
+  return validation.ok ? validation.normalized as number : fallback
 }
 
-function validateNumericSetting(rule: SettingRule, value: unknown): SettingValidationResult {
+function coerceBooleanValue(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value
+  if (value === 'true') return true
+  if (value === 'false') return false
+  return fallback
+}
+
+function validateNumericSetting(rule: NumericSettingRule, value: unknown): SettingValidationResult {
   const parsed = parseNumber(value)
   if (parsed === null) {
     return { ok: false, error: 'value must be a number' }

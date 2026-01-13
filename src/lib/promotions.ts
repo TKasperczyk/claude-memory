@@ -14,7 +14,6 @@ const SKILL_SUCCESS_THRESHOLD = 5
 const CLAUDE_MD_SUCCESS_THRESHOLD = 3
 const SKILL_NAME_MAX_LENGTH = 64
 const PROJECT_SLUG_MAX_LENGTH = 80
-const PROMOTION_MODEL = 'claude-haiku-4-5-20251001'
 const PROMOTION_TOOL_NAME = 'emit_promotion_decisions'
 const PROMOTION_MAX_TOKENS = 1600
 const PROMOTION_BATCH_SIZE = 8
@@ -772,7 +771,7 @@ async function requestPromotionDecisions(
   config: Config
 ): Promise<PromotionDecision[]> {
   const response = await client.messages.create({
-    model: PROMOTION_MODEL,
+    model: config.extraction.model,
     max_tokens: Math.min(PROMOTION_MAX_TOKENS, config.extraction.maxTokens),
     temperature: 0,
     system: [
