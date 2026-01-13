@@ -10,6 +10,46 @@ export type { MaintenanceSettings, RetrievalSettings, Settings } from '../../sha
 const SETTINGS_DIR = path.join(homedir(), '.claude-memory')
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json')
 
+type SettingRule = { kind: 'int' | 'float'; min?: number; max?: number }
+
+const SETTING_RULES = {
+  minSemanticSimilarity: { kind: 'float', min: 0, max: 1 },
+  minScore: { kind: 'float', min: 0, max: 1 },
+  minSemanticOnlyScore: { kind: 'float', min: 0, max: 1 },
+  maxRecords: { kind: 'int', min: 1, max: 20 },
+  maxTokens: { kind: 'int', min: 1, max: 10000 },
+  mmrLambda: { kind: 'float', min: 0, max: 1 },
+  usageRatioWeight: { kind: 'float', min: 0, max: 1 },
+  staleDays: { kind: 'int', min: 1 },
+  discoveryMaxAgeDays: { kind: 'int', min: 1 },
+  lowUsageMinRetrievals: { kind: 'int', min: 1 },
+  lowUsageRatioThreshold: { kind: 'float', min: 0, max: 1 },
+  lowUsageHighRetrievalMin: { kind: 'int', min: 1 },
+  consolidationSearchLimit: { kind: 'int', min: 1 },
+  consolidationMaxClusterSize: { kind: 'int', min: 1 },
+  consolidationThreshold: { kind: 'float', min: 0, max: 1 },
+  consolidationTextSimilarityRatio: { kind: 'float', min: 0, max: 1 },
+  conflictSimilarityThreshold: { kind: 'float', min: 0, max: 1 },
+  conflictCheckBatchSize: { kind: 'int', min: 1 },
+  contradictionSimilarityThreshold: { kind: 'float', min: 0, max: 1 },
+  contradictionSearchLimit: { kind: 'int', min: 1 },
+  contradictionBatchSize: { kind: 'int', min: 1 },
+  globalPromotionBatchSize: { kind: 'int', min: 1 },
+  globalPromotionRecheckDays: { kind: 'int', min: 1 },
+  globalPromotionMinSuccessCount: { kind: 'int', min: 1 },
+  globalPromotionMinUsageRatio: { kind: 'float', min: 0, max: 1 },
+  globalPromotionMinRetrievalsForUsageRatio: { kind: 'int', min: 1 },
+  warningClusterSimilarityThreshold: { kind: 'float', min: 0, max: 1 },
+  warningClusterLimit: { kind: 'int', min: 1 },
+  warningSynthesisMinFailures: { kind: 'int', min: 1 },
+  warningSynthesisBatchSize: { kind: 'int', min: 1 },
+  warningSynthesisRecheckDays: { kind: 'int', min: 1 },
+  procedureStepCheckCount: { kind: 'int', min: 1 },
+  extractionDedupThreshold: { kind: 'float', min: 0, max: 1 },
+  reviewSimilarThreshold: { kind: 'float', min: 0, max: 1 },
+  reviewDuplicateWarningThreshold: { kind: 'float', min: 0, max: 1 }
+} satisfies Record<keyof Settings, SettingRule>
+
 export function getDefaultRetrievalSettings(): RetrievalSettings {
   return {
     minSemanticSimilarity: 0.70,
@@ -99,83 +139,221 @@ function coerceSettings(value: unknown, fallback: Settings): Settings {
   }
 }
 
+type SettingValidationResult = { ok: true; normalized: number } | { ok: false; error: string }
+
+export function validateSettingValue(setting: keyof Settings, value: unknown): SettingValidationResult {
+  const rule = SETTING_RULES[setting]
+  return validateNumericSetting(rule, value)
+}
+
 export function coerceRetrievalSettings(value: Record<string, unknown>, fallback: RetrievalSettings): RetrievalSettings {
   return {
-    minSemanticSimilarity: coerceFloat(value.minSemanticSimilarity, fallback.minSemanticSimilarity, 0, 1),
-    minScore: coerceFloat(value.minScore, fallback.minScore, 0, 1),
-    minSemanticOnlyScore: coerceFloat(value.minSemanticOnlyScore, fallback.minSemanticOnlyScore, 0, 1),
-    maxRecords: coerceInt(value.maxRecords, fallback.maxRecords, 1),
-    maxTokens: coerceInt(value.maxTokens, fallback.maxTokens, 1),
-    mmrLambda: coerceFloat(value.mmrLambda, fallback.mmrLambda, 0, 1),
-    usageRatioWeight: coerceFloat(value.usageRatioWeight, fallback.usageRatioWeight, 0, 1)
+    minSemanticSimilarity: coerceSettingValue(
+      SETTING_RULES.minSemanticSimilarity,
+      value.minSemanticSimilarity,
+      fallback.minSemanticSimilarity
+    ),
+    minScore: coerceSettingValue(
+      SETTING_RULES.minScore,
+      value.minScore,
+      fallback.minScore
+    ),
+    minSemanticOnlyScore: coerceSettingValue(
+      SETTING_RULES.minSemanticOnlyScore,
+      value.minSemanticOnlyScore,
+      fallback.minSemanticOnlyScore
+    ),
+    maxRecords: coerceSettingValue(
+      SETTING_RULES.maxRecords,
+      value.maxRecords,
+      fallback.maxRecords
+    ),
+    maxTokens: coerceSettingValue(
+      SETTING_RULES.maxTokens,
+      value.maxTokens,
+      fallback.maxTokens
+    ),
+    mmrLambda: coerceSettingValue(
+      SETTING_RULES.mmrLambda,
+      value.mmrLambda,
+      fallback.mmrLambda
+    ),
+    usageRatioWeight: coerceSettingValue(
+      SETTING_RULES.usageRatioWeight,
+      value.usageRatioWeight,
+      fallback.usageRatioWeight
+    )
   }
 }
 
 function coerceMaintenanceSettings(value: Record<string, unknown>, fallback: MaintenanceSettings): MaintenanceSettings {
   return {
-    staleDays: coerceInt(value.staleDays, fallback.staleDays, 1),
-    discoveryMaxAgeDays: coerceInt(value.discoveryMaxAgeDays, fallback.discoveryMaxAgeDays, 1),
-    lowUsageMinRetrievals: coerceInt(value.lowUsageMinRetrievals, fallback.lowUsageMinRetrievals, 1),
-    lowUsageRatioThreshold: coerceFloat(value.lowUsageRatioThreshold, fallback.lowUsageRatioThreshold, 0, 1),
-    lowUsageHighRetrievalMin: coerceInt(value.lowUsageHighRetrievalMin, fallback.lowUsageHighRetrievalMin, 1),
-    consolidationSearchLimit: coerceInt(value.consolidationSearchLimit, fallback.consolidationSearchLimit, 1),
-    consolidationMaxClusterSize: coerceInt(value.consolidationMaxClusterSize, fallback.consolidationMaxClusterSize, 1),
-    consolidationThreshold: coerceFloat(value.consolidationThreshold, fallback.consolidationThreshold, 0, 1),
-    consolidationTextSimilarityRatio: coerceFloat(
+    staleDays: coerceSettingValue(SETTING_RULES.staleDays, value.staleDays, fallback.staleDays),
+    discoveryMaxAgeDays: coerceSettingValue(
+      SETTING_RULES.discoveryMaxAgeDays,
+      value.discoveryMaxAgeDays,
+      fallback.discoveryMaxAgeDays
+    ),
+    lowUsageMinRetrievals: coerceSettingValue(
+      SETTING_RULES.lowUsageMinRetrievals,
+      value.lowUsageMinRetrievals,
+      fallback.lowUsageMinRetrievals
+    ),
+    lowUsageRatioThreshold: coerceSettingValue(
+      SETTING_RULES.lowUsageRatioThreshold,
+      value.lowUsageRatioThreshold,
+      fallback.lowUsageRatioThreshold
+    ),
+    lowUsageHighRetrievalMin: coerceSettingValue(
+      SETTING_RULES.lowUsageHighRetrievalMin,
+      value.lowUsageHighRetrievalMin,
+      fallback.lowUsageHighRetrievalMin
+    ),
+    consolidationSearchLimit: coerceSettingValue(
+      SETTING_RULES.consolidationSearchLimit,
+      value.consolidationSearchLimit,
+      fallback.consolidationSearchLimit
+    ),
+    consolidationMaxClusterSize: coerceSettingValue(
+      SETTING_RULES.consolidationMaxClusterSize,
+      value.consolidationMaxClusterSize,
+      fallback.consolidationMaxClusterSize
+    ),
+    consolidationThreshold: coerceSettingValue(
+      SETTING_RULES.consolidationThreshold,
+      value.consolidationThreshold,
+      fallback.consolidationThreshold
+    ),
+    consolidationTextSimilarityRatio: coerceSettingValue(
+      SETTING_RULES.consolidationTextSimilarityRatio,
       value.consolidationTextSimilarityRatio,
-      fallback.consolidationTextSimilarityRatio,
-      0,
-      1
+      fallback.consolidationTextSimilarityRatio
     ),
-    conflictSimilarityThreshold: coerceFloat(value.conflictSimilarityThreshold, fallback.conflictSimilarityThreshold, 0, 1),
-    conflictCheckBatchSize: coerceInt(value.conflictCheckBatchSize, fallback.conflictCheckBatchSize, 1),
-    contradictionSimilarityThreshold: coerceFloat(value.contradictionSimilarityThreshold, fallback.contradictionSimilarityThreshold, 0, 1),
-    contradictionSearchLimit: coerceInt(value.contradictionSearchLimit, fallback.contradictionSearchLimit, 1),
-    contradictionBatchSize: coerceInt(value.contradictionBatchSize, fallback.contradictionBatchSize, 1),
-    globalPromotionBatchSize: coerceInt(value.globalPromotionBatchSize, fallback.globalPromotionBatchSize, 1),
-    globalPromotionRecheckDays: coerceInt(value.globalPromotionRecheckDays, fallback.globalPromotionRecheckDays, 1),
-    globalPromotionMinSuccessCount: coerceInt(value.globalPromotionMinSuccessCount, fallback.globalPromotionMinSuccessCount, 1),
-    globalPromotionMinUsageRatio: coerceFloat(value.globalPromotionMinUsageRatio, fallback.globalPromotionMinUsageRatio, 0, 1),
-    globalPromotionMinRetrievalsForUsageRatio: coerceInt(
+    conflictSimilarityThreshold: coerceSettingValue(
+      SETTING_RULES.conflictSimilarityThreshold,
+      value.conflictSimilarityThreshold,
+      fallback.conflictSimilarityThreshold
+    ),
+    conflictCheckBatchSize: coerceSettingValue(
+      SETTING_RULES.conflictCheckBatchSize,
+      value.conflictCheckBatchSize,
+      fallback.conflictCheckBatchSize
+    ),
+    contradictionSimilarityThreshold: coerceSettingValue(
+      SETTING_RULES.contradictionSimilarityThreshold,
+      value.contradictionSimilarityThreshold,
+      fallback.contradictionSimilarityThreshold
+    ),
+    contradictionSearchLimit: coerceSettingValue(
+      SETTING_RULES.contradictionSearchLimit,
+      value.contradictionSearchLimit,
+      fallback.contradictionSearchLimit
+    ),
+    contradictionBatchSize: coerceSettingValue(
+      SETTING_RULES.contradictionBatchSize,
+      value.contradictionBatchSize,
+      fallback.contradictionBatchSize
+    ),
+    globalPromotionBatchSize: coerceSettingValue(
+      SETTING_RULES.globalPromotionBatchSize,
+      value.globalPromotionBatchSize,
+      fallback.globalPromotionBatchSize
+    ),
+    globalPromotionRecheckDays: coerceSettingValue(
+      SETTING_RULES.globalPromotionRecheckDays,
+      value.globalPromotionRecheckDays,
+      fallback.globalPromotionRecheckDays
+    ),
+    globalPromotionMinSuccessCount: coerceSettingValue(
+      SETTING_RULES.globalPromotionMinSuccessCount,
+      value.globalPromotionMinSuccessCount,
+      fallback.globalPromotionMinSuccessCount
+    ),
+    globalPromotionMinUsageRatio: coerceSettingValue(
+      SETTING_RULES.globalPromotionMinUsageRatio,
+      value.globalPromotionMinUsageRatio,
+      fallback.globalPromotionMinUsageRatio
+    ),
+    globalPromotionMinRetrievalsForUsageRatio: coerceSettingValue(
+      SETTING_RULES.globalPromotionMinRetrievalsForUsageRatio,
       value.globalPromotionMinRetrievalsForUsageRatio,
-      fallback.globalPromotionMinRetrievalsForUsageRatio,
-      1
+      fallback.globalPromotionMinRetrievalsForUsageRatio
     ),
-    warningClusterSimilarityThreshold: coerceFloat(
+    warningClusterSimilarityThreshold: coerceSettingValue(
+      SETTING_RULES.warningClusterSimilarityThreshold,
       value.warningClusterSimilarityThreshold,
-      fallback.warningClusterSimilarityThreshold,
-      0,
-      1
+      fallback.warningClusterSimilarityThreshold
     ),
-    warningClusterLimit: coerceInt(value.warningClusterLimit, fallback.warningClusterLimit, 1),
-    warningSynthesisMinFailures: coerceInt(value.warningSynthesisMinFailures, fallback.warningSynthesisMinFailures, 1),
-    warningSynthesisBatchSize: coerceInt(value.warningSynthesisBatchSize, fallback.warningSynthesisBatchSize, 1),
-    warningSynthesisRecheckDays: coerceInt(value.warningSynthesisRecheckDays, fallback.warningSynthesisRecheckDays, 1),
-    procedureStepCheckCount: coerceInt(value.procedureStepCheckCount, fallback.procedureStepCheckCount, 1),
-    extractionDedupThreshold: coerceFloat(value.extractionDedupThreshold, fallback.extractionDedupThreshold, 0, 1),
-    reviewSimilarThreshold: coerceFloat(value.reviewSimilarThreshold, fallback.reviewSimilarThreshold, 0, 1),
-    reviewDuplicateWarningThreshold: coerceFloat(
+    warningClusterLimit: coerceSettingValue(
+      SETTING_RULES.warningClusterLimit,
+      value.warningClusterLimit,
+      fallback.warningClusterLimit
+    ),
+    warningSynthesisMinFailures: coerceSettingValue(
+      SETTING_RULES.warningSynthesisMinFailures,
+      value.warningSynthesisMinFailures,
+      fallback.warningSynthesisMinFailures
+    ),
+    warningSynthesisBatchSize: coerceSettingValue(
+      SETTING_RULES.warningSynthesisBatchSize,
+      value.warningSynthesisBatchSize,
+      fallback.warningSynthesisBatchSize
+    ),
+    warningSynthesisRecheckDays: coerceSettingValue(
+      SETTING_RULES.warningSynthesisRecheckDays,
+      value.warningSynthesisRecheckDays,
+      fallback.warningSynthesisRecheckDays
+    ),
+    procedureStepCheckCount: coerceSettingValue(
+      SETTING_RULES.procedureStepCheckCount,
+      value.procedureStepCheckCount,
+      fallback.procedureStepCheckCount
+    ),
+    extractionDedupThreshold: coerceSettingValue(
+      SETTING_RULES.extractionDedupThreshold,
+      value.extractionDedupThreshold,
+      fallback.extractionDedupThreshold
+    ),
+    reviewSimilarThreshold: coerceSettingValue(
+      SETTING_RULES.reviewSimilarThreshold,
+      value.reviewSimilarThreshold,
+      fallback.reviewSimilarThreshold
+    ),
+    reviewDuplicateWarningThreshold: coerceSettingValue(
+      SETTING_RULES.reviewDuplicateWarningThreshold,
       value.reviewDuplicateWarningThreshold,
-      fallback.reviewDuplicateWarningThreshold,
-      0,
-      1
+      fallback.reviewDuplicateWarningThreshold
     )
   }
 }
 
-function coerceFloat(value: unknown, fallback: number, min: number, max: number): number {
-  const parsed = parseNumber(value)
-  if (parsed === null) return fallback
-  if (parsed < min || parsed > max) return fallback
-  return parsed
+function coerceSettingValue(rule: SettingRule, value: unknown, fallback: number): number {
+  const validation = validateNumericSetting(rule, value)
+  return validation.ok ? validation.normalized : fallback
 }
 
-function coerceInt(value: unknown, fallback: number, min: number): number {
+function validateNumericSetting(rule: SettingRule, value: unknown): SettingValidationResult {
   const parsed = parseNumber(value)
-  if (parsed === null) return fallback
-  const rounded = Math.trunc(parsed)
-  if (rounded < min) return fallback
-  return rounded
+  if (parsed === null) {
+    return { ok: false, error: 'value must be a number' }
+  }
+
+  if (rule.kind === 'int' && !Number.isInteger(parsed)) {
+    return { ok: false, error: 'value must be a whole number' }
+  }
+
+  if (rule.min !== undefined && rule.max !== undefined) {
+    if (parsed < rule.min || parsed > rule.max) {
+      return { ok: false, error: `value must be between ${rule.min} and ${rule.max}` }
+    }
+  } else if (rule.min !== undefined && parsed < rule.min) {
+    return { ok: false, error: `value must be >= ${rule.min}` }
+  } else if (rule.max !== undefined && parsed > rule.max) {
+    return { ok: false, error: `value must be <= ${rule.max}` }
+  }
+
+  const normalized = rule.kind === 'int' ? Math.trunc(parsed) : parsed
+  return { ok: true, normalized }
 }
 
 function parseNumber(value: unknown): number | null {

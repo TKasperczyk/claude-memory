@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, RotateCcw, Save } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
+import { ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
@@ -8,6 +8,7 @@ import {
   RETRIEVAL_FIELDS,
   SettingsPanel,
   isSettingsModified,
+  validateFieldValue,
   type RetrievalSettingsFormState,
   type SettingsField
 } from '@/components/SettingsPanel'
@@ -16,6 +17,9 @@ import { resetSettings, updateSettings, type Settings } from '@/lib/api'
 
 type SettingsKey = keyof Settings
 type FormState = Record<SettingsKey, string>
+type FormErrors = Partial<Record<SettingsKey, string>>
+type StatusContext = 'save' | 'reset'
+type Status = { type: 'saving' | 'success' | 'error'; text: string; context: StatusContext }
 
 type SettingsGroup = {
   id: string
@@ -306,6 +310,46 @@ const ALL_FIELDS: SettingsField<SettingsKey>[] = [
   ...RETRIEVAL_FIELDS,
   ...MAINTENANCE_GROUPS.flatMap(group => group.fields)
 ]
+const AUTO_SAVE_DELAY_MS = 500
+const SUCCESS_FADE_DELAY_MS = 1400
+const SUCCESS_CLEAR_DELAY_MS = 1700
+const SETTINGS_FIELD_PREFIX = 'settings-field-'
+const SETTINGS_FIELD_LABEL_SUFFIX = '-label'
+const SETTINGS_FIELD_SLIDER_SUFFIX = '-slider'
+const SETTINGS_KEY_SET = new Set<SettingsKey>(ALL_FIELDS.map(field => field.key))
+
+function extractSettingsKey(rawId: string | null): SettingsKey | null {
+  if (!rawId || !rawId.startsWith(SETTINGS_FIELD_PREFIX)) return null
+  let key = rawId.slice(SETTINGS_FIELD_PREFIX.length)
+  if (key.endsWith(SETTINGS_FIELD_SLIDER_SUFFIX)) {
+    key = key.slice(0, -SETTINGS_FIELD_SLIDER_SUFFIX.length)
+  } else if (key.endsWith(SETTINGS_FIELD_LABEL_SUFFIX)) {
+    key = key.slice(0, -SETTINGS_FIELD_LABEL_SUFFIX.length)
+  }
+  return SETTINGS_KEY_SET.has(key as SettingsKey) ? (key as SettingsKey) : null
+}
+
+function getSettingsKeyFromElement(target: EventTarget | null): SettingsKey | null {
+  if (!(target instanceof HTMLElement)) return null
+  const directKey = extractSettingsKey(target.getAttribute('id'))
+  if (directKey) return directKey
+  const labelledBy = target.getAttribute('aria-labelledby')
+  if (!labelledBy) return null
+  for (const labelId of labelledBy.split(/\s+/)) {
+    const key = extractSettingsKey(labelId)
+    if (key) return key
+  }
+  return null
+}
+
+function isFieldSynced(rawInput: string, field: SettingsField<SettingsKey>, settings: Settings): boolean {
+  const trimmed = rawInput.trim()
+  if (trimmed === '') return false
+  const { value, error } = validateFieldValue(field, trimmed)
+  if (error || value === undefined) return false
+  const normalized = field.kind === 'int' ? Math.trunc(value) : value
+  return normalized === settings[field.key]
+}
 
 function toFormState(settings: Partial<Settings> | null): FormState {
   return ALL_FIELDS.reduce((acc, field) => {
@@ -315,28 +359,37 @@ function toFormState(settings: Partial<Settings> | null): FormState {
   }, {} as FormState)
 }
 
-function parseFormState(state: FormState): Settings | null {
-  const parsed = {} as Settings
+function parseFormState(
+  state: FormState,
+  options: { requireAll?: boolean } = {}
+): { values: Partial<Settings>; errors: FormErrors; isValid: boolean } {
+  const values: Partial<Settings> = {}
+  const errors: FormErrors = {}
+  const requireAll = options.requireAll ?? false
 
   for (const field of ALL_FIELDS) {
     const rawInput = state[field.key].trim()
-    if (rawInput === '') return null
-    const rawValue = Number(rawInput)
-    if (!Number.isFinite(rawValue)) return null
+    if (rawInput === '') {
+      if (requireAll) {
+        errors[field.key] = 'Required.'
+      }
+      continue
+    }
 
-    if (field.kind === 'int') {
-      const value = Math.trunc(rawValue)
-      if (field.min !== undefined && value < field.min) return null
-      if (field.max !== undefined && value > field.max) return null
-      parsed[field.key] = value
-    } else {
-      if (field.min !== undefined && rawValue < field.min) return null
-      if (field.max !== undefined && rawValue > field.max) return null
-      parsed[field.key] = rawValue
+    const { value, error } = validateFieldValue(field, rawInput)
+    if (error) {
+      errors[field.key] = error
+      continue
+    }
+    if (value !== undefined) {
+      values[field.key] = field.kind === 'int' ? Math.trunc(value) : value
     }
   }
 
-  return parsed
+  const isValid = Object.keys(errors).length === 0
+    && (!requireAll || Object.keys(values).length === ALL_FIELDS.length)
+
+  return { values, errors, isValid }
 }
 
 export default function Settings() {
@@ -345,33 +398,90 @@ export default function Settings() {
   const { data: defaultsResponse } = useSettingsDefaults()
   const defaultSettings = defaultsResponse?.settings ?? null
   const [form, setForm] = useState<FormState>(() => toFormState(settings ?? defaultSettings ?? null))
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [status, setStatus] = useState<Status | null>(null)
+  const [statusFading, setStatusFading] = useState(false)
+  const [isAutoSaving, setIsAutoSaving] = useState(false)
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(MAINTENANCE_GROUPS.map(group => [group.id, true]))
   )
+  const formRef = useRef(form)
+  const settingsRef = useRef<Settings | null>(settings ?? null)
+  const lastSyncedSettingsRef = useRef<Settings | null>(settings ?? defaultSettings ?? null)
+  const saveInFlightRef = useRef(false)
+  const queuedSaveRef = useRef(false)
+  const isMountedRef = useRef(true)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const editingFieldsRef = useRef<Set<SettingsKey>>(new Set())
+
+  const handleFocusCapture = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    const key = getSettingsKeyFromElement(event.target)
+    if (key) {
+      editingFieldsRef.current.add(key)
+    }
+  }, [])
+
+  const handleBlurCapture = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    const key = getSettingsKeyFromElement(event.target)
+    if (!key) return
+    const nextKey = getSettingsKeyFromElement(event.relatedTarget)
+    if (nextKey === key) return
+    editingFieldsRef.current.delete(key)
+  }, [])
 
   useEffect(() => {
-    if (settings) {
-      setForm(toFormState(settings))
-    }
+    formRef.current = form
+  }, [form])
+
+  useEffect(() => {
+    settingsRef.current = settings ?? null
   }, [settings])
 
   useEffect(() => {
-    if (!settings && defaultSettings) {
-      setForm(toFormState(defaultSettings))
+    return () => {
+      isMountedRef.current = false
+      abortControllerRef.current?.abort()
     }
+  }, [])
+
+  useEffect(() => {
+    const nextSettings = settings ?? defaultSettings ?? null
+    if (!nextSettings) return
+
+    const previousSettings = lastSyncedSettingsRef.current
+    setForm(prev => {
+      let next = prev
+      for (const field of ALL_FIELDS) {
+        const key = field.key
+        if (editingFieldsRef.current.has(key)) continue
+        if (previousSettings && !isFieldSynced(prev[key], field, previousSettings)) continue
+        const formatted = field.kind === 'int'
+          ? String(Math.trunc(nextSettings[key]))
+          : String(nextSettings[key])
+        if (prev[key] === formatted) continue
+        if (next === prev) {
+          next = { ...prev }
+        }
+        next[key] = formatted
+      }
+      return next
+    })
+    lastSyncedSettingsRef.current = nextSettings
   }, [settings, defaultSettings])
 
   useEffect(() => {
-    if (!message) return
-    const timer = setTimeout(() => setMessage(null), 3500)
-    return () => clearTimeout(timer)
-  }, [message])
+    if (!status || status.type !== 'success') {
+      setStatusFading(false)
+      return
+    }
+    setStatusFading(false)
+    const fadeTimer = setTimeout(() => setStatusFading(true), SUCCESS_FADE_DELAY_MS)
+    const clearTimer = setTimeout(() => setStatus(null), SUCCESS_CLEAR_DELAY_MS)
+    return () => {
+      clearTimeout(fadeTimer)
+      clearTimeout(clearTimer)
+    }
+  }, [status])
 
-  const initialForm = useMemo(() => (settings ? toFormState(settings) : null), [settings])
-  const isDirty = initialForm
-    ? ALL_FIELDS.some(field => form[field.key] !== initialForm[field.key])
-    : true
   const retrievalForm = useMemo(() => {
     return RETRIEVAL_FIELDS.reduce((acc, field) => {
       acc[field.key] = form[field.key]
@@ -379,41 +489,154 @@ export default function Settings() {
     }, {} as RetrievalSettingsFormState)
   }, [form])
 
-  const saveMutation = useMutation({
-    mutationFn: updateSettings,
-    onSuccess: data => {
-      queryClient.setQueryData(['settings'], data)
-      setForm(toFormState(data))
-      setMessage({ type: 'success', text: 'Settings saved.' })
-    },
-    onError: err => {
-      setMessage({ type: 'error', text: (err as Error).message || 'Failed to save settings.' })
-    }
-  })
+  const formValidation = useMemo(() => parseFormState(form, { requireAll: true }), [form])
+  const formErrors = formValidation.errors
 
   const resetMutation = useMutation({
     mutationFn: resetSettings,
     onSuccess: data => {
       queryClient.setQueryData(['settings'], data)
+      settingsRef.current = data
+      lastSyncedSettingsRef.current = data
       setForm(toFormState(data))
-      setMessage({ type: 'success', text: 'Settings reset to defaults.' })
+      setStatus({ type: 'success', text: 'Settings reset to defaults.', context: 'reset' })
     },
     onError: err => {
-      setMessage({ type: 'error', text: (err as Error).message || 'Failed to reset settings.' })
+      setStatus({
+        type: 'error',
+        text: (err as Error).message || 'Failed to reset settings.',
+        context: 'reset'
+      })
     }
   })
 
-  const handleSave = () => {
-    const parsed = parseFormState(form)
-    if (!parsed) {
-      setMessage({ type: 'error', text: 'Enter valid values for all settings.' })
+  const triggerAutoSave = useCallback(async () => {
+    if (!isMountedRef.current) return
+    if (saveInFlightRef.current) {
+      queuedSaveRef.current = true
       return
     }
-    saveMutation.mutate(parsed)
-  }
+    const currentSettings = settingsRef.current
+    const currentForm = formRef.current
+    if (!currentSettings) {
+      if (isMountedRef.current) {
+        setIsAutoSaving(false)
+      }
+      return
+    }
+    const validation = parseFormState(currentForm, { requireAll: true })
+    if (!validation.isValid) {
+      if (isMountedRef.current) {
+        setIsAutoSaving(false)
+      }
+      return
+    }
+    const parsed = validation.values as Settings
+    const updates = ALL_FIELDS.filter(field => parsed[field.key] !== currentSettings[field.key])
+    if (updates.length === 0) {
+      if (isMountedRef.current) {
+        setIsAutoSaving(false)
+      }
+      return
+    }
+
+    saveInFlightRef.current = true
+    if (isMountedRef.current) {
+      setIsAutoSaving(true)
+      setStatus({ type: 'saving', text: 'Saving...', context: 'save' })
+    }
+    let hadError = false
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
+    const payload: Partial<Settings> = {}
+    for (const field of updates) {
+      payload[field.key] = parsed[field.key]
+    }
+
+    try {
+      const nextSettings = await updateSettings(payload, { signal: abortController.signal })
+      queryClient.setQueryData(['settings'], nextSettings)
+      settingsRef.current = nextSettings
+      lastSyncedSettingsRef.current = nextSettings
+      if (isMountedRef.current) {
+        setForm(prev => {
+          let next = prev
+          for (const field of updates) {
+            const key = field.key
+            const rawInput = prev[key].trim()
+            const currentNumber = Number(rawInput)
+            if (!Number.isFinite(currentNumber)) continue
+            const normalized = field.kind === 'int' ? Math.trunc(currentNumber) : currentNumber
+            if (normalized !== parsed[key]) continue
+            const formatted = field.kind === 'int'
+              ? String(Math.trunc(nextSettings[key]))
+              : String(nextSettings[key])
+            if (next[key] === formatted) continue
+            if (next === prev) {
+              next = { ...prev }
+            }
+            next[key] = formatted
+          }
+          return next
+        })
+        setStatus({ type: 'success', text: 'Saved', context: 'save' })
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return
+      }
+      hadError = true
+      if (isMountedRef.current) {
+        setStatus({
+          type: 'error',
+          text: (err as Error).message || 'Failed to save settings.',
+          context: 'save'
+        })
+      }
+    } finally {
+      saveInFlightRef.current = false
+      if (abortControllerRef.current === abortController) {
+        abortControllerRef.current = null
+      }
+      if (!isMountedRef.current) {
+        queuedSaveRef.current = false
+        return
+      }
+      if (queuedSaveRef.current && !hadError) {
+        queuedSaveRef.current = false
+        void triggerAutoSave()
+        return
+      }
+      queuedSaveRef.current = false
+      setIsAutoSaving(false)
+    }
+  }, [queryClient])
+
+  useEffect(() => {
+    if (!settings) return
+    if (!formValidation.isValid) return
+    const parsed = formValidation.values as Settings
+    const hasChanges = ALL_FIELDS.some(field => parsed[field.key] !== settings[field.key])
+    if (!hasChanges) return
+    const timer = setTimeout(() => {
+      void triggerAutoSave()
+    }, AUTO_SAVE_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [formValidation, settings, triggerAutoSave])
+
+  const handleFieldChange = useCallback((key: SettingsKey, value: string) => {
+    formRef.current = { ...formRef.current, [key]: value }
+    setForm(prev => ({ ...prev, [key]: value }))
+    setStatus(prev => (prev?.type === 'saving' ? prev : null))
+    setStatusFading(false)
+  }, [])
 
   const handleReset = () => {
     resetMutation.mutate()
+  }
+
+  const handleRetry = () => {
+    void triggerAutoSave()
   }
 
   const toggleGroup = (groupId: string) => {
@@ -421,7 +644,7 @@ export default function Settings() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" onFocusCapture={handleFocusCapture} onBlurCapture={handleBlurCapture}>
       <PageHeader
         title="Settings"
         description="Tune retrieval, maintenance, and similarity thresholds"
@@ -451,9 +674,10 @@ export default function Settings() {
           title="Retrieval settings"
           description="Control similarity filters and injected context limits."
           values={retrievalForm}
-          onChange={(key, value) => setForm(prev => ({ ...prev, [key]: value }))}
+          onChange={handleFieldChange}
           savedValues={defaultSettings ?? undefined}
           defaultValues={defaultSettings ?? undefined}
+          errors={formErrors}
           showModifiedBadge
           showFieldModified
           disabled={isPending}
@@ -475,7 +699,8 @@ export default function Settings() {
             const groupModified = isSettingsModified({
               fields: group.fields,
               values: form,
-              baselineValues: defaultSettings ?? undefined
+              baselineValues: defaultSettings ?? undefined,
+              errors: formErrors
             })
             return (
               <div key={group.id} className="rounded-xl border border-border bg-background/40">
@@ -504,9 +729,10 @@ export default function Settings() {
                     <SettingsPanel
                       fields={group.fields}
                       values={form}
-                      onChange={(key, value) => setForm(prev => ({ ...prev, [key]: value }))}
+                      onChange={handleFieldChange}
                       savedValues={defaultSettings ?? undefined}
                       defaultValues={defaultSettings ?? undefined}
+                      errors={formErrors}
                       showFieldModified
                       disabled={isPending}
                       variant="full"
@@ -522,26 +748,34 @@ export default function Settings() {
 
       <div className="flex flex-wrap items-center gap-3">
         <button
-          onClick={handleSave}
-          disabled={isPending || saveMutation.isPending || !isDirty}
-          className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
-        >
-          {saveMutation.isPending ? <ButtonSpinner size="sm" /> : <Save className="w-4 h-4" />}
-          {saveMutation.isPending ? 'Saving...' : 'Save settings'}
-        </button>
-
-        <button
           onClick={handleReset}
-          disabled={isPending || resetMutation.isPending}
+          disabled={isPending || resetMutation.isPending || isAutoSaving}
           className="flex items-center gap-2 h-9 px-4 rounded-md border border-border text-sm font-medium text-foreground hover:bg-secondary/60 transition-base disabled:opacity-50"
         >
           {resetMutation.isPending ? <ButtonSpinner size="sm" /> : <RotateCcw className="w-4 h-4" />}
           {resetMutation.isPending ? 'Resetting...' : 'Reset to defaults'}
         </button>
 
-        {message && (
-          <div className={`text-sm ${message.type === 'success' ? 'text-emerald-400' : 'text-destructive'}`}>
-            {message.text}
+        {status && (
+          <div
+            className={`text-sm transition-opacity duration-300 ${statusFading ? 'opacity-0' : 'opacity-100'} ${
+              status.type === 'error'
+                ? 'text-destructive'
+                : status.type === 'success'
+                  ? 'text-emerald-400'
+                  : 'text-muted-foreground'
+            }`}
+          >
+            <span>{status.text}</span>
+            {status.type === 'error' && status.context === 'save' && (
+              <button
+                type="button"
+                onClick={handleRetry}
+                className="ml-2 text-xs font-medium text-destructive underline-offset-2 hover:underline"
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
       </div>

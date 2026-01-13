@@ -242,10 +242,18 @@ export function fetchSettingsDefaults(): Promise<SettingsDefaultsResponse> {
   return request('/settings/defaults')
 }
 
-export function updateSettings(settings: Partial<Settings>): Promise<Settings> {
+export function updateSettings(settings: Partial<Settings>, options?: RequestInit): Promise<Settings> {
   return request('/settings', {
     method: 'PUT',
-    body: JSON.stringify(settings)
+    body: JSON.stringify(settings),
+    ...options
+  })
+}
+
+export function updateSetting(setting: string, value: string | number): Promise<Settings> {
+  return requestWithStatus('/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({ setting, value })
   })
 }
 

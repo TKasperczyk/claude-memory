@@ -18,7 +18,8 @@ import {
   updateSettings,
   type MemoryRecord,
   type PreviewResponse,
-  type RetrievalSettings
+  type RetrievalSettings,
+  type Settings
 } from '@/lib/api'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 import { useSettings, useSettingsDefaults } from '@/hooks/queries'
@@ -120,8 +121,8 @@ export default function ContextPreview() {
   } = settingsValidation
   const hasErrors = Object.keys(settingsErrors).length > 0
 
-  const saveMutation = useMutation({
-    mutationFn: updateSettings,
+  const saveMutation = useMutation<Settings, Error, Partial<Settings>>({
+    mutationFn: settings => updateSettings(settings),
     onSuccess: data => {
       queryClient.setQueryData(['settings'], data)
       setSettingsForm(toFormState(data))

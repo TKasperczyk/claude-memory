@@ -31,7 +31,8 @@ import {
   getDefaultSettings,
   loadSettings,
   resetSettings,
-  saveSettings
+  saveSettings,
+  validateSettingValue
 } from '../../src/lib/settings.js'
 import type { MemoryRecord, NearMissRecord, RecordType, Settings } from '../../shared/types.js'
 import { getExtractionRun, listExtractionRuns } from '../../src/lib/extraction-log.js'
@@ -113,6 +114,37 @@ app.put('/api/settings', (req, res) => {
     const message = error instanceof Error ? error.message : 'Failed to update settings'
     console.error('Settings update error:', error)
     res.status(500).send(message)
+  }
+})
+
+app.patch('/api/settings', (req, res) => {
+  try {
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ error: 'Settings payload must be an object' })
+    }
+
+    const { setting, value } = req.body
+    if (typeof setting !== 'string' || setting.trim().length === 0) {
+      return res.status(400).json({ error: 'setting required' })
+    }
+
+    const normalizedSetting = setting.trim()
+    const defaults = getDefaultSettings()
+    if (!Object.prototype.hasOwnProperty.call(defaults, normalizedSetting)) {
+      return res.status(400).json({ error: 'Unknown setting' })
+    }
+
+    const validation = validateSettingValue(normalizedSetting as keyof Settings, value)
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.error })
+    }
+
+    saveSettings({ [normalizedSetting]: validation.normalized } as Partial<Settings>)
+    res.json(loadSettings())
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to update setting'
+    console.error('Setting update error:', error)
+    res.status(500).json({ error: message })
   }
 })
 

@@ -127,7 +127,7 @@ export const RETRIEVAL_FIELDS: SettingsField<keyof RetrievalSettings>[] = [
 
 type FieldValidation = { value?: number; error?: string }
 
-function validateFieldValue(field: SettingsField, rawInput: string): FieldValidation {
+export function validateFieldValue(field: SettingsField, rawInput: string): FieldValidation {
   const parsed = Number(rawInput)
   if (!Number.isFinite(parsed)) {
     return { error: 'Enter a number.' }
