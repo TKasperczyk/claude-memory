@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
-import { ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
+import { RotateCcw } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import {
-  ModifiedBadge,
   RETRIEVAL_FIELDS,
   SettingsPanel,
-  isSettingsModified,
   validateFieldValue,
   type RetrievalSettingsFormState,
   type SettingsField
@@ -401,9 +399,6 @@ export default function Settings() {
   const [status, setStatus] = useState<Status | null>(null)
   const [statusFading, setStatusFading] = useState(false)
   const [isAutoSaving, setIsAutoSaving] = useState(false)
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(MAINTENANCE_GROUPS.map(group => [group.id, true]))
-  )
   const formRef = useRef(form)
   const settingsRef = useRef<Settings | null>(settings ?? null)
   const lastSyncedSettingsRef = useRef<Settings | null>(settings ?? defaultSettings ?? null)
@@ -639,10 +634,6 @@ export default function Settings() {
     void triggerAutoSave()
   }
 
-  const toggleGroup = (groupId: string) => {
-    setOpenGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }))
-  }
-
   return (
     <div className="space-y-6" onFocusCapture={handleFocusCapture} onBlurCapture={handleBlurCapture}>
       <PageHeader
@@ -694,55 +685,26 @@ export default function Settings() {
         </div>
 
         <div className="space-y-3">
-          {MAINTENANCE_GROUPS.map(group => {
-            const isOpen = openGroups[group.id]
-            const groupModified = isSettingsModified({
-              fields: group.fields,
-              values: form,
-              baselineValues: defaultSettings ?? undefined,
-              errors: formErrors
-            })
-            return (
-              <div key={group.id} className="rounded-xl border border-border bg-background/40">
-                <button
-                  onClick={() => toggleGroup(group.id)}
-                  className="w-full px-4 py-3 flex items-center gap-3 text-left"
-                >
-                  {isOpen ? (
-                    <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <div className="font-medium text-sm">{group.label}</div>
-                      {groupModified && <ModifiedBadge variant="header" />}
-                    </div>
-                    {group.description && (
-                      <div className="text-xs text-muted-foreground">{group.description}</div>
-                    )}
-                  </div>
-                </button>
-
-                <div className={`accordion-content ${isOpen ? 'open' : ''}`}>
-                  <div className="accordion-inner">
-                    <SettingsPanel
-                      fields={group.fields}
-                      values={form}
-                      onChange={handleFieldChange}
-                      savedValues={defaultSettings ?? undefined}
-                      defaultValues={defaultSettings ?? undefined}
-                      errors={formErrors}
-                      showFieldModified
-                      disabled={isPending}
-                      variant="full"
-                      containerClassName="px-4 pb-4"
-                    />
-                  </div>
-                </div>
-              </div>
-            )
-          })}
+          {MAINTENANCE_GROUPS.map(group => (
+            <SettingsPanel
+              key={group.id}
+              collapsible
+              size="sm"
+              defaultOpen
+              title={group.label}
+              description={group.description}
+              fields={group.fields}
+              values={form}
+              onChange={handleFieldChange}
+              savedValues={defaultSettings ?? undefined}
+              defaultValues={defaultSettings ?? undefined}
+              errors={formErrors}
+              showFieldModified
+              showModifiedBadge
+              disabled={isPending}
+              variant="full"
+            />
+          ))}
         </div>
       </div>
 

@@ -252,6 +252,7 @@ export interface SettingsPanelProps<K extends string = string> {
   title?: string
   description?: string
   variant?: 'full' | 'compact'
+  size?: 'default' | 'sm'
   showDefaults?: boolean
   showModifiedBadge?: boolean
   showFieldModified?: boolean
@@ -285,7 +286,8 @@ export function SettingsPanel<K extends string>({
   gridClassName,
   containerClassName,
   disabled = false,
-  status
+  status,
+  size = 'default'
 }: SettingsPanelProps<K>) {
   const [open, setOpen] = useState(defaultOpen)
   const isOpen = collapsible ? open : true
@@ -295,8 +297,13 @@ export function SettingsPanel<K extends string>({
   const shouldShowFieldModified = showFieldModified ?? variant === 'compact'
   const showHeader = Boolean(title || description)
 
+  const collapsibleContainerClasses = `rounded-xl border border-border ${
+    size === 'sm' ? 'bg-background/40' : 'bg-card'
+  }`
   const containerClasses = containerClassName
-    ?? (variant === 'compact' ? 'rounded-xl border border-border bg-card' : 'space-y-6')
+    ?? (collapsible
+      ? collapsibleContainerClasses
+      : (variant === 'compact' ? 'rounded-xl border border-border bg-card' : 'space-y-6'))
   const gridClasses = gridClassName
     ?? (variant === 'compact' ? 'grid gap-4 md:grid-cols-2 lg:grid-cols-3' : 'grid gap-5 md:grid-cols-2')
 
@@ -320,6 +327,17 @@ export function SettingsPanel<K extends string>({
     : 'ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-base disabled:opacity-40'
   const errorTextClass = variant === 'compact' ? 'text-[10px] text-destructive' : 'text-xs text-destructive'
   const [editingField, setEditingField] = useState<K | null>(null)
+  const contentPaddingClass = collapsible
+    ? (size === 'sm' ? 'px-4 pb-4' : 'px-6 pb-6')
+    : (variant === 'compact' ? 'px-6 pb-6' : undefined)
+  const contentClass = cn(
+    contentPaddingClass,
+    variant === 'compact' ? 'space-y-5' : 'space-y-6'
+  )
+  const headerButtonClass = cn(
+    'w-full flex items-center gap-3 text-left',
+    size === 'sm' ? 'px-4 py-3' : 'px-6 py-4'
+  )
 
   const modified = useMemo(() => {
     if (!shouldShowModifiedBadge) return false
@@ -519,7 +537,7 @@ export function SettingsPanel<K extends string>({
   ) : null
 
   const content = (
-    <div className={variant === 'compact' ? 'px-6 pb-6 space-y-5' : 'space-y-6'}>
+    <div className={contentClass}>
       <div className={gridClasses}>
         {fields.map(renderField)}
       </div>
@@ -532,7 +550,7 @@ export function SettingsPanel<K extends string>({
       <div className={containerClasses}>
         <button
           onClick={() => setOpen(prev => !prev)}
-          className="w-full px-6 py-4 flex items-center gap-3 text-left"
+          className={headerButtonClass}
         >
           {isOpen ? (
             <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
