@@ -9,6 +9,7 @@ import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNo
 import { embed } from '../lib/embed.js'
 import { loadConfig } from '../lib/config.js'
 import { mergeNearMisses } from '../lib/diagnostics.js'
+import { generateRetrievalQueryPlan } from '../lib/retrieval-query-generator.js'
 import { loadSettings, type RetrievalSettings } from '../lib/settings.js'
 import {
   DEFAULT_CONFIG,
@@ -30,6 +31,7 @@ const MAX_KEYWORD_QUERIES = 4
 const MAX_KEYWORD_ERRORS = 2
 const MAX_KEYWORD_COMMANDS = 2
 const PREPROMPT_TIMEOUT_MS = 4000
+const HAIKU_QUERY_TIMEOUT_MS = 1500
 const MAX_SEMANTIC_QUERY_CHARS = 1200
 
 function applySettingsToConfig(config: Config, settings: RetrievalSettings): Config {
@@ -98,7 +100,7 @@ export async function handlePrePrompt(
         settings,
         input.cwd,
         signal,
-        { diagnostic }
+        { diagnostic, transcriptPath: input.transcript_path }
       )
       const results = searchResult.results
       if (diagnostic) {
@@ -171,17 +173,40 @@ async function searchMemories(
   settings: RetrievalSettings,
   cwd: string,
   signal?: AbortSignal,
-  options: { diagnostic?: boolean } = {}
+  options: { diagnostic?: boolean; transcriptPath?: string } = {}
 ): Promise<SearchMemoriesResult> {
   const cleanPrompt = stripNoiseWords(prompt)
-  const scope = {
-    project: signals.projectRoot ?? cwd,
-    domain: signals.domain
-  }
   const diagnostic = options.diagnostic === true
 
+  const queryPlan = await generateRetrievalQueryPlan(
+    prompt,
+    options.transcriptPath,
+    config,
+    { signal, timeoutMs: HAIKU_QUERY_TIMEOUT_MS }
+  )
+  const resolvedPrompt = queryPlan?.resolvedQuery
+    ? stripNoiseWords(queryPlan.resolvedQuery)
+    : cleanPrompt
+  const effectivePrompt = resolvedPrompt || cleanPrompt
+  const effectiveDomain = queryPlan?.domain ?? signals.domain
+  const signalsForQuery = effectiveDomain === signals.domain
+    ? signals
+    : { ...signals, domain: effectiveDomain }
+
+  const keywordQueries = queryPlan
+    ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt)
+    : buildKeywordQueries(signals, cleanPrompt)
+
+  const semanticBase = queryPlan?.semanticQuery?.trim()
+  const semanticQuery = semanticBase
+    ? normalizeSemanticQuery(semanticBase, signalsForQuery)
+    : buildSemanticQuery(cleanPrompt, signalsForQuery)
+  const scope = {
+    project: signals.projectRoot ?? cwd,
+    domain: signalsForQuery.domain
+  }
+
   // Pre-compute embedding once to avoid duplicate API calls on retry
-  const semanticQuery = buildSemanticQuery(cleanPrompt, signals)
   let embedding: number[] | undefined
   if (semanticQuery) {
     try {
@@ -195,8 +220,7 @@ async function searchMemories(
   }
 
   let searchQualifiedResult = await searchWithScope(
-    cleanPrompt,
-    signals,
+    keywordQueries,
     config,
     settings,
     scope,
@@ -214,8 +238,7 @@ async function searchMemories(
     // Fallback: remove project filter but preserve domain to avoid cross-domain noise
     console.error('[claude-memory] No project-scoped hits; retrying with domain filter only.')
     searchQualifiedResult = await searchWithScope(
-      cleanPrompt,
-      signals,
+      keywordQueries,
       config,
       settings,
       { domain: scope.domain },
@@ -290,8 +313,7 @@ async function runHybridSearch(
 }
 
 async function searchWithScope(
-  cleanPrompt: string,
-  signals: ContextSignals,
+  keywordQueries: string[],
   config: Config,
   settings: RetrievalSettings,
   scope: { project?: string; domain?: string },
@@ -300,13 +322,12 @@ async function searchWithScope(
   options: { diagnostic?: boolean } = {}
 ): Promise<SearchWithScopeResult> {
   const maxRecords = config.injection.maxRecords
-  const keywordQueries = buildKeywordQueries(signals, cleanPrompt)
   const resultsById = new Map<string, HybridSearchResult>()
   const diagnostic = options.diagnostic === true
   const limit = maxRecords
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
-  console.error(`[claude-memory] Signals: errors=${signals.errors.length}, commands=${signals.commands.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
+  console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
 
   for (const query of keywordQueries) {
     if (resultsById.size >= limit) break
@@ -578,6 +599,41 @@ function cosineSimilarity(a: number[], b: number[]): number {
   if (denominator === 0) return 0
 
   return dotProduct / denominator
+}
+
+function normalizeKeywordQueries(queries: string[], fallback: string): string[] {
+  const trimmed = queries.map(query => query.trim()).filter(query => query.length > 0)
+  const deduped: string[] = []
+  const seen = new Set<string>()
+
+  for (const entry of trimmed) {
+    if (seen.has(entry)) continue
+    deduped.push(entry)
+    seen.add(entry)
+  }
+
+  if (deduped.length === 0 && fallback.trim()) {
+    deduped.push(fallback.trim())
+  }
+
+  if (deduped.length <= MAX_KEYWORD_QUERIES) return deduped
+  return deduped.slice(0, MAX_KEYWORD_QUERIES)
+}
+
+function normalizeSemanticQuery(semanticQuery: string, signals: ContextSignals): string {
+  const trimmed = semanticQuery.trim()
+  if (!trimmed) return ''
+
+  const parts = [trimmed]
+  const lowered = trimmed.toLowerCase()
+  if (signals.projectName && !lowered.includes('project:')) {
+    parts.push(`project: ${signals.projectName}`)
+  }
+  if (signals.domain && !lowered.includes('domain:')) {
+    parts.push(`domain: ${signals.domain}`)
+  }
+
+  return truncateText(parts.join('\n'), MAX_SEMANTIC_QUERY_CHARS)
 }
 
 function buildKeywordQueries(signals: ContextSignals, cleanPrompt: string): string[] {
