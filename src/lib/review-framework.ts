@@ -27,6 +27,7 @@ export interface ReviewResult<TPayload> {
 export type ThinkingCallback = (chunk: string) => void
 
 const THINKING_BUDGET_TOKENS = 8000
+const MIN_THINKING_BUDGET = 2000
 
 export async function executeReview<TInput, TPayload>(
   input: TInput,
@@ -121,26 +122,29 @@ export async function executeReviewStreaming<TInput, TPayload>(
   }
 
   const prompt = frameworkConfig.buildPrompt(input)
-  const configMaxTokens = config.extraction.maxTokens
-  const baseMaxTokens = Math.min(frameworkConfig.maxTokens, configMaxTokens)
-  const calculatedMaxTokens = baseMaxTokens + THINKING_BUDGET_TOKENS
-  const maxTokens = Math.min(configMaxTokens, calculatedMaxTokens)
-  const thinkingBudget = Math.min(
-    THINKING_BUDGET_TOKENS,
-    Math.max(0, maxTokens - baseMaxTokens)
-  )
+  // For streaming with thinking, we need more tokens than normal
+  // The config limit applies to tool output; thinking is additional
+  const baseMaxTokens = frameworkConfig.maxTokens
+  const thinkingBudget = THINKING_BUDGET_TOKENS
+  const maxTokens = baseMaxTokens + thinkingBudget
+  // Extended thinking requires tool_choice: 'auto' - forced tool_choice is not compatible
+  // The system prompt must strongly instruct the model to use the tool
+  const systemPromptWithToolInstruction = `${frameworkConfig.systemPrompt}
+
+IMPORTANT: You MUST call the ${frameworkConfig.toolName} tool to submit your review. Do not respond with text - always use the tool.`
+
   const stream = await client.messages.create({
     model: frameworkConfig.model,
     max_tokens: maxTokens,
     temperature: 0,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: frameworkConfig.systemPrompt }
+      { type: 'text', text: systemPromptWithToolInstruction }
     ],
     messages: [{ role: 'user', content: prompt }],
     tools: [tool],
-    tool_choice: { type: 'tool', name: frameworkConfig.toolName },
-    thinking: thinkingBudget > 0 ? { type: 'enabled', budget_tokens: thinkingBudget } : undefined,
+    tool_choice: { type: 'auto' },
+    thinking: { type: 'enabled', budget_tokens: thinkingBudget },
     stream: true
   }, abortSignal ? { signal: abortSignal } : undefined)
 
