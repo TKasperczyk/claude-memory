@@ -116,7 +116,7 @@ export async function reviewInjection(
 
   let similarMemories: Array<{ record: MemoryRecord; similarity: number }> = []
   try {
-    similarMemories = await collectSimilarMemories(prompt, signals, injectedIds, projectRoot, config)
+    similarMemories = await collectSimilarMemories(prompt, signals, injectedIds, projectRoot, injection.injectedAt, config)
   } catch (error) {
     console.error('[claude-memory] Failed to fetch similar memories for injection review:', error)
   }
@@ -191,7 +191,7 @@ export async function reviewInjectionStreaming(
 
   let similarMemories: Array<{ record: MemoryRecord; similarity: number }> = []
   try {
-    similarMemories = await collectSimilarMemories(prompt, signals, injectedIds, projectRoot, config)
+    similarMemories = await collectSimilarMemories(prompt, signals, injectedIds, projectRoot, injection.injectedAt, config)
   } catch (error) {
     console.error('[claude-memory] Failed to fetch similar memories for injection review:', error)
   }
@@ -308,6 +308,7 @@ async function collectSimilarMemories(
   signals: ContextSignals,
   excludeIds: string[],
   cwd: string | undefined,
+  injectedAt: number,
   config: Config
 ): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
   const inputs = buildPromptEmbeddingInputs(prompt, signals)
@@ -328,6 +329,8 @@ async function collectSimilarMemories(
 
     for (const result of results) {
       if (excludeSet.has(result.record.id)) continue
+      // Skip memories created after the injection - they couldn't have been injected
+      if ((result.record.timestamp ?? 0) > injectedAt) continue
       const existing = seen.get(result.record.id)
       if (!existing || result.similarity > existing.similarity) {
         seen.set(result.record.id, result)
