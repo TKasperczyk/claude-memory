@@ -136,7 +136,8 @@ IMPORTANT: You MUST call the ${frameworkConfig.toolName} tool to submit your rev
   const stream = await client.messages.create({
     model: frameworkConfig.model,
     max_tokens: maxTokens,
-    temperature: 0,
+    // Extended thinking requires temperature: 1
+    temperature: 1,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: systemPromptWithToolInstruction }
