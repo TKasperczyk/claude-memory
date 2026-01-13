@@ -42,7 +42,10 @@ const REVIEW_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
     prompt: { type: 'string' },
     reviewedAt: { type: 'number' },
     overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
-    relevanceScore: { type: 'number' },
+    relevanceScore: {
+      type: 'number',
+      description: 'Overall relevance of injected memories (0-100). 100 = all highly relevant, 0 = all irrelevant.'
+    },
     injectedVerdicts: {
       type: 'array',
       items: {
@@ -493,11 +496,16 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
 
 function parseRelevanceScore(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
-    return clampScore(value)
+    // Model might output 0.85 meaning 85% - scale to 0-100
+    const scaled = value > 0 && value < 1 ? value * 100 : value
+    return clampScore(scaled)
   }
   if (typeof value === 'string' && value.trim() !== '') {
     const parsed = Number(value)
-    if (Number.isFinite(parsed)) return clampScore(parsed)
+    if (Number.isFinite(parsed)) {
+      const scaled = parsed > 0 && parsed < 1 ? parsed * 100 : parsed
+      return clampScore(scaled)
+    }
   }
   return null
 }
