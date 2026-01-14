@@ -3,7 +3,7 @@
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { SKIP_MARKER, getCommandFilePath } from '../lib/claude-commands.js'
-import { readFileIfExists } from '../lib/shared.js'
+import { readFileIfExists, truncateText } from '../lib/shared.js'
 import { closeMilvus, initMilvus, hybridSearch } from '../lib/milvus.js'
 import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { embed } from '../lib/embed.js'
@@ -670,11 +670,6 @@ function buildSemanticQuery(
   if (signals.domain) parts.push(`domain: ${signals.domain}`)
 
   return truncateText(parts.join('\n'), settings.maxSemanticQueryChars)
-}
-
-function truncateText(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value
-  return value.slice(0, maxLength - 3) + '...'
 }
 
 /**

@@ -11,7 +11,7 @@ import {
   type ScoredRecord,
   type WarningRecord
 } from './types.js'
-import { looksLikeCommand } from './shared.js'
+import { looksLikeCommand, truncateText } from './shared.js'
 import { buildExclusionReason } from './diagnostics.js'
 
 export interface ContextSignals {
@@ -591,11 +591,6 @@ function dedupeAndTrim(values: string[], limit: number): string[] {
   }
 
   return result
-}
-
-function truncateText(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value
-  return value.slice(0, maxLength - 3) + '...'
 }
 
 function isStackStart(line: string): boolean {

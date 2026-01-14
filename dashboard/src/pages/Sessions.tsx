@@ -10,7 +10,7 @@ import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import { useStreamingReview } from '@/hooks/useStreamingReview'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
-import { formatDateTime } from '@/lib/format'
+import { formatDateTime, formatRelativeTimeShortAgo } from '@/lib/format'
 import {
   fetchInjectionReview,
   type InjectedMemoryVerdict,
@@ -89,17 +89,6 @@ type PromptDisplayEntry = {
   timestamp?: number
   status?: InjectionStatus
   memoryCount?: number
-}
-
-function formatRelative(ts: number): string {
-  const diff = Date.now() - ts
-  const mins = Math.floor(diff / 60000)
-  const hours = Math.floor(mins / 60)
-  const days = Math.floor(hours / 24)
-  if (days > 0) return `${days}d ago`
-  if (hours > 0) return `${hours}h ago`
-  if (mins > 0) return `${mins}m ago`
-  return 'now'
 }
 
 function parseSnippetTitle(snippet: string): string {
@@ -582,7 +571,7 @@ export default function Sessions() {
                       )
                     })()}
                     <span>{memories.length} memories</span>
-                    <span>{formatRelative(session.lastActivity)}</span>
+                    <span>{formatRelativeTimeShortAgo(session.lastActivity)}</span>
                   </div>
                 </button>
 

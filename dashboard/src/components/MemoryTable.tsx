@@ -1,27 +1,11 @@
 import type { MemoryRecord } from '@/lib/api'
+import { formatRelativeTimeShort, truncateText } from '@/lib/format'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 
 interface MemoryTableProps {
   records: MemoryRecord[]
   onSelect: (record: MemoryRecord) => void
   emptyMessage?: string
-}
-
-function truncate(value: string, max: number): string {
-  return value.length <= max ? value : `${value.slice(0, max - 1)}…`
-}
-
-function formatRelativeTime(timestamp?: number): string {
-  if (!timestamp) return '—'
-  const diff = Date.now() - timestamp
-  const mins = Math.floor(diff / 60000)
-  const hours = Math.floor(mins / 60)
-  const days = Math.floor(hours / 24)
-
-  if (days > 0) return `${days}d`
-  if (hours > 0) return `${hours}h`
-  if (mins > 0) return `${mins}m`
-  return 'now'
 }
 
 export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryTableProps) {
@@ -49,7 +33,7 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
         </thead>
         <tbody>
           {records.map(record => {
-            const summary = truncate(getMemorySummary(record), 80)
+            const summary = truncateText(getMemorySummary(record), 80, { ellipsis: '…' })
             return (
               <tr
                 key={record.id}
@@ -81,7 +65,7 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
                   {record.usageCount ?? 0}
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
-                  {formatRelativeTime(record.lastUsed ?? record.timestamp)}
+                  {formatRelativeTimeShort(record.lastUsed ?? record.timestamp)}
                 </td>
               </tr>
             )

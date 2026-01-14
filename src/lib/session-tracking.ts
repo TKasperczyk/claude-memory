@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, isPlainObject } from './parsing.js'
+import { readJsonFile, writeJsonFile } from './json.js'
 import { sanitizeSessionId } from './shared.js'
 import {
   type InjectedMemoryEntry,
@@ -68,23 +69,16 @@ function withSessionLock<T>(sessionId: string, action: () => T): T {
 
 export function loadSessionTracking(sessionId: string): InjectionSessionRecord | null {
   const filePath = getSessionTrackingPath(sessionId)
-  if (!fs.existsSync(filePath)) return null
-
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8')
-    const parsed = JSON.parse(raw) as unknown
-    return coerceSessionRecord(parsed, sessionId)
-  } catch (error) {
-    console.error('[claude-memory] Failed to read session tracking file:', error)
-    return null
-  }
+  return readJsonFile(filePath, {
+    onError: error => console.error('[claude-memory] Failed to read session tracking file:', error),
+    coerce: data => coerceSessionRecord(data, sessionId)
+  })
 }
 
 export function saveSessionTracking(record: InjectionSessionRecord): void {
   try {
-    fs.mkdirSync(SESSIONS_DIR, { recursive: true })
     const filePath = getSessionTrackingPath(record.sessionId)
-    fs.writeFileSync(filePath, JSON.stringify(record, null, 2))
+    writeJsonFile(filePath, record, { ensureDir: true, pretty: 2 })
   } catch (error) {
     console.error('[claude-memory] Failed to write session tracking file:', error)
   }

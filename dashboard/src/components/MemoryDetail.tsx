@@ -3,7 +3,7 @@ import { Trash2, X } from 'lucide-react'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import Skeleton from '@/components/Skeleton'
 import { deleteMemory, type MemoryRecord } from '@/lib/api'
-import { formatDateTime } from '@/lib/format'
+import { formatDateTime, formatRelativeTimeLong } from '@/lib/format'
 import { TYPE_COLORS, getMemoryTitle } from '@/lib/memory-ui'
 
 export interface RetrievalContext {
@@ -24,18 +24,6 @@ interface MemoryDetailProps {
 }
 
 const ANIMATION_DURATION = 200
-
-function formatRelative(ts?: number): string {
-  if (!ts) return '—'
-  const diff = Date.now() - ts
-  const mins = Math.floor(diff / 60000)
-  const hours = Math.floor(mins / 60)
-  const days = Math.floor(hours / 24)
-  if (days > 0) return `${days} day${days > 1 ? 's' : ''} ago`
-  if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`
-  if (mins > 0) return `${mins} minute${mins > 1 ? 's' : ''} ago`
-  return 'just now'
-}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -350,7 +338,7 @@ export default function MemoryDetail({
               <Field label="Domain">{record.domain ?? '—'}</Field>
               <Field label="Created">{formatDateTime(record.timestamp)}</Field>
               <Field label="Last used">
-                {formatRelative(record.lastUsed ?? record.timestamp)}
+                {formatRelativeTimeLong(record.lastUsed ?? record.timestamp)}
               </Field>
             </div>
 

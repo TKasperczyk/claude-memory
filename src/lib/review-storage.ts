@@ -1,9 +1,9 @@
-import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { type ExtractionReview, type ExtractionReviewIssue } from './extraction-review.js'
 import { type InjectedMemoryVerdict, type InjectionReview, type MissedMemory } from './injection-review.js'
 import { asBoolean, asInteger, asNumber, asString, isPlainObject } from './parsing.js'
+import { readJsonFile, writeJsonFile } from './json.js'
 import { sanitizeRunId, sanitizeSessionId } from './shared.js'
 import {
   clampScore,
@@ -19,23 +19,18 @@ import { type MaintenanceReview } from '../../shared/types.js'
 const REVIEWS_DIR = path.join(homedir(), '.claude-memory', 'reviews')
 
 function saveReviewFile<T>(filePath: string, review: T): void {
-  try {
-    fs.mkdirSync(REVIEWS_DIR, { recursive: true })
-    fs.writeFileSync(filePath, JSON.stringify(review, null, 2))
-  } catch (error) {
-    console.error('[claude-memory] Failed to write review:', error)
-  }
+  writeJsonFile(filePath, review, {
+    ensureDir: true,
+    pretty: 2,
+    onError: error => console.error('[claude-memory] Failed to write review:', error)
+  })
 }
 
 function loadReviewFile<T>(filePath: string, coerce: (data: unknown) => T | null): T | null {
-  if (!fs.existsSync(filePath)) return null
-  try {
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown
-    return coerce(data)
-  } catch (error) {
-    console.error('[claude-memory] Failed to read review:', error)
-    return null
-  }
+  return readJsonFile(filePath, {
+    onError: error => console.error('[claude-memory] Failed to read review:', error),
+    coerce
+  })
 }
 
 export function getReviewPath(runId: string): string {

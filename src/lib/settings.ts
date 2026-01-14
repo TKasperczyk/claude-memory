@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { isPlainObject } from './parsing.js'
+import { readJsonFile, writeJsonFile } from './json.js'
 import { SIMILARITY_THRESHOLDS } from './types.js'
 import type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
 
@@ -120,24 +121,20 @@ export function getDefaultSettings(): Settings {
 
 export function loadSettings(): Settings {
   const defaults = getDefaultSettings()
-  if (!fs.existsSync(SETTINGS_PATH)) return defaults
-
-  try {
-    const raw = fs.readFileSync(SETTINGS_PATH, 'utf-8')
-    const parsed = JSON.parse(raw) as unknown
-    if (!isPlainObject(parsed)) return defaults
-    return coerceSettings(parsed, defaults)
-  } catch (error) {
-    console.error('[claude-memory] Failed to load settings:', error)
-    return defaults
-  }
+  return readJsonFile(SETTINGS_PATH, {
+    fallback: defaults,
+    onError: error => console.error('[claude-memory] Failed to load settings:', error),
+    coerce: data => {
+      if (!isPlainObject(data)) return defaults
+      return coerceSettings(data, defaults)
+    }
+  }) ?? defaults
 }
 
 export function saveSettings(settings: Partial<Settings>): void {
   const current = loadSettings()
   const merged = coerceSettings({ ...current, ...settings }, current)
-  fs.mkdirSync(SETTINGS_DIR, { recursive: true })
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2))
+  writeJsonFile(SETTINGS_PATH, merged, { ensureDir: true, pretty: 2 })
 }
 
 export function resetSettings(): void {

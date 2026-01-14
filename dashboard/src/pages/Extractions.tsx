@@ -17,8 +17,8 @@ import {
   type ExtractionRun,
   type MemoryRecord
 } from '@/lib/api'
-import { formatDateTime, formatDuration } from '@/lib/format'
-import { TYPE_COLORS } from '@/lib/memory-ui'
+import { formatDateTime, formatDuration, truncateText } from '@/lib/format'
+import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 import { formatExtractionReview } from '@/lib/review-format'
 
 const PAGE_SIZE = 25
@@ -55,21 +55,6 @@ const ISSUE_LABELS: Record<ExtractionReviewIssue['type'], string> = {
 function truncateSessionId(sessionId: string): string {
   if (sessionId.length <= 10) return sessionId
   return `${sessionId.slice(0, 10)}...`
-}
-
-function getRecordSummary(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command': return record.command
-    case 'error': return record.errorText
-    case 'discovery': return record.what
-    case 'procedure': return record.name
-    case 'warning': return record.avoid
-  }
-}
-
-function truncate(value: string, max: number): string {
-  if (value.length <= max) return value
-  return `${value.slice(0, max - 3)}...`
 }
 
 function ExtractionListSkeleton() {
@@ -487,9 +472,9 @@ export default function Extractions() {
                       ) : (
                         <div className="space-y-2">
                           {runRecords.map(record => {
-                            const summary = truncate(getRecordSummary(record), 100)
+                            const summary = truncateText(getMemorySummary(record), 100)
                             const excerpt = record.sourceExcerpt
-                              ? truncate(record.sourceExcerpt, 220)
+                              ? truncateText(record.sourceExcerpt, 220)
                               : 'No source excerpt available.'
 
                             return (

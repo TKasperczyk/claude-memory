@@ -1,5 +1,7 @@
 import fs from 'fs'
 import readline from 'readline'
+import { safeJsonStringify } from './json.js'
+import { truncateTextWithMarker } from './shared.js'
 
 export interface ToolCall {
   id?: string
@@ -203,7 +205,7 @@ export async function parseTranscript(path: string): Promise<Transcript> {
 
       const role = resolveMessageRole(entry)
       if (role && extracted.text.trim()) {
-        const truncatedText = truncateText(extracted.text, MESSAGE_TEXT_MAX_CHARS)
+        const truncatedText = truncateTextWithMarker(extracted.text, MESSAGE_TEXT_MAX_CHARS)
         messages.push({
           role,
           text: truncatedText,
@@ -407,7 +409,7 @@ function extractMessageContent(
       const isError = (block as { is_error?: unknown }).is_error === true
       toolResults.push({
         toolUseId,
-        outputText: truncateText(outputText, TOOL_OUTPUT_MAX_CHARS),
+        outputText: truncateTextWithMarker(outputText, TOOL_OUTPUT_MAX_CHARS),
         isError,
         timestampMs: context.timestampMs,
         rawTimestamp: context.rawTimestamp,
@@ -468,7 +470,7 @@ function attachToolUseResult(results: ToolResult[], toolUseResult: unknown): voi
   if (!target.outputText) {
     const outputText = formatToolUseResult(toolUseResult)
     if (outputText) {
-      target.outputText = truncateText(outputText, TOOL_OUTPUT_MAX_CHARS)
+      target.outputText = truncateTextWithMarker(outputText, TOOL_OUTPUT_MAX_CHARS)
     }
   }
 }
@@ -480,7 +482,7 @@ function buildToolResultFromMetadata(
   const outputText = formatToolUseResult(toolUseResult)
   if (!outputText) return null
   return {
-    outputText: truncateText(outputText, TOOL_OUTPUT_MAX_CHARS),
+    outputText: truncateTextWithMarker(outputText, TOOL_OUTPUT_MAX_CHARS),
     metadata: toolUseResult,
     timestampMs: context.timestampMs,
     rawTimestamp: context.rawTimestamp,
@@ -543,14 +545,6 @@ function parseTimestamp(raw: unknown): { rawTimestamp?: string; timestampMs?: nu
   const ms = Date.parse(raw)
   if (!Number.isFinite(ms)) return { rawTimestamp: raw }
   return { rawTimestamp: raw, timestampMs: ms }
-}
-
-function truncateText(value: string | undefined, maxLength: number): string {
-  if (!value) return ''
-  if (value.length <= maxLength) return value
-  const head = value.slice(0, Math.max(0, maxLength - 500))
-  const tail = value.slice(-500)
-  return `${head}\n...[truncated]...\n${tail}`
 }
 
 function asString(value: unknown): string | undefined {
@@ -660,15 +654,6 @@ function formatToolInput(input: unknown): string | undefined {
 function truncateToolText(value: string): string {
   if (value.length <= TOOL_SNIPPET_MAX_CHARS) return value
   return value.slice(0, TOOL_SNIPPET_MAX_CHARS - 3) + '...'
-}
-
-function safeJsonStringify(value: unknown): string | undefined {
-  if (value === undefined) return undefined
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
 }
 
 function fileEndsWithNewline(path: string): boolean {

@@ -12,6 +12,7 @@ import {
 import { asString, isPlainObject } from './parsing.js'
 import { executeReview, executeReviewStreaming, type ThinkingCallback } from './review-framework.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
+import { safeStringify } from './json.js'
 import type { MaintenanceReview, OperationResult, MaintenanceAction, MaintenanceCandidateGroup } from '../../shared/types.js'
 
 export type { MaintenanceReview } from '../../shared/types.js'
@@ -566,13 +567,4 @@ function describeReviewPayloadIssues(input: unknown): string[] {
   }
 
   return issues.length ? issues : ['unknown validation failure']
-}
-
-function safeStringify(value: unknown): string {
-  try {
-    const serialized = JSON.stringify(value)
-    return typeof serialized === 'string' ? serialized : String(value)
-  } catch {
-    return String(value)
-  }
 }

@@ -104,6 +104,25 @@ export function truncateSnippet(value: string, maxLength: number = 120): string 
   return `${cleaned.slice(0, maxLength - 3)}...`
 }
 
+export function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  return value.slice(0, maxLength - 3) + '...'
+}
+
+export function truncateTextWithMarker(
+  value: string | undefined,
+  maxLength: number,
+  options: { tailLength?: number; marker?: string } = {}
+): string {
+  if (!value) return ''
+  if (value.length <= maxLength) return value
+  const tailLength = options.tailLength ?? 500
+  const marker = options.marker ?? '\n...[truncated]...\n'
+  const head = value.slice(0, Math.max(0, maxLength - tailLength))
+  const tail = value.slice(-tailLength)
+  return `${head}${marker}${tail}`
+}
+
 export function buildCandidateRecord(
   record: MemoryRecord,
   reason: string,

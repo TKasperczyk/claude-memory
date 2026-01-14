@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import fs from 'fs'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { asStringArray, asTrimmedString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { truncateText } from './shared.js'
 import { parseTranscriptTurns, type TranscriptTurn } from './transcript.js'
 import { DEFAULT_CONFIG, type Config } from './types.js'
 
@@ -171,11 +172,6 @@ function formatTurn(turn: TranscriptTurn, index: number): string {
   const lines = [`Turn ${index + 1}`, `User: ${user}`]
   if (assistant) lines.push(`Assistant: ${assistant}`)
   return lines.join('\n')
-}
-
-function truncateText(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value
-  return value.slice(0, maxLength - 3) + '...'
 }
 
 function createTimeoutSignal(

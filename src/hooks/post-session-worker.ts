@@ -14,6 +14,7 @@ import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } fr
 import { loadConfig } from '../lib/config.js'
 import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord } from '../lib/types.js'
+import { safeJsonStringifyCompact } from '../lib/json.js'
 import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
 
@@ -408,16 +409,7 @@ function extractToolInputText(input: unknown): string | undefined {
   const record = input as Record<string, unknown>
   if (typeof record.command === 'string' && record.command.trim()) return record.command
 
-  return safeJsonStringify(record)
-}
-
-function safeJsonStringify(value: unknown): string | undefined {
-  try {
-    const serialized = JSON.stringify(value)
-    return serialized && serialized !== '{}' ? serialized : undefined
-  } catch {
-    return undefined
-  }
+  return safeJsonStringifyCompact(record)
 }
 
 function normalizeSearchText(value: string): string {

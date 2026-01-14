@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
+import { readJsonFile, writeJsonFile } from './json.js'
 import { sanitizeRunId } from './shared.js'
 import type { ExtractionRecordSummary, ExtractionRun, RecordType } from '../../shared/types.js'
 
@@ -40,11 +41,10 @@ function cleanupOldExtractionLogs(daysToKeep: number = DEFAULT_DAYS_TO_KEEP): vo
 
 export function saveExtractionRun(run: ExtractionRun): void {
   try {
-    fs.mkdirSync(EXTRACTIONS_DIR, { recursive: true })
     // Cleanup happens on save to avoid extra I/O when no extractions run.
     cleanupOldExtractionLogs()
     const filePath = getExtractionRunPath(run.runId)
-    fs.writeFileSync(filePath, JSON.stringify(run, null, 2))
+    writeJsonFile(filePath, run, { ensureDir: true, pretty: 2 })
   } catch (error) {
     console.error('[claude-memory] Failed to write extraction run log:', error)
   }
@@ -73,16 +73,10 @@ export function listExtractionRuns(): ExtractionRun[] {
 
 export function getExtractionRun(runId: string): ExtractionRun | null {
   const filePath = getExtractionRunPath(runId)
-  if (!fs.existsSync(filePath)) return null
-
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8')
-    const parsed = JSON.parse(raw) as unknown
-    return coerceExtractionRun(parsed, runId)
-  } catch (error) {
-    console.error('[claude-memory] Failed to read extraction run log:', error)
-    return null
-  }
+  return readJsonFile(filePath, {
+    onError: error => console.error('[claude-memory] Failed to read extraction run log:', error),
+    coerce: data => coerceExtractionRun(data, runId)
+  })
 }
 
 function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | null {
