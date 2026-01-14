@@ -67,6 +67,8 @@ export function useStreamingReview<TResult>(
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+    let hasResult = false
+    let hasError = false
 
     const isActive = () =>
       mountedRef.current &&
@@ -75,12 +77,14 @@ export function useStreamingReview<TResult>(
 
     const handleError = (err: Error) => {
       if (!isActive()) return
+      hasError = true
       setError(err)
       onError?.(err)
     }
 
     const handleResult = (payload: TResult) => {
       if (!isActive()) return
+      hasResult = true
       setResult(payload)
       onComplete?.(payload)
     }
@@ -211,6 +215,22 @@ export function useStreamingReview<TResult>(
 
         if (!done && dataLines.length > 0) {
           flushEvent()
+        }
+
+        if (!isActive()) return
+
+        if (!receivedStreamEvent && !hasResult && !hasError && !controller.signal.aborted) {
+          try {
+            await runFallback()
+            return
+          } catch (fallbackErr) {
+            handleError(fallbackErr instanceof Error ? fallbackErr : new Error('Streaming failed'))
+            return
+          }
+        }
+
+        if (receivedStreamEvent && !hasResult && !hasError && !controller.signal.aborted) {
+          handleError(new Error('Streaming ended without a review result.'))
         }
       } catch (err) {
         if (controller.signal.aborted || !isActive()) return

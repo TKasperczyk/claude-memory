@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Check, Circle, Copy, Eye, Loader2, Play } from 'lucide-react'
 import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
@@ -953,6 +953,14 @@ function ResultPanel({
   const [review, setReview] = useState<MaintenanceReview | null>(null)
   const [cacheLoading, setCacheLoading] = useState(false)
   const [reviewError, setReviewError] = useState<string | null>(null)
+  const reviewBody = useMemo(() => ({ result }), [result])
+  const handleReviewComplete = useCallback((nextReview: MaintenanceReview) => {
+    setReview(nextReview)
+    setReviewError(null)
+  }, [setReview, setReviewError])
+  const handleReviewError = useCallback((err: Error) => {
+    setReviewError(err.message || 'Failed to run review')
+  }, [setReviewError])
   const {
     trigger: triggerReview,
     thinking,
@@ -960,14 +968,9 @@ function ResultPanel({
     reset: resetStreaming
   } = useStreamingReview<MaintenanceReview>({
     endpoint: `/api/maintenance/${result.operation}/review`,
-    body: { result },
-    onComplete: (nextReview) => {
-      setReview(nextReview)
-      setReviewError(null)
-    },
-    onError: (err) => {
-      setReviewError(err.message || 'Failed to run review')
-    }
+    body: reviewBody,
+    onComplete: handleReviewComplete,
+    onError: handleReviewError
   })
   const isReviewRunning = isStreaming
   const isReviewPending = (isReviewRunning || cacheLoading) && !review
