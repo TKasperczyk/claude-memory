@@ -71,7 +71,7 @@ export interface Transcript {
   parseErrors: number
 }
 
-type CCContentBlock =
+export type CCContentBlock =
   | { type: 'text'; text?: string }
   | { type: 'thinking'; thinking?: string }
   | { type: 'tool_use'; id?: string; name?: string; input?: unknown }
@@ -101,8 +101,14 @@ type CCJsonlEntry = {
 }
 
 const TOOL_OUTPUT_MAX_CHARS = 8000
+const TOOL_SNIPPET_MAX_CHARS = 400
 const MESSAGE_TEXT_MAX_CHARS = 20000
 const PARSE_WARN_LIMIT = 5
+
+export type TranscriptTurn = {
+  user: string
+  assistant?: string
+}
 
 export async function parseTranscript(path: string): Promise<Transcript> {
   const messages: TranscriptMessage[] = []
@@ -277,6 +283,77 @@ export async function parseTranscript(path: string): Promise<Transcript> {
   }
 }
 
+export async function parseTranscriptTurns(
+  transcriptPath: string,
+  maxTurns: number,
+  signal?: AbortSignal
+): Promise<TranscriptTurn[]> {
+  const turns: TranscriptTurn[] = []
+  let currentTurn: TranscriptTurn | null = null
+
+  const pushTurn = (turn: TranscriptTurn): void => {
+    if (!turn.user || !turn.assistant) return
+    turns.push(turn)
+    if (turns.length > maxTurns) turns.shift()
+  }
+
+  const input = fs.createReadStream(transcriptPath, { encoding: 'utf-8' })
+  const rl = readline.createInterface({ input, crlfDelay: Infinity })
+
+  try {
+    for await (const line of rl) {
+      if (signal?.aborted) break
+      const trimmed = line.trim()
+      if (!trimmed) continue
+
+      let entry: CCJsonlEntry | null = null
+      try {
+        entry = JSON.parse(trimmed) as CCJsonlEntry
+      } catch {
+        continue
+      }
+
+      if (!entry || typeof entry !== 'object') continue
+      if (entry.isSidechain || entry.isMeta) continue
+
+      const role = resolveMessageRole(entry)
+      if (role) {
+        const content = coerceTurnContent(entry.message?.content ?? entry.content)
+        if (!content) continue
+
+        if (role === 'user') {
+          if (currentTurn) pushTurn(currentTurn)
+          currentTurn = { user: content }
+          continue
+        }
+
+        if (role === 'assistant') {
+          if (!currentTurn) continue
+          appendAssistantContent(currentTurn, content)
+          continue
+        }
+      }
+
+      if (entry.type === 'tool_use') {
+        const toolText = formatToolUseEntry(entry)
+        if (toolText && currentTurn) appendAssistantContent(currentTurn, toolText)
+        continue
+      }
+
+      if (entry.type === 'tool_result') {
+        const toolText = formatToolResultEntry(entry)
+        if (toolText && currentTurn) appendAssistantContent(currentTurn, toolText)
+      }
+    }
+  } finally {
+    rl.close()
+    input.destroy()
+  }
+
+  if (currentTurn) pushTurn(currentTurn)
+  return turns
+}
+
 function extractMessageContent(
   content: CCContentBlock[] | string | undefined,
   context: { timestampMs?: number; rawTimestamp?: string; cwd?: string }
@@ -347,10 +424,9 @@ function extractMessageContent(
 }
 
 function resolveMessageRole(entry: CCJsonlEntry): 'user' | 'assistant' | undefined {
-  if (entry.type === 'user' || entry.type === 'assistant') return entry.type
-  const role = entry.message?.role
-  if (role === 'user' || role === 'assistant') return role
-  return undefined
+  const direct = normalizeRole(entry.type)
+  if (direct) return direct
+  return normalizeRole(entry.message?.role)
 }
 
 function buildToolBlocksFromEntry(entry: CCJsonlEntry): CCContentBlock[] | null {
@@ -430,6 +506,12 @@ function coerceToolContentText(content: unknown): string | undefined {
   return formatToolUseResult(content)
 }
 
+function coerceToolContentTextForSnippet(content: unknown): string | undefined {
+  const text = coerceToolContentText(content)
+  const trimmed = text?.trim()
+  return trimmed ? text : undefined
+}
+
 function formatToolUseResult(result: unknown): string | undefined {
   if (!result || typeof result !== 'object') return undefined
   const record = result as Record<string, unknown>
@@ -452,12 +534,8 @@ function formatToolUseResult(result: unknown): string | undefined {
 
   if (outputs.length > 0) return outputs.join('\n')
 
-  try {
-    const serialized = JSON.stringify(result, null, 2)
-    return serialized === '{}' ? undefined : serialized
-  } catch {
-    return undefined
-  }
+  const serialized = safeJsonStringify(result)
+  return serialized === '{}' ? undefined : serialized
 }
 
 function parseTimestamp(raw: unknown): { rawTimestamp?: string; timestampMs?: number } {
@@ -477,6 +555,120 @@ function truncateText(value: string | undefined, maxLength: number): string {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+function asTrimmedString(value: unknown): string | undefined {
+  const raw = asString(value)
+  const trimmed = raw?.trim()
+  return trimmed ? trimmed : undefined
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeRole(role: unknown): 'user' | 'assistant' | undefined {
+  if (role === 'user' || role === 'assistant') return role
+  if (role === 'human') return 'user'
+  return undefined
+}
+
+function coerceTurnContent(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed ? trimmed : null
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map(entry => {
+        if (!isPlainObject(entry)) return null
+        const type = entry.type
+        if (type === 'text' && typeof entry.text === 'string') return entry.text
+        if (type === 'tool_use') return formatToolUseBlock(entry)
+        if (type === 'tool_result') return formatToolResultBlock(entry)
+        if (typeof entry.text === 'string') return entry.text
+        return null
+      })
+      .filter((entry): entry is string => typeof entry === 'string')
+    const joined = parts.join('\n')
+    const trimmed = joined.trim()
+    return trimmed ? trimmed : null
+  }
+
+  if (isPlainObject(value) && typeof value.text === 'string') {
+    const trimmed = value.text.trim()
+    return trimmed ? trimmed : null
+  }
+
+  return null
+}
+
+function appendAssistantContent(turn: TranscriptTurn, content: string): void {
+  const trimmed = content.trim()
+  if (!trimmed) return
+  turn.assistant = turn.assistant
+    ? `${turn.assistant}\n\n${trimmed}`
+    : trimmed
+}
+
+function formatToolUseBlock(block: Record<string, unknown>): string | null {
+  return formatToolCall(block.name, block.input)
+}
+
+function formatToolResultBlock(block: Record<string, unknown>): string | null {
+  const outputText = coerceToolContentTextForSnippet(block.content)
+  const isError = block.is_error === true
+  return formatToolResult(outputText, isError, undefined)
+}
+
+function formatToolUseEntry(entry: CCJsonlEntry): string | null {
+  return formatToolCall(entry.name, entry.input)
+}
+
+function formatToolResultEntry(entry: CCJsonlEntry): string | null {
+  const outputText = coerceToolContentTextForSnippet(entry.content ?? entry.toolUseResult)
+  const isError = entry.is_error === true || entry.isError === true
+  return formatToolResult(outputText, isError, entry.name)
+}
+
+function formatToolCall(name: unknown, input: unknown): string | null {
+  const toolName = asTrimmedString(name) ?? 'unknown'
+  const inputText = formatToolInput(input)
+  return inputText ? `[Tool Call] ${toolName} ${inputText}` : `[Tool Call] ${toolName}`
+}
+
+function formatToolResult(outputText: string | undefined, isError: boolean, name?: unknown): string | null {
+  const nameLabel = asTrimmedString(name)
+  const headerParts = ['[Tool Result]']
+  if (nameLabel) headerParts.push(nameLabel)
+  if (isError) headerParts.push('error')
+  const header = headerParts.join(' ')
+  if (!outputText) return header
+  return `${header}\n${truncateToolText(outputText)}`
+}
+
+function formatToolInput(input: unknown): string | undefined {
+  if (isPlainObject(input) && typeof input.command === 'string') {
+    return `command=${input.command}`
+  }
+  const serialized = safeJsonStringify(input)
+  if (!serialized) return undefined
+  return `input=${truncateToolText(serialized)}`
+}
+
+function truncateToolText(value: string): string {
+  if (value.length <= TOOL_SNIPPET_MAX_CHARS) return value
+  return value.slice(0, TOOL_SNIPPET_MAX_CHARS - 3) + '...'
+}
+
+function safeJsonStringify(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
 }
 
 function fileEndsWithNewline(path: string): boolean {
