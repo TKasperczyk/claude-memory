@@ -45,7 +45,7 @@ export function isSettingsModified<K extends string>({
 }: {
   fields: SettingsField<K>[]
   values: SettingsFormState<K>
-  baselineValues?: Partial<Record<K, number>>
+  baselineValues?: Partial<Record<K, number | boolean>>
   errors?: SettingsErrors<K>
 }): boolean {
   if (!baselineValues) return false
@@ -56,10 +56,13 @@ export function isSettingsModified<K extends string>({
     const baselineValue = baselineValues[field.key]
     if (baselineValue === undefined) continue
     if (errors?.[field.key]) return true
-    const parsed = Number(rawInput)
-    if (!Number.isFinite(parsed)) return true
-    if (parsed !== baselineValue) {
-      return true
+    if (field.kind === 'bool') {
+      const boolValue = rawInput === 'true'
+      if (boolValue !== baselineValue) return true
+    } else {
+      const parsed = Number(rawInput)
+      if (!Number.isFinite(parsed)) return true
+      if (parsed !== baselineValue) return true
     }
   }
   return false
@@ -297,7 +300,7 @@ export function parseFormState(
       continue
     }
     if (value !== undefined) {
-      values[field.key] = value
+      ;(values as Record<string, number | boolean>)[field.key] = value
     }
   }
 
@@ -331,7 +334,7 @@ export function buildSettingsOverride(
     const value = values[key]
     if (value === undefined) continue
     if (value !== base[key]) {
-      override[key] = value
+      ;(override as Record<string, number | boolean>)[key] = value
       hasOverride = true
     }
   }
@@ -349,8 +352,8 @@ export interface SettingsPanelProps<K extends string = string> {
   fields: SettingsField<K>[]
   values: SettingsFormState<K>
   onChange: (key: K, value: string) => void
-  savedValues?: Partial<Record<K, number>>
-  defaultValues?: Partial<Record<K, number>>
+  savedValues?: Partial<Record<K, number | boolean>>
+  defaultValues?: Partial<Record<K, number | boolean>>
   onSave?: () => void
   onReset?: () => void
   isSaving?: boolean
@@ -548,11 +551,12 @@ export function SettingsPanel<K extends string>({
       baseResetNum ?? rangeMin,
       hasNumericValue ? parsedValue : rangeMin
     )
+    const step = field.step ?? 1
     const inferredMax = field.max ?? Math.max(
-      rangeMin + field.step * 100,
-      baselineForMax + field.step * 100
+      rangeMin + step * 100,
+      baselineForMax + step * 100
     )
-    let rangeMax = inferredMax <= rangeMin ? rangeMin + field.step * 100 : inferredMax
+    let rangeMax = inferredMax <= rangeMin ? rangeMin + step * 100 : inferredMax
     if (field.max === undefined && hasNumericValue && parsedValue > rangeMax) {
       rangeMax = parsedValue
     }
@@ -599,7 +603,7 @@ export function SettingsPanel<K extends string>({
               <button
                 type="button"
                 onClick={() => {
-                  const resetValue = baseResetValue ?? 0
+                  const resetValue = typeof baseResetValue === 'number' ? baseResetValue : 0
                   onChange(key, field.kind === 'int' ? String(Math.trunc(resetValue)) : String(resetValue))
                   setEditingField(null)
                 }}
@@ -623,7 +627,7 @@ export function SettingsPanel<K extends string>({
             id={sliderId}
             value={sliderValue}
             onChange={e => onChange(key, e.target.value)}
-            step={field.step}
+            step={step}
             min={rangeMin}
             max={rangeMax}
             disabled={disabled}
@@ -644,7 +648,7 @@ export function SettingsPanel<K extends string>({
                   event.currentTarget.blur()
                 }
               }}
-              step={field.step}
+              step={step}
               min={field.min}
               max={field.max}
               disabled={disabled}

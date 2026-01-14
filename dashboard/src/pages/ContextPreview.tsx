@@ -250,7 +250,7 @@ export default function ContextPreview() {
         description="Adjust thresholds and limits for this preview (not saved until you apply)"
         values={settingsForm}
         onChange={(key, value) => setSettingsForm(prev => ({ ...prev, [key]: value }))}
-        savedValues={effectiveSettings ?? undefined}
+        savedValues={(effectiveSettings ?? undefined) as RetrievalSettings | undefined}
         errors={settingsErrors}
         onSave={handleSaveSettings}
         onReset={handleResetSettings}

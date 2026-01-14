@@ -11,7 +11,7 @@ import {
   type SettingsField
 } from '@/components/SettingsPanel'
 import { useSettings, useSettingsDefaults } from '@/hooks/queries'
-import { resetSettings, updateSettings, type Settings } from '@/lib/api'
+import { resetSettings, updateSettings, type RetrievalSettings, type Settings } from '@/lib/api'
 
 type SettingsKey = keyof Settings
 type FormState = Record<SettingsKey, string>
@@ -345,14 +345,20 @@ function isFieldSynced(rawInput: string, field: SettingsField<SettingsKey>, sett
   if (trimmed === '') return false
   const { value, error } = validateFieldValue(field, trimmed)
   if (error || value === undefined) return false
-  const normalized = field.kind === 'int' ? Math.trunc(value) : value
+  const normalized = field.kind === 'int' && typeof value === 'number' ? Math.trunc(value) : value
   return normalized === settings[field.key]
 }
 
 function toFormState(settings: Partial<Settings> | null): FormState {
   return ALL_FIELDS.reduce((acc, field) => {
     const value = settings?.[field.key]
-    acc[field.key] = typeof value === 'number' ? String(value) : ''
+    if (typeof value === 'number') {
+      acc[field.key] = String(value)
+    } else if (typeof value === 'boolean') {
+      acc[field.key] = String(value)
+    } else {
+      acc[field.key] = ''
+    }
     return acc
   }, {} as FormState)
 }
@@ -380,7 +386,7 @@ function parseFormState(
       continue
     }
     if (value !== undefined) {
-      values[field.key] = field.kind === 'int' ? Math.trunc(value) : value
+      ;(values as Record<string, number | boolean>)[field.key] = field.kind === 'int' && typeof value === 'number' ? Math.trunc(value) : value
     }
   }
 
@@ -449,9 +455,10 @@ export default function Settings() {
         const key = field.key
         if (editingFieldsRef.current.has(key)) continue
         if (previousSettings && !isFieldSynced(prev[key], field, previousSettings)) continue
-        const formatted = field.kind === 'int'
-          ? String(Math.trunc(nextSettings[key]))
-          : String(nextSettings[key])
+        const value = nextSettings[key]
+        const formatted = field.kind === 'int' && typeof value === 'number'
+          ? String(Math.trunc(value))
+          : String(value)
         if (prev[key] === formatted) continue
         if (next === prev) {
           next = { ...prev }
@@ -545,7 +552,7 @@ export default function Settings() {
     abortControllerRef.current = abortController
     const payload: Partial<Settings> = {}
     for (const field of updates) {
-      payload[field.key] = parsed[field.key]
+      ;(payload as Record<string, number | boolean>)[field.key] = parsed[field.key]
     }
 
     try {
@@ -559,13 +566,26 @@ export default function Settings() {
           for (const field of updates) {
             const key = field.key
             const rawInput = prev[key].trim()
+            // Handle boolean fields differently
+            if (field.kind === 'bool') {
+              const currentBool = rawInput === 'true'
+              if (currentBool !== parsed[key]) continue
+              const formatted = String(nextSettings[key])
+              if (next[key] === formatted) continue
+              if (next === prev) {
+                next = { ...prev }
+              }
+              next[key] = formatted
+              continue
+            }
             const currentNumber = Number(rawInput)
             if (!Number.isFinite(currentNumber)) continue
             const normalized = field.kind === 'int' ? Math.trunc(currentNumber) : currentNumber
             if (normalized !== parsed[key]) continue
-            const formatted = field.kind === 'int'
-              ? String(Math.trunc(nextSettings[key]))
-              : String(nextSettings[key])
+            const settingsValue = nextSettings[key]
+            const formatted = field.kind === 'int' && typeof settingsValue === 'number'
+              ? String(Math.trunc(settingsValue))
+              : String(settingsValue)
             if (next[key] === formatted) continue
             if (next === prev) {
               next = { ...prev }
@@ -668,8 +688,8 @@ export default function Settings() {
           description="Control similarity filters and injected context limits."
           values={retrievalForm}
           onChange={handleFieldChange}
-          savedValues={defaultSettings ?? undefined}
-          defaultValues={defaultSettings ?? undefined}
+          savedValues={(defaultSettings ?? undefined) as RetrievalSettings | undefined}
+          defaultValues={(defaultSettings ?? undefined) as RetrievalSettings | undefined}
           errors={formErrors}
           showModifiedBadge
           showFieldModified
@@ -698,8 +718,8 @@ export default function Settings() {
               fields={group.fields}
               values={form}
               onChange={handleFieldChange}
-              savedValues={defaultSettings ?? undefined}
-              defaultValues={defaultSettings ?? undefined}
+              savedValues={(defaultSettings ?? undefined) as Settings | undefined}
+              defaultValues={(defaultSettings ?? undefined) as Settings | undefined}
               errors={formErrors}
               showFieldModified
               showModifiedBadge
