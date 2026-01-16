@@ -76,46 +76,20 @@ type ReviewPayload = {
   summary: string
 }
 
+type ExtractionReviewInput = {
+  run: NonNullable<ReturnType<typeof getExtractionRun>>
+  records: MemoryRecord[]
+  similarMemories: Array<{ record: MemoryRecord; similarity: number }>
+  thresholds: { reviewSimilarThreshold: number; reviewDuplicateWarningThreshold: number }
+}
+
 export async function reviewExtraction(
   runId: string,
   config: Config = DEFAULT_CONFIG
 ): Promise<ExtractionReview> {
   const startTime = Date.now()
-  const run = getExtractionRun(runId)
-  if (!run) {
-    throw new Error('Extraction run not found.')
-  }
-
-  const extractedIds = run.extractedRecordIds ?? []
-  if (extractedIds.length === 0) {
-    throw new Error('No extracted record IDs in this run. This may be an older extraction log or a run with only duplicates.')
-  }
-  const records = await fetchRecordsByIds(extractedIds, config, { includeEmbeddings: true })
-  if (records.length === 0) {
-    throw new Error('Could not fetch extracted records from Milvus. They may have been deleted.')
-  }
-
-  const { reviewSimilarThreshold, reviewDuplicateWarningThreshold } = loadSettings()
-
-  let similarMemories: Array<{ record: MemoryRecord; similarity: number }> = []
-  try {
-    const transcriptSegments = collectTranscriptSegments(records)
-    similarMemories = await collectSimilarMemories(
-      transcriptSegments,
-      extractedIds,
-      config,
-      reviewSimilarThreshold
-    )
-  } catch (error) {
-    console.error('[claude-memory] Failed to fetch similar memories for review:', error)
-  }
-
-  const { payload, reviewedAt, model, durationMs } = await executeReview({
-    run,
-    records,
-    similarMemories,
-    thresholds: { reviewSimilarThreshold, reviewDuplicateWarningThreshold }
-  }, {
+  const input = await buildExtractionReviewInput(runId, config)
+  const { payload, reviewedAt, model, durationMs } = await executeReview(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
@@ -147,6 +121,36 @@ export async function reviewExtractionStreaming(
   abortSignal?: AbortSignal
 ): Promise<ExtractionReview> {
   const startTime = Date.now()
+  const input = await buildExtractionReviewInput(runId, config)
+  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming(input, {
+    toolName: REVIEW_TOOL_NAME,
+    toolDescription: REVIEW_TOOL_DESCRIPTION,
+    toolSchema: REVIEW_TOOL_SCHEMA,
+    maxTokens: REVIEW_MAX_TOKENS,
+    systemPrompt: REVIEW_SYSTEM_PROMPT,
+    model: REVIEW_MODEL,
+    buildPrompt: buildExtractionReviewPrompt,
+    coercePayload: coerceReviewPayload,
+    authErrorMessage: 'No authentication available for extraction review. Set ANTHROPIC_API_KEY or run kira login.',
+    startedAt: startTime
+  }, config, onThinking, abortSignal)
+
+  return {
+    runId,
+    reviewedAt,
+    overallRating: payload.overallRating,
+    accuracyScore: payload.accuracyScore,
+    issues: payload.issues,
+    summary: payload.summary,
+    model,
+    durationMs
+  }
+}
+
+async function buildExtractionReviewInput(
+  runId: string,
+  config: Config
+): Promise<ExtractionReviewInput> {
   const run = getExtractionRun(runId)
   if (!run) {
     throw new Error('Extraction run not found.')
@@ -176,33 +180,11 @@ export async function reviewExtractionStreaming(
     console.error('[claude-memory] Failed to fetch similar memories for review:', error)
   }
 
-  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming({
+  return {
     run,
     records,
     similarMemories,
     thresholds: { reviewSimilarThreshold, reviewDuplicateWarningThreshold }
-  }, {
-    toolName: REVIEW_TOOL_NAME,
-    toolDescription: REVIEW_TOOL_DESCRIPTION,
-    toolSchema: REVIEW_TOOL_SCHEMA,
-    maxTokens: REVIEW_MAX_TOKENS,
-    systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: REVIEW_MODEL,
-    buildPrompt: buildExtractionReviewPrompt,
-    coercePayload: coerceReviewPayload,
-    authErrorMessage: 'No authentication available for extraction review. Set ANTHROPIC_API_KEY or run kira login.',
-    startedAt: startTime
-  }, config, onThinking, abortSignal)
-
-  return {
-    runId,
-    reviewedAt,
-    overallRating: payload.overallRating,
-    accuracyScore: payload.accuracyScore,
-    issues: payload.issues,
-    summary: payload.summary,
-    model,
-    durationMs
   }
 }
 

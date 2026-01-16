@@ -87,52 +87,23 @@ type ReviewPayload = {
   summary: string
 }
 
+type InjectionReviewInput = {
+  sessionId: string
+  prompt: string
+  cwd?: string
+  injectedAt: number
+  signals: ContextSignals
+  injectedPayload: Array<Record<string, unknown>>
+  similarMemories: Array<{ record: MemoryRecord; similarity: number }>
+}
+
 export async function reviewInjection(
   sessionId: string,
   config: Config = DEFAULT_CONFIG
 ): Promise<InjectionReview> {
   const startTime = Date.now()
-  const session = loadSessionTracking(sessionId)
-  if (!session) {
-    throw new Error('Session not found.')
-  }
-
-  const injection = selectLatestInjection(session.memories)
-  if (!injection) {
-    throw new Error('No injected memories with prompts found for review.')
-  }
-
-  const prompt = injection.prompt.trim()
-  if (!prompt) {
-    throw new Error('No prompt available for injection review.')
-  }
-
-  const injectedIds = injection.entries.map(entry => entry.id)
-  const records = await fetchRecordsByIds(injectedIds, config)
-  const injectedPayload = buildInjectedPayload(injection.entries, records)
-  if (injectedPayload.length === 0) {
-    throw new Error('Injected memories missing for review.')
-  }
-
-  const projectRoot = resolveReviewProjectRoot(session.cwd, records)
-  const signals = buildReviewSignals(prompt, projectRoot)
-
-  let similarMemories: Array<{ record: MemoryRecord; similarity: number }> = []
-  try {
-    similarMemories = await collectSimilarMemories(prompt, signals, injectedIds, projectRoot, injection.injectedAt, config)
-  } catch (error) {
-    console.error('[claude-memory] Failed to fetch similar memories for injection review:', error)
-  }
-
-  const { payload, reviewedAt, model, durationMs } = await executeReview({
-    sessionId,
-    prompt,
-    cwd: session.cwd ?? projectRoot,
-    injectedAt: injection.injectedAt,
-    signals,
-    injectedPayload,
-    similarMemories
-  }, {
+  const { input, injectedEntries } = await buildInjectionReviewInput(sessionId, config)
+  const { payload, reviewedAt, model, durationMs } = await executeReview(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
@@ -145,10 +116,10 @@ export async function reviewInjection(
     startedAt: startTime
   }, config)
 
-  const injectedVerdicts = normalizeInjectedVerdicts(payload.injectedVerdicts, injection.entries)
+  const injectedVerdicts = normalizeInjectedVerdicts(payload.injectedVerdicts, injectedEntries)
   return {
     sessionId,
-    prompt,
+    prompt: input.prompt,
     reviewedAt,
     overallRating: payload.overallRating,
     relevanceScore: payload.relevanceScore,
@@ -167,6 +138,39 @@ export async function reviewInjectionStreaming(
   abortSignal?: AbortSignal
 ): Promise<InjectionReview> {
   const startTime = Date.now()
+  const { input, injectedEntries } = await buildInjectionReviewInput(sessionId, config)
+  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming(input, {
+    toolName: REVIEW_TOOL_NAME,
+    toolDescription: REVIEW_TOOL_DESCRIPTION,
+    toolSchema: REVIEW_TOOL_SCHEMA,
+    maxTokens: REVIEW_MAX_TOKENS,
+    systemPrompt: REVIEW_SYSTEM_PROMPT,
+    model: REVIEW_MODEL,
+    buildPrompt: buildInjectionReviewPrompt,
+    coercePayload: coerceReviewPayload,
+    authErrorMessage: 'No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.',
+    startedAt: startTime
+  }, config, onThinking, abortSignal)
+
+  const injectedVerdicts = normalizeInjectedVerdicts(payload.injectedVerdicts, injectedEntries)
+  return {
+    sessionId,
+    prompt: input.prompt,
+    reviewedAt,
+    overallRating: payload.overallRating,
+    relevanceScore: payload.relevanceScore,
+    injectedVerdicts,
+    missedMemories: payload.missedMemories,
+    summary: payload.summary,
+    model,
+    durationMs
+  }
+}
+
+async function buildInjectionReviewInput(
+  sessionId: string,
+  config: Config
+): Promise<{ input: InjectionReviewInput; injectedEntries: InjectedMemoryEntry[] }> {
   const session = loadSessionTracking(sessionId)
   if (!session) {
     throw new Error('Session not found.')
@@ -199,39 +203,17 @@ export async function reviewInjectionStreaming(
     console.error('[claude-memory] Failed to fetch similar memories for injection review:', error)
   }
 
-  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming({
-    sessionId,
-    prompt,
-    cwd: session.cwd ?? projectRoot,
-    injectedAt: injection.injectedAt,
-    signals,
-    injectedPayload,
-    similarMemories
-  }, {
-    toolName: REVIEW_TOOL_NAME,
-    toolDescription: REVIEW_TOOL_DESCRIPTION,
-    toolSchema: REVIEW_TOOL_SCHEMA,
-    maxTokens: REVIEW_MAX_TOKENS,
-    systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: REVIEW_MODEL,
-    buildPrompt: buildInjectionReviewPrompt,
-    coercePayload: coerceReviewPayload,
-    authErrorMessage: 'No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.',
-    startedAt: startTime
-  }, config, onThinking, abortSignal)
-
-  const injectedVerdicts = normalizeInjectedVerdicts(payload.injectedVerdicts, injection.entries)
   return {
-    sessionId,
-    prompt,
-    reviewedAt,
-    overallRating: payload.overallRating,
-    relevanceScore: payload.relevanceScore,
-    injectedVerdicts,
-    missedMemories: payload.missedMemories,
-    summary: payload.summary,
-    model,
-    durationMs
+    input: {
+      sessionId,
+      prompt,
+      cwd: session.cwd ?? projectRoot,
+      injectedAt: injection.injectedAt,
+      signals,
+      injectedPayload,
+      similarMemories
+    },
+    injectedEntries: injection.entries
   }
 }
 

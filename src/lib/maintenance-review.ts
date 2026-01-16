@@ -135,29 +135,19 @@ type ReviewPayload = {
   summary: string
 }
 
+type MaintenanceReviewInput = {
+  result: OperationResult
+  records: MemoryRecord[]
+  settings: MaintenanceSettings
+}
+
 export async function reviewMaintenanceResult(
   result: OperationResult,
   config: Config = DEFAULT_CONFIG
 ): Promise<MaintenanceReview> {
   const startTime = Date.now()
-  const resultId = buildResultId(result)
-  const settings = loadSettings()
-
-  const recordIds = collectRecordIds(result)
-  let records: MemoryRecord[] = []
-  if (recordIds.length > 0) {
-    try {
-      records = await fetchRecordsByIds(recordIds, config)
-    } catch (error) {
-      console.error('[claude-memory] Failed to fetch maintenance records for review:', error)
-    }
-  }
-
-  const { payload, reviewedAt, model, durationMs } = await executeReview({
-    result,
-    records,
-    settings
-  }, {
+  const { input, resultId } = await buildMaintenanceReviewInput(result, config)
+  const { payload, reviewedAt, model, durationMs } = await executeReview(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
@@ -197,24 +187,8 @@ export async function reviewMaintenanceResultStreaming(
   abortSignal?: AbortSignal
 ): Promise<MaintenanceReview> {
   const startTime = Date.now()
-  const resultId = buildResultId(result)
-  const settings = loadSettings()
-
-  const recordIds = collectRecordIds(result)
-  let records: MemoryRecord[] = []
-  if (recordIds.length > 0) {
-    try {
-      records = await fetchRecordsByIds(recordIds, config)
-    } catch (error) {
-      console.error('[claude-memory] Failed to fetch maintenance records for review:', error)
-    }
-  }
-
-  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming({
-    result,
-    records,
-    settings
-  }, {
+  const { input, resultId } = await buildMaintenanceReviewInput(result, config)
+  const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
@@ -244,6 +218,33 @@ export async function reviewMaintenanceResultStreaming(
     summary: payload.summary,
     model,
     durationMs
+  }
+}
+
+async function buildMaintenanceReviewInput(
+  result: OperationResult,
+  config: Config
+): Promise<{ input: MaintenanceReviewInput; resultId: string }> {
+  const resultId = buildResultId(result)
+  const settings = loadSettings()
+
+  const recordIds = collectRecordIds(result)
+  let records: MemoryRecord[] = []
+  if (recordIds.length > 0) {
+    try {
+      records = await fetchRecordsByIds(recordIds, config)
+    } catch (error) {
+      console.error('[claude-memory] Failed to fetch maintenance records for review:', error)
+    }
+  }
+
+  return {
+    input: {
+      result,
+      records,
+      settings
+    },
+    resultId
   }
 }
 
