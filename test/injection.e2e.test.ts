@@ -192,40 +192,70 @@ And it failed. What should I do?`
   })
 
   describe.skipIf(!hasEmbeddings)(`Memory Search${embeddingSkipSuffix}`, () => {
-    it('should find records by keyword match', async () => {
-      await insertRecord(createMockCommandRecord({
+    it('should support keyword, semantic, and hybrid search', async () => {
+      const keywordRecord = createMockCommandRecord({
         command: 'systemctl restart nginx',
         exitCode: 0,
         outcome: 'success'
-      }), TEST_CONFIG)
+      })
+      const semanticRecord = createMockCommandRecord({
+        command: 'docker compose up -d',
+        exitCode: 0,
+        outcome: 'success'
+      })
+      const hybridKeywordRecord = createMockCommandRecord({
+        command: 'kubectl get pods --all-namespaces',
+        exitCode: 0,
+        outcome: 'success'
+      })
+      const hybridSemanticRecord = createMockErrorRecord({
+        errorText: 'kubectl get pods failed: pod not found',
+        resolution: 'Check namespace with kubectl get ns'
+      })
 
-      const results = await hybridSearch({
+      await insertRecord(keywordRecord, TEST_CONFIG)
+      await insertRecord(semanticRecord, TEST_CONFIG)
+      await insertRecord(hybridKeywordRecord, TEST_CONFIG)
+      await insertRecord(hybridSemanticRecord, TEST_CONFIG)
+
+      const keywordResults = await hybridSearch({
         query: 'nginx',
         limit: 5,
         vectorWeight: 0,
         keywordWeight: 1
       }, TEST_CONFIG)
 
-      expect(results.length).toBeGreaterThan(0)
-      expect(results[0].keywordMatch).toBe(true)
-    })
+      const keywordMatch = keywordResults.find(result => result.record.id === keywordRecord.id)
+      expect(keywordMatch).toBeDefined()
+      expect(keywordMatch!.keywordMatch).toBe(true)
 
-    it('should find records by semantic similarity', async () => {
-      await insertRecord(createMockCommandRecord({
-        command: 'docker compose up -d',
-        exitCode: 0,
-        outcome: 'success'
-      }), TEST_CONFIG)
-
-      const results = await hybridSearch({
+      const semanticResults = await hybridSearch({
         query: 'start containers in background',
         limit: 5,
         vectorWeight: 1,
         keywordWeight: 0
       }, TEST_CONFIG)
 
-      expect(results.length).toBeGreaterThan(0)
-      expect(results[0].similarity).toBeGreaterThan(0)
+      const semanticMatch = semanticResults.find(result => result.record.id === semanticRecord.id)
+      expect(semanticMatch).toBeDefined()
+      expect(semanticMatch!.similarity).toBeGreaterThan(0)
+
+      const hybridResults = await hybridSearch({
+        query: hybridKeywordRecord.command,
+        limit: 5,
+        vectorWeight: 0.5,
+        keywordWeight: 0.5,
+        minScore: 0
+      }, TEST_CONFIG)
+
+      const hybridKeywordMatch = hybridResults.find(result => result.record.id === hybridKeywordRecord.id)
+      const hybridSemanticMatch = hybridResults.find(result => result.record.id === hybridSemanticRecord.id)
+
+      expect(hybridKeywordMatch).toBeDefined()
+      expect(hybridKeywordMatch!.keywordMatch).toBe(true)
+      expect(hybridSemanticMatch).toBeDefined()
+      expect(hybridSemanticMatch!.keywordMatch).toBe(false)
+      expect(hybridSemanticMatch!.similarity).toBeGreaterThan(0)
     })
 
     it('should filter by project', async () => {
@@ -273,48 +303,24 @@ And it failed. What should I do?`
       expect(results.some(r => r.record.scope === 'global')).toBe(true)
       expect(results.every(r => r.record.project === '/project-a' || r.record.scope === 'global')).toBe(true)
     })
-
-    it('should support hybrid search combining keyword and vector', async () => {
-      const keywordRecord = createMockCommandRecord({
-        command: 'kubectl get pods --all-namespaces',
-        exitCode: 0,
-        outcome: 'success'
-      })
-      const semanticRecord = createMockErrorRecord({
-        errorText: 'kubectl get pods failed: pod not found',
-        resolution: 'Check namespace with kubectl get ns'
-      })
-
-      await insertRecord(keywordRecord, TEST_CONFIG)
-      await insertRecord(semanticRecord, TEST_CONFIG)
-
-      const results = await hybridSearch({
-        query: keywordRecord.command,
-        limit: 5,
-        vectorWeight: 0.5,
-        keywordWeight: 0.5,
-        minScore: 0  // Disable minScore filter for this test since we're testing hybrid mechanics
-      }, TEST_CONFIG)
-
-      const keywordResult = results.find(r => r.record.id === keywordRecord.id)
-      const semanticResult = results.find(r => r.record.id === semanticRecord.id)
-
-      expect(keywordResult).toBeDefined()
-      expect(keywordResult!.keywordMatch).toBe(true)
-      expect(semanticResult).toBeDefined()
-      expect(semanticResult!.keywordMatch).toBe(false)
-      expect(semanticResult!.similarity).toBeGreaterThan(0)
-    })
   })
 
   describe('Pre-Prompt Hook Integration', () => {
     it.skipIf(!hasEmbeddings)(`should inject context for matching memories${embeddingSkipSuffix}`, async () => {
-      // Pre-populate with a known record
-      await insertRecord(createMockErrorRecord({
+      // Pre-populate with known records
+      const commandRecord = createMockCommandRecord({
+        command: 'pnpm prisma migrate deploy',
+        exitCode: 0,
+        outcome: 'success'
+      })
+      const errorRecord = createMockErrorRecord({
         errorText: 'ECONNREFUSED 127.0.0.1:5432',
         errorType: 'connection',
         resolution: 'Start PostgreSQL with: sudo systemctl start postgresql'
-      }), TEST_CONFIG)
+      })
+
+      await insertRecord(commandRecord, TEST_CONFIG)
+      await insertRecord(errorRecord, TEST_CONFIG)
 
       const hookInput: UserPromptSubmitInput = {
         session_id: 'test-session-inject-1',
@@ -322,7 +328,13 @@ And it failed. What should I do?`
         cwd: TEST_PROJECT,
         permission_mode: 'default',
         hook_event_name: 'UserPromptSubmit',
-        prompt: 'I am getting ECONNREFUSED error on port 5432'
+        prompt: `I am getting ECONNREFUSED 127.0.0.1:5432 when running migrations.
+
+\`\`\`bash
+$ pnpm prisma migrate deploy
+\`\`\`
+
+How do I fix it?`
       }
 
       const result = await handlePrePrompt(hookInput, TEST_CONFIG)
@@ -331,7 +343,11 @@ And it failed. What should I do?`
       expect(result.context).not.toBeNull()
       expect(result.context).toContain('<prior-knowledge>')
       expect(result.context).toContain('ECONNREFUSED')
+      expect(result.context).toContain('pnpm prisma migrate deploy')
       expect(result.context).toContain('postgresql')
+      expect(result.results.map(entry => entry.record.id)).toEqual(
+        expect.arrayContaining([commandRecord.id, errorRecord.id])
+      )
     })
 
     it('should handle empty prompt gracefully', async () => {

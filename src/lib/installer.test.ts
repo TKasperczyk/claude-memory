@@ -21,34 +21,31 @@ afterEach(() => {
 })
 
 describe('installer command safety', () => {
-  it('installCommands writes file when missing', () => {
-    const status = installCommands(settingsPath)
-    const commandStatus = status.memory
-    expect(commandStatus.installed).toBe(true)
-    expect(commandStatus.modified).toBe(false)
-    expect(fs.existsSync(commandStatus.path)).toBe(true)
-  })
-
-  it('installCommands writes file when content matches expected (idempotent)', () => {
+  it('installCommands creates file when missing and is idempotent', () => {
     const first = installCommands(settingsPath)
     const filePath = first.memory.path
+    expect(fs.existsSync(filePath)).toBe(true)
     const original = fs.readFileSync(filePath, 'utf-8')
 
-    installCommands(settingsPath)
+    const status = installCommands(settingsPath)
     const after = fs.readFileSync(filePath, 'utf-8')
 
     expect(after).toBe(original)
+    expect(status.memory.installed).toBe(true)
+    expect(status.memory.modified).toBe(false)
   })
 
-  it('installCommands skips writing when file exists with different content', () => {
+  it('installCommands reports modified and preserves custom content', () => {
     const first = installCommands(settingsPath)
     const filePath = first.memory.path
     fs.writeFileSync(filePath, 'custom content', 'utf-8')
 
-    installCommands(settingsPath)
+    const status = installCommands(settingsPath)
     const after = fs.readFileSync(filePath, 'utf-8')
 
     expect(after).toBe('custom content')
+    expect(status.memory.installed).toBe(false)
+    expect(status.memory.modified).toBe(true)
   })
 
   it('uninstallCommands deletes file when content matches expected', () => {
@@ -56,44 +53,27 @@ describe('installer command safety', () => {
     const filePath = first.memory.path
     expect(fs.existsSync(filePath)).toBe(true)
 
-    uninstallCommands(settingsPath)
+    const status = uninstallCommands(settingsPath)
 
     expect(fs.existsSync(filePath)).toBe(false)
+    expect(status.memory.installed).toBe(false)
+    expect(status.memory.modified).toBe(false)
   })
 
-  it('uninstallCommands skips deletion when file has different content', () => {
+  it('uninstallCommands preserves custom file and reports modified', () => {
     const first = installCommands(settingsPath)
     const filePath = first.memory.path
     fs.writeFileSync(filePath, 'custom content', 'utf-8')
 
-    uninstallCommands(settingsPath)
+    const status = uninstallCommands(settingsPath)
 
     expect(fs.existsSync(filePath)).toBe(true)
     expect(fs.readFileSync(filePath, 'utf-8')).toBe('custom content')
-  })
-
-  it('uninstallCommands no error when file does not exist', () => {
-    expect(() => uninstallCommands(settingsPath)).not.toThrow()
-  })
-})
-
-describe('command status logic', () => {
-  it('installed is true only when file exists and matches expected', () => {
-    const status = installCommands(settingsPath)
-    expect(status.memory.installed).toBe(true)
-    expect(status.memory.modified).toBe(false)
-  })
-
-  it('modified is true when file exists but differs from expected', () => {
-    const first = installCommands(settingsPath)
-    fs.writeFileSync(first.memory.path, 'custom content', 'utf-8')
-
-    const status = installCommands(settingsPath)
     expect(status.memory.installed).toBe(false)
     expect(status.memory.modified).toBe(true)
   })
 
-  it('installed and modified are false when file does not exist', () => {
+  it('uninstallCommands returns uninstalled status when file is missing', () => {
     const status = uninstallCommands(settingsPath)
     expect(status.memory.installed).toBe(false)
     expect(status.memory.modified).toBe(false)

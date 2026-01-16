@@ -23,7 +23,7 @@ import {
   createMockErrorRecord
 } from './helpers.js'
 import { parseTranscript } from '../src/lib/transcript.js'
-import { initMilvus, insertRecord, getRecord, hybridSearch, findSimilar } from '../src/lib/milvus.js'
+import { initMilvus, insertRecord, getRecord, findSimilar } from '../src/lib/milvus.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
 import type { SessionEndInput } from '../src/lib/types.js'
 
@@ -191,41 +191,6 @@ this is not valid json
       expect(matches.length).toBeGreaterThanOrEqual(1)
       expect(matches[0].record.id).toBe(record1.id)
       expect(matches[0].similarity).toBeGreaterThan(0.8)
-    })
-
-    it('should perform hybrid search', async () => {
-      const record = createMockCommandRecord({
-        command: 'systemctl restart nginx',
-        exitCode: 0,
-        outcome: 'success'
-      })
-
-      await insertRecord(record, TEST_CONFIG)
-
-      // Keyword search should find it
-      const keywordResults = await hybridSearch({
-        query: 'nginx',
-        limit: 5,
-        vectorWeight: 0,
-        keywordWeight: 1
-      }, TEST_CONFIG)
-
-      expect(keywordResults.length).toBeGreaterThanOrEqual(1)
-      expect(keywordResults[0].keywordMatch).toBe(true)
-      expect((keywordResults[0].record as typeof record).command).toContain('nginx')
-
-      // Vector search should also find it
-      const vectorResults = await hybridSearch({
-        query: 'restart web server service',
-        limit: 5,
-        vectorWeight: 1,
-        keywordWeight: 0
-      }, TEST_CONFIG)
-
-      const vectorResult = vectorResults.find(result => result.record.id === record.id)
-      expect(vectorResult).toBeDefined()
-      expect(vectorResult!.keywordMatch).toBe(false)
-      expect(vectorResult!.similarity).toBeGreaterThan(0)
     })
 
     it('should track success/failure counts', async () => {

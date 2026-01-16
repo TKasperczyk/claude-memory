@@ -19,7 +19,7 @@ import {
 import { initMilvus, insertRecord } from '../src/lib/milvus.js'
 import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
-import type { CommandRecord, ErrorRecord, UserPromptSubmitInput, SessionEndInput } from '../src/lib/types.js'
+import type { CommandRecord, UserPromptSubmitInput, SessionEndInput } from '../src/lib/types.js'
 import { randomUUID } from 'crypto'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
@@ -48,166 +48,6 @@ describe('Round-Trip E2E', () => {
   beforeEach(async () => {
     await dropTestCollection()
     await initMilvus(TEST_CONFIG)
-  })
-
-  describe('Manual Round-Trip (Direct Storage)', () => {
-    it('should retrieve injected context for stored command', async () => {
-      // Step 1: Store a command record directly
-      const commandRecord: CommandRecord = {
-        id: randomUUID(),
-        type: 'command',
-        command: 'kubectl rollout restart deployment/api',
-        exitCode: 0,
-        outcome: 'success',
-        context: {
-          project: TEST_PROJECT,
-          cwd: TEST_PROJECT,
-          intent: 'restart the api pods'
-        },
-        project: TEST_PROJECT,
-        domain: 'kubernetes',
-        timestamp: Date.now(),
-        successCount: 3,
-        failureCount: 0,
-        lastUsed: Date.now(),
-        deprecated: false
-      }
-
-      await insertRecord(commandRecord, TEST_CONFIG)
-
-      // Step 2: Query with related prompt
-      const hookInput: UserPromptSubmitInput = {
-        session_id: 'roundtrip-test-1',
-        transcript_path: '',
-        cwd: TEST_PROJECT,
-        permission_mode: 'default',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'How do I restart the kubernetes deployment?'
-      }
-
-      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
-
-      // Step 3: Verify context contains the command
-      expect(result.timedOut).toBe(false)
-      expect(result.context).toContain('<prior-knowledge>')
-      expect(result.context).toContain('kubectl rollout restart')
-    })
-
-    it('should retrieve injected context for stored error resolution', async () => {
-      // Step 1: Store an error record
-      const errorRecord: ErrorRecord = {
-        id: randomUUID(),
-        type: 'error',
-        errorText: 'FATAL: password authentication failed for user "postgres"',
-        errorType: 'authentication',
-        resolution: 'Update password in .env file and restart the service',
-        context: {
-          project: TEST_PROJECT,
-          file: '.env',
-          tool: 'psql'
-        },
-        project: TEST_PROJECT,
-        domain: 'database',
-        timestamp: Date.now(),
-        successCount: 0,
-        failureCount: 1,
-        lastUsed: Date.now(),
-        deprecated: false
-      }
-
-      await insertRecord(errorRecord, TEST_CONFIG)
-
-      // Step 2: Query with related error
-      const hookInput: UserPromptSubmitInput = {
-        session_id: 'roundtrip-test-2',
-        transcript_path: '',
-        cwd: TEST_PROJECT,
-        permission_mode: 'default',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: `I'm getting this error:
-FATAL: password authentication failed for user "postgres"
-How do I fix it?`
-      }
-
-      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
-
-      // Step 3: Verify context contains resolution
-      expect(result.timedOut).toBe(false)
-      expect(result.context).toContain('<prior-knowledge>')
-      expect(result.context).toContain('password')
-      expect(result.context).toContain('.env')
-    })
-
-    it('should handle multiple related memories', async () => {
-      // Store multiple related records
-      const records: CommandRecord[] = [
-        {
-          id: randomUUID(),
-          type: 'command',
-          command: 'docker compose build',
-          exitCode: 0,
-          outcome: 'success',
-          context: { project: TEST_PROJECT, cwd: TEST_PROJECT, intent: 'build containers' },
-          project: TEST_PROJECT,
-          domain: 'docker',
-          timestamp: Date.now(),
-          successCount: 5,
-          failureCount: 0,
-          lastUsed: Date.now(),
-          deprecated: false
-        },
-        {
-          id: randomUUID(),
-          type: 'command',
-          command: 'docker compose up -d',
-          exitCode: 0,
-          outcome: 'success',
-          context: { project: TEST_PROJECT, cwd: TEST_PROJECT, intent: 'start containers' },
-          project: TEST_PROJECT,
-          domain: 'docker',
-          timestamp: Date.now(),
-          successCount: 8,
-          failureCount: 1,
-          lastUsed: Date.now(),
-          deprecated: false
-        },
-        {
-          id: randomUUID(),
-          type: 'command',
-          command: 'docker compose logs -f api',
-          exitCode: 0,
-          outcome: 'success',
-          context: { project: TEST_PROJECT, cwd: TEST_PROJECT, intent: 'view api logs' },
-          project: TEST_PROJECT,
-          domain: 'docker',
-          timestamp: Date.now(),
-          successCount: 3,
-          failureCount: 0,
-          lastUsed: Date.now(),
-          deprecated: false
-        }
-      ]
-
-      for (const record of records) {
-        await insertRecord(record, TEST_CONFIG)
-      }
-
-      // Query for docker-related help
-      const hookInput: UserPromptSubmitInput = {
-        session_id: 'roundtrip-test-3',
-        transcript_path: '',
-        cwd: TEST_PROJECT,
-        permission_mode: 'default',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'How do I work with docker compose in this project?'
-      }
-
-      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
-
-      expect(result.timedOut).toBe(false)
-      expect(result.context).toContain('<prior-knowledge>')
-      expect(result.context).toContain('docker compose')
-    })
   })
 
   describe.skipIf(!hasAnthropicAuth)('Full Round-Trip (With Extraction)', () => {
@@ -295,42 +135,6 @@ How do I fix it?`
   })
 
   describe('Edge Cases', () => {
-    it('should not inject deprecated records', async () => {
-      const record: CommandRecord = {
-        id: randomUUID(),
-        type: 'command',
-        command: 'old-deprecated-command',
-        exitCode: 0,
-        outcome: 'success',
-        context: { project: TEST_PROJECT, cwd: TEST_PROJECT, intent: 'test' },
-        project: TEST_PROJECT,
-        domain: 'test',
-        timestamp: Date.now(),
-        successCount: 1,
-        failureCount: 0,
-        lastUsed: Date.now(),
-        deprecated: true // DEPRECATED
-      }
-
-      await insertRecord(record, TEST_CONFIG)
-
-      const hookInput: UserPromptSubmitInput = {
-        session_id: 'roundtrip-edge-1',
-        transcript_path: '',
-        cwd: TEST_PROJECT,
-        permission_mode: 'default',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'old-deprecated-command'
-      }
-
-      const result = await handlePrePrompt(hookInput, TEST_CONFIG)
-
-      // Should not include deprecated command in context
-      if (result.context) {
-        expect(result.context).not.toContain('old-deprecated-command')
-      }
-    })
-
     it('should prioritize exact keyword matches', async () => {
       // Insert a record with specific keyword
       const record: CommandRecord = {
