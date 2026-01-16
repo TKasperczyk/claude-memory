@@ -23,7 +23,7 @@ import {
 } from '../../src/lib/milvus.js'
 import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../../src/lib/session-tracking.js'
 import { findGitRoot } from '../../src/lib/context.js'
-import { handlePrePrompt } from '../../src/hooks/pre-prompt.js'
+import { retrieveContext } from '../../src/lib/retrieval.js'
 import { loadConfig } from '../../src/lib/config.js'
 import { mergeNearMisses } from '../../src/lib/diagnostics.js'
 import {
@@ -611,13 +611,7 @@ app.post('/api/preview', async (req, res) => {
       ? coerceRetrievalSettings(rawSettingsOverride as Record<string, unknown>, loadSettings())
       : undefined
 
-    // Use the same handlePrePrompt function as the actual hook
-    const result = await handlePrePrompt({
-      hook_event_name: 'UserPromptSubmit',
-      prompt,
-      cwd,
-      session_id: 'preview'
-    }, CONFIG, { settingsOverride, diagnostic })
+    const result = await retrieveContext({ prompt, cwd }, CONFIG, { settingsOverride, diagnostic })
 
     const scoredResults = result.results.map(r => ({
       record: r.record,
