@@ -13,6 +13,7 @@ import {
   createMockErrorRecord,
   createMockDiscoveryRecord,
   createMockProcedureRecord,
+  createTempProjectFixture,
   cleanupTempFiles
 } from './helpers.js'
 import { initMilvus, insertRecord, hybridSearch } from '../src/lib/milvus.js'
@@ -75,8 +76,8 @@ And it failed. What should I do?`
     })
 
     it('should detect project domain from files', () => {
-      // Use a real Node project directory
-      const signals = extractSignals('build the project', '/home/luthriel/Programming/claude-memory')
+      const fixtureRoot = createTempProjectFixture()
+      const signals = extractSignals('build the project', fixtureRoot)
 
       expect(signals.domain).toBe('node')
     })

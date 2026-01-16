@@ -1,11 +1,13 @@
 import { MilvusClient } from '@zilliz/milvus2-sdk-node'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
 import type { CommandRecord, DiscoveryRecord, ErrorRecord, MemoryRecord, ProcedureRecord } from '../src/lib/types.js'
 
 let client: MilvusClient | null = null
+const tempFixtureDirs: string[] = []
 
 /**
  * Get Milvus client for test operations.
@@ -202,6 +204,26 @@ export function createMockTranscript(entries: object[]): string {
 }
 
 /**
+ * Create a temp project fixture with marker files for domain detection.
+ */
+export function createTempProjectFixture(files: Record<string, string> = {}): string {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-memory-fixture-'))
+  tempFixtureDirs.push(tempDir)
+
+  const defaultFiles: Record<string, string> = {
+    'package.json': JSON.stringify({ name: 'temp-fixture', private: true }, null, 2),
+    'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'ES2020' } }, null, 2)
+  }
+
+  const mergedFiles = { ...defaultFiles, ...files }
+  for (const [filename, contents] of Object.entries(mergedFiles)) {
+    fs.writeFileSync(path.join(tempDir, filename), contents, 'utf-8')
+  }
+
+  return tempDir
+}
+
+/**
  * Build a typical session transcript with commands and tool results.
  */
 export function buildTypicalTranscriptEntries(): object[] {
@@ -381,4 +403,10 @@ export function cleanupTempFiles(): void {
   if (fs.existsSync(tempDir)) {
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
+  for (const dir of tempFixtureDirs) {
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  tempFixtureDirs.length = 0
 }
