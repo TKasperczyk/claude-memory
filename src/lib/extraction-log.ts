@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
 import { readJsonFile, writeJsonFile } from './json.js'
 import { sanitizeRunId } from './shared.js'
+import { getRecordSummary } from './record-summary.js'
 import type { ExtractionRecordSummary, ExtractionRun, RecordType } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
@@ -136,16 +137,13 @@ function coerceRecordSummary(value: unknown): ExtractionRecordSummary | null {
 
 function deriveSummaryFromRecord(type: RecordType | undefined, record: Record<string, unknown>): string | undefined {
   if (!type) return undefined
-  switch (type) {
-    case 'command':
-      return asTrimmedString(record.command)
-    case 'error':
-      return asTrimmedString(record.errorText)
-    case 'discovery':
-      return asTrimmedString(record.what)
-    case 'procedure':
-      return asTrimmedString(record.name)
-    case 'warning':
-      return asTrimmedString(record.avoid) ?? asTrimmedString(record.useInstead)
-  }
+  return getRecordSummary({
+    type,
+    command: asTrimmedString(record.command),
+    errorText: asTrimmedString(record.errorText),
+    what: asTrimmedString(record.what),
+    name: asTrimmedString(record.name),
+    avoid: asTrimmedString(record.avoid),
+    useInstead: asTrimmedString(record.useInstead)
+  }, { useInsteadFallback: true })
 }

@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import fs from 'fs'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { asStringArray, asTrimmedString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
-import { truncateText } from './shared.js'
+import { truncateText, withTimeout } from './shared.js'
 import { parseTranscriptTurns, type TranscriptTurn } from './transcript.js'
 import { DEFAULT_CONFIG, type Config } from './types.js'
 
@@ -86,52 +86,48 @@ export async function generateRetrievalQueryPlan(
   }
   if (options.signal?.aborted) return null
 
-  const { signal, cleanup } = createTimeoutSignal(options.timeoutMs, options.signal)
-
   try {
-    if (signal?.aborted) return null
+    const result = await withTimeout(async (signal) => {
+      const turns = await parseTranscriptTurns(
+        transcriptPath,
+        options.maxTurns ?? MAX_CONTEXT_TURNS,
+        signal
+      )
+      if (signal.aborted || turns.length === 0) return null
 
-    const turns = await parseTranscriptTurns(
-      transcriptPath,
-      options.maxTurns ?? MAX_CONTEXT_TURNS,
-      signal
-    )
-    if (signal?.aborted || turns.length === 0) return null
+      const client = await createAnthropicClient()
+      if (!client) {
+        console.error('[claude-memory] No authentication available for retrieval query generation.')
+        return null
+      }
 
-    const client = await createAnthropicClient()
-    if (!client) {
-      console.error('[claude-memory] No authentication available for retrieval query generation.')
-      return null
-    }
+      const userPrompt = buildUserPrompt(turns, prompt)
 
-    const userPrompt = buildUserPrompt(turns, prompt)
+      const response = await client.messages.create({
+        model: config.extraction.model,
+        max_tokens: Math.min(QUERY_MAX_TOKENS, config.extraction.maxTokens),
+        temperature: 0,
+        system: [
+          { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+          { type: 'text', text: SYSTEM_PROMPT }
+        ],
+        messages: [{ role: 'user', content: userPrompt }],
+        tools: [QUERY_TOOL],
+        tool_choice: { type: 'tool', name: TOOL_NAME }
+      }, { signal })
 
-    const response = await client.messages.create({
-      model: config.extraction.model,
-      max_tokens: Math.min(QUERY_MAX_TOKENS, config.extraction.maxTokens),
-      temperature: 0,
-      system: [
-        { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-        { type: 'text', text: SYSTEM_PROMPT }
-      ],
-      messages: [{ role: 'user', content: userPrompt }],
-      tools: [QUERY_TOOL],
-      tool_choice: { type: 'tool', name: TOOL_NAME }
-    }, signal ? { signal } : undefined)
+      const toolInput = response.content.find((block): block is ToolUseBlock =>
+        isToolUseBlock(block) && block.name === TOOL_NAME
+      )?.input
+      if (!toolInput) return null
+      return coerceRetrievalQueryPlan(toolInput)
+    }, { timeoutMs: options.timeoutMs, signal: options.signal })
 
-    const toolInput = response.content.find((block): block is ToolUseBlock =>
-      isToolUseBlock(block) && block.name === TOOL_NAME
-    )?.input
-    if (!toolInput) return null
-    const plan = coerceRetrievalQueryPlan(toolInput)
-    return plan
+    if (!result.completed) return null
+    return result.value ?? null
   } catch (error) {
-    const aborted = signal?.aborted || options.signal?.aborted
-    if (aborted) return null
     console.error('[claude-memory] Retrieval query generation failed:', error)
     return null
-  } finally {
-    cleanup()
   }
 }
 
@@ -172,37 +168,4 @@ function formatTurn(turn: TranscriptTurn, index: number): string {
   const lines = [`Turn ${index + 1}`, `User: ${user}`]
   if (assistant) lines.push(`Assistant: ${assistant}`)
   return lines.join('\n')
-}
-
-function createTimeoutSignal(
-  timeoutMs?: number,
-  externalSignal?: AbortSignal
-): { signal?: AbortSignal; cleanup: () => void } {
-  if (!timeoutMs && !externalSignal) {
-    return { signal: undefined, cleanup: () => {} }
-  }
-
-  const controller = new AbortController()
-  let timeoutId: NodeJS.Timeout | null = null
-  const onAbort = (): void => controller.abort()
-
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      controller.abort()
-    } else {
-      externalSignal.addEventListener('abort', onAbort, { once: true })
-    }
-  }
-
-  if (timeoutMs && timeoutMs > 0) {
-    timeoutId = setTimeout(() => controller.abort(), timeoutMs)
-  }
-
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      if (timeoutId) clearTimeout(timeoutId)
-      if (externalSignal) externalSignal.removeEventListener('abort', onAbort)
-    }
-  }
 }

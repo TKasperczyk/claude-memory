@@ -1506,7 +1506,7 @@ function needsEmbeddingRefresh(existing: MemoryRecord, updated: MemoryRecord): b
   return buildEmbeddingInput(existing) !== buildEmbeddingInput(updated)
 }
 
-function escapeLikeValue(value: string): string {
+export function escapeLikeValue(value: string): string {
   const escapedWildcards = value.replace(/[%_]/g, '\\$&')
   return escapeFilterValue(escapedWildcards)
 }
@@ -1559,7 +1559,7 @@ export function buildFilter(filters: {
   return parts.join(' && ')
 }
 
-function buildKeywordFilter(query: string, baseFilter?: string): string {
+export function buildKeywordFilter(query: string, baseFilter?: string): string {
   const escaped = escapeLikeValue(query)
   const likeClause = `exact_text like "%${escaped}%"`
   if (!baseFilter) return likeClause

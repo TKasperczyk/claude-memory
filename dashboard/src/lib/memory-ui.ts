@@ -1,4 +1,5 @@
 import type { MemoryRecord } from '@/lib/api'
+import { getRecordSummary } from '../../../src/lib/record-summary.js'
 
 export const TYPE_COLORS: Record<MemoryRecord['type'], string> = {
   command: '#2dd4bf',
@@ -9,18 +10,7 @@ export const TYPE_COLORS: Record<MemoryRecord['type'], string> = {
 }
 
 export function getMemorySummary(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command':
-      return record.command
-    case 'error':
-      return record.errorText
-    case 'discovery':
-      return record.what
-    case 'procedure':
-      return record.name
-    case 'warning':
-      return record.avoid
-  }
+  return getRecordSummary(record)
 }
 
 export function getMemoryTitle(record: MemoryRecord): string {

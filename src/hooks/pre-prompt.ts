@@ -3,7 +3,7 @@
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { SKIP_MARKER, getCommandFilePath } from '../lib/claude-commands.js'
-import { readFileIfExists, truncateText } from '../lib/shared.js'
+import { readFileIfExists, truncateText, withTimeout } from '../lib/shared.js'
 import { closeMilvus, initMilvus, hybridSearch } from '../lib/milvus.js'
 import { buildContext, extractSignals, findGitRoot, formatRecordSnippet, stripNoiseWords, type ContextSignals } from '../lib/context.js'
 import { embed } from '../lib/embed.js'
@@ -80,7 +80,7 @@ export async function handlePrePrompt(
   const runtimeConfig = applySettingsToConfig(config, settings)
   const diagnostic = options.diagnostic === true
 
-  const result = await runWithTimeout(async (signal) => {
+  const result = await withTimeout(async (signal) => {
     const unregister = registerAbortCleanup(signal, () => {
       void closeMilvus()
     })
@@ -120,8 +120,11 @@ export async function handlePrePrompt(
     } finally {
       unregister()
     }
-  }, settings.prePromptTimeoutMs, () => {
-    void closeMilvus()
+  }, {
+    timeoutMs: settings.prePromptTimeoutMs,
+    onTimeout: () => {
+      void closeMilvus()
+    }
   })
 
   if (!result.completed) {
@@ -130,7 +133,7 @@ export async function handlePrePrompt(
       signals,
       results: [],
       injectedRecords: [],
-      timedOut: true
+      timedOut: result.timedOut
     }
   }
 
@@ -727,43 +730,6 @@ function registerAbortCleanup(signal: AbortSignal, cleanup: () => void): () => v
   }
   signal.addEventListener('abort', onAbort, { once: true })
   return () => signal.removeEventListener('abort', onAbort)
-}
-
-async function runWithTimeout<T>(
-  task: (signal: AbortSignal) => Promise<T>,
-  timeoutMs: number,
-  onTimeout?: () => void
-): Promise<{ completed: boolean; value?: T }> {
-  let timeoutId: NodeJS.Timeout | null = null
-  const controller = new AbortController()
-  try {
-    const timeoutPromise = new Promise<{ completed: boolean }>(resolve => {
-      timeoutId = setTimeout(() => {
-        controller.abort()
-        if (onTimeout) {
-          try {
-            onTimeout()
-          } catch (error) {
-            console.error('[claude-memory] Timeout cleanup failed:', error)
-          }
-        }
-        resolve({ completed: false })
-      }, timeoutMs)
-    })
-    const taskPromise = task(controller.signal)
-      .then(value => ({ completed: true as const, value }))
-      .catch(error => {
-        if (controller.signal.aborted) {
-          return { completed: false as const }
-        }
-        return { completed: true as const, error }
-      })
-    const result = await Promise.race([taskPromise, timeoutPromise])
-    if (result.completed && 'error' in result) throw result.error
-    return result
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId)
-  }
 }
 
 async function readHookInput(): Promise<UserPromptSubmitInput | null> {

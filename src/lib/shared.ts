@@ -1,5 +1,6 @@
 import fs from 'fs'
-import { type MemoryRecord } from './types.js'
+import { getRecordSummary, type RecordSummarySource } from './record-summary.js'
+import { type MemoryRecord, type RecordType } from './types.js'
 
 /**
  * Check if a string looks like a command line.
@@ -74,6 +75,14 @@ export function escapeFilterValue(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
+const UNKNOWN_RECORD_SUMMARY: Record<RecordType, string> = {
+  command: 'unknown command',
+  error: 'unknown error',
+  discovery: 'unknown discovery',
+  procedure: 'unknown procedure',
+  warning: 'unknown warning'
+}
+
 export function buildRecordSnippet(record: {
   type: string
   command?: string
@@ -81,21 +90,13 @@ export function buildRecordSnippet(record: {
   what?: string
   name?: string
   avoid?: string
+  useInstead?: string
 }): string {
-  switch (record.type) {
-    case 'command':
-      return record.command ?? 'unknown command'
-    case 'error':
-      return record.errorText ?? 'unknown error'
-    case 'discovery':
-      return record.what ?? 'unknown discovery'
-    case 'procedure':
-      return record.name ?? 'unknown procedure'
-    case 'warning':
-      return record.avoid ?? 'unknown warning'
-    default:
-      return `${record.type} record`
-  }
+  const summary = getRecordSummary(record as RecordSummarySource)
+  if (summary !== undefined) return summary
+  const fallback = UNKNOWN_RECORD_SUMMARY[record.type as RecordType]
+  if (fallback) return fallback
+  return `${record.type} record`
 }
 
 export function truncateSnippet(value: string, maxLength: number = 120): string {
@@ -146,4 +147,78 @@ export function truncateWithTail(value: string, maxLength: number, tailLength: n
   const head = value.slice(0, Math.max(0, maxLength - tailLength))
   const tail = value.slice(-tailLength)
   return `${head}\n...\n${tail}`
+}
+
+export type TimeoutResult<T> =
+  | { completed: true; timedOut: false; value: T }
+  | { completed: false; timedOut: boolean }
+
+export async function withTimeout<T>(
+  task: (signal: AbortSignal) => Promise<T>,
+  options: { timeoutMs?: number; signal?: AbortSignal; onTimeout?: () => void } = {}
+): Promise<TimeoutResult<T>> {
+  const { timeoutMs, signal: externalSignal, onTimeout } = options
+
+  if (externalSignal?.aborted) {
+    return { completed: false, timedOut: false }
+  }
+
+  const controller = new AbortController()
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  let timedOut = false
+
+  const abort = (): void => {
+    if (!controller.signal.aborted) {
+      controller.abort()
+    }
+  }
+
+  const onExternalAbort = (): void => {
+    abort()
+  }
+
+  if (externalSignal) {
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true })
+  }
+
+  if (timeoutMs && timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      timedOut = true
+      abort()
+      if (onTimeout) {
+        try {
+          onTimeout()
+        } catch (error) {
+          console.error('[claude-memory] Timeout cleanup failed:', error)
+        }
+      }
+    }, timeoutMs)
+  }
+
+  let onAbort: (() => void) | null = null
+  const abortPromise = new Promise<{ completed: false; timedOut: boolean }>(resolve => {
+    if (controller.signal.aborted) {
+      resolve({ completed: false, timedOut })
+      return
+    }
+    onAbort = () => resolve({ completed: false, timedOut })
+    controller.signal.addEventListener('abort', onAbort, { once: true })
+  })
+
+  const taskPromise = task(controller.signal)
+    .then(value => ({ completed: true as const, timedOut: false as const, value }))
+    .catch(error => {
+      if (controller.signal.aborted) {
+        return { completed: false as const, timedOut }
+      }
+      throw error
+    })
+
+  try {
+    return await Promise.race([taskPromise, abortPromise])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort)
+    if (onAbort) controller.signal.removeEventListener('abort', onAbort)
+  }
 }

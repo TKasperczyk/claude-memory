@@ -17,6 +17,7 @@ import {
   deleteRecord,
   resetCollection,
   countRecords,
+  buildKeywordFilter,
   escapeFilterValue,
   getRecordStats
 } from '../../src/lib/milvus.js'
@@ -218,23 +219,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function escapeLikeValue(value: string): string {
-  const escapedWildcards = value.replace(/[%_]/g, '\\$&')
-  return escapeFilterValue(escapedWildcards)
-}
-
 function buildSearchFilter(filters: { type?: RecordType; project?: string; deprecated?: boolean }): string | undefined {
   const parts: string[] = []
   if (filters.type) parts.push(`type == "${escapeFilterValue(filters.type)}"`)
   if (filters.project) parts.push(`project == "${escapeFilterValue(filters.project)}"`)
   if (!filters.deprecated) parts.push('deprecated == false')
   return parts.length > 0 ? parts.join(' && ') : undefined
-}
-
-function buildKeywordFilter(query: string, baseFilter?: string): string {
-  const escaped = escapeLikeValue(query)
-  const likeClause = `exact_text like "%${escaped}%"`
-  return baseFilter ? `${baseFilter} && ${likeClause}` : likeClause
 }
 
 function combineNearMisses(...sources: Array<NearMissRecord[] | undefined>): NearMissRecord[] {

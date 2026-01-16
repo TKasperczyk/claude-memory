@@ -15,6 +15,7 @@ import { loadConfig } from '../lib/config.js'
 import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
+import { getRecordSummary } from '../lib/record-summary.js'
 import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
 
@@ -195,21 +196,6 @@ function buildRecordSummary(record: MemoryRecord): ExtractionRecordSummary | nul
     type: record.type,
     summary,
     timestamp: record.timestamp
-  }
-}
-
-function getRecordSummary(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command':
-      return record.command
-    case 'error':
-      return record.errorText
-    case 'discovery':
-      return record.what
-    case 'procedure':
-      return record.name
-    case 'warning':
-      return record.avoid
   }
 }
 

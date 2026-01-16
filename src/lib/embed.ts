@@ -3,6 +3,7 @@
  */
 
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config } from './types.js'
+import { withTimeout } from './shared.js'
 const DEFAULT_TIMEOUT_MS = 30000
 
 const config: Config = DEFAULT_CONFIG
@@ -30,24 +31,7 @@ async function requestEmbeddings(
   cfg: Config,
   signal?: AbortSignal
 ): Promise<number[][]> {
-  const controller = new AbortController()
-  let timedOut = false
-  const timeoutId = setTimeout(() => {
-    timedOut = true
-    controller.abort()
-  }, DEFAULT_TIMEOUT_MS)
-  const onAbort = (): void => {
-    controller.abort()
-  }
-  if (signal) {
-    if (signal.aborted) {
-      onAbort()
-    } else {
-      signal.addEventListener('abort', onAbort)
-    }
-  }
-
-  try {
+  const result = await withTimeout(async (timeoutSignal) => {
     const response = await fetch(cfg.embeddings.baseUrl + '/embeddings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -55,7 +39,7 @@ async function requestEmbeddings(
         input,
         model: cfg.embeddings.model
       }),
-      signal: controller.signal
+      signal: timeoutSignal
     })
 
     if (!response.ok) {
@@ -80,29 +64,20 @@ async function requestEmbeddings(
     }
 
     return embeddings
-  } catch (error: unknown) {
-    if (isAbortError(error)) {
-      if (timedOut) {
-        throw new Error(`Embedding request timed out after ${DEFAULT_TIMEOUT_MS}ms`)
-      }
-      throw new Error('Embedding request aborted')
+  }, { timeoutMs: DEFAULT_TIMEOUT_MS, signal })
+
+  if (!result.completed) {
+    if (result.timedOut) {
+      throw new Error(`Embedding request timed out after ${DEFAULT_TIMEOUT_MS}ms`)
     }
-    throw error
-  } finally {
-    clearTimeout(timeoutId)
-    if (signal) {
-      signal.removeEventListener('abort', onAbort)
-    }
+    throw new Error('Embedding request aborted')
   }
+
+  return result.value
 }
 
 export function ensureEmbeddingDim(embedding: number[]): void {
   if (embedding.length !== EMBEDDING_DIM) {
     throw new Error(`Embedding dimension mismatch: expected ${EMBEDDING_DIM}, got ${embedding.length}`)
   }
-}
-
-function isAbortError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false
-  return 'name' in error && (error as { name?: unknown }).name === 'AbortError'
 }
