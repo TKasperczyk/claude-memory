@@ -11,6 +11,7 @@ import {
   ensureWarningSynthesisField
 } from './milvus-schema.js'
 
+// Single-client module: switching configs replaces the active client for the process.
 let client: MilvusClient | null = null
 let activeConfig: Config | null = null
 

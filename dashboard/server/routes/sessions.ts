@@ -1,0 +1,117 @@
+import express from 'express'
+import { reviewInjection, reviewInjectionStreaming } from '../../../src/lib/injection-review.js'
+import { getRecordStats } from '../../../src/lib/milvus.js'
+import { getInjectionReview, saveInjectionReview } from '../../../src/lib/review-storage.js'
+import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../../../src/lib/session-tracking.js'
+import type { ServerContext } from '../context.js'
+
+export function createSessionsRouter(context: ServerContext): express.Router {
+  const router = express.Router()
+  const { config, ensureInitialized } = context
+
+  router.get('/api/sessions', async (_req, res) => {
+    try {
+      await ensureInitialized()
+      const sessions = listAllSessions().map(session => ({
+        ...session,
+        memories: dedupeInjectedMemories(session.memories)
+      }))
+
+      const allIds = sessions.flatMap(session => session.memories.map(memory => memory.id))
+      const statsMap = await getRecordStats(allIds)
+
+      const enrichedSessions = sessions.map(session => ({
+        ...session,
+        memories: session.memories.map(memory => ({
+          ...memory,
+          stats: statsMap.get(memory.id) ?? null
+        }))
+      }))
+
+      res.json({
+        sessions: enrichedSessions,
+        count: sessions.length
+      })
+    } catch (error) {
+      console.error('Sessions error:', error)
+      res.status(500).json({ error: 'Failed to list sessions' })
+    }
+  })
+
+  router.get('/api/sessions/:sessionId/review', (req, res) => {
+    try {
+      const review = getInjectionReview(req.params.sessionId)
+      if (!review) {
+        return res.status(404).json({ error: 'Review not found' })
+      }
+      res.json(review)
+    } catch (error) {
+      console.error('Injection review error:', error)
+      res.status(500).json({ error: 'Failed to get injection review' })
+    }
+  })
+
+  router.post('/api/sessions/:sessionId/review', async (req, res) => {
+    try {
+      const sessionId = req.params.sessionId
+      const session = loadSessionTracking(sessionId)
+      if (!session) {
+        return res.status(404).json({ error: 'Session not found' })
+      }
+
+      const wantsStream = req.query.stream === 'true'
+      if (wantsStream) {
+        res.setHeader('Content-Type', 'text/event-stream')
+        res.setHeader('Cache-Control', 'no-cache')
+        res.setHeader('Connection', 'keep-alive')
+        res.flushHeaders()
+
+        const abortController = new AbortController()
+        req.on('close', () => {
+          abortController.abort()
+        })
+
+        const send = (payload: unknown) => {
+          if (abortController.signal.aborted || res.writableEnded) return
+          res.write(`data: ${JSON.stringify(payload)}\n\n`)
+        }
+        const onThinking = (chunk: string) => {
+          if (!chunk || abortController.signal.aborted || res.writableEnded) return
+          send({ thinking: chunk })
+        }
+
+        try {
+          await ensureInitialized()
+          const review = await reviewInjectionStreaming(sessionId, config, onThinking, abortController.signal)
+          saveInjectionReview(review)
+          send({ result: review })
+          if (!abortController.signal.aborted && !res.writableEnded) {
+            res.write('data: [DONE]\n\n')
+          }
+        } catch (error) {
+          if (abortController.signal.aborted) return
+          const message = error instanceof Error ? error.message : String(error)
+          console.error('Injection review error:', error)
+          send({ error: message || 'Failed to run injection review' })
+          if (!abortController.signal.aborted && !res.writableEnded) {
+            res.write('data: [DONE]\n\n')
+          }
+        } finally {
+          res.end()
+        }
+        return
+      }
+
+      await ensureInitialized()
+      const review = await reviewInjection(sessionId, config)
+      saveInjectionReview(review)
+      res.json(review)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('Injection review error:', error)
+      res.status(500).json({ error: message || 'Failed to run injection review' })
+    }
+  })
+
+  return router
+}
