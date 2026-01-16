@@ -336,9 +336,9 @@ async function searchWithScope(
   options: { diagnostic?: boolean } = {}
 ): Promise<SearchWithScopeResult> {
   const maxRecords = config.injection.maxRecords
+  const candidateLimit = Math.max(maxRecords * 3, maxRecords)
   const resultsById = new Map<string, HybridSearchResult>()
   const diagnostic = options.diagnostic === true
-  const limit = maxRecords
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
   console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
@@ -357,13 +357,13 @@ async function searchWithScope(
   for (const query of keywordQueries) {
     const keywordResults = await runHybridSearch({
       query,
-      limit,
+      limit: candidateLimit,
       project: scope.project,
       domain: scope.domain,
       excludeDeprecated: true,
       vectorWeight: 0,
       keywordWeight: 1,
-      keywordLimit: limit,
+      keywordLimit: candidateLimit,
       usageRatioWeight: settings.usageRatioWeight,
       includeEmbeddings: true,
       signal
@@ -380,7 +380,7 @@ async function searchWithScope(
     const semanticResults = await runHybridSearch({
       query: '', // Not used when embedding provided
       embedding: precomputedEmbedding,
-      limit,
+      limit: candidateLimit,
       project: scope.project,
       domain: scope.domain,
       excludeDeprecated: true,
@@ -402,7 +402,7 @@ async function searchWithScope(
 
   const filteredResults = Array.from(resultsById.values())
     .filter(result => result.keywordMatch || result.score >= settings.minScore)
-  const rankedResults = sortByScore(filteredResults).slice(0, limit)
+  const rankedResults = sortByScore(filteredResults).slice(0, candidateLimit)
   if (diagnostic && nearMisses) {
     for (const result of rankedResults) {
       nearMisses.delete(result.record.id)
