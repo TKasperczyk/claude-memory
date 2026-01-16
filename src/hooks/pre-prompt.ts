@@ -324,8 +324,18 @@ async function searchWithScope(
 
   console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
 
+  const upsertResult = (item: HybridSearchResult): void => {
+    const existing = resultsById.get(item.record.id)
+    if (existing) {
+      existing.similarity = Math.max(existing.similarity, item.similarity)
+      existing.score = Math.max(existing.score, item.score)
+      existing.keywordMatch = existing.keywordMatch || item.keywordMatch
+    } else {
+      resultsById.set(item.record.id, item)
+    }
+  }
+
   for (const query of keywordQueries) {
-    if (resultsById.size >= limit) break
     const keywordResults = await runHybridSearch({
       query,
       limit,
@@ -340,10 +350,7 @@ async function searchWithScope(
       signal
     }, config, diagnostic)
     for (const item of keywordResults.results) {
-      if (resultsById.size >= limit) break
-      if (!resultsById.has(item.record.id)) {
-        resultsById.set(item.record.id, item)
-      }
+      upsertResult(item)
     }
     if (diagnostic && nearMisses) {
       mergeNearMisses(nearMisses, keywordResults.nearMisses)
@@ -367,14 +374,7 @@ async function searchWithScope(
       signal
     }, config, diagnostic)
     for (const item of semanticResults.results) {
-      const existing = resultsById.get(item.record.id)
-      if (existing) {
-        // Merge: record was found by both keyword and semantic search
-        existing.similarity = Math.max(existing.similarity, item.similarity)
-        existing.score = Math.max(existing.score, item.score)
-      } else if (resultsById.size < limit) {
-        resultsById.set(item.record.id, item)
-      }
+      upsertResult(item)
     }
     if (diagnostic && nearMisses) {
       mergeNearMisses(nearMisses, semanticResults.nearMisses)
@@ -383,12 +383,13 @@ async function searchWithScope(
 
   const filteredResults = Array.from(resultsById.values())
     .filter(result => result.keywordMatch || result.score >= settings.minScore)
+  const rankedResults = sortByScore(filteredResults).slice(0, limit)
   if (diagnostic && nearMisses) {
-    for (const result of filteredResults) {
+    for (const result of rankedResults) {
       nearMisses.delete(result.record.id)
     }
   }
-  return { results: filteredResults, nearMisses: Array.from(nearMisses?.values() ?? []) }
+  return { results: rankedResults, nearMisses: Array.from(nearMisses?.values() ?? []) }
 }
 
 /**
@@ -868,28 +869,32 @@ function trackSession(
 ): void {
   if (!sessionId) return
 
-  // Strip noise words (ultrathink, etc.) before storing
-  const cleanPrompt = stripNoiseWords(prompt)
+  try {
+    // Strip noise words (ultrathink, etc.) before storing
+    const cleanPrompt = stripNoiseWords(prompt)
 
-  // Build lookup map for retrieval metadata
-  const resultById = new Map(searchResults.map(r => [r.record.id, r]))
+    // Build lookup map for retrieval metadata
+    const resultById = new Map(searchResults.map(r => [r.record.id, r]))
 
-  const injectedAt = Date.now()
-  const entries = records.map(record => {
-    const searchResult = resultById.get(record.id)
-    return {
-      id: record.id,
-      snippet: normalizeSnippet(formatRecordSnippet(record) ?? `type: ${record.type}`),
-      type: record.type,
-      injectedAt,
-      // Include retrieval trigger metadata
-      similarity: searchResult?.similarity,
-      keywordMatch: searchResult?.keywordMatch,
-      score: searchResult?.score
-    }
-  })
+    const injectedAt = Date.now()
+    const entries = records.map(record => {
+      const searchResult = resultById.get(record.id)
+      return {
+        id: record.id,
+        snippet: normalizeSnippet(formatRecordSnippet(record) ?? `type: ${record.type}`),
+        type: record.type,
+        injectedAt,
+        // Include retrieval trigger metadata
+        similarity: searchResult?.similarity,
+        keywordMatch: searchResult?.keywordMatch,
+        score: searchResult?.score
+      }
+    })
 
-  appendSessionTracking(sessionId, entries, cwd, cleanPrompt, status)
+    appendSessionTracking(sessionId, entries, cwd, cleanPrompt, status)
+  } catch (error) {
+    console.error('[claude-memory] Failed to track session:', error)
+  }
 }
 
 function normalizeSnippet(value: string): string {

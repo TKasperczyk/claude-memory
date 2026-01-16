@@ -57,3 +57,22 @@ Web UI for inspecting and maintaining the memory pool:
 - Embeddings are 4096-dimensional (Qwen3); dimension is enforced at insert time
 - Record schemas are centralized in `src/lib/record-schema.ts` for consistency between extraction and review
 - Auth falls back through: env vars → Claude Code credentials → kira credentials
+
+## Claude-Context Indexing
+
+When using claude-context MCP to index this codebase:
+
+```
+mcp__claude-context__index_codebase({
+  path: "/home/luthriel/Programming/claude-memory",
+  force: true,
+  customExtensions: [".svelte"],
+  ignorePatterns: ["**/.pnpm-store/**", "**/pnpm-lock.yaml", "**/*.lock"]
+})
+```
+
+**Important:**
+- Don't add `.json` as a custom extension - it picks up pnpm's content-addressable store (hundreds of package metadata files in `dashboard/.pnpm-store/`)
+- The AST splitter handles `.ts`, `.tsx` by default - only add `.svelte` for this project
+- Always ignore `.pnpm-store/**` and lock files
+- Expected result: ~85 files, ~1600 chunks (not 400+ files)

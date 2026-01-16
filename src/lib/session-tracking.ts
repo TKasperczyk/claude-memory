@@ -16,6 +16,7 @@ const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
 const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure|warning):/i
 const LOCK_RETRY_DELAY_MS = 25
 const LOCK_MAX_WAIT_MS = 1000
+const LOCK_STALE_MS = 30_000
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4))
 
 function getSessionTrackingPath(sessionId: string): string {
@@ -31,6 +32,44 @@ function sleep(ms: number): void {
   Atomics.wait(LOCK_SLEEP, 0, 0, ms)
 }
 
+function readLockPid(lockPath: string): number | null {
+  try {
+    const content = fs.readFileSync(lockPath, 'utf-8').trim()
+    if (!content) return null
+    const pid = Number.parseInt(content, 10)
+    return Number.isNaN(pid) ? null : pid
+  } catch {
+    return null
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') return false
+    return true
+  }
+}
+
+function isStaleLock(lockPath: string, now: number): boolean {
+  try {
+    const pid = readLockPid(lockPath)
+    if (pid !== null) {
+      return !isProcessAlive(pid)
+    }
+    const stats = fs.statSync(lockPath)
+    const ageMs = now - stats.mtimeMs
+    return ageMs >= LOCK_STALE_MS
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return false
+    return false
+  }
+}
+
 function withSessionLock<T>(sessionId: string, action: () => T): T {
   const lockPath = getSessionLockPath(sessionId)
   const start = Date.now()
@@ -39,13 +78,31 @@ function withSessionLock<T>(sessionId: string, action: () => T): T {
   while (fd === null) {
     try {
       fd = fs.openSync(lockPath, 'wx')
+      try {
+        fs.writeFileSync(fd, `${process.pid}\n`)
+      } catch {
+        // Ignore lock metadata errors
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code !== 'EEXIST') {
         throw error
       }
-      if (Date.now() - start >= LOCK_MAX_WAIT_MS) {
-        throw new Error(`Timed out waiting for session lock: ${lockPath}`)
+      const now = Date.now()
+      if (isStaleLock(lockPath, now)) {
+        let removed = false
+        try {
+          fs.unlinkSync(lockPath)
+          removed = true
+          console.warn('[claude-memory] Removed stale session lock:', lockPath)
+        } catch (unlinkError) {
+          console.warn('[claude-memory] Failed to remove stale session lock:', unlinkError)
+        }
+        if (removed) continue
+      }
+      if (now - start >= LOCK_MAX_WAIT_MS) {
+        console.warn('[claude-memory] Timed out waiting for session lock; proceeding without lock:', lockPath)
+        return action()
       }
       sleep(LOCK_RETRY_DELAY_MS)
     }
