@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
+import { checkEmbeddingAvailability } from './embedding-availability.js'
 import {
   dropTestCollection,
   createMockCommandRecord,
@@ -18,6 +19,13 @@ import { initMilvus, insertRecord, hybridSearch } from '../src/lib/milvus.js'
 import { buildContext, extractSignals } from '../src/lib/context.js'
 import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
 import type { UserPromptSubmitInput } from '../src/lib/types.js'
+
+const embeddingAvailability = await checkEmbeddingAvailability(TEST_CONFIG, { timeoutMs: 800 })
+const hasEmbeddings = embeddingAvailability.available
+const embeddingSkipNote = embeddingAvailability.reason
+  ? `LMStudio unavailable: ${embeddingAvailability.reason}`
+  : 'LMStudio unavailable'
+const embeddingSkipSuffix = hasEmbeddings ? '' : ` (skipped: ${embeddingSkipNote})`
 
 describe('Injection E2E', () => {
   beforeAll(async () => {
@@ -182,7 +190,7 @@ And it failed. What should I do?`
     })
   })
 
-  describe('Memory Search', () => {
+  describe.skipIf(!hasEmbeddings)(`Memory Search${embeddingSkipSuffix}`, () => {
     it('should find records by keyword match', async () => {
       await insertRecord(createMockCommandRecord({
         command: 'systemctl restart nginx',
@@ -290,7 +298,7 @@ And it failed. What should I do?`
   })
 
   describe('Pre-Prompt Hook Integration', () => {
-    it('should inject context for matching memories', async () => {
+    it.skipIf(!hasEmbeddings)(`should inject context for matching memories${embeddingSkipSuffix}`, async () => {
       // Pre-populate with a known record
       await insertRecord(createMockErrorRecord({
         errorText: 'ECONNREFUSED 127.0.0.1:5432',
@@ -332,7 +340,7 @@ And it failed. What should I do?`
       expect(result.results.length).toBe(0)
     })
 
-    it('should handle no matching memories', async () => {
+    it.skipIf(!hasEmbeddings)(`should handle no matching memories${embeddingSkipSuffix}`, async () => {
       const hookInput: UserPromptSubmitInput = {
         session_id: 'test-session-inject-3',
         transcript_path: '',
@@ -348,7 +356,7 @@ And it failed. What should I do?`
       expect(result.context).toBeNull()
     })
 
-    it('should complete within reasonable time', async () => {
+    it.skipIf(!hasEmbeddings)(`should complete within reasonable time${embeddingSkipSuffix}`, async () => {
       const hookInput: UserPromptSubmitInput = {
         session_id: 'test-session-inject-4',
         transcript_path: '',

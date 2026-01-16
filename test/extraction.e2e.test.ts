@@ -11,6 +11,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import path from 'path'
 import fs from 'fs'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
+import { checkEmbeddingAvailability } from './embedding-availability.js'
 import {
   dropTestCollection,
   countTestRecords,
@@ -38,6 +39,20 @@ const hasAnthropicAuth = !!(
   existsSync(join(homedir(), '.claude', '.credentials.json')) ||
   existsSync(join(homedir(), '.kira', 'credentials.json'))
 )
+
+const embeddingAvailability = await checkEmbeddingAvailability(TEST_CONFIG, { timeoutMs: 800 })
+const hasEmbeddings = embeddingAvailability.available
+const embeddingSkipNote = embeddingAvailability.reason
+  ? `LMStudio unavailable: ${embeddingAvailability.reason}`
+  : 'LMStudio unavailable'
+const embeddingSkipSuffix = hasEmbeddings ? '' : ` (skipped: ${embeddingSkipNote})`
+const extractionSkipReasons = [
+  !hasAnthropicAuth ? 'missing Anthropic auth' : null,
+  !hasEmbeddings ? embeddingSkipNote : null
+].filter((reason): reason is string => Boolean(reason))
+const extractionSkipSuffix = extractionSkipReasons.length > 0
+  ? ` (skipped: ${extractionSkipReasons.join(', ')})`
+  : ''
 
 describe('Extraction E2E', () => {
   beforeAll(async () => {
@@ -125,7 +140,7 @@ this is not valid json
     })
   })
 
-  describe('Storage Layer', () => {
+  describe.skipIf(!hasEmbeddings)(`Storage Layer${embeddingSkipSuffix}`, () => {
     it('should insert and retrieve a command record', async () => {
       const record = createMockCommandRecord({
         command: 'pnpm build',
@@ -228,28 +243,31 @@ this is not valid json
   })
 
   describe('Post-Session Hook Integration', () => {
-    it.skipIf(!hasAnthropicAuth)('should extract and store records from transcript', async () => {
-      const entries = buildTypicalTranscriptEntries()
-      const transcriptPath = createMockTranscript(entries)
+    it.skipIf(extractionSkipReasons.length > 0)(
+      `should extract and store records from transcript${extractionSkipSuffix}`,
+      async () => {
+        const entries = buildTypicalTranscriptEntries()
+        const transcriptPath = createMockTranscript(entries)
 
-      const hookInput: SessionEndInput = {
-        session_id: 'test-session-123',
-        transcript_path: transcriptPath,
-        cwd: TEST_PROJECT,
-        permission_mode: 'default',
-        hook_event_name: 'SessionEnd',
-        reason: 'prompt_input_exit'
+        const hookInput: SessionEndInput = {
+          session_id: 'test-session-123',
+          transcript_path: transcriptPath,
+          cwd: TEST_PROJECT,
+          permission_mode: 'default',
+          hook_event_name: 'SessionEnd',
+          reason: 'prompt_input_exit'
+        }
+
+        const result = await handlePostSession(hookInput, TEST_CONFIG)
+
+        expect(result.reason).toBeUndefined()
+        expect(result.inserted + result.updated).toBeGreaterThan(0)
+
+        // Check that records were stored
+        const count = await countTestRecords()
+        expect(count).toBeGreaterThan(0)
       }
-
-      const result = await handlePostSession(hookInput, TEST_CONFIG)
-
-      expect(result.reason).toBeUndefined()
-      expect(result.inserted + result.updated).toBeGreaterThan(0)
-
-      // Check that records were stored
-      const count = await countTestRecords()
-      expect(count).toBeGreaterThan(0)
-    })
+    )
 
     it('should skip extraction when reason is "clear"', async () => {
       const entries = buildTypicalTranscriptEntries()
