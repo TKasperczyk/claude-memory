@@ -275,26 +275,35 @@ And it failed. What should I do?`
     })
 
     it('should support hybrid search combining keyword and vector', async () => {
-      await insertRecord(createMockCommandRecord({
-        command: 'kubectl get pods',
+      const keywordRecord = createMockCommandRecord({
+        command: 'kubectl get pods --all-namespaces',
         exitCode: 0,
         outcome: 'success'
-      }), TEST_CONFIG)
-
-      await insertRecord(createMockErrorRecord({
-        errorText: 'pod not found',
+      })
+      const semanticRecord = createMockErrorRecord({
+        errorText: 'kubectl get pods failed: pod not found',
         resolution: 'Check namespace with kubectl get ns'
-      }), TEST_CONFIG)
+      })
+
+      await insertRecord(keywordRecord, TEST_CONFIG)
+      await insertRecord(semanticRecord, TEST_CONFIG)
 
       const results = await hybridSearch({
-        query: 'kubernetes pods',
+        query: keywordRecord.command,
         limit: 5,
         vectorWeight: 0.5,
         keywordWeight: 0.5,
         minScore: 0  // Disable minScore filter for this test since we're testing hybrid mechanics
       }, TEST_CONFIG)
 
-      expect(results.length).toBeGreaterThan(0)
+      const keywordResult = results.find(r => r.record.id === keywordRecord.id)
+      const semanticResult = results.find(r => r.record.id === semanticRecord.id)
+
+      expect(keywordResult).toBeDefined()
+      expect(keywordResult!.keywordMatch).toBe(true)
+      expect(semanticResult).toBeDefined()
+      expect(semanticResult!.keywordMatch).toBe(false)
+      expect(semanticResult!.similarity).toBeGreaterThan(0)
     })
   })
 

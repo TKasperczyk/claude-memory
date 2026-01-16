@@ -296,26 +296,32 @@ describe('Maintenance E2E', () => {
       const staleTimestamp = Date.now() - STALE_CUTOFF_MS - 1000
 
       // Insert a stale record with invalid command
-      await insertRecord(createMockCommandRecord({
+      const staleRecord = createMockCommandRecord({
         command: 'nonexistent-stale-cmd',
         lastUsed: staleTimestamp,
+        timestamp: staleTimestamp,
         deprecated: false
-      }), TEST_CONFIG)
+      })
+      await insertRecord(staleRecord, TEST_CONFIG)
 
       // Insert duplicate records
-      for (let i = 0; i < 3; i++) {
-        await insertRecord(createMockCommandRecord({
+      const duplicateRecords = Array.from({ length: 3 }, (_, i) =>
+        createMockCommandRecord({
           command: 'pnpm build',
           successCount: i + 1,
           failureCount: 0
-        }), TEST_CONFIG)
+        })
+      )
+      for (const record of duplicateRecords) {
+        await insertRecord(record, TEST_CONFIG)
       }
 
       // Insert a valid fresh record
-      await insertRecord(createMockCommandRecord({
+      const freshRecord = createMockCommandRecord({
         command: 'git status',
         lastUsed: Date.now()
-      }), TEST_CONFIG)
+      })
+      await insertRecord(freshRecord, TEST_CONFIG)
 
       // Check counts before maintenance
       const beforeRecords = await queryRecords({ filter: 'deprecated == false' }, TEST_CONFIG)
@@ -344,6 +350,21 @@ describe('Maintenance E2E', () => {
 
       // Should have fewer non-deprecated records
       expect(afterRecords.length).toBeLessThan(beforeRecords.length)
+
+      const staleUpdated = await getRecord(staleRecord.id, TEST_CONFIG)
+      expect(staleUpdated!.deprecated).toBe(true)
+
+      const duplicateUpdates = await Promise.all(
+        duplicateRecords.map(record => getRecord(record.id, TEST_CONFIG))
+      )
+      const activeDuplicates = duplicateUpdates.filter(record => record && !record.deprecated)
+      const deprecatedDuplicates = duplicateUpdates.filter(record => record?.deprecated)
+
+      expect(activeDuplicates.length).toBe(1)
+      expect(deprecatedDuplicates.length).toBe(duplicateRecords.length - 1)
+
+      const freshUpdated = await getRecord(freshRecord.id, TEST_CONFIG)
+      expect(freshUpdated!.deprecated).toBe(false)
     })
   })
 })

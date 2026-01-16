@@ -355,10 +355,10 @@ How do I fix it?`
       const otherRecord: CommandRecord = {
         id: randomUUID(),
         type: 'command',
-        command: 'run generic test command',
+        command: 'SPECIFIC_UNIQUE_KEYWORD_124',
         exitCode: 0,
         outcome: 'success',
-        context: { project: TEST_PROJECT, cwd: TEST_PROJECT, intent: 'run tests' },
+        context: { project: TEST_PROJECT, cwd: TEST_PROJECT, intent: 'run similar keyword' },
         project: TEST_PROJECT,
         domain: 'test',
         timestamp: Date.now(),
@@ -383,6 +383,17 @@ How do I fix it?`
 
       // Should find the exact keyword match
       expect(result.context).toContain('SPECIFIC_UNIQUE_KEYWORD_123')
+      expect(result.results.length).toBeGreaterThan(0)
+
+      const topResult = result.results[0]
+      const semanticResult = result.results.find(entry => entry.record.id === otherRecord.id)
+
+      expect(topResult.record.id).toBe(record.id)
+      expect(topResult.keywordMatch).toBe(true)
+      if (semanticResult) {
+        expect(semanticResult.keywordMatch).toBe(false)
+        expect(result.results.indexOf(semanticResult)).toBeGreaterThan(0)
+      }
     })
   })
 })

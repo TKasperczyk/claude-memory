@@ -222,7 +222,10 @@ this is not valid json
         keywordWeight: 0
       }, TEST_CONFIG)
 
-      expect(vectorResults.length).toBeGreaterThanOrEqual(1)
+      const vectorResult = vectorResults.find(result => result.record.id === record.id)
+      expect(vectorResult).toBeDefined()
+      expect(vectorResult!.keywordMatch).toBe(false)
+      expect(vectorResult!.similarity).toBeGreaterThan(0)
     })
 
     it('should track success/failure counts', async () => {
