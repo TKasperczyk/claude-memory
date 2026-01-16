@@ -98,7 +98,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         res.flushHeaders()
 
         const abortController = new AbortController()
-        req.on('close', () => {
+        res.on('close', () => {
           abortController.abort()
         })
 
