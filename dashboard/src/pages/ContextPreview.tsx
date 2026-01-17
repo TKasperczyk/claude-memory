@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
-import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import NearMissesPanel from '@/components/NearMissesPanel'
@@ -186,11 +185,6 @@ export default function ContextPreview() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Simulator"
-        description="Test what memories would be injected for a given prompt"
-      />
-
       {/* Input form */}
       <div className="p-6 rounded-xl border border-border bg-card space-y-4">
         <div>

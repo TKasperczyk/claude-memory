@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Check, Circle, Copy, Eye, Loader2, Play } from 'lucide-react'
-import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
@@ -1377,11 +1376,7 @@ export default function Maintenance() {
 
   if (operationsLoading) {
     return (
-      <div className="space-y-8">
-        <PageHeader
-          title="Maintenance"
-          description="Run maintenance operations manually with dry-run previews"
-        />
+      <div className="space-y-6">
         <section className="p-6 rounded-xl border border-border bg-card space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="space-y-2">
@@ -1421,36 +1416,15 @@ export default function Maintenance() {
   }
 
   if (operationsError) {
-    return (
-      <div className="space-y-8">
-        <PageHeader
-          title="Maintenance"
-          description="Run maintenance operations manually with dry-run previews"
-        />
-        <div className="text-sm text-destructive">{operationsError.message}</div>
-      </div>
-    )
+    return <div className="text-sm text-destructive">{operationsError.message}</div>
   }
 
   if (operations.length === 0) {
-    return (
-      <div className="space-y-8">
-        <PageHeader
-          title="Maintenance"
-          description="Run maintenance operations manually with dry-run previews"
-        />
-        <div className="text-sm text-muted-foreground">No maintenance operations available.</div>
-      </div>
-    )
+    return <div className="text-sm text-muted-foreground">No maintenance operations available.</div>
   }
 
   return (
-    <div className="space-y-8">
-      <PageHeader
-        title="Maintenance"
-        description="Run maintenance operations manually with dry-run previews"
-      />
-
+    <div className="space-y-6">
       <section className="p-6 rounded-xl border border-border bg-card space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>

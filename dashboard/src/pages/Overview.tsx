@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Check, Link2, X } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import StatsCard from '@/components/StatsCard'
 import Skeleton from '@/components/Skeleton'
@@ -235,21 +234,11 @@ export default function Overview() {
   const isInitialLoading = isPending && !data
 
   if (error && !data) {
-    return (
-      <div>
-        <PageHeader title="Overview" />
-        <div className="text-sm text-destructive">Failed to load statistics</div>
-      </div>
-    )
+    return <div className="text-sm text-destructive">Failed to load statistics</div>
   }
 
   if (!data && !isInitialLoading) {
-    return (
-      <div>
-        <PageHeader title="Overview" />
-        <div className="text-sm text-destructive">Failed to load statistics</div>
-      </div>
-    )
+    return <div className="text-sm text-destructive">Failed to load statistics</div>
   }
 
   const typeData = data
@@ -296,12 +285,7 @@ export default function Overview() {
   const showInstallationRecovery = Boolean(installationError) && !installationLoading && !hasInstallationStatus
 
   return (
-    <div className="space-y-8">
-      <PageHeader
-        title="Overview"
-        description="Memory system statistics and distribution"
-      />
-
+    <div className="space-y-6">
       {error && data && (
         <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
           Failed to refresh data. Showing cached results.

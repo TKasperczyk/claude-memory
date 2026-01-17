@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Activity, Check, ChevronRight, Copy, Search, Sparkles } from 'lucide-react'
-import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
+import MetricTile from '@/components/MetricTile'
+import ReviewSkeleton from '@/components/ReviewSkeleton'
 import ThinkingPanel from '@/components/ThinkingPanel'
 import { useSessions } from '@/hooks/queries'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -388,21 +389,6 @@ function SessionListSkeleton() {
   )
 }
 
-function ReviewSkeleton() {
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <Skeleton className="h-4 w-16" />
-        <Skeleton className="h-3 w-24" />
-        <Skeleton className="h-3 w-28" />
-      </div>
-      <Skeleton className="h-4 w-full" />
-      <Skeleton className="h-4 w-5/6" />
-      <Skeleton className="h-4 w-4/6" />
-    </div>
-  )
-}
-
 function SessionReviewPanel({
   session,
   review,
@@ -560,23 +546,6 @@ function FilterChip({
     >
       {children}
     </button>
-  )
-}
-
-function MetricTile({
-  label,
-  value,
-  valueClassName
-}: {
-  label: string
-  value: ReactNode
-  valueClassName?: string
-}) {
-  return (
-    <div className="flex items-baseline gap-2">
-      <span className="text-[11px] text-muted-foreground">{label}</span>
-      <span className={`text-sm font-semibold tabular-nums ${valueClassName ?? ''}`}>{value}</span>
-    </div>
   )
 }
 
@@ -939,20 +908,12 @@ export default function Sessions() {
 
   if (error && !data) {
     return (
-      <div>
-        <PageHeader title="Sessions" />
-        <div className="text-sm text-destructive">{errorMessage}</div>
-      </div>
+      <div className="text-sm text-destructive">{errorMessage}</div>
     )
   }
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Sessions"
-        description={`${sessions.length} tracked session${sessions.length !== 1 ? 's' : ''}`}
-      />
-
+    <div className="flex flex-col flex-1 min-h-0 gap-4">
       {error && data && (
         <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
           Failed to refresh data. Showing cached results.
@@ -966,8 +927,8 @@ export default function Sessions() {
           No sessions tracked yet. Sessions appear when Claude Code runs with memory hooks enabled.
         </div>
       ) : (
-        <div className="space-y-4">
-          <section className="rounded-xl border border-border bg-card px-4 py-3">
+        <div className="flex flex-col flex-1 min-h-0 gap-4">
+          <section className="rounded-xl border border-border bg-card px-4 py-3 shrink-0">
             <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
@@ -1012,7 +973,7 @@ export default function Sessions() {
             </div>
           </section>
 
-          <section className="rounded-xl border border-border bg-card px-4 py-3 space-y-3">
+          <section className="rounded-xl border border-border bg-card px-4 py-3 space-y-3 shrink-0">
             <div className="flex flex-wrap items-center gap-3">
               <div className="relative min-w-[180px] flex-1 max-w-xs">
                 <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1071,13 +1032,13 @@ export default function Sessions() {
             </div>
           </section>
 
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
-            <section className="rounded-xl border border-border bg-card p-3">
-              <div className="flex items-center justify-between mb-2">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)] flex-1 min-h-0">
+            <section className="rounded-xl border border-border bg-card p-3 flex flex-col min-h-0">
+              <div className="flex items-center justify-between mb-2 shrink-0">
                 <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sessions</div>
                 <div className="text-[11px] text-muted-foreground">{sortedSessions.length}</div>
               </div>
-              <div className="space-y-3 lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto lg:pr-1">
+              <div className="space-y-3 flex-1 min-h-0 overflow-y-auto pr-1">
                 {sortedSessions.length === 0 ? (
                   <div className="py-6 text-center text-sm text-muted-foreground">
                     No sessions match filters.
@@ -1104,7 +1065,7 @@ export default function Sessions() {
               </div>
             </section>
 
-            <section className="rounded-xl border border-border bg-card p-4 flex flex-col lg:h-[calc(100vh-180px)]">
+            <section className="rounded-xl border border-border bg-card p-4 flex flex-col min-h-0">
               {!selectedSession ? (
                 <div className="flex-1 flex flex-col items-center justify-center text-center text-sm text-muted-foreground">
                   Select a session to view details.

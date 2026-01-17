@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
 import { RotateCcw } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import {
   RETRIEVAL_FIELDS,
@@ -656,11 +655,6 @@ export default function Settings() {
 
   return (
     <div className="space-y-6" onFocusCapture={handleFocusCapture} onBlurCapture={handleBlurCapture}>
-      <PageHeader
-        title="Settings"
-        description="Tune retrieval, maintenance, and similarity thresholds"
-      />
-
       <div className="p-6 rounded-xl border border-border bg-card space-y-6">
         <div className="text-xs text-muted-foreground">
           Stored in <span className="font-mono">~/.claude-memory/settings.json</span>

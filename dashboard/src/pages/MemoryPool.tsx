@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import { PageHeader } from '@/App'
 import ButtonSpinner from '@/components/ButtonSpinner'
 import MemoryDetail from '@/components/MemoryDetail'
 import MemoryTable from '@/components/MemoryTable'
@@ -128,11 +127,6 @@ export default function MemoryPool() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Memories"
-        description="Browse and search stored memory records"
-      />
-
       {memoriesError && memoriesData && (
         <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
           Failed to refresh data. Showing cached results.

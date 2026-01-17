@@ -65,26 +65,13 @@ function Sidebar() {
   )
 }
 
-function PageHeader({ title, description }: { title: string; description?: string }) {
-  return (
-    <div className="mb-8">
-      <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-      {description && (
-        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
-      )}
-    </div>
-  )
-}
-
-export { PageHeader }
-
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-background">
+      <div className="h-screen bg-background overflow-hidden">
         <Sidebar />
-        <main className="pl-56">
-          <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-8 py-8">
+        <main className="pl-56 h-full flex flex-col">
+          <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-8 py-8 w-full flex-1 min-h-0 flex flex-col">
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/memories" element={<MemoryPool />} />
