@@ -75,6 +75,7 @@ const HEALTH_STYLES = {
 
 const TIME_FILTERS = [
   { key: 'all', label: 'All time', ms: Number.POSITIVE_INFINITY },
+  { key: '12h', label: '12h', ms: 12 * 60 * 60 * 1000 },
   { key: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
   { key: '7d', label: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
   { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 }
@@ -641,7 +642,7 @@ export default function Sessions() {
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const [searchQuery, setSearchQuery] = useState('')
-  const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('all')
+  const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('12h')
   const [projectFilter, setProjectFilter] = useState('all')
   const [hasMemoriesOnly, setHasMemoriesOnly] = useState(false)
   const [hasReviewsOnly, setHasReviewsOnly] = useState(false)

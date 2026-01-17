@@ -53,6 +53,16 @@ const ISSUE_LABELS: Record<ExtractionReviewIssue['type'], string> = {
   duplicate: 'Duplicate'
 }
 
+const TIME_FILTERS = [
+  { key: 'all', label: 'All time', ms: Number.POSITIVE_INFINITY },
+  { key: '12h', label: '12h', ms: 12 * 60 * 60 * 1000 },
+  { key: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
+  { key: '7d', label: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
+  { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 }
+] as const
+
+type TimeFilterKey = typeof TIME_FILTERS[number]['key']
+
 function truncateSessionId(sessionId: string): string {
   if (sessionId.length <= 10) return sessionId
   return `${sessionId.slice(0, 10)}...`
@@ -187,6 +197,30 @@ function ExtractionListSkeleton() {
         </div>
       </div>
     </div>
+  )
+}
+
+function FilterChip({
+  active,
+  onClick,
+  children
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`h-7 px-2.5 text-[11px] rounded-full border transition-base ${
+        active
+          ? 'bg-foreground text-background border-foreground'
+          : 'bg-background border-border text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -433,6 +467,7 @@ function ExtractionRunCard({
 export default function Extractions() {
   const [page, setPage] = useState(0)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('12h')
   const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose } = useSelectedMemory()
   const [recordsByRun, setRecordsByRun] = useState<Record<string, MemoryRecord[]>>({})
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null)
@@ -444,18 +479,20 @@ export default function Extractions() {
   const loadSeqRef = useRef(0)
 
   const { data, error, isPending, isFetching } = useExtractions({ page, limit: PAGE_SIZE })
-  const runs = data?.runs ?? []
+  const allRuns = data?.runs ?? []
   const total = data?.total ?? null
-  const displayOffset = data?.offset ?? page * PAGE_SIZE
   const errorMessage = error instanceof Error ? error.message : 'Failed to load extractions'
+
+  const filteredRuns = useMemo(() => {
+    const timeMs = TIME_FILTERS.find(filter => filter.key === timeFilter)?.ms ?? Number.POSITIVE_INFINITY
+    return allRuns.filter(run => Date.now() - run.timestamp <= timeMs)
+  }, [allRuns, timeFilter])
 
   const pageInfo = () => {
     if (isPending && !data) return 'Loading...'
     if (error && !data) return 'Error'
-    if (!runs.length) return 'No results'
-    const start = displayOffset + 1
-    const end = displayOffset + runs.length
-    return total ? `${start}-${end} of ${total}` : `${start}-${end}`
+    if (!filteredRuns.length) return 'No results'
+    return `${filteredRuns.length}/${allRuns.length}`
   }
 
   const loadRunDetails = async (run: ExtractionRun) => {
@@ -499,18 +536,18 @@ export default function Extractions() {
   }
 
   useEffect(() => {
-    if (runs.length === 0) {
+    if (filteredRuns.length === 0) {
       setSelectedRunId(null)
       return
     }
-    if (selectedRunId && runs.some(run => run.runId === selectedRunId)) return
-    setSelectedRunId(runs[0].runId)
-  }, [runs, selectedRunId])
+    if (selectedRunId && filteredRuns.some(run => run.runId === selectedRunId)) return
+    setSelectedRunId(filteredRuns[0].runId)
+  }, [filteredRuns, selectedRunId])
 
   const selectedRun = useMemo(() => {
     if (!selectedRunId) return null
-    return runs.find(run => run.runId === selectedRunId) ?? null
-  }, [runs, selectedRunId])
+    return filteredRuns.find(run => run.runId === selectedRunId) ?? null
+  }, [filteredRuns, selectedRunId])
 
   useEffect(() => {
     if (!selectedRun) return
@@ -532,7 +569,7 @@ export default function Extractions() {
     let totalDuration = 0
     let latestTimestamp = 0
 
-    for (const run of runs) {
+    for (const run of filteredRuns) {
       totalRecords += run.recordCount
       totalErrors += run.parseErrorCount
       totalDuration += run.duration
@@ -542,15 +579,15 @@ export default function Extractions() {
     }
 
     return {
-      totalRuns: runs.length,
+      totalRuns: filteredRuns.length,
       totalRecords,
       totalErrors,
-      avgDuration: runs.length ? totalDuration / runs.length : 0,
+      avgDuration: filteredRuns.length ? totalDuration / filteredRuns.length : 0,
       latestTimestamp
     }
-  }, [runs])
+  }, [filteredRuns])
 
-  const isInitialLoading = isPending && runs.length === 0
+  const isInitialLoading = isPending && allRuns.length === 0
   const isRefreshing = isFetching && !isInitialLoading
 
   if (error && !data) {
@@ -576,7 +613,7 @@ export default function Extractions() {
 
       {isInitialLoading ? (
         <ExtractionListSkeleton />
-      ) : runs.length === 0 ? (
+      ) : allRuns.length === 0 ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
           No extraction runs logged yet.
         </div>
@@ -622,14 +659,33 @@ export default function Extractions() {
             </div>
           </section>
 
+          <section className="rounded-xl border border-border bg-card px-4 py-3 shrink-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-1">
+                {TIME_FILTERS.map(filter => (
+                  <FilterChip
+                    key={filter.key}
+                    active={timeFilter === filter.key}
+                    onClick={() => setTimeFilter(filter.key)}
+                  >
+                    {filter.label}
+                  </FilterChip>
+                ))}
+              </div>
+              <div className="ml-auto text-xs text-muted-foreground">
+                {filteredRuns.length}/{allRuns.length}
+              </div>
+            </div>
+          </section>
+
           <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)] flex-1 min-h-0">
             <section className="rounded-xl border border-border bg-card p-3 flex flex-col min-h-0">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Runs</div>
-                <div className="text-[11px] text-muted-foreground">{runs.length}</div>
+                <div className="text-[11px] text-muted-foreground">{filteredRuns.length}</div>
               </div>
               <div className="space-y-2 flex-1 min-h-0 lg:overflow-y-auto lg:pr-1">
-                {runs.map(run => {
+                {filteredRuns.map(run => {
                   const review = reviewsByRun[run.runId]
                   const hasReview = Object.prototype.hasOwnProperty.call(reviewsByRun, run.runId)
 
