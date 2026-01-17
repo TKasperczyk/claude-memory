@@ -126,7 +126,7 @@ export default function MemoryPool() {
   const isRefreshing = isFetching && !isInitialLoading
 
   return (
-    <div className="space-y-6">
+    <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
       {memoriesError && memoriesData && (
         <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
           Failed to refresh data. Showing cached results.

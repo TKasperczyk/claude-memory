@@ -184,7 +184,7 @@ export default function ContextPreview() {
   const previewDisabled = loading || settingsPending
 
   return (
-    <div className="space-y-6">
+    <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
       {/* Input form */}
       <div className="p-6 rounded-xl border border-border bg-card space-y-4">
         <div>

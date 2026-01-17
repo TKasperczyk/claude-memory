@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Activity, Check, ChevronRight, Copy, Search, Sparkles } from 'lucide-react'
 import ButtonSpinner from '@/components/ButtonSpinner'
@@ -559,7 +559,6 @@ function SessionCard({
   selected: boolean
   onSelect: (sessionId: string) => void
 }) {
-  const projectName = extractProjectName(session.cwd)
   const promptCount = getPromptCount(session)
   const injectionCount = session.injectionCount ?? 0
   const ratioValue = typeof promptCount === 'number' && promptCount > 0 ? injectionCount / promptCount : 0
@@ -574,15 +573,22 @@ function SessionCard({
       onClick={() => onSelect(session.sessionId)}
       className={`w-full text-left rounded-lg border px-3 py-2 transition-base ${
         selected
-          ? 'border-foreground/40 bg-foreground/5 ring-1 ring-foreground/10'
-          : 'border-border bg-card hover:border-foreground/20'
+          ? 'border-foreground/50 bg-secondary shadow-sm ring-1 ring-foreground/15'
+          : 'border-border bg-secondary/80 hover:bg-secondary hover:border-foreground/30'
       }`}
     >
-      {/* Row 1: Project name + time */}
+      {/* Row 1: Activity + badges + time */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className={`h-2 w-2 rounded-full shrink-0 ${activity.dot}`} />
-          <span className="font-medium truncate">{projectName}</span>
+          <span className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${health.badge}`}>
+            {health.label}
+          </span>
+          {lastStatus && (
+            <span className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${lastStatus.badge}`}>
+              {lastStatus.label}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1 text-[11px] text-muted-foreground shrink-0">
           <span>{formatRelativeTimeShortAgo(session.lastActivity)}</span>
@@ -590,27 +596,15 @@ function SessionCard({
         </div>
       </div>
 
-      {/* Row 2: Badges + stats */}
-      <div className="mt-1 flex items-center gap-2 flex-wrap">
-        <span className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${health.badge}`}>
-          {health.label}
-        </span>
-        {lastStatus && (
-          <span className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${lastStatus.badge}`}>
-            {lastStatus.label}
-          </span>
-        )}
-        <span className="text-[10px] text-muted-foreground ml-auto">
-          <span className="text-foreground tabular-nums">{promptCount ?? '—'}</span>p
-          <span className="mx-1 text-muted-foreground/50">·</span>
-          <span className="text-foreground tabular-nums">{injectionCount}</span>i
-          <span className="mx-1 text-muted-foreground/50">·</span>
-          <span className="text-foreground tabular-nums">{session.memories.length}</span>m
-        </span>
-      </div>
-
-      {/* Row 3: Injection bar + ratio */}
+      {/* Row 2: Stats + injection bar */}
       <div className="mt-1.5 flex items-center gap-2">
+        <span className="text-[10px] shrink-0">
+          <span className="text-foreground tabular-nums">{promptCount ?? '—'}</span>
+          <span className="text-muted-foreground ml-0.5">prompts</span>
+          <span className="mx-1.5 text-muted-foreground/50">·</span>
+          <span className="text-foreground tabular-nums">{injectionCount}</span>
+          <span className="text-muted-foreground ml-0.5">inj</span>
+        </span>
         <div className="flex-1 h-1 rounded-full bg-secondary/60 overflow-hidden">
           <div
             className={`h-full ${health.bar}`}
@@ -630,6 +624,8 @@ export default function Sessions() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [expandedPromptIndex, setExpandedPromptIndex] = useState<number | null>(null)
   const [retrievalContext, setRetrievalContext] = useState<RetrievalContext | null>(null)
+  const promptsListRef = useRef<HTMLDivElement>(null)
+  const promptsScrollPosRef = useRef<number>(0)
   const {
     selectedId,
     selected,
@@ -897,6 +893,13 @@ export default function Sessions() {
     void loadReview(selectedSession)
   }, [selectedSession])
 
+  // Restore prompts list scroll position when going back from detail view
+  useEffect(() => {
+    if (expandedPromptIndex === null && promptsListRef.current) {
+      promptsListRef.current.scrollTop = promptsScrollPosRef.current
+    }
+  }, [expandedPromptIndex])
+
   const handleReviewUpdate = (sessionId: string, review: InjectionReview) => {
     setReviewsBySession(prev => ({ ...prev, [sessionId]: review }))
   }
@@ -1047,7 +1050,10 @@ export default function Sessions() {
                 ) : (
                   groupedSessions.map(group => (
                     <div key={group.key} className="space-y-1.5">
-                      <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground px-1 pt-1">
+                      <div
+                        className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground px-1 pt-1 truncate"
+                        title={group.key}
+                      >
                         {group.label}
                       </div>
                       <div className="space-y-1.5">
@@ -1168,63 +1174,154 @@ export default function Sessions() {
 
                       {/* Content area */}
                       <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
-                        <div className="grid gap-3 lg:grid-cols-2">
-                          {/* Prompts list */}
-                          <div className="rounded-lg border border-border bg-background/40 p-3">
-                            <div className="flex items-center justify-between mb-2">
-                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Prompts</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                {promptsAvailable ? prompts.length : (promptCount ?? '—')}
-                              </div>
-                            </div>
-                            {!promptsAvailable ? (
-                              <div className="text-xs text-muted-foreground">
-                                Prompt data unavailable for legacy sessions.
-                              </div>
-                            ) : prompts.length === 0 ? (
-                              <div className="text-xs text-muted-foreground">
-                                No prompts recorded.
-                              </div>
-                            ) : (
-                              <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
-                                {prompts.map((prompt, index) => {
-                                  const status = prompt.status
-                                  const statusStyle = status ? STATUS_STYLES[status] : null
-                                  const memoryCountLabel = formatMemoryCount(prompt.memoryCount)
-                                  const promptText = prompt.text.trim().length > 0 ? prompt.text : '(empty)'
-                                  const isExpanded = expandedPromptIndex === index
-
-                                  return (
-                                    <button
-                                      key={`${selectedSession.sessionId}-prompt-${index}`}
-                                      type="button"
-                                      onClick={() => setExpandedPromptIndex(isExpanded ? null : index)}
-                                      className={`w-full text-left rounded border p-2 transition-base ${
-                                        isExpanded
-                                          ? 'border-foreground/30 bg-secondary/50 ring-1 ring-foreground/10'
-                                          : 'border-border bg-secondary/30 hover:border-foreground/20'
-                                      }`}
-                                    >
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div className="flex-1 min-w-0">
-                                          <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                                            {statusStyle && (
-                                              <span className={`px-1 py-0.5 rounded text-[9px] uppercase tracking-wide ${statusStyle.badge}`}>
-                                                {statusStyle.label}
-                                              </span>
-                                            )}
-                                            {memoryCountLabel && (
-                                              <span className="text-[10px] text-muted-foreground">{memoryCountLabel}</span>
-                                            )}
-                                          </div>
-                                          <div className="text-xs text-foreground line-clamp-2">{promptText}</div>
-                                        </div>
-                                        <ChevronRight className={`w-3.5 h-3.5 text-muted-foreground shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                          {/* Prompts section - transforms to detail view when prompt selected */}
+                          <div className="rounded-lg border border-border bg-background/40 p-3 min-h-[296px]">
+                            {expandedPrompt ? (
+                              // Prompt detail view
+                              (() => {
+                                const promptMemories = getPromptMemories(selectedSession, expandedPrompt)
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-between mb-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => setExpandedPromptIndex(null)}
+                                        className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground transition-base"
+                                      >
+                                        <ChevronRight className="w-3 h-3 rotate-180" />
+                                        Back to prompts
+                                      </button>
+                                      <div className="flex items-center gap-2">
+                                        {expandedPrompt.status && (
+                                          <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide ${STATUS_STYLES[expandedPrompt.status].badge}`}>
+                                            {STATUS_STYLES[expandedPrompt.status].label}
+                                          </span>
+                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSendToSimulator(expandedPrompt.text, selectedSession.cwd)}
+                                          className="text-[10px] px-2 py-1 rounded border border-border bg-background hover:bg-secondary transition-base"
+                                        >
+                                          Simulator
+                                        </button>
                                       </div>
-                                    </button>
-                                  )
-                                })}
-                              </div>
+                                    </div>
+                                    <div className="max-h-64 overflow-y-auto space-y-3 pr-1">
+                                      <div className="rounded bg-secondary/30 p-3">
+                                        <pre className="text-xs text-foreground whitespace-pre-wrap font-mono leading-relaxed max-h-32 overflow-y-auto">
+                                          {expandedPrompt.text.trim() || '(empty prompt)'}
+                                        </pre>
+                                      </div>
+                                      {promptMemories.length > 0 && (
+                                        <div className="space-y-2">
+                                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                            Injected memories ({promptMemories.length})
+                                          </div>
+                                          <div className="space-y-1">
+                                            {promptMemories.map((memory, idx) => {
+                                              const title = parseSnippetTitle(memory.snippet)
+                                              const trigger = formatRetrievalTrigger(memory)
+                                            return (
+                                              <button
+                                                key={`${memory.id}-prompt-${idx}`}
+                                                type="button"
+                                                onClick={() => handleSelect(memory.id, {
+                                                  prompt: memory.prompt,
+                                                  similarity: memory.similarity,
+                                                  keywordMatch: memory.keywordMatch,
+                                                  score: memory.score
+                                                })}
+                                                className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded border border-border bg-secondary/30 hover:bg-secondary/50 transition-base group"
+                                              >
+                                                <span
+                                                  className="w-2 h-2 rounded-full shrink-0"
+                                                  style={{ backgroundColor: memory.type ? TYPE_COLORS[memory.type] : '#888' }}
+                                                />
+                                                <span className="flex-1 truncate text-xs text-foreground/80 group-hover:text-foreground">{title}</span>
+                                                {trigger && (
+                                                  <span className={`text-[9px] font-mono px-1 rounded bg-background/50 shrink-0 ${trigger.color}`} title={trigger.title}>
+                                                    {trigger.label}
+                                                  </span>
+                                                )}
+                                                <span className={`text-[10px] font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
+                                                  {formatUsageRatio(memory.stats)}
+                                                </span>
+                                              </button>
+                                            )
+                                          })}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {promptMemories.length === 0 && (
+                                        <div className="text-xs text-muted-foreground">No memories injected for this prompt.</div>
+                                      )}
+                                    </div>
+                                  </>
+                                )
+                              })()
+                            ) : (
+                              // Prompts list view
+                              <>
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Prompts</div>
+                                  <div className="text-[11px] text-muted-foreground">
+                                    {promptsAvailable ? prompts.length : (promptCount ?? '—')}
+                                  </div>
+                                </div>
+                                {!promptsAvailable ? (
+                                  <div className="text-xs text-muted-foreground">
+                                    Prompt data unavailable for legacy sessions.
+                                  </div>
+                                ) : prompts.length === 0 ? (
+                                  <div className="text-xs text-muted-foreground">
+                                    No prompts recorded.
+                                  </div>
+                                ) : (
+                                  <div
+                                    ref={promptsListRef}
+                                    className="max-h-64 overflow-y-auto space-y-1.5 pr-1"
+                                  >
+                                    {prompts.map((prompt, index) => {
+                                      const status = prompt.status
+                                      const statusStyle = status ? STATUS_STYLES[status] : null
+                                      const memoryCountLabel = formatMemoryCount(prompt.memoryCount)
+                                      const promptText = prompt.text.trim().length > 0 ? prompt.text : '(empty)'
+
+                                      return (
+                                        <button
+                                          key={`${selectedSession.sessionId}-prompt-${index}`}
+                                          type="button"
+                                          onClick={() => {
+                                            // Save scroll position before expanding
+                                            if (promptsListRef.current) {
+                                              promptsScrollPosRef.current = promptsListRef.current.scrollTop
+                                            }
+                                            setExpandedPromptIndex(index)
+                                          }}
+                                          className="w-full text-left rounded border border-border bg-secondary/30 p-2 hover:border-foreground/20 transition-base"
+                                        >
+                                          <div className="flex items-start justify-between gap-2">
+                                            <div className="flex-1 min-w-0">
+                                              <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                                                {statusStyle && (
+                                                  <span className={`px-1 py-0.5 rounded text-[9px] uppercase tracking-wide ${statusStyle.badge}`}>
+                                                    {statusStyle.label}
+                                                  </span>
+                                                )}
+                                                {memoryCountLabel && (
+                                                  <span className="text-[10px] text-muted-foreground">{memoryCountLabel}</span>
+                                                )}
+                                              </div>
+                                              <div className="text-xs text-foreground line-clamp-2">{promptText}</div>
+                                            </div>
+                                            <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                                          </div>
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                              </>
                             )}
                           </div>
 
@@ -1290,87 +1387,6 @@ export default function Sessions() {
                               </div>
                             )}
                           </div>
-                        </div>
-
-                        {/* Expanded prompt detail - below the grid */}
-                        {expandedPrompt && (() => {
-                          const promptMemories = getPromptMemories(selectedSession, expandedPrompt)
-                          return (
-                            <div className="rounded-lg border border-foreground/20 bg-background/60 p-3 space-y-3">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Prompt Detail</div>
-                                  {expandedPrompt.status && (
-                                    <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide ${STATUS_STYLES[expandedPrompt.status].badge}`}>
-                                      {STATUS_STYLES[expandedPrompt.status].label}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSendToSimulator(expandedPrompt.text, selectedSession.cwd)}
-                                    className="text-[10px] px-2 py-1 rounded border border-border bg-background hover:bg-secondary transition-base"
-                                  >
-                                    Open in Simulator
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setExpandedPromptIndex(null)}
-                                    className="text-[10px] px-2 py-1 rounded border border-border bg-background hover:bg-secondary transition-base"
-                                  >
-                                    Close
-                                  </button>
-                                </div>
-                              </div>
-                              <div className="rounded bg-secondary/30 p-3 max-h-32 overflow-y-auto">
-                                <pre className="text-xs text-foreground whitespace-pre-wrap font-mono leading-relaxed">
-                                  {expandedPrompt.text.trim() || '(empty prompt)'}
-                                </pre>
-                              </div>
-                              {promptMemories.length > 0 && (
-                                <div className="space-y-2">
-                                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                                    Injected Memories ({promptMemories.length})
-                                  </div>
-                                  <div className="space-y-1">
-                                    {promptMemories.map((memory, idx) => {
-                                      const title = parseSnippetTitle(memory.snippet)
-                                      const trigger = formatRetrievalTrigger(memory)
-                                      return (
-                                        <button
-                                          key={`${memory.id}-prompt-${idx}`}
-                                          type="button"
-                                          onClick={() => handleSelect(memory.id, {
-                                            prompt: memory.prompt,
-                                            similarity: memory.similarity,
-                                            keywordMatch: memory.keywordMatch,
-                                            score: memory.score
-                                          })}
-                                          className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded border border-border bg-secondary/30 hover:bg-secondary/50 transition-base group"
-                                        >
-                                          <span
-                                            className="w-2 h-2 rounded-full shrink-0"
-                                            style={{ backgroundColor: memory.type ? TYPE_COLORS[memory.type] : '#888' }}
-                                          />
-                                          <span className="flex-1 truncate text-xs text-foreground/80 group-hover:text-foreground">{title}</span>
-                                          {trigger && (
-                                            <span className={`text-[9px] font-mono px-1 rounded bg-background/50 shrink-0 ${trigger.color}`} title={trigger.title}>
-                                              {trigger.label}
-                                            </span>
-                                          )}
-                                          <span className={`text-[10px] font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
-                                            {formatUsageRatio(memory.stats)}
-                                          </span>
-                                        </button>
-                                      )
-                                    })}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )
-                        })()}
                       </div>
                     </div>
                   )

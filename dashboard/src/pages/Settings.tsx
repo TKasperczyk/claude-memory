@@ -654,7 +654,7 @@ export default function Settings() {
   }
 
   return (
-    <div className="space-y-6" onFocusCapture={handleFocusCapture} onBlurCapture={handleBlurCapture}>
+    <div className="flex-1 min-h-0 overflow-y-auto space-y-6" onFocusCapture={handleFocusCapture} onBlurCapture={handleBlurCapture}>
       <div className="p-6 rounded-xl border border-border bg-card space-y-6">
         <div className="text-xs text-muted-foreground">
           Stored in <span className="font-mono">~/.claude-memory/settings.json</span>

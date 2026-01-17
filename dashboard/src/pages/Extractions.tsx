@@ -85,27 +85,28 @@ function extractProjectFromPath(transcriptPath: string | undefined): string {
   const encodedDir = parts[projectsIdx + 1]
   if (!encodedDir || encodedDir.startsWith('.')) return 'Unknown'
 
-  // The last segment after splitting by dash is typically the project name
-  // But we need to handle multi-word project names (e.g., "claude-memory")
-  // Strategy: take the last meaningful segment(s) after common path prefixes
+  // Split by dash and filter common path segments to find the project name
   const segments = encodedDir.split('-').filter(Boolean)
-
-  // Find where the actual project name starts (skip home, user, common dirs)
   const commonPrefixes = ['home', 'users', 'programming', 'projects', 'code', 'dev', 'src', 'work']
-  let startIdx = 0
-  for (let i = 0; i < segments.length; i++) {
-    if (commonPrefixes.includes(segments[i].toLowerCase())) {
-      startIdx = i + 1
-    } else {
+
+  // Filter out all common prefixes and user-like segments (single short words at the start)
+  const projectParts: string[] = []
+  let foundProject = false
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const seg = segments[i].toLowerCase()
+    if (commonPrefixes.includes(seg)) {
+      // Stop when we hit a common path segment from the end
       break
     }
+    projectParts.unshift(segments[i])
+    foundProject = true
   }
 
-  // Return the remaining segments joined, or the last segment if nothing remains
-  const projectParts = segments.slice(startIdx)
-  if (projectParts.length === 0) {
+  if (!foundProject || projectParts.length === 0) {
+    // Fallback: just use the last segment
     return segments[segments.length - 1] || 'Unknown'
   }
+
   return projectParts.join('-')
 }
 
@@ -395,19 +396,16 @@ function ExtractionRunCard({
   run,
   selected,
   review,
-  hasReview,
   onSelect
 }: {
   run: ExtractionRun
   selected: boolean
   review: ExtractionReview | null | undefined
-  hasReview: boolean
   onSelect: (runId: string) => void
 }) {
-  const projectName = extractProjectFromPath(run.transcriptPath)
   const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
   const hasErrors = run.parseErrorCount > 0
-  const dotClass = hasErrors ? 'bg-destructive' : 'bg-muted-foreground/50'
+  const dotClass = hasErrors ? 'bg-destructive' : 'bg-emerald-400'
 
   return (
     <button
@@ -415,50 +413,38 @@ function ExtractionRunCard({
       onClick={() => onSelect(run.runId)}
       className={`w-full text-left rounded-lg border px-3 py-2 transition-base ${
         selected
-          ? 'border-foreground/40 bg-foreground/5 ring-1 ring-foreground/10'
-          : 'border-border bg-card hover:border-foreground/20'
+          ? 'border-foreground/50 bg-secondary shadow-sm ring-1 ring-foreground/15'
+          : 'border-border bg-secondary/80 hover:bg-secondary hover:border-foreground/30'
       }`}
     >
+      {/* Row 1: Activity + badges + time */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className={`h-2 w-2 rounded-full shrink-0 ${dotClass}`} />
-          <span
-            className="font-medium truncate direction-rtl text-left"
-            title={run.transcriptPath || run.sessionId}
-            style={{ direction: 'rtl', textAlign: 'left' }}
-          >
-            {projectName}
+          <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-foreground/10 text-foreground/70">
+            {run.recordCount} rec
           </span>
+          <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-foreground/10 text-foreground/70">
+            {formatDuration(run.duration)}
+          </span>
+          {accuracyBadge && (
+            <span
+              className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${accuracyBadge.badge}`}
+              title={accuracyBadge.title}
+            >
+              Acc {accuracyBadge.label}
+            </span>
+          )}
+          {hasErrors && (
+            <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
+              {run.parseErrorCount} err
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1 text-[11px] text-muted-foreground shrink-0">
           <span>{formatRelativeTimeShortAgo(run.timestamp)}</span>
           {selected && <ChevronRight className="w-3.5 h-3.5 text-foreground" />}
         </div>
-      </div>
-
-      <div className="mt-1 flex items-center gap-2 flex-wrap">
-        {accuracyBadge ? (
-          <span
-            className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${accuracyBadge.badge}`}
-            title={accuracyBadge.title}
-          >
-            Acc {accuracyBadge.label}
-          </span>
-        ) : hasReview ? (
-          <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-muted-foreground/15 text-muted-foreground">
-            No review
-          </span>
-        ) : null}
-        {hasErrors && (
-          <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
-            {run.parseErrorCount} parse {run.parseErrorCount === 1 ? 'error' : 'errors'}
-          </span>
-        )}
-        <span className="text-[10px] text-muted-foreground ml-auto">
-          <span className="text-foreground tabular-nums">{run.recordCount}</span> rec
-          <span className="mx-1 text-muted-foreground/50">·</span>
-          <span className="text-foreground tabular-nums">{formatDuration(run.duration)}</span>
-        </span>
       </div>
     </button>
   )
@@ -587,6 +573,21 @@ export default function Extractions() {
     }
   }, [filteredRuns])
 
+  const groupedRuns = useMemo(() => {
+    const groups = new Map<string, ExtractionRun[]>()
+    for (const run of filteredRuns) {
+      const projectName = extractProjectFromPath(run.transcriptPath)
+      if (!groups.has(projectName)) {
+        groups.set(projectName, [])
+      }
+      groups.get(projectName)!.push(run)
+    }
+    return Array.from(groups.entries()).map(([name, runs]) => ({
+      name,
+      runs
+    }))
+  }, [filteredRuns])
+
   const isInitialLoading = isPending && allRuns.length === 0
   const isRefreshing = isFetching && !isInitialLoading
 
@@ -684,22 +685,34 @@ export default function Extractions() {
                 <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Runs</div>
                 <div className="text-[11px] text-muted-foreground">{filteredRuns.length}</div>
               </div>
-              <div className="space-y-2 flex-1 min-h-0 lg:overflow-y-auto lg:pr-1">
-                {filteredRuns.map(run => {
-                  const review = reviewsByRun[run.runId]
-                  const hasReview = Object.prototype.hasOwnProperty.call(reviewsByRun, run.runId)
-
-                  return (
-                    <ExtractionRunCard
-                      key={run.runId}
-                      run={run}
-                      selected={run.runId === selectedRunId}
-                      review={review}
-                      hasReview={hasReview}
-                      onSelect={setSelectedRunId}
-                    />
-                  )
-                })}
+              <div className="space-y-3 flex-1 min-h-0 lg:overflow-y-auto lg:pr-1">
+                {filteredRuns.length === 0 ? (
+                  <div className="py-6 text-center text-sm text-muted-foreground">
+                    No runs match filters.
+                  </div>
+                ) : (
+                  groupedRuns.map(group => (
+                    <div key={group.name} className="space-y-1.5">
+                      <div
+                        className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground px-1 pt-1 truncate"
+                        title={group.name}
+                      >
+                        {group.name}
+                      </div>
+                      <div className="space-y-1.5">
+                        {group.runs.map(run => (
+                          <ExtractionRunCard
+                            key={run.runId}
+                            run={run}
+                            selected={run.runId === selectedRunId}
+                            review={reviewsByRun[run.runId]}
+                            onSelect={setSelectedRunId}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
               <div className="mt-3 flex items-center justify-between">
                 <button
