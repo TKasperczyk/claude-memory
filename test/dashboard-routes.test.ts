@@ -49,6 +49,7 @@ import { getExtractionRun, listExtractionRuns } from '../src/lib/extraction-log.
 import { reviewExtraction, reviewExtractionStreaming } from '../src/lib/extraction-review.js'
 import {
   getInjectionReview,
+  hasInjectionReview,
   getMaintenanceReview,
   getReview,
   saveMaintenanceReview,
@@ -128,6 +129,7 @@ vi.mock('../src/lib/extraction-review.js', () => ({
 
 vi.mock('../src/lib/review-storage.js', () => ({
   getInjectionReview: vi.fn(),
+  hasInjectionReview: vi.fn(),
   getReview: vi.fn(),
   getMaintenanceReview: vi.fn(),
   saveInjectionReview: vi.fn(),
@@ -187,6 +189,7 @@ const mockedListAllSessions = vi.mocked(listAllSessions)
 const mockedLoadSessionTracking = vi.mocked(loadSessionTracking)
 const mockedDedupeInjectedMemories = vi.mocked(dedupeInjectedMemories)
 const mockedGetInjectionReview = vi.mocked(getInjectionReview)
+const mockedHasInjectionReview = vi.mocked(hasInjectionReview)
 const mockedGetExtractionRun = vi.mocked(getExtractionRun)
 const mockedListExtractionRuns = vi.mocked(listExtractionRuns)
 const mockedReviewExtraction = vi.mocked(reviewExtraction)
@@ -310,6 +313,7 @@ beforeEach(() => {
   mockedLoadSessionTracking.mockReturnValue(null)
   mockedDedupeInjectedMemories.mockImplementation(memories => memories)
   mockedGetInjectionReview.mockReturnValue(null)
+  mockedHasInjectionReview.mockResolvedValue(false)
   mockedGetExtractionRun.mockReturnValue(null)
   mockedListExtractionRuns.mockReturnValue([])
   mockedReviewExtraction.mockResolvedValue({ status: 'ok' })

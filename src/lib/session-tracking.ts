@@ -175,7 +175,8 @@ export function appendSessionTracking(
       prompts: [...(existing?.prompts ?? []), promptEntry],
       promptCount: prevPromptCount + 1,
       injectionCount: prevInjectionCount + (didInject ? 1 : 0),
-      lastStatus: status
+      lastStatus: status,
+      hasReview: existing?.hasReview
     }
     saveSessionTracking(record)
     return record
@@ -238,6 +239,8 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
   const now = Date.now()
   const createdAt = asInteger(record.createdAt) ?? now
 
+  const hasReview = asBoolean(record.hasReview)
+
   return {
     sessionId: asString(record.sessionId) ?? sessionId,
     createdAt,
@@ -247,7 +250,8 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
     prompts,
     promptCount: asInteger(record.promptCount) ?? undefined,
     injectionCount: asInteger(record.injectionCount) ?? undefined,
-    lastStatus: asInjectionStatus(record.lastStatus)
+    lastStatus: asInjectionStatus(record.lastStatus),
+    hasReview: hasReview ?? undefined
   }
 }
 

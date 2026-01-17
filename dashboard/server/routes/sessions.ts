@@ -14,19 +14,26 @@ export function createSessionsRouter(context: ServerContext): express.Router {
       await ensureInitialized()
       const sessions = listAllSessions().map(session => ({
         ...session,
+        memoriesRaw: session.memories,
         memories: dedupeInjectedMemories(session.memories)
       }))
 
       const allIds = sessions.flatMap(session => session.memories.map(memory => memory.id))
       const statsMap = await getRecordStats(allIds)
 
-      const enrichedSessions = sessions.map(session => ({
-        ...session,
-        memories: session.memories.map(memory => ({
+      const enrichedSessions = sessions.map(session => {
+        const applyStats = (memory: typeof session.memories[number]) => ({
           ...memory,
           stats: statsMap.get(memory.id) ?? null
-        }))
-      }))
+        })
+
+        return {
+          ...session,
+          hasReview: Boolean(session.hasReview),
+          memories: session.memories.map(applyStats),
+          memoriesRaw: session.memoriesRaw.map(applyStats)
+        }
+      })
 
       res.json({
         sessions: enrichedSessions,

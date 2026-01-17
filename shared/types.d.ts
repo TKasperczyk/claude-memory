@@ -120,10 +120,12 @@ export interface InjectionSessionRecord {
   lastActivity: number
   cwd?: string
   memories: InjectedMemoryEntry[]
+  memoriesRaw?: InjectedMemoryEntry[]
   prompts?: InjectionPromptEntry[]
   promptCount?: number
   injectionCount?: number
   lastStatus?: InjectionStatus
+  hasReview?: boolean
 }
 
 export interface SearchResult {

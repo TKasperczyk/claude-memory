@@ -84,7 +84,7 @@ export default function App() {
       <div className="min-h-screen bg-background">
         <Sidebar />
         <main className="pl-56">
-          <div className="max-w-6xl mx-auto px-8 py-8">
+          <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-8 py-8">
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/memories" element={<MemoryPool />} />

@@ -1,3 +1,4 @@
+import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { type ExtractionReview, type ExtractionReviewIssue } from './extraction-review.js'
@@ -5,6 +6,7 @@ import { type InjectedMemoryVerdict, type InjectionReview, type MissedMemory } f
 import { asBoolean, asInteger, asNumber, asString, isPlainObject } from './parsing.js'
 import { readJsonFile, writeJsonFile } from './json.js'
 import { sanitizeRunId, sanitizeSessionId } from './shared.js'
+import { loadSessionTracking, saveSessionTracking } from './session-tracking.js'
 import {
   clampScore,
   coerceInjectedVerdict,
@@ -56,11 +58,27 @@ export function getInjectionReviewPath(sessionId: string): string {
 export function saveInjectionReview(review: InjectionReview): void {
   const filePath = getInjectionReviewPath(review.sessionId)
   saveReviewFile(filePath, review)
+  try {
+    const session = loadSessionTracking(review.sessionId)
+    if (!session || session.hasReview) return
+    saveSessionTracking({ ...session, hasReview: true })
+  } catch (error) {
+    console.error('[claude-memory] Failed to update session review flag:', error)
+  }
 }
 
 export function getInjectionReview(sessionId: string): InjectionReview | null {
   const filePath = getInjectionReviewPath(sessionId)
   return loadReviewFile(filePath, (data) => coerceInjectionReview(data, sessionId))
+}
+
+export async function hasInjectionReview(sessionId: string): Promise<boolean> {
+  try {
+    await fs.promises.access(getInjectionReviewPath(sessionId))
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function getMaintenanceReviewPath(resultId: string, operation: string): string {

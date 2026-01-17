@@ -167,6 +167,37 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
           {record.verification && <Field label="Verification">{record.verification}</Field>}
         </div>
       )
+
+    case 'warning':
+      return (
+        <div className="space-y-4">
+          <Field label="Avoid">
+            <div className="p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm">
+              {record.avoid}
+            </div>
+          </Field>
+          <Field label="Use instead">
+            <div className="p-3 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-sm">
+              {record.useInstead}
+            </div>
+          </Field>
+          <Field label="Reason">{record.reason}</Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Severity">
+              <span className={
+                record.severity === 'critical' ? 'text-destructive font-medium' :
+                record.severity === 'warning' ? 'text-amber-400' :
+                'text-muted-foreground'
+              }>
+                {record.severity}
+              </span>
+            </Field>
+            {record.synthesizedAt && (
+              <Field label="Synthesized">{formatDateTime(record.synthesizedAt)}</Field>
+            )}
+          </div>
+        </div>
+      )
   }
 }
 
@@ -368,6 +399,11 @@ export default function MemoryDetail({
                   <div className="text-xs text-muted-foreground">Ratio</div>
                 </div>
               </div>
+              {retrievalContext && (record.retrievalCount ?? 0) === 0 && (
+                <div className="mt-3 text-xs text-muted-foreground text-center">
+                  Stats update when the session ends
+                </div>
+              )}
             </div>
 
             {/* Retrieval context (from session) */}
