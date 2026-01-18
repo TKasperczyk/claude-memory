@@ -614,7 +614,7 @@ function pickErrorLine(lines: string[]): string {
 
 // looksLikeCommand is imported from shared.ts
 
-function inferDomain(root: string): string | undefined {
+export function inferDomain(root: string): string | undefined {
   if (!root) return undefined
 
   const markers: Array<{ domain: string; files: string[] }> = [

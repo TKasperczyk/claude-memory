@@ -69,5 +69,6 @@ function combineNearMisses(...sources: Array<NearMissRecord[] | undefined>): Nea
     if (!entries) continue
     mergeNearMisses(merged, entries)
   }
-  return Array.from(merged.values())
+  // Sort by similarity descending so most relevant near misses appear first
+  return Array.from(merged.values()).sort((a, b) => b.record.similarity - a.record.similarity)
 }

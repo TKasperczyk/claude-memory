@@ -11,7 +11,7 @@ import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { extractRecords } from '../lib/extract.js'
-import { findGitRoot } from '../lib/context.js'
+import { findGitRoot, inferDomain } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
 import { loadSettings } from '../lib/settings.js'
@@ -93,11 +93,13 @@ export async function handlePostSession(
   }
 
   const projectRoot = findGitRoot(input.cwd) ?? input.cwd
+  const domain = inferDomain(projectRoot)
   const extracted = await extractRecords(transcript, {
     sessionId: input.session_id,
     cwd: input.cwd,
     project: projectRoot,
-    transcriptPath: input.transcript_path
+    transcriptPath: input.transcript_path,
+    domain
   })
 
   const records = options.recordAugmenter

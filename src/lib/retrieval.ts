@@ -248,23 +248,9 @@ async function searchMemories(
     mergeNearMisses(searchNearMisses, searchQualifiedResult.nearMisses)
   }
 
-  if (results.length === 0 && scope.project) {
-    // Fallback: remove project filter but preserve domain to avoid cross-domain noise
-    console.error('[claude-memory] No project-scoped hits; retrying with domain filter only.')
-    searchQualifiedResult = await searchWithScope(
-      keywordQueries,
-      config,
-      settings,
-      { domain: scope.domain },
-      embedding,
-      signal,
-      { diagnostic }
-    )
-    results = searchQualifiedResult.results
-    if (diagnostic && searchNearMisses) {
-      mergeNearMisses(searchNearMisses, searchQualifiedResult.nearMisses)
-    }
-  }
+  // Note: Global memories (scope="global") are already included via includeGlobal=true
+  // in buildFilter. We no longer fallback to remove the project filter, as that
+  // allowed project-scoped memories from OTHER projects to leak through.
 
   if (diagnostic && searchNearMisses) {
     for (const result of results) {
@@ -275,7 +261,9 @@ async function searchMemories(
   const searchDiagnostics = diagnostic
     ? {
         qualified: results,
+        // Sort near misses by similarity descending so most relevant appear first
         nearMisses: Array.from(searchNearMisses?.values() ?? [])
+          .sort((a, b) => b.record.similarity - a.record.similarity)
       }
     : undefined
 
