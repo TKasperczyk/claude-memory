@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, Check, ChevronRight, Copy, Sparkles } from 'lucide-react'
 import ButtonSpinner from '@/components/ButtonSpinner'
+import ListItem from '@/components/ListItem'
 import MemoryDetail from '@/components/MemoryDetail'
 import MetricTile from '@/components/MetricTile'
 import ReviewSkeleton from '@/components/ReviewSkeleton'
@@ -325,9 +326,6 @@ function ExtractionReviewPanel({
               <div className="space-y-2">
                 {review.issues.map((issue, index) => {
                   const issueSelectable = Boolean(issue.recordId)
-                  const issueClasses = `rounded border border-border bg-secondary/30 p-2 transition-base ${
-                    issueSelectable ? 'cursor-pointer hover:bg-secondary/50' : ''
-                  }`
 
                   const issueContent = (
                     <>
@@ -362,19 +360,17 @@ function ExtractionReviewPanel({
                   const recordId = issue.recordId
                   if (issueSelectable && recordId) {
                     return (
-                      <button
-                        key={`${issue.type}-${recordId}-${index}`}
-                        type="button"
-                        onClick={() => onSelect(recordId)}
-                        className={`w-full text-left ${issueClasses}`}
-                      >
+                      <ListItem key={`${issue.type}-${recordId}-${index}`} onClick={() => onSelect(recordId)}>
                         {issueContent}
-                      </button>
+                      </ListItem>
                     )
                   }
 
                   return (
-                    <div key={`${issue.type}-missing-${index}`} className={issueClasses}>
+                    <div
+                      key={`${issue.type}-missing-${index}`}
+                      className="rounded-lg border border-border bg-secondary/80 px-3 py-2"
+                    >
                       {issueContent}
                     </div>
                   )
@@ -408,15 +404,7 @@ function ExtractionRunCard({
   const dotClass = hasErrors ? 'bg-destructive' : 'bg-emerald-400'
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(run.runId)}
-      className={`w-full text-left rounded-lg border px-3 py-2 transition-base ${
-        selected
-          ? 'border-foreground/50 bg-secondary shadow-sm ring-1 ring-foreground/15'
-          : 'border-border bg-secondary/80 hover:bg-secondary hover:border-foreground/30'
-      }`}
-    >
+    <ListItem onClick={() => onSelect(run.runId)} selected={selected}>
       {/* Row 1: Activity + badges + time */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
@@ -446,7 +434,7 @@ function ExtractionRunCard({
           {selected && <ChevronRight className="w-3.5 h-3.5 text-foreground" />}
         </div>
       </div>
-    </button>
+    </ListItem>
   )
 }
 
@@ -840,12 +828,7 @@ export default function Extractions() {
                                   : 'No source excerpt available.'
 
                                 return (
-                                  <button
-                                    key={record.id}
-                                    type="button"
-                                    onClick={() => handleSelect(record.id)}
-                                    className="w-full text-left rounded-md border border-border bg-secondary/30 px-3 py-2 cursor-pointer hover:bg-secondary/50 transition-base"
-                                  >
+                                  <ListItem key={record.id} onClick={() => handleSelect(record.id)}>
                                     <div className="flex items-center gap-2 mb-1">
                                       <span
                                         className="w-2 h-2 rounded-full"
@@ -860,7 +843,7 @@ export default function Extractions() {
                                     </div>
                                     <div className="text-xs text-foreground mb-1 line-clamp-2">{summaryText}</div>
                                     <div className="text-[10px] text-muted-foreground font-mono line-clamp-2">{excerpt}</div>
-                                  </button>
+                                  </ListItem>
                                 )
                               })}
                             </div>

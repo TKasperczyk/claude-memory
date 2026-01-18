@@ -1,3 +1,4 @@
+import ListItem from '@/components/ListItem'
 import TypeBadge from '@/components/TypeBadge'
 import { type ExclusionReason, type MemoryRecord, type NearMissRecord } from '@/lib/api'
 import { getMemorySummary } from '@/lib/memory-ui'
@@ -79,18 +80,14 @@ export default function NearMissesPanel({
             const { record, score, similarity } = miss.record
             const summary = getMemorySummary(record)
             return (
-              <button
-                key={record.id}
-                onClick={() => onSelect(record)}
-                className="w-full text-left p-3 rounded-md bg-secondary/30 text-sm cursor-pointer hover:bg-secondary/50 transition-base"
-              >
+              <ListItem key={record.id} onClick={() => onSelect(record)}>
                 <div className="flex items-center justify-between gap-3">
                   <TypeBadge type={record.type} />
                   <span className="text-xs text-muted-foreground tabular-nums">
                     Score {formatDecimal(score)} · Sim {formatDecimal(similarity)}
                   </span>
                 </div>
-                <div className="mt-1 truncate" title={summary}>
+                <div className="mt-1 text-sm truncate" title={summary}>
                   {summary}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -103,7 +100,7 @@ export default function NearMissesPanel({
                     </span>
                   ))}
                 </div>
-              </button>
+              </ListItem>
             )
           })}
         </div>

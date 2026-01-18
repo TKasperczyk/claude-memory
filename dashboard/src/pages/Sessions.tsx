@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Activity, Check, ChevronRight, Copy, Search, Sparkles } from 'lucide-react'
 import ButtonSpinner from '@/components/ButtonSpinner'
+import ListItem from '@/components/ListItem'
 import MetricTile from '@/components/MetricTile'
 import ReviewSkeleton from '@/components/ReviewSkeleton'
 import ThinkingPanel from '@/components/ThinkingPanel'
@@ -479,11 +480,10 @@ function SessionReviewPanel({
               <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Verdicts</div>
               <div className="space-y-1 max-h-32 overflow-y-auto">
                 {review.injectedVerdicts.map((verdict, index) => (
-                  <button
+                  <ListItem
                     key={`${verdict.id}-${index}`}
-                    type="button"
                     onClick={() => onSelect(verdict.id)}
-                    className="w-full text-left rounded border border-border bg-secondary/30 p-1.5 cursor-pointer hover:bg-secondary/50 transition-base"
+                    compact
                   >
                     <div className="flex items-center gap-1.5 mb-0.5">
                       <span className={`text-[9px] uppercase tracking-wide px-1 py-0.5 rounded ${VERDICT_STYLES[verdict.verdict].badge}`}>
@@ -492,7 +492,7 @@ function SessionReviewPanel({
                       <span className="text-[10px] text-muted-foreground font-mono truncate">{verdict.id.slice(0, 8)}</span>
                     </div>
                     <div className="text-[11px] text-foreground line-clamp-1">{verdict.snippet}</div>
-                  </button>
+                  </ListItem>
                 ))}
               </div>
             </div>
@@ -503,15 +503,14 @@ function SessionReviewPanel({
               <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Missed</div>
               <div className="space-y-1 max-h-24 overflow-y-auto">
                 {review.missedMemories.map((missed, index) => (
-                  <button
+                  <ListItem
                     key={`${missed.id}-${index}`}
-                    type="button"
                     onClick={() => onSelect(missed.id)}
-                    className="w-full text-left rounded border border-border bg-secondary/30 p-1.5 cursor-pointer hover:bg-secondary/50 transition-base"
+                    compact
                   >
                     <span className="text-[10px] text-muted-foreground font-mono">{missed.id.slice(0, 8)}</span>
                     <div className="text-[11px] text-foreground line-clamp-1">{missed.snippet}</div>
-                  </button>
+                  </ListItem>
                 ))}
               </div>
             </div>
@@ -568,15 +567,7 @@ function SessionCard({
   const lastStatus = session.lastStatus ? STATUS_STYLES[session.lastStatus] : null
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(session.sessionId)}
-      className={`w-full text-left rounded-lg border px-3 py-2 transition-base ${
-        selected
-          ? 'border-foreground/50 bg-secondary shadow-sm ring-1 ring-foreground/15'
-          : 'border-border bg-secondary/80 hover:bg-secondary hover:border-foreground/30'
-      }`}
-    >
+    <ListItem onClick={() => onSelect(session.sessionId)} selected={selected}>
       {/* Row 1: Activity + badges + time */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
@@ -615,7 +606,7 @@ function SessionCard({
           {ratioBadge.label}
         </span>
       </div>
-    </button>
+    </ListItem>
   )
 }
 
@@ -1222,16 +1213,16 @@ export default function Sessions() {
                                               const title = parseSnippetTitle(memory.snippet)
                                               const trigger = formatRetrievalTrigger(memory)
                                             return (
-                                              <button
+                                              <ListItem
                                                 key={`${memory.id}-prompt-${idx}`}
-                                                type="button"
                                                 onClick={() => handleSelect(memory.id, {
                                                   prompt: memory.prompt,
                                                   similarity: memory.similarity,
                                                   keywordMatch: memory.keywordMatch,
                                                   score: memory.score
                                                 })}
-                                                className="w-full text-left flex items-center gap-2 py-1.5 px-2 rounded border border-border bg-secondary/30 hover:bg-secondary/50 transition-base group"
+                                                compact
+                                                className="flex items-center gap-2 group"
                                               >
                                                 <span
                                                   className="w-2 h-2 rounded-full shrink-0"
@@ -1246,7 +1237,7 @@ export default function Sessions() {
                                                 <span className={`text-[10px] font-mono shrink-0 ${getUsageColor(memory.stats)}`}>
                                                   {formatUsageRatio(memory.stats)}
                                                 </span>
-                                              </button>
+                                              </ListItem>
                                             )
                                           })}
                                           </div>
@@ -1288,9 +1279,8 @@ export default function Sessions() {
                                       const promptText = prompt.text.trim().length > 0 ? prompt.text : '(empty)'
 
                                       return (
-                                        <button
+                                        <ListItem
                                           key={`${selectedSession.sessionId}-prompt-${index}`}
-                                          type="button"
                                           onClick={() => {
                                             // Save scroll position before expanding
                                             if (promptsListRef.current) {
@@ -1298,7 +1288,6 @@ export default function Sessions() {
                                             }
                                             setExpandedPromptIndex(index)
                                           }}
-                                          className="w-full text-left rounded border border-border bg-secondary/30 p-2 hover:border-foreground/20 transition-base"
                                         >
                                           <div className="flex items-start justify-between gap-2">
                                             <div className="flex-1 min-w-0">
@@ -1316,7 +1305,7 @@ export default function Sessions() {
                                             </div>
                                             <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                                           </div>
-                                        </button>
+                                        </ListItem>
                                       )
                                     })}
                                   </div>
