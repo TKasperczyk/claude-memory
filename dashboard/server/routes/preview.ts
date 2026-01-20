@@ -5,10 +5,11 @@ import { coerceRetrievalSettings, loadSettings } from '../../../src/lib/settings
 import type { NearMissRecord } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { isPlainObject, parseOptionalBoolean } from '../utils/params.js'
+import { ensureConfigInitialized } from '../utils/milvus.js'
 
 export function createPreviewRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config } = context
+  const { config: baseConfig } = context
 
   router.post('/api/preview', async (req, res) => {
     try {
@@ -16,6 +17,8 @@ export function createPreviewRouter(context: ServerContext): express.Router {
       if (!prompt) {
         return res.status(400).json({ error: 'Prompt required' })
       }
+
+      const config = await ensureConfigInitialized(req, baseConfig)
 
       const diagnostic = parseOptionalBoolean(req.query.diagnostic ?? req.body?.diagnostic)
       const settingsOverride = isPlainObject(rawSettingsOverride)

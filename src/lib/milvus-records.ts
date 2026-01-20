@@ -10,9 +10,9 @@ import {
 import {
   type Config,
   type MemoryRecord,
-  type RecordScope,
   type RecordType
 } from './types.js'
+import { isValidConfidence, isValidOutcome, isValidSeverity, normalizeScope } from './parsing.js'
 
 export async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<RowData> {
   const normalized = normalizeRecord(record)
@@ -288,33 +288,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(entry => typeof entry === 'string')
-}
-
-function isValidOutcome(value: unknown): value is 'success' | 'failure' | 'partial' {
-  return value === 'success' || value === 'failure' || value === 'partial'
-}
-
-function isValidConfidence(value: unknown): value is 'verified' | 'inferred' | 'tentative' {
-  return value === 'verified' || value === 'inferred' || value === 'tentative'
-}
-
-function isValidSeverity(value: unknown): value is 'caution' | 'warning' | 'critical' {
-  return value === 'caution' || value === 'warning' || value === 'critical'
-}
-
-function isValidScope(value: unknown): value is RecordScope {
-  return value === 'global' || value === 'project'
-}
-
-function normalizeScope(value: unknown): RecordScope {
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase()
-    if (normalized === 'global' || normalized === 'project') {
-      return normalized as RecordScope
-    }
-  }
-  if (isValidScope(value)) return value
-  return 'project'
 }
 
 function isValidRecord(record: MemoryRecord): boolean {

@@ -4,14 +4,15 @@ import { getRecordStats } from '../../../src/lib/milvus.js'
 import { getInjectionReview, saveInjectionReview } from '../../../src/lib/review-storage.js'
 import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../../../src/lib/session-tracking.js'
 import type { ServerContext } from '../context.js'
+import { ensureConfigInitialized } from '../utils/milvus.js'
 
 export function createSessionsRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config, ensureInitialized } = context
+  const { config: baseConfig } = context
 
-  router.get('/api/sessions', async (_req, res) => {
+  router.get('/api/sessions', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const sessions = listAllSessions().map(session => ({
         ...session,
         memoriesRaw: session.memories,
@@ -19,7 +20,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
       }))
 
       const allIds = sessions.flatMap(session => session.memories.map(memory => memory.id))
-      const statsMap = await getRecordStats(allIds)
+      const statsMap = await getRecordStats(allIds, config)
 
       const enrichedSessions = sessions.map(session => {
         const applyStats = (memory: typeof session.memories[number]) => ({
@@ -88,7 +89,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
         }
 
         try {
-          await ensureInitialized()
+          const config = await ensureConfigInitialized(req, baseConfig)
           const review = await reviewInjectionStreaming(sessionId, config, onThinking, abortController.signal)
           saveInjectionReview(review)
           send({ result: review })
@@ -109,7 +110,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
         return
       }
 
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const review = await reviewInjection(sessionId, config)
       saveInjectionReview(review)
       res.json(review)

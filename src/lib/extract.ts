@@ -1,12 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
-import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type InjectedMemoryEntry, type MemoryRecord, type ProcedureRecord, type WarningRecord, type WarningSeverity } from './types.js'
+import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type InjectedMemoryEntry, type MemoryRecord, type ProcedureRecord, type WarningRecord } from './types.js'
 import type { Transcript, TranscriptEvent } from './transcript.js'
 import { getDomainExamples, type DomainExample } from './milvus.js'
 import { stripNoiseWords } from './context.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { getRecordSchemaOneOf } from './record-schema.js'
-import { isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { asConfidence, asOutcome, asScope, asSeverity, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 
 export interface ExtractionContext {
   sessionId: string
@@ -414,7 +414,7 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
   const commandRaw = asString(input.command)
   const command = commandRaw ? stripTruncationMarkers(commandRaw) : undefined
   const exitCodeRaw = asNumber(input.exitCode)
-  const outcome = coerceOutcome(input.outcome)
+  const outcome = asOutcome(input.outcome)
   const sourceExcerptRaw = asString(input.sourceExcerpt)
   const sourceExcerpt = sourceExcerptRaw ? stripTruncationMarkers(sourceExcerptRaw) : undefined
   if (!command || exitCodeRaw === null || !outcome || !sourceExcerpt) return null
@@ -439,7 +439,7 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
     }
   }
 
-  const scope = coerceScope(input.scope)
+  const scope = asScope(input.scope)
   if (scope) record.scope = scope
 
   const truncatedOutputRaw = asString(input.truncatedOutput)
@@ -481,7 +481,7 @@ function coerceErrorRecord(input: Record<string, unknown>, context: ExtractionCo
     }
   }
 
-  const scope = coerceScope(input.scope)
+  const scope = asScope(input.scope)
   if (scope) record.scope = scope
 
   const cause = asString(input.cause)
@@ -504,7 +504,7 @@ function coerceDiscoveryRecord(input: Record<string, unknown>, context: Extracti
   const what = asString(input.what)
   const where = asString(input.where)
   const evidence = asString(input.evidence)
-  const confidence = coerceConfidence(input.confidence)
+  const confidence = asConfidence(input.confidence)
   const sourceExcerptRaw = asString(input.sourceExcerpt)
   const sourceExcerpt = sourceExcerptRaw ? stripTruncationMarkers(sourceExcerptRaw) : undefined
   if (!what || !where || !evidence || !confidence || !sourceExcerpt) return null
@@ -519,7 +519,7 @@ function coerceDiscoveryRecord(input: Record<string, unknown>, context: Extracti
     sourceExcerpt
   }
 
-  const scope = coerceScope(input.scope)
+  const scope = asScope(input.scope)
   if (scope) record.scope = scope
 
   const project = asString(input.project) ?? context.project ?? context.cwd
@@ -551,7 +551,7 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
     }
   }
 
-  const scope = coerceScope(input.scope)
+  const scope = asScope(input.scope)
   if (scope) record.scope = scope
 
   const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
@@ -575,7 +575,7 @@ function coerceWarningRecord(input: Record<string, unknown>, context: Extraction
   const avoid = asString(input.avoid)
   const useInstead = asString(input.useInstead)
   const reason = asString(input.reason)
-  const severity = coerceSeverity(input.severity)
+  const severity = asSeverity(input.severity)
   const sourceExcerptRaw = asString(input.sourceExcerpt)
   const sourceExcerpt = sourceExcerptRaw ? stripTruncationMarkers(sourceExcerptRaw) : undefined
   if (!avoid || !useInstead || !reason || !severity || !sourceExcerpt) return null
@@ -591,7 +591,7 @@ function coerceWarningRecord(input: Record<string, unknown>, context: Extraction
     synthesizedAt: Date.now()
   }
 
-  const scope = coerceScope(input.scope)
+  const scope = asScope(input.scope)
   if (scope) record.scope = scope
 
   const project = asString(input.project) ?? context.project ?? context.cwd
@@ -600,11 +600,6 @@ function coerceWarningRecord(input: Record<string, unknown>, context: Extraction
   if (domain) record.domain = domain
 
   return record
-}
-
-function coerceSeverity(value: unknown): WarningSeverity | null {
-  if (value === 'caution' || value === 'warning' || value === 'critical') return value
-  return null
 }
 
 function inferIntent(transcript: Transcript): string | undefined {
@@ -642,23 +637,6 @@ function stripTruncationMarkers(value: string): string {
 
 function pickProject(project: string | undefined, context: ExtractionContext): string {
   return project ?? context.project ?? context.cwd ?? 'unknown'
-}
-
-function coerceScope(value: unknown): 'global' | 'project' | null {
-  if (typeof value !== 'string') return null
-  const normalized = value.trim().toLowerCase()
-  if (normalized === 'global' || normalized === 'project') return normalized
-  return null
-}
-
-function coerceOutcome(value: unknown): CommandRecord['outcome'] | null {
-  if (value === 'success' || value === 'failure' || value === 'partial') return value
-  return null
-}
-
-function coerceConfidence(value: unknown): DiscoveryRecord['confidence'] | null {
-  if (value === 'verified' || value === 'inferred' || value === 'tentative') return value
-  return null
 }
 
 function coerceStringArray(value: unknown): string[] {

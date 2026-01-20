@@ -1,30 +1,44 @@
 import express from 'express'
+import { randomUUID } from 'crypto'
 import {
   countRecords,
   deleteRecord,
   escapeFilterValue,
   getRecord,
   hybridSearch,
+  insertRecord,
   iterateRecords,
   queryRecords,
   resetCollection,
   buildKeywordFilter
 } from '../../../src/lib/milvus.js'
-import type { RecordType } from '../../../shared/types.js'
+import { EMBEDDING_DIM } from '../../../src/lib/types.js'
+import {
+  asBoolean,
+  asConfidence,
+  asNumber,
+  asOutcome,
+  asScope,
+  asSeverity,
+  asStringArray,
+  asTrimmedString
+} from '../../../src/lib/parsing.js'
+import type { MemoryRecord, RecordType } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
-import { parseNonNegativeInt } from '../utils/params.js'
+import { isPlainObject, parseNonNegativeInt } from '../utils/params.js'
+import { ensureConfigInitialized } from '../utils/milvus.js'
 
 export function createMemoryRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config, ensureInitialized, memoryTypes } = context
+  const { config: baseConfig, memoryTypes } = context
 
   router.get('/api/memory-types', (_req, res) => {
     res.json({ types: memoryTypes })
   })
 
-  router.get('/api/stats', async (_req, res) => {
+  router.get('/api/stats', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const total = await countRecords({}, config)
       const stats = {
         total,
@@ -76,7 +90,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.get('/api/memories', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
 
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 100), 1000)
       const offset = parseNonNegativeInt(req.query.offset, 0)
@@ -111,7 +125,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.get('/api/memories/:id', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const record = await getRecord(req.params.id, config)
       if (!record) {
         return res.status(404).json({ error: 'Memory not found' })
@@ -125,7 +139,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.delete('/api/memories/:id', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const record = await getRecord(req.params.id, config)
       if (!record) {
         return res.status(404).json({ error: 'Memory not found' })
@@ -138,9 +152,9 @@ export function createMemoryRouter(context: ServerContext): express.Router {
     }
   })
 
-  router.post('/api/reset-collection', async (_req, res) => {
+  router.post('/api/reset-collection', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       await resetCollection(config)
       res.json({ success: true })
     } catch (error) {
@@ -149,9 +163,271 @@ export function createMemoryRouter(context: ServerContext): express.Router {
     }
   })
 
+  /**
+   * POST /api/memories - Insert a new memory record.
+   * Used by evaluation frameworks to programmatically add memories.
+   *
+   * Supports X-Milvus-Collection header for collection isolation.
+   */
+  router.post('/api/memories', async (req, res) => {
+    try {
+      const config = await ensureConfigInitialized(req, baseConfig)
+      const body = req.body
+
+      if (!isPlainObject(body)) {
+        return res.status(400).json({ error: 'Invalid payload' })
+      }
+
+      // Validate required fields based on type
+      const type = body.type as RecordType
+      if (!type || !memoryTypes.includes(type)) {
+        return res.status(400).json({
+          error: `Invalid or missing type. Must be one of: ${memoryTypes.join(', ')}`
+        })
+      }
+
+      const sourceExcerpt = asTrimmedString(body.sourceExcerpt)
+      if (!sourceExcerpt) {
+        return res.status(400).json({ error: 'sourceExcerpt required' })
+      }
+
+      const hasEmbedding = Object.prototype.hasOwnProperty.call(body, 'embedding')
+      const embedding = hasEmbedding ? asNumberArray(body.embedding) : undefined
+      if (hasEmbedding && !embedding) {
+        return res.status(400).json({ error: 'embedding must be an array of numbers' })
+      }
+      if (embedding && embedding.length !== EMBEDDING_DIM) {
+        return res.status(400).json({
+          error: `embedding must be length ${EMBEDDING_DIM}`
+        })
+      }
+
+      const hasScope = Object.prototype.hasOwnProperty.call(body, 'scope')
+      const scope = hasScope ? asScope(body.scope) : undefined
+      if (hasScope && !scope) {
+        return res.status(400).json({ error: 'scope must be global or project' })
+      }
+
+      // Build the record with defaults
+      const now = Date.now()
+      const id = asTrimmedString(body.id) ?? randomUUID()
+      const baseRecord = {
+        id,
+        timestamp: asNumber(body.timestamp) ?? now,
+        scope,
+        sourceSessionId: asTrimmedString(body.sourceSessionId),
+        sourceExcerpt,
+        project: asTrimmedString(body.project),
+        domain: asTrimmedString(body.domain),
+        successCount: asNumber(body.successCount) ?? undefined,
+        failureCount: asNumber(body.failureCount) ?? undefined,
+        retrievalCount: asNumber(body.retrievalCount) ?? undefined,
+        usageCount: asNumber(body.usageCount) ?? undefined,
+        lastUsed: asNumber(body.lastUsed) ?? undefined,
+        deprecated: asBoolean(body.deprecated) ?? undefined,
+        generalized: asBoolean(body.generalized) ?? undefined,
+        lastGeneralizationCheck: asNumber(body.lastGeneralizationCheck) ?? undefined,
+        lastGlobalCheck: asNumber(body.lastGlobalCheck) ?? undefined,
+        lastConflictCheck: asNumber(body.lastConflictCheck) ?? undefined,
+        lastWarningSynthesisCheck: asNumber(body.lastWarningSynthesisCheck) ?? undefined,
+        embedding
+      }
+
+      // Type-specific fields
+      let record: MemoryRecord
+      switch (type) {
+        case 'command': {
+          const command = asTrimmedString(body.command)
+          const exitCode = asNumber(body.exitCode)
+          const outcome = asOutcome(body.outcome)
+          const contextInput = isPlainObject(body.context) ? body.context : undefined
+          const contextProject = asTrimmedString(contextInput?.project)
+          const contextCwd = asTrimmedString(contextInput?.cwd)
+          const contextIntent = asTrimmedString(contextInput?.intent)
+
+          if (!command) {
+            return res.status(400).json({ error: 'command required' })
+          }
+          if (exitCode === null) {
+            return res.status(400).json({ error: 'exitCode required' })
+          }
+          if (!outcome) {
+            return res.status(400).json({ error: 'outcome must be success, failure, or partial' })
+          }
+          if (!contextProject || !contextCwd || !contextIntent) {
+            return res.status(400).json({ error: 'context.project, context.cwd, and context.intent required' })
+          }
+
+          record = {
+            ...baseRecord,
+            type: 'command',
+            command,
+            exitCode: Math.trunc(exitCode),
+            outcome,
+            context: {
+              project: contextProject,
+              cwd: contextCwd,
+              intent: contextIntent
+            }
+          }
+          const truncatedOutput = asTrimmedString(body.truncatedOutput)
+          if (truncatedOutput) record.truncatedOutput = truncatedOutput
+          const resolution = asTrimmedString(body.resolution)
+          if (resolution) record.resolution = resolution
+          break
+        }
+        case 'error': {
+          const errorText = asTrimmedString(body.errorText)
+          const errorType = asTrimmedString(body.errorType)
+          const resolution = asTrimmedString(body.resolution)
+          const contextInput = isPlainObject(body.context) ? body.context : undefined
+          const contextProject = asTrimmedString(contextInput?.project)
+
+          if (!errorText) {
+            return res.status(400).json({ error: 'errorText required' })
+          }
+          if (!errorType) {
+            return res.status(400).json({ error: 'errorType required' })
+          }
+          if (!resolution) {
+            return res.status(400).json({ error: 'resolution required' })
+          }
+          if (!contextProject) {
+            return res.status(400).json({ error: 'context.project required' })
+          }
+
+          record = {
+            ...baseRecord,
+            type: 'error',
+            errorText,
+            errorType,
+            resolution,
+            context: {
+              project: contextProject
+            }
+          }
+          const cause = asTrimmedString(body.cause)
+          if (cause) record.cause = cause
+          const file = asTrimmedString(contextInput?.file)
+          if (file) record.context.file = file
+          const tool = asTrimmedString(contextInput?.tool)
+          if (tool) record.context.tool = tool
+          break
+        }
+        case 'discovery': {
+          const what = asTrimmedString(body.what)
+          const where = asTrimmedString(body.where)
+          const evidence = asTrimmedString(body.evidence)
+          const confidence = asConfidence(body.confidence)
+
+          if (!what) {
+            return res.status(400).json({ error: 'what required' })
+          }
+          if (!where) {
+            return res.status(400).json({ error: 'where required' })
+          }
+          if (!evidence) {
+            return res.status(400).json({ error: 'evidence required' })
+          }
+          if (!confidence) {
+            return res.status(400).json({ error: 'confidence must be verified, inferred, or tentative' })
+          }
+
+          record = {
+            ...baseRecord,
+            type: 'discovery',
+            what,
+            where,
+            evidence,
+            confidence
+          }
+          break
+        }
+        case 'procedure': {
+          const name = asTrimmedString(body.name)
+          const steps = asStringArray(body.steps)
+          const contextInput = isPlainObject(body.context) ? body.context : undefined
+          const domain = asTrimmedString(contextInput?.domain)
+          const contextProject = asTrimmedString(contextInput?.project) ?? asTrimmedString(body.project)
+
+          if (!name) {
+            return res.status(400).json({ error: 'name required' })
+          }
+          if (steps.length === 0 || !steps.some(step => step.trim().length > 0)) {
+            return res.status(400).json({ error: 'steps required' })
+          }
+          if (!domain) {
+            return res.status(400).json({ error: 'context.domain required' })
+          }
+
+          record = {
+            ...baseRecord,
+            type: 'procedure',
+            name,
+            steps,
+            context: {
+              domain,
+              ...(contextProject ? { project: contextProject } : {})
+            }
+          }
+          const prerequisites = asStringArray(body.prerequisites)
+          if (prerequisites && prerequisites.length > 0) record.prerequisites = prerequisites
+          const verification = asTrimmedString(body.verification)
+          if (verification) record.verification = verification
+          break
+        }
+        case 'warning': {
+          const avoid = asTrimmedString(body.avoid)
+          const useInstead = asTrimmedString(body.useInstead)
+          const reason = asTrimmedString(body.reason)
+          const severity = asSeverity(body.severity)
+
+          if (!avoid) {
+            return res.status(400).json({ error: 'avoid required' })
+          }
+          if (!useInstead) {
+            return res.status(400).json({ error: 'useInstead required' })
+          }
+          if (!reason) {
+            return res.status(400).json({ error: 'reason required' })
+          }
+          if (!severity) {
+            return res.status(400).json({ error: 'severity must be caution, warning, or critical' })
+          }
+
+          record = {
+            ...baseRecord,
+            type: 'warning',
+            avoid,
+            useInstead,
+            reason,
+            severity
+          }
+          const sourceRecordIds = asStringArray(body.sourceRecordIds)
+          if (sourceRecordIds && sourceRecordIds.length > 0) {
+            record.sourceRecordIds = sourceRecordIds
+          }
+          const synthesizedAt = asNumber(body.synthesizedAt)
+          if (synthesizedAt !== null) record.synthesizedAt = synthesizedAt
+          break
+        }
+        default:
+          return res.status(400).json({ error: `Unsupported type: ${type}` })
+      }
+
+      // Build and insert
+      await insertRecord(record, config)
+
+      res.status(201).json({ id: record.id, success: true })
+    } catch (error) {
+      console.error('Insert memory error:', error)
+      res.status(500).json({ error: 'Failed to insert memory' })
+    }
+  })
+
   router.get('/api/search', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
 
       const rawQuery = req.query.q as string
       const query = rawQuery?.trim()
@@ -210,4 +486,10 @@ function buildSearchFilter(filters: { type?: RecordType; project?: string; depre
   if (filters.project) parts.push(`project == "${escapeFilterValue(filters.project)}"`)
   if (!filters.deprecated) parts.push('deprecated == false')
   return parts.length > 0 ? parts.join(' && ') : undefined
+}
+
+function asNumberArray(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  if (!value.every(item => typeof item === 'number' && Number.isFinite(item))) return undefined
+  return value
 }

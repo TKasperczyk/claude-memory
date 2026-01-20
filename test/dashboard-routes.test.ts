@@ -4,7 +4,7 @@ import request from 'supertest'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
-import { DEFAULT_CONFIG } from '../src/lib/types.js'
+import { DEFAULT_CONFIG, EMBEDDING_DIM } from '../src/lib/types.js'
 import { createExtractionsRouter } from '../dashboard/server/routes/extractions.js'
 import { createInstallationRouter } from '../dashboard/server/routes/installation.js'
 import { createMaintenanceRouter } from '../dashboard/server/routes/maintenance.js'
@@ -38,10 +38,12 @@ import {
   getRecord,
   getRecordStats,
   hybridSearch,
+  insertRecord,
   iterateRecords,
   queryRecords,
   resetCollection
 } from '../src/lib/milvus.js'
+import { ensureClient } from '../src/lib/milvus-client.js'
 import { mergeNearMisses } from '../src/lib/diagnostics.js'
 import { retrieveContext } from '../src/lib/retrieval.js'
 import { reviewInjection, reviewInjectionStreaming } from '../src/lib/injection-review.js'
@@ -92,6 +94,7 @@ vi.mock('../src/lib/installer.js', () => {
 })
 
 vi.mock('../src/lib/milvus.js', () => ({
+  insertRecord: vi.fn(),
   countRecords: vi.fn(),
   deleteRecord: vi.fn(),
   escapeFilterValue: vi.fn(),
@@ -102,6 +105,10 @@ vi.mock('../src/lib/milvus.js', () => ({
   queryRecords: vi.fn(),
   resetCollection: vi.fn(),
   buildKeywordFilter: vi.fn()
+}))
+
+vi.mock('../src/lib/milvus-client.js', () => ({
+  ensureClient: vi.fn()
 }))
 
 vi.mock('../src/lib/diagnostics.js', () => ({
@@ -177,6 +184,8 @@ const mockedGetRecord = vi.mocked(getRecord)
 const mockedDeleteRecord = vi.mocked(deleteRecord)
 const mockedResetCollection = vi.mocked(resetCollection)
 const mockedHybridSearch = vi.mocked(hybridSearch)
+const mockedEnsureClient = vi.mocked(ensureClient)
+const mockedInsertRecord = vi.mocked(insertRecord)
 const mockedIterateRecords = vi.mocked(iterateRecords)
 const mockedBuildKeywordFilter = vi.mocked(buildKeywordFilter)
 const mockedEscapeFilterValue = vi.mocked(escapeFilterValue)
@@ -220,15 +229,13 @@ const buildApp = (overrides: Partial<{
   memoryTypes: string[]
   suggestionAllowedRoots: string[]
   claudeSettingsPath: string
-  ensureInitialized: () => Promise<void>
 }> = {}) => {
   const context = {
     configRoot: overrides.configRoot ?? '/tmp',
     config: overrides.config ?? DEFAULT_CONFIG,
     memoryTypes: overrides.memoryTypes ?? ['command', 'error'],
     suggestionAllowedRoots: overrides.suggestionAllowedRoots ?? ['/tmp'],
-    claudeSettingsPath: overrides.claudeSettingsPath ?? '/tmp/settings.json',
-    ensureInitialized: overrides.ensureInitialized ?? vi.fn().mockResolvedValue(undefined)
+    claudeSettingsPath: overrides.claudeSettingsPath ?? '/tmp/settings.json'
   }
 
   const app = express()
@@ -264,6 +271,15 @@ const buildEditDiff = (target: string, lines: string[]): string => {
   ].join('\n')
 }
 
+const buildMemoryPayload = (overrides: Record<string, unknown>): Record<string, unknown> => ({
+  id: 'mem-1',
+  timestamp: 1700000000000,
+  sourceExcerpt: 'Excerpt evidence.',
+  ...overrides
+})
+
+const ALL_MEMORY_TYPES = ['command', 'error', 'discovery', 'procedure', 'warning']
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockedLoadSettings.mockReturnValue({ ...DEFAULT_SETTINGS })
@@ -285,6 +301,8 @@ beforeEach(() => {
   mockedDeleteRecord.mockResolvedValue(undefined)
   mockedResetCollection.mockResolvedValue(undefined)
   mockedHybridSearch.mockResolvedValue([])
+  mockedEnsureClient.mockResolvedValue({} as any)
+  mockedInsertRecord.mockResolvedValue(undefined)
   mockedIterateRecords.mockReturnValue(makeAsyncIterable([]))
   mockedBuildKeywordFilter.mockImplementation((_query, baseFilter) => baseFilter)
   mockedEscapeFilterValue.mockImplementation(value => String(value))
@@ -403,6 +421,94 @@ describe('installation routes', () => {
 })
 
 describe('memory routes', () => {
+  const insertCases = [
+    {
+      label: 'command',
+      id: 'cmd-1',
+      payload: buildMemoryPayload({
+        id: 'cmd-1',
+        type: 'command',
+        command: 'ls -la',
+        exitCode: '0',
+        outcome: 'success',
+        context: { project: 'proj', cwd: '/tmp', intent: 'list files' }
+      }),
+      expected: {
+        id: 'cmd-1',
+        type: 'command',
+        exitCode: 0,
+        outcome: 'success'
+      }
+    },
+    {
+      label: 'error',
+      id: 'err-1',
+      payload: buildMemoryPayload({
+        id: 'err-1',
+        type: 'error',
+        errorText: 'boom',
+        errorType: 'TypeError',
+        resolution: 'restart',
+        context: { project: 'proj' }
+      }),
+      expected: {
+        id: 'err-1',
+        type: 'error',
+        errorText: 'boom'
+      }
+    },
+    {
+      label: 'discovery',
+      id: 'disc-1',
+      payload: buildMemoryPayload({
+        id: 'disc-1',
+        type: 'discovery',
+        what: 'feature flag enabled',
+        where: 'config',
+        evidence: 'observed in logs',
+        confidence: 'verified'
+      }),
+      expected: {
+        id: 'disc-1',
+        type: 'discovery',
+        confidence: 'verified'
+      }
+    },
+    {
+      label: 'procedure',
+      id: 'proc-1',
+      payload: buildMemoryPayload({
+        id: 'proc-1',
+        type: 'procedure',
+        name: 'Run checks',
+        steps: ['npm test', 'npm run build'],
+        context: { domain: 'ci', project: 'proj' }
+      }),
+      expected: {
+        id: 'proc-1',
+        type: 'procedure',
+        name: 'Run checks'
+      }
+    },
+    {
+      label: 'warning',
+      id: 'warn-1',
+      payload: buildMemoryPayload({
+        id: 'warn-1',
+        type: 'warning',
+        avoid: 'manual edits',
+        useInstead: 'use the formatter',
+        reason: 'ensures consistent output',
+        severity: 'warning'
+      }),
+      expected: {
+        id: 'warn-1',
+        type: 'warning',
+        severity: 'warning'
+      }
+    }
+  ]
+
   it('coerces pagination parameters', async () => {
     const { app } = buildApp()
     const res = await request(app).get('/api/memories?limit=oops&offset=-10')
@@ -428,6 +534,172 @@ describe('memory routes', () => {
 
     expect(res.status).toBe(200)
     expect(res.body).toEqual({ success: true })
+  })
+
+  it.each(insertCases)('inserts %s records', async ({ id, payload, expected }) => {
+    const { app } = buildApp({ memoryTypes: ALL_MEMORY_TYPES })
+    const res = await request(app).post('/api/memories').send(payload)
+
+    expect(res.status).toBe(201)
+    expect(res.body).toEqual({ id, success: true })
+    expect(mockedInsertRecord).toHaveBeenCalledWith(expect.objectContaining(expected), expect.anything())
+  })
+
+  it('rejects missing sourceExcerpt', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/memories')
+      .send({
+        type: 'error',
+        errorText: 'boom',
+        errorType: 'TypeError',
+        resolution: 'restart',
+        context: { project: 'proj' }
+      })
+
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ error: 'sourceExcerpt required' })
+  })
+
+  it('rejects invalid types', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/memories')
+      .send({ type: 'nope', sourceExcerpt: 'Excerpt evidence.' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toContain('Invalid or missing type')
+  })
+
+  it('rejects invalid embedding dimensions', async () => {
+    const { app } = buildApp({ memoryTypes: ALL_MEMORY_TYPES })
+    const res = await request(app)
+      .post('/api/memories')
+      .send({
+        type: 'discovery',
+        sourceExcerpt: 'Excerpt evidence.',
+        embedding: [0.1, 0.2]
+      })
+
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ error: `embedding must be length ${EMBEDDING_DIM}` })
+  })
+
+  it('rejects invalid embedding payloads', async () => {
+    const { app } = buildApp({ memoryTypes: ALL_MEMORY_TYPES })
+    const res = await request(app)
+      .post('/api/memories')
+      .send({
+        type: 'discovery',
+        sourceExcerpt: 'Excerpt evidence.',
+        embedding: 'nope'
+      })
+
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ error: 'embedding must be an array of numbers' })
+  })
+
+  it('honors collection override header for memories', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/memories')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for memory detail', async () => {
+    mockedGetRecord.mockResolvedValueOnce({ id: 'mem-1', type: 'command' })
+
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/memories/mem-1')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for memory deletes', async () => {
+    mockedGetRecord.mockResolvedValueOnce({ id: 'mem-1' })
+
+    const { app } = buildApp()
+    const res = await request(app)
+      .delete('/api/memories/mem-1')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for memory inserts', async () => {
+    const { app } = buildApp({ memoryTypes: ALL_MEMORY_TYPES })
+    const payload = buildMemoryPayload({
+      type: 'discovery',
+      what: 'feature flag enabled',
+      where: 'config',
+      evidence: 'observed in logs',
+      confidence: 'verified'
+    })
+    const res = await request(app)
+      .post('/api/memories')
+      .set('X-Milvus-Collection', 'test-collection')
+      .send(payload)
+
+    expect(res.status).toBe(201)
+    expect(mockedInsertRecord).toHaveBeenCalledTimes(1)
+    expect(mockedInsertRecord.mock.calls[0]?.[1]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for stats', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/stats')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for search', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/search?q=check')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for reset collection', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/reset-collection')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
   })
 
   it('requires a query for search', async () => {
@@ -516,6 +788,20 @@ describe('preview routes', () => {
     expect(res.body.nearMisses).toHaveLength(1)
     expect(res.body.injected).toHaveLength(1)
   })
+
+  it('honors collection override header for preview', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/preview')
+      .set('X-Milvus-Collection', 'test-collection')
+      .send({ prompt: 'hello', cwd: '/tmp' })
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
 })
 
 describe('sessions routes', () => {
@@ -538,6 +824,35 @@ describe('sessions routes', () => {
     expect(res.status).toBe(200)
     expect(res.body.sessions).toHaveLength(1)
     expect(res.body.sessions[0].memories[0].stats).toEqual({ retrievalCount: 2 })
+  })
+
+  it('honors collection override header for sessions', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/sessions')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for session reviews', async () => {
+    mockedLoadSessionTracking.mockReturnValueOnce({ sessionId: 'session-1' })
+
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/sessions/session-1/review')
+      .set('X-Milvus-Collection', 'test-collection')
+      .send({})
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
   })
 
   it('streams injection review responses', async () => {
@@ -593,6 +908,52 @@ describe('extractions routes', () => {
     expect(res.body.runs[0].runId).toBe('run-2')
   })
 
+  it('honors collection override header for extraction reviews', async () => {
+    mockedGetExtractionRun.mockReturnValueOnce({
+      runId: 'run-1',
+      sessionId: 'session-1',
+      transcriptPath: '/tmp/session.jsonl',
+      timestamp: 0,
+      recordCount: 0,
+      parseErrorCount: 0,
+      extractedRecordIds: [],
+      duration: 0
+    })
+
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/extractions/run-1/review')
+      .set('X-Milvus-Collection', 'test-collection')
+      .send({})
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for extraction runs', async () => {
+    mockedGetExtractionRun.mockReturnValueOnce({
+      runId: 'run-1',
+      extractedRecordIds: ['rec-1']
+    })
+    mockedQueryRecords.mockResolvedValueOnce([
+      { id: 'rec-1', type: 'command' }
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/extractions/run-1')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
   it('returns ordered extraction records', async () => {
     mockedGetExtractionRun.mockReturnValueOnce({
       runId: 'run-1',
@@ -639,6 +1000,61 @@ describe('maintenance routes', () => {
 
     expect(res.status).toBe(400)
     expect(res.body).toEqual({ error: 'Unknown operation' })
+  })
+
+  it('honors collection override header for maintenance reviews', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/maintenance/promotion-suggestions/review')
+      .set('X-Milvus-Collection', 'test-collection')
+      .send({ result: { operation: 'promotion-suggestions', actions: [], candidates: [] } })
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for maintenance run', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/maintenance/run')
+      .set('X-Milvus-Collection', 'test-collection')
+      .send({ operation: 'promotion-suggestions' })
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for maintenance run-all', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/maintenance/run-all')
+      .set('X-Milvus-Collection', 'test-collection')
+      .send({ dryRun: true })
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('honors collection override header for maintenance stream', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/maintenance/stream')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
+    expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
+      milvus: { collection: 'test-collection' }
+    })
   })
 
   it('streams maintenance reviews', async () => {

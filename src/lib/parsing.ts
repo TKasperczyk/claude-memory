@@ -1,4 +1,11 @@
-import { type InjectionStatus, type RecordType } from './types.js'
+import {
+  type CommandRecord,
+  type DiscoveryRecord,
+  type InjectionStatus,
+  type RecordScope,
+  type RecordType,
+  type WarningSeverity
+} from './types.js'
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -74,4 +81,47 @@ export function asInjectionStatus(value: unknown): InjectionStatus | undefined {
     return value
   }
   return undefined
+}
+
+export function isValidOutcome(value: unknown): value is CommandRecord['outcome'] {
+  return value === 'success' || value === 'failure' || value === 'partial'
+}
+
+export function asOutcome(value: unknown): CommandRecord['outcome'] | undefined {
+  return isValidOutcome(value) ? value : undefined
+}
+
+export function isValidConfidence(value: unknown): value is DiscoveryRecord['confidence'] {
+  return value === 'verified' || value === 'inferred' || value === 'tentative'
+}
+
+export function asConfidence(value: unknown): DiscoveryRecord['confidence'] | undefined {
+  return isValidConfidence(value) ? value : undefined
+}
+
+export function isValidSeverity(value: unknown): value is WarningSeverity {
+  return value === 'caution' || value === 'warning' || value === 'critical'
+}
+
+export function asSeverity(value: unknown): WarningSeverity | undefined {
+  return isValidSeverity(value) ? value : undefined
+}
+
+export function isValidScope(value: unknown): value is RecordScope {
+  return value === 'global' || value === 'project'
+}
+
+export function asScope(value: unknown): RecordScope | undefined {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'global' || normalized === 'project') {
+      return normalized as RecordScope
+    }
+  }
+  if (isValidScope(value)) return value
+  return undefined
+}
+
+export function normalizeScope(value: unknown, fallback: RecordScope = 'project'): RecordScope {
+  return asScope(value) ?? fallback
 }

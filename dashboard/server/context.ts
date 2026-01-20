@@ -2,7 +2,6 @@ import path from 'path'
 import { homedir } from 'os'
 import { findGitRoot } from '../../src/lib/context.js'
 import { loadConfig } from '../../src/lib/config.js'
-import { initMilvus } from '../../src/lib/milvus.js'
 import type { Config } from '../../src/lib/types.js'
 import type { RecordType } from '../../shared/types.js'
 
@@ -12,7 +11,6 @@ export type ServerContext = {
   memoryTypes: RecordType[]
   suggestionAllowedRoots: string[]
   claudeSettingsPath: string
-  ensureInitialized: () => Promise<void>
 }
 
 export function createServerContext(): ServerContext {
@@ -25,20 +23,11 @@ export function createServerContext(): ServerContext {
   ]
   const claudeSettingsPath = path.join(homedir(), '.claude', 'settings.json')
 
-  let initialized = false
-  const ensureInitialized = async (): Promise<void> => {
-    if (!initialized) {
-      await initMilvus(config)
-      initialized = true
-    }
-  }
-
   return {
     configRoot,
     config,
     memoryTypes,
     suggestionAllowedRoots,
-    claudeSettingsPath,
-    ensureInitialized
+    claudeSettingsPath
   }
 }

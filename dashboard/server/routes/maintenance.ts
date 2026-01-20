@@ -13,6 +13,7 @@ import {
 import { getMaintenanceReview, saveMaintenanceReview } from '../../../src/lib/review-storage.js'
 import type { ServerContext } from '../context.js'
 import { isPlainObject } from '../utils/params.js'
+import { ensureConfigInitialized } from '../utils/milvus.js'
 
 type SuggestionApplyAction = 'new' | 'edit'
 
@@ -25,7 +26,7 @@ class SuggestionTargetError extends Error {
 
 export function createMaintenanceRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config, ensureInitialized, configRoot, suggestionAllowedRoots } = context
+  const { config: baseConfig, configRoot, suggestionAllowedRoots } = context
 
   router.get('/api/maintenance/:operation/review/:resultId', (req, res) => {
     try {
@@ -94,7 +95,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         }
 
         try {
-          await ensureInitialized()
+          const config = await ensureConfigInitialized(req, baseConfig)
           const review = await reviewMaintenanceResultStreaming(normalizedResult, config, onThinking, abortController.signal)
           saveMaintenanceReview(review)
           send({ result: review })
@@ -115,7 +116,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         return
       }
 
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const review = await reviewMaintenanceResult(normalizedResult, config)
       saveMaintenanceReview(review)
       res.json(review)
@@ -219,7 +220,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
   router.post('/api/maintenance/run', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const { operation, dryRun } = req.body ?? {}
       if (!operation || typeof operation !== 'string') {
         return res.status(400).json({ error: 'Operation required' })
@@ -243,7 +244,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
   router.post('/api/maintenance/run-all', async (req, res) => {
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const { dryRun } = req.body ?? {}
       const results = await runAllMaintenance(Boolean(dryRun), config)
       res.json(results)
@@ -267,7 +268,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
     }
 
     try {
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
 
       sendEvent('start', {
         operations: MAINTENANCE_OPERATIONS,

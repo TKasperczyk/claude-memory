@@ -6,10 +6,11 @@ import { getReview, saveReview } from '../../../src/lib/review-storage.js'
 import type { MemoryRecord } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { parseNonNegativeInt } from '../utils/params.js'
+import { ensureConfigInitialized } from '../utils/milvus.js'
 
 export function createExtractionsRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config, ensureInitialized } = context
+  const { config: baseConfig } = context
 
   router.get('/api/extractions', (req, res) => {
     try {
@@ -43,7 +44,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         return res.json({ run, records: [] })
       }
 
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
 
       const records: MemoryRecord[] = []
       const batchSize = 1000
@@ -112,7 +113,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         }
 
         try {
-          await ensureInitialized()
+          const config = await ensureConfigInitialized(req, baseConfig)
           const review = await reviewExtractionStreaming(runId, config, onThinking, abortController.signal)
           saveReview(review)
           send({ result: review })
@@ -133,7 +134,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         return
       }
 
-      await ensureInitialized()
+      const config = await ensureConfigInitialized(req, baseConfig)
       const review = await reviewExtraction(runId, config)
       saveReview(review)
       res.json(review)
