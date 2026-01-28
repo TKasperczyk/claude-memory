@@ -15,6 +15,8 @@ export interface ExtractionContext {
   transcriptPath?: string
   intent?: string
   domain?: string
+  /** Memories that were injected during this session - used to detect outdated information */
+  injectedMemories?: InjectedMemoryEntry[]
 }
 
 const TOOL_NAME = 'emit_records'
@@ -236,6 +238,7 @@ function buildUserPrompt(transcript: Transcript, context: ExtractionContext): st
   const project = context.project ?? context.cwd ?? 'unknown'
   const cwd = context.cwd ?? 'unknown'
   const transcriptText = formatTranscript(transcript.events, MAX_TRANSCRIPT_CHARS)
+  const priorKnowledgeSection = buildPriorKnowledgeSection(context.injectedMemories)
 
   return `Context:
 - session_id: ${context.sessionId}
@@ -243,7 +246,7 @@ function buildUserPrompt(transcript: Transcript, context: ExtractionContext): st
 - cwd: ${cwd}
 - transcript_path: ${context.transcriptPath ?? 'unknown'}
 - intent: ${context.intent ?? 'unknown'}
-
+${priorKnowledgeSection}
 Extraction guidance:
 1) CommandRecord: for notable shell commands with meaningful outcomes. Skip routine commands
    like "pnpm build" or "git status" unless they revealed something important.
@@ -293,6 +296,29 @@ function formatInjectedMemory(entry: InjectedMemoryEntry): string {
   const injectedAt = new Date(entry.injectedAt).toISOString()
   const snippet = cleanInline(entry.snippet)
   return `- id: ${entry.id}\n  injected_at: ${injectedAt}\n  snippet: ${snippet}`
+}
+
+function buildPriorKnowledgeSection(injectedMemories?: InjectedMemoryEntry[]): string {
+  if (!injectedMemories || injectedMemories.length === 0) {
+    return ''
+  }
+
+  const memoriesText = injectedMemories
+    .map(entry => `- [${entry.id}] ${cleanInline(entry.snippet)}`)
+    .join('\n')
+
+  return `
+Prior knowledge (memories injected during this session):
+${memoriesText}
+
+IMPORTANT - Change detection:
+If the transcript shows that any of the above prior knowledge is now OUTDATED, INCORRECT, or SUPERSEDED:
+- Extract a new discovery or warning that captures the CURRENT correct information
+- Set the "supersedes" field to the full UUID of the outdated memory (shown in brackets above)
+- Keep sourceExcerpt as a verbatim transcript quote - do NOT put the supersedes ID there
+- Example: if prior knowledge [b5049b3a-...] says "uses individual updateRecord calls" but transcript shows batch updates,
+  extract a discovery with supersedes: "b5049b3a-..." and sourceExcerpt quoting the relevant transcript text
+`
 }
 
 function formatTranscript(events: TranscriptEvent[], maxChars: number): string {

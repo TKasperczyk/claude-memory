@@ -25,8 +25,11 @@ import {
 } from '../../../src/lib/parsing.js'
 import type { MemoryRecord, RecordType } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
+import { createLogger } from '../lib/logger.js'
 import { isPlainObject, parseNonNegativeInt } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
+
+const logger = createLogger('memory')
 
 export function createMemoryRouter(context: ServerContext): express.Router {
   const router = express.Router()
@@ -83,7 +86,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
       res.json(stats)
     } catch (error) {
-      console.error('Stats error:', error)
+      logger.error('Failed to get stats', error)
       res.status(500).json({ error: 'Failed to get stats' })
     }
   })
@@ -118,7 +121,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         limit
       })
     } catch (error) {
-      console.error('List memories error:', error)
+      logger.error('Failed to list memories', error)
       res.status(500).json({ error: 'Failed to list memories' })
     }
   })
@@ -132,7 +135,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       }
       res.json(record)
     } catch (error) {
-      console.error('Get memory error:', error)
+      logger.error('Failed to get memory', error)
       res.status(500).json({ error: 'Failed to get memory' })
     }
   })
@@ -147,7 +150,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       await deleteRecord(req.params.id, config)
       res.json({ success: true })
     } catch (error) {
-      console.error('Delete memory error:', error)
+      logger.error('Failed to delete memory', error)
       res.status(500).json({ error: 'Failed to delete memory' })
     }
   })
@@ -158,7 +161,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       await resetCollection(config)
       res.json({ success: true })
     } catch (error) {
-      console.error('Reset collection error:', error)
+      logger.error('Failed to reset collection', error)
       res.status(500).json({ error: 'Failed to reset collection' })
     }
   })
@@ -420,7 +423,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
       res.status(201).json({ id: record.id, success: true })
     } catch (error) {
-      console.error('Insert memory error:', error)
+      logger.error('Failed to insert memory', error)
       res.status(500).json({ error: 'Failed to insert memory' })
     }
   })
@@ -472,7 +475,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         }))
       })
     } catch (error) {
-      console.error('Search error:', error)
+      logger.error('Failed to search', error)
       res.status(500).json({ error: 'Failed to search' })
     }
   })

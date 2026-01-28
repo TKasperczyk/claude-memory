@@ -16,7 +16,7 @@ import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
 import { loadSettings } from '../lib/settings.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
-import { DEFAULT_CONFIG, type Config, type MemoryRecord, type ExtractionHookInput } from '../lib/types.js'
+import { DEFAULT_CONFIG, type Config, type MemoryRecord, type ExtractionHookInput, type InjectedMemoryEntry } from '../lib/types.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -44,6 +44,8 @@ export async function handlePostSession(
   options: {
     flush?: FlushMode
     recordAugmenter?: (record: MemoryRecord, transcript: Transcript) => MemoryRecord
+    /** Memories injected during this session - used for change detection */
+    injectedMemories?: InjectedMemoryEntry[]
   } = {}
 ): Promise<PostSessionResult> {
   // Accept both SessionEnd and PreCompact events
@@ -99,7 +101,8 @@ export async function handlePostSession(
     cwd: input.cwd,
     project: projectRoot,
     transcriptPath: input.transcript_path,
-    domain
+    domain,
+    injectedMemories: options.injectedMemories
   })
 
   const records = options.recordAugmenter

@@ -113,6 +113,11 @@ async function main(): Promise<void> {
   await initMilvus(config)
   debugLog('Milvus initialized')
 
+  // Load session tracking to get injected memories for change detection
+  const session = loadSessionTracking(payload.session_id)
+  const injectedMemories = session ? dedupeInjectedMemories(session.memories) : []
+  debugLog(`Loaded ${injectedMemories.length} injected memories for change detection`)
+
   let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
   let shouldFlush = false
   const extractionStart = Date.now()
@@ -121,6 +126,7 @@ async function main(): Promise<void> {
     debugLog('Running extraction...')
     result = await handlePostSession(payload, config, {
       flush: 'end-of-batch',
+      injectedMemories,
       recordAugmenter: (record, transcript) => ({
         ...record,
         sourceSessionId: payload.session_id,

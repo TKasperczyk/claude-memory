@@ -19,9 +19,16 @@ interface RecordTypeDefinition {
  * sourceExcerpt is REQUIRED - extraction must cite transcript evidence.
  */
 const COMMON_OPTIONAL_PROPERTIES = {
-  project: { type: 'string' },
+  project: {
+    type: 'string',
+    description: 'Full absolute path to the project root (e.g., /home/user/projects/myapp). Infer from file paths and commands in the transcript if different from the context project.'
+  },
   scope: { type: 'string', enum: ['global', 'project'] },
-  domain: { type: 'string' }
+  domain: { type: 'string' },
+  supersedes: {
+    type: 'string',
+    description: 'Full UUID of a prior knowledge memory that this record supersedes/invalidates. Only set when this extraction corrects outdated information from an injected memory.'
+  }
 } as const
 
 const SOURCE_EXCERPT_PROPERTY = {
@@ -55,8 +62,8 @@ export const RECORD_TYPE_DEFINITIONS: Record<string, RecordTypeDefinition> = {
           additionalProperties: false,
           required: ['project', 'cwd', 'intent'],
           properties: {
-            project: { type: 'string' },
-            cwd: { type: 'string' },
+            project: { type: 'string', description: 'Full absolute path to project root' },
+            cwd: { type: 'string', description: 'Full absolute path to working directory' },
             intent: { type: 'string' }
           }
         }
@@ -83,7 +90,7 @@ export const RECORD_TYPE_DEFINITIONS: Record<string, RecordTypeDefinition> = {
           additionalProperties: false,
           required: ['project'],
           properties: {
-            project: { type: 'string' },
+            project: { type: 'string', description: 'Full absolute path to project root' },
             file: { type: 'string' },
             tool: { type: 'string' }
           }
@@ -129,7 +136,7 @@ export const RECORD_TYPE_DEFINITIONS: Record<string, RecordTypeDefinition> = {
           additionalProperties: false,
           required: ['domain'],
           properties: {
-            project: { type: 'string' },
+            project: { type: 'string', description: 'Full absolute path to project root' },
             domain: { type: 'string' }
           }
         }

@@ -5,22 +5,24 @@ import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPl
 import { readJsonFile, writeJsonFile } from './json.js'
 import { sanitizeRunId } from './shared.js'
 import { getRecordSummary } from './record-summary.js'
+import { loadSettings } from './settings.js'
 import type { ExtractionRecordSummary, ExtractionRun, RecordType } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
 
 const EXTRACTIONS_DIR = path.join(homedir(), '.claude-memory', 'extractions')
-const DEFAULT_DAYS_TO_KEEP = 1
 
 function getExtractionRunPath(runId: string): string {
   const safeId = sanitizeRunId(runId)
   return path.join(EXTRACTIONS_DIR, `${safeId}.json`)
 }
 
-function cleanupOldExtractionLogs(daysToKeep: number = DEFAULT_DAYS_TO_KEEP): void {
+function cleanupOldExtractionLogs(): void {
   if (!fs.existsSync(EXTRACTIONS_DIR)) return
 
-  const cutoff = Date.now() - Math.max(daysToKeep, 0) * 24 * 60 * 60 * 1000
+  const settings = loadSettings()
+  const daysToKeep = settings.extractionLogRetentionDays
+  const cutoff = Date.now() - Math.max(daysToKeep, 1) * 24 * 60 * 60 * 1000
 
   try {
     const files = fs.readdirSync(EXTRACTIONS_DIR).filter(file => file.endsWith('.json'))

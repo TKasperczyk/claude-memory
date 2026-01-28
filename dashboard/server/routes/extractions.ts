@@ -5,8 +5,11 @@ import { escapeFilterValue, queryRecords } from '../../../src/lib/milvus.js'
 import { getReview, saveReview } from '../../../src/lib/review-storage.js'
 import type { MemoryRecord } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
+import { createLogger } from '../lib/logger.js'
 import { parseNonNegativeInt } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
+
+const logger = createLogger('extractions')
 
 export function createExtractionsRouter(context: ServerContext): express.Router {
   const router = express.Router()
@@ -27,7 +30,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         limit
       })
     } catch (error) {
-      console.error('Extractions error:', error)
+      logger.error('Failed to list extractions', error)
       res.status(500).json({ error: 'Failed to list extractions' })
     }
   })
@@ -65,7 +68,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
       res.json({ run, records: ordered })
     } catch (error) {
-      console.error('Extraction run error:', error)
+      logger.error('Failed to get extraction run', error)
       res.status(500).json({ error: 'Failed to get extraction run' })
     }
   })
@@ -78,7 +81,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       }
       res.json(review)
     } catch (error) {
-      console.error('Extraction review error:', error)
+      logger.error('Extraction review error', error)
       res.status(500).json({ error: 'Failed to get extraction review' })
     }
   })
@@ -123,7 +126,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         } catch (error) {
           if (abortController.signal.aborted) return
           const message = error instanceof Error ? error.message : String(error)
-          console.error('Extraction review error:', error)
+          logger.error('Extraction review error', error)
           send({ error: message || 'Failed to run extraction review' })
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.write('data: [DONE]\n\n')
@@ -140,7 +143,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       res.json(review)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.error('Extraction review error:', error)
+      logger.error('Extraction review error', error)
       res.status(500).json({ error: message || 'Failed to run extraction review' })
     }
   })

@@ -4,7 +4,10 @@ import { getRecordStats } from '../../../src/lib/milvus.js'
 import { getInjectionReview, saveInjectionReview } from '../../../src/lib/review-storage.js'
 import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../../../src/lib/session-tracking.js'
 import type { ServerContext } from '../context.js'
+import { createLogger } from '../lib/logger.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
+
+const logger = createLogger('sessions')
 
 export function createSessionsRouter(context: ServerContext): express.Router {
   const router = express.Router()
@@ -41,7 +44,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
         count: sessions.length
       })
     } catch (error) {
-      console.error('Sessions error:', error)
+      logger.error('Failed to list sessions', error)
       res.status(500).json({ error: 'Failed to list sessions' })
     }
   })
@@ -54,7 +57,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
       }
       res.json(review)
     } catch (error) {
-      console.error('Injection review error:', error)
+      logger.error('Injection review error', error)
       res.status(500).json({ error: 'Failed to get injection review' })
     }
   })
@@ -99,7 +102,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
         } catch (error) {
           if (abortController.signal.aborted) return
           const message = error instanceof Error ? error.message : String(error)
-          console.error('Injection review error:', error)
+          logger.error('Injection review error', error)
           send({ error: message || 'Failed to run injection review' })
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.write('data: [DONE]\n\n')
@@ -116,7 +119,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
       res.json(review)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.error('Injection review error:', error)
+      logger.error('Injection review error', error)
       res.status(500).json({ error: message || 'Failed to run injection review' })
     }
   })

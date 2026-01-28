@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
-import { type MilvusClient } from '@zilliz/milvus2-sdk-node'
+import { type MilvusClient, type RowData } from '@zilliz/milvus2-sdk-node'
 import { escapeFilterValue } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import { OUTPUT_FIELDS, createCollection } from './milvus-schema.js'
@@ -509,6 +509,59 @@ export async function countRecords(
     return result.data ?? 0
   } catch (error) {
     console.error('[claude-memory] countRecords failed:', error)
+    throw error
+  }
+}
+
+/**
+ * Batch update multiple records with the same partial updates.
+ * Much more efficient than calling updateRecord() in a loop when updating many records.
+ * All records must already have embeddings (no re-embedding is done).
+ */
+export async function batchUpdateRecords(
+  records: MemoryRecord[],
+  updates: Partial<MemoryRecord>,
+  config: Config = DEFAULT_CONFIG
+): Promise<{ updated: number; failed: number }> {
+  if (records.length === 0) return { updated: 0, failed: 0 }
+
+  try {
+    const client = await ensureClient(config)
+    const batchSize = 500
+    let updated = 0
+    let failed = 0
+
+    for (let i = 0; i < records.length; i += batchSize) {
+      const batch = records.slice(i, i + batchSize)
+      const rows: RowData[] = []
+
+      for (const record of batch) {
+        try {
+          const merged = mergeRecords(record, updates)
+          merged.id = record.id
+          // Keep existing embedding - no re-embedding for metadata-only updates
+          const row = await buildMilvusRow({ ...merged, embedding: record.embedding }, config)
+          rows.push(row)
+        } catch {
+          failed += 1
+        }
+      }
+
+      if (rows.length > 0) {
+        await client.upsert({
+          collection_name: config.milvus.collection,
+          data: rows
+        })
+        updated += rows.length
+      }
+    }
+
+    // Single flush at the end
+    await flushAndWait(client, config.milvus.collection)
+
+    return { updated, failed }
+  } catch (error) {
+    console.error('[claude-memory] batchUpdateRecords failed:', error)
     throw error
   }
 }

@@ -57,7 +57,8 @@ const SETTING_RULES = {
   procedureStepCheckCount: { kind: 'int', min: 1 },
   extractionDedupThreshold: { kind: 'float', min: 0, max: 1 },
   reviewSimilarThreshold: { kind: 'float', min: 0, max: 1 },
-  reviewDuplicateWarningThreshold: { kind: 'float', min: 0, max: 1 }
+  reviewDuplicateWarningThreshold: { kind: 'float', min: 0, max: 1 },
+  extractionLogRetentionDays: { kind: 'int', min: 1 }
 } satisfies Record<keyof Settings, SettingRule>
 
 export function getDefaultRetrievalSettings(): RetrievalSettings {
@@ -108,7 +109,8 @@ export function getDefaultMaintenanceSettings(): MaintenanceSettings {
     procedureStepCheckCount: 3,
     extractionDedupThreshold: SIMILARITY_THRESHOLDS.EXTRACTION_DEDUP,
     reviewSimilarThreshold: SIMILARITY_THRESHOLDS.REVIEW_SIMILAR,
-    reviewDuplicateWarningThreshold: SIMILARITY_THRESHOLDS.REVIEW_DUPLICATE_WARNING
+    reviewDuplicateWarningThreshold: SIMILARITY_THRESHOLDS.REVIEW_DUPLICATE_WARNING,
+    extractionLogRetentionDays: 14
   }
 }
 
@@ -373,6 +375,11 @@ function coerceMaintenanceSettings(value: Record<string, unknown>, fallback: Mai
       SETTING_RULES.reviewDuplicateWarningThreshold,
       value.reviewDuplicateWarningThreshold,
       fallback.reviewDuplicateWarningThreshold
+    ),
+    extractionLogRetentionDays: coerceSettingValue(
+      SETTING_RULES.extractionLogRetentionDays,
+      value.extractionLogRetentionDays,
+      fallback.extractionLogRetentionDays
     )
   }
 }

@@ -12,8 +12,11 @@ import {
 } from '../../../src/lib/maintenance-api.js'
 import { getMaintenanceReview, saveMaintenanceReview } from '../../../src/lib/review-storage.js'
 import type { ServerContext } from '../context.js'
+import { createLogger } from '../lib/logger.js'
 import { isPlainObject } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
+
+const logger = createLogger('maintenance')
 
 type SuggestionApplyAction = 'new' | 'edit'
 
@@ -37,7 +40,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       }
       res.json(review)
     } catch (error) {
-      console.error('Maintenance review error:', error)
+      logger.error('Maintenance review error', error)
       res.status(500).json({ error: 'Failed to get maintenance review' })
     }
   })
@@ -105,7 +108,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         } catch (error) {
           if (abortController.signal.aborted) return
           const message = error instanceof Error ? error.message : String(error)
-          console.error('Maintenance review error:', error)
+          logger.error('Maintenance review error', error)
           send({ error: message || 'Failed to run maintenance review' })
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.write('data: [DONE]\n\n')
@@ -122,7 +125,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       res.json(review)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.error('Maintenance review error:', error)
+      logger.error('Maintenance review error', error)
       res.status(500).json({ error: message || 'Failed to run maintenance review' })
     }
   })
@@ -213,7 +216,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       if (code === 'EEXIST') {
         return res.status(409).json({ error: 'Target file already exists' })
       }
-      console.error('Apply suggestion error:', error)
+      logger.error('Failed to apply suggestion', error)
       res.status(500).json({ error: 'Failed to apply suggestion' })
     }
   })
@@ -230,14 +233,19 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         return res.status(400).json({ error: 'Unknown operation' })
       }
 
+      const mode = dryRun ? 'preview' : 'run'
+      logger.info(`Running ${operation} (${mode})`)
+
       const result = await runMaintenanceOperation(
         operation as MaintenanceOperation,
         Boolean(dryRun),
         config
       )
+
+      logger.info(`Completed ${operation}`, result.summary)
       res.json(result)
     } catch (error) {
-      console.error('Maintenance run error:', error)
+      logger.error('Failed to run maintenance operation', error)
       res.status(500).json({ error: 'Failed to run maintenance operation' })
     }
   })
@@ -249,7 +257,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       const results = await runAllMaintenance(Boolean(dryRun), config)
       res.json(results)
     } catch (error) {
-      console.error('Maintenance run-all error:', error)
+      logger.error('Failed to run all maintenance operations', error)
       res.status(500).json({ error: 'Failed to run maintenance operations' })
     }
   })

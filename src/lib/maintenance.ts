@@ -19,7 +19,8 @@ import {
 import type { MaintenanceCandidateGroup, MaintenanceCandidateRecord } from '../../shared/types.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { embed } from './embed.js'
-import { buildEmbeddingInput, buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
+import { createLogger } from './logger.js'
+import { batchUpdateRecords, buildEmbeddingInput, buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
 import { loadSettings, type MaintenanceSettings } from './settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import {
@@ -30,6 +31,8 @@ import {
   normalizeStep,
   truncateSnippet
 } from './shared.js'
+
+const logger = createLogger('maintenance')
 
 export type { MaintenanceCandidateGroup, MaintenanceCandidateRecord } from '../../shared/types.js'
 
@@ -317,17 +320,25 @@ async function findNewConflicts(
   const pairs: ConflictPair[] = []
   const filter = 'deprecated == false && last_conflict_check == 0'
   const unchecked = await fetchRecords(filter, config, true)
-  const establishedFilter = 'last_conflict_check > 0'
+  // Track pairs we've already seen to avoid duplicates (A vs B and B vs A)
+  const seenPairs = new Set<string>()
 
   for (const record of unchecked) {
+    // Compare against ALL non-deprecated records, not just established ones
+    // This allows detecting conflicts within the same batch of new records
     const matches = await findSimilar(
       record,
       maintenance.conflictSimilarityThreshold,
       5,
-      config,
-      establishedFilter
+      config
+      // No establishedFilter - compare against all records
     )
     for (const match of matches) {
+      // Create canonical pair key to avoid duplicates
+      const pairKey = [record.id, match.record.id].sort().join(':')
+      if (seenPairs.has(pairKey)) continue
+      seenPairs.add(pairKey)
+
       pairs.push({ newRecord: record, existingRecord: match.record })
     }
   }
@@ -749,8 +760,15 @@ export async function runConflictResolution(
   let errors = 0
 
   try {
-    const unchecked = await fetchRecords('deprecated == false && last_conflict_check == 0', config, false)
+    const mode = dryRun ? 'preview' : 'execute'
+    logger.info(`Starting conflict resolution (${mode})`)
+
+    logger.info('Fetching unchecked records...')
+    // Include embeddings - needed for batchUpdateRecords to rebuild rows without re-embedding
+    const unchecked = await fetchRecords('deprecated == false && last_conflict_check == 0', config, true)
     candidates = unchecked.length
+    logger.info(`Found ${candidates} unchecked records`)
+
     if (unchecked.length > 0) {
       const records = unchecked.map(record => buildCandidateRecord(record, 'new, never conflict-checked'))
       candidateGroups.push({
@@ -760,8 +778,12 @@ export async function runConflictResolution(
       })
     }
 
+    logger.info('Finding conflict pairs (similarity search)...')
+    const searchStart = Date.now()
     const conflictPairs = await findNewConflicts(config, maintenance)
     pairs = conflictPairs.length
+    const searchDuration = Date.now() - searchStart
+    logger.info(`Found ${pairs} conflict pairs in ${searchDuration}ms (threshold: ${maintenance.conflictSimilarityThreshold})`)
 
     const deprecatedNewIds = new Set<string>()
     const failedNewIds = new Set<string>()
@@ -815,6 +837,11 @@ export async function runConflictResolution(
       variants += pendingVariants
     }
 
+    if (pairs > 0) {
+      logger.info(`Adjudicating ${pairs} pairs via LLM (batch size: ${maintenance.conflictCheckBatchSize})...`)
+    }
+    const adjudicationStart = Date.now()
+
     for (let i = 0; i < conflictPairs.length; i += maintenance.conflictCheckBatchSize) {
       const batch = conflictPairs.slice(i, i + maintenance.conflictCheckBatchSize)
 
@@ -832,6 +859,16 @@ export async function runConflictResolution(
         try {
           const verdict = await resolveConflictWithLLM(pair, config)
           checked += 1
+
+          // Log progress every 5 pairs or at the end
+          if (checked % 5 === 0 || checked === pairs) {
+            const elapsed = Date.now() - adjudicationStart
+            const avgMs = Math.round(elapsed / checked)
+            const remaining = pairs - checked
+            const etaMs = remaining * avgMs
+            const etaSec = Math.round(etaMs / 1000)
+            logger.info(`Adjudicated ${checked}/${pairs} pairs (${avgMs}ms/pair, ~${etaSec}s remaining)`)
+          }
 
           if (verdict.verdict === 'supersedes') {
             const action: ConflictMaintenanceAction = {
@@ -878,22 +915,31 @@ export async function runConflictResolution(
 
     await flushPending()
 
-    const checkedAt = Date.now()
-    for (const record of unchecked) {
-      if (deprecatedNewIds.has(record.id)) continue
-      if (failedNewIds.has(record.id)) continue
+    if (checked > 0) {
+      const adjudicationDuration = Date.now() - adjudicationStart
+      logger.info(`Adjudication complete in ${Math.round(adjudicationDuration / 1000)}s`)
+      logger.info(`Verdicts: ${deprecatedExisting} supersedes, ${deprecatedNew} hallucinations, ${variants} variants`)
+    }
 
+    const recordsToMark = unchecked.filter(r => !deprecatedNewIds.has(r.id) && !failedNewIds.has(r.id))
+    if (recordsToMark.length > 0) {
       if (dryRun) {
-        processed += 1
+        processed = recordsToMark.length
       } else {
-        const didUpdate = await updateRecord(record.id, { lastConflictCheck: checkedAt }, config)
-        if (didUpdate) {
-          processed += 1
+        logger.info(`Marking ${recordsToMark.length} records as conflict-checked (batch)...`)
+        const checkedAt = Date.now()
+        const batchResult = await batchUpdateRecords(recordsToMark, { lastConflictCheck: checkedAt }, config)
+        processed = batchResult.updated
+        if (batchResult.failed > 0) {
+          logger.warn(`Failed to mark ${batchResult.failed} records`)
         }
       }
     }
+
+    logger.info(`Conflict resolution complete: ${processed} records processed, ${errors} errors`)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    logger.error('Conflict resolution failed', error)
     return {
       actions,
       summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, processed, errors },

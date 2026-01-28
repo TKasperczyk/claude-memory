@@ -4,8 +4,11 @@ import { retrieveContext } from '../../../src/lib/retrieval.js'
 import { coerceRetrievalSettings, loadSettings } from '../../../src/lib/settings.js'
 import type { NearMissRecord } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
+import { createLogger } from '../lib/logger.js'
 import { isPlainObject, parseOptionalBoolean } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
+
+const logger = createLogger('preview')
 
 export function createPreviewRouter(context: ServerContext): express.Router {
   const router = express.Router()
@@ -58,7 +61,7 @@ export function createPreviewRouter(context: ServerContext): express.Router {
         ...diagnosticPayload
       })
     } catch (error) {
-      console.error('Preview error:', error)
+      logger.error('Failed to preview context', error)
       res.status(500).json({ error: 'Failed to preview context' })
     }
   })

@@ -54,6 +54,14 @@ const MAINTENANCE_GROUPS: SettingsGroup[] = [
         step: 1,
         min: 1,
         kind: 'int'
+      },
+      {
+        key: 'extractionLogRetentionDays',
+        label: 'Extraction log retention (days)',
+        description: 'How long to keep extraction logs for review.',
+        step: 1,
+        min: 1,
+        kind: 'int'
       }
     ]
   },

@@ -8,7 +8,10 @@ import {
   validateSettingValue
 } from '../../../src/lib/settings.js'
 import type { Settings } from '../../../shared/types.js'
+import { createLogger } from '../lib/logger.js'
 import { isPlainObject } from '../utils/params.js'
+
+const logger = createLogger('settings')
 
 export function createSettingsRouter(): express.Router {
   const router = express.Router()
@@ -17,7 +20,7 @@ export function createSettingsRouter(): express.Router {
     try {
       res.json(loadSettings())
     } catch (error) {
-      console.error('Settings error:', error)
+      logger.error('Failed to load settings', error)
       res.status(500).json({ error: 'Failed to load settings' })
     }
   })
@@ -29,7 +32,7 @@ export function createSettingsRouter(): express.Router {
         maintenance: getDefaultMaintenanceSettings()
       })
     } catch (error) {
-      console.error('Settings defaults error:', error)
+      logger.error('Failed to load default settings', error)
       res.status(500).json({ error: 'Failed to load default settings' })
     }
   })
@@ -43,7 +46,7 @@ export function createSettingsRouter(): express.Router {
       res.json(loadSettings())
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update settings'
-      console.error('Settings update error:', error)
+      logger.error('Failed to update settings', error)
       res.status(500).send(message)
     }
   })
@@ -74,7 +77,7 @@ export function createSettingsRouter(): express.Router {
       res.json(loadSettings())
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update setting'
-      console.error('Setting update error:', error)
+      logger.error('Failed to update setting', error)
       res.status(500).json({ error: message })
     }
   })
@@ -85,7 +88,7 @@ export function createSettingsRouter(): express.Router {
       res.json(getDefaultSettings())
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to reset settings'
-      console.error('Settings reset error:', error)
+      logger.error('Failed to reset settings', error)
       res.status(500).send(message)
     }
   })

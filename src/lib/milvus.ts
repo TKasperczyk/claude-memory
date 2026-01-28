@@ -9,6 +9,7 @@ export { initMilvus, closeMilvus } from './milvus-client.js'
 export {
   insertRecord,
   updateRecord,
+  batchUpdateRecords,
   incrementRecordCounters,
   deleteRecord,
   resetCollection,

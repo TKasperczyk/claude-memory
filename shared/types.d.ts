@@ -22,6 +22,8 @@ export interface BaseRecord {
   lastConflictCheck?: number
   lastWarningSynthesisCheck?: number
   embedding?: number[]
+  /** UUID of a prior memory that this record supersedes/invalidates */
+  supersedes?: string
 }
 
 export interface CommandRecord extends BaseRecord {
@@ -201,6 +203,7 @@ export interface MaintenanceSettings {
   extractionDedupThreshold: number
   reviewSimilarThreshold: number
   reviewDuplicateWarningThreshold: number
+  extractionLogRetentionDays: number
 }
 
 export type Settings = RetrievalSettings & MaintenanceSettings

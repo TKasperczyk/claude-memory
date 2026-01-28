@@ -9,6 +9,9 @@ import {
   uninstallHooks
 } from '../../../src/lib/installer.js'
 import type { ServerContext } from '../context.js'
+import { createLogger } from '../lib/logger.js'
+
+const logger = createLogger('installation')
 
 export function createInstallationRouter(context: ServerContext): express.Router {
   const router = express.Router()
@@ -113,7 +116,7 @@ function handleClaudeSettingsError(res: Response, error: unknown, fallbackMessag
     res.status(500).json({ error: error.message })
     return
   }
-  console.error('Claude settings error:', error)
+  logger.error('Claude settings error', error)
   const message = error instanceof Error ? error.message : fallbackMessage
   res.status(500).json({ error: message || fallbackMessage })
 }
