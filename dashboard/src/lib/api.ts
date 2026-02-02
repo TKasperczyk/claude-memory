@@ -8,7 +8,6 @@ import type {
   InjectionReview,
   InjectionSessionRecord,
   MaintenanceOperationInfo,
-  MaintenanceProgress,
   MaintenanceReview,
   MaintenanceSettings,
   MemoryRecord,

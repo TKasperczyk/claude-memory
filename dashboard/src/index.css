@@ -6,47 +6,59 @@
 
 @layer base {
   :root {
-    /* Refined dark palette */
-    --background: 240 6% 6%;
-    --foreground: 0 0% 95%;
-
-    --card: 240 5% 8.5%;
-    --card-foreground: 0 0% 95%;
-
-    --popover: 240 5% 8.5%;
-    --popover-foreground: 0 0% 95%;
-
-    --primary: 0 0% 95%;
-    --primary-foreground: 240 6% 6%;
-
-    --secondary: 240 4% 13%;
-    --secondary-foreground: 0 0% 95%;
-
-    --muted: 240 4% 16%;
-    --muted-foreground: 240 4% 50%;
-
-    --accent: 240 4% 16%;
-    --accent-foreground: 0 0% 95%;
-
+    /* Dark orange theme */
+    --background: 20 14.3% 4.1%;
+    --foreground: 60 9.1% 97.8%;
+    --card: 24 10% 6%;
+    --card-foreground: 60 9.1% 97.8%;
+    --popover: 24 10% 6%;
+    --popover-foreground: 60 9.1% 97.8%;
+    --primary: 24 95% 50%;
+    --primary-foreground: 60 9.1% 97.8%;
+    --secondary: 24 10% 12%;
+    --secondary-foreground: 60 9.1% 97.8%;
+    --muted: 24 10% 12%;
+    --muted-foreground: 24 10% 55%;
+    --accent: 24 20% 16%;
+    --accent-foreground: 60 9.1% 97.8%;
     --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
-
-    --border: 240 4% 16%;
-    --input: 240 4% 14%;
-    --ring: 240 4% 30%;
-
+    --destructive-foreground: 60 9.1% 97.8%;
+    --border: 24 10% 14%;
+    --input: 24 10% 14%;
+    --ring: 24 95% 50%;
     --radius: 0.5rem;
 
-    /* Elevated surfaces */
-    --surface-1: 240 5% 10%;
-    --surface-2: 240 5% 12%;
+    /* Semantic status colors */
+    --success: 160 60% 45%;
+    --success-foreground: 160 60% 90%;
+    --warning: 45 93% 47%;
+    --warning-foreground: 45 93% 90%;
+    --info: 200 80% 50%;
+    --info-foreground: 200 80% 90%;
 
-    /* Semantic colors for memory types */
-    --type-command: 167 85% 45%;
-    --type-error: 350 89% 60%;
-    --type-discovery: 217 91% 60%;
-    --type-procedure: 270 60% 65%;
-    --type-warning: 43 96% 56%;
+    /* Chart colors */
+    --chart-1: 24 95% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+
+    /* Memory type colors - now use semantic palette */
+    --type-command: 160 60% 45%;
+    --type-error: 0 72% 51%;
+    --type-discovery: 24 95% 50%;
+    --type-procedure: 280 65% 60%;
+    --type-warning: 45 93% 47%;
+
+    /* Sidebar */
+    --sidebar-background: 20 14.3% 4.1%;
+    --sidebar-foreground: 60 9.1% 97.8%;
+    --sidebar-primary: 24 95% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 24 10% 12%;
+    --sidebar-accent-foreground: 60 9.1% 97.8%;
+    --sidebar-border: 24 10% 14%;
+    --sidebar-ring: 24 95% 50%;
   }
 
   * {
@@ -57,6 +69,7 @@
     @apply bg-background text-foreground antialiased;
     font-family: 'Inter', system-ui, sans-serif;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    letter-spacing: -0.011em;
   }
 
   code, pre, .font-mono {
@@ -93,23 +106,24 @@
   .transition-base {
     @apply transition-colors duration-150 ease-out;
   }
-
-  .surface-1 {
-    background-color: hsl(var(--surface-1));
-  }
-
-  .surface-2 {
-    background-color: hsl(var(--surface-2));
-  }
 }
 
 /* Section styling */
 .section-card {
-  @apply rounded-xl border border-border bg-card;
+  @apply rounded-xl border border-border bg-card shadow-sm;
 }
 
 .section-header {
-  @apply text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70;
+  @apply text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground;
+}
+
+/* Page header styling */
+.page-header {
+  @apply text-xl font-semibold tracking-tight text-foreground;
+}
+
+.page-subtitle {
+  @apply text-sm text-muted-foreground;
 }
 
 /* Interactive card hover */
@@ -203,6 +217,28 @@
 .text-type-discovery { color: hsl(var(--type-discovery)); }
 .text-type-procedure { color: hsl(var(--type-procedure)); }
 .text-type-warning { color: hsl(var(--type-warning)); }
+
+/* Status color utilities */
+.bg-success { background-color: hsl(var(--success)); }
+.bg-success\/10 { background-color: hsl(var(--success) / 0.1); }
+.bg-success\/15 { background-color: hsl(var(--success) / 0.15); }
+.text-success { color: hsl(var(--success)); }
+.text-success-foreground { color: hsl(var(--success-foreground)); }
+.border-success\/20 { border-color: hsl(var(--success) / 0.2); }
+
+.bg-warning { background-color: hsl(var(--warning)); }
+.bg-warning\/10 { background-color: hsl(var(--warning) / 0.1); }
+.bg-warning\/15 { background-color: hsl(var(--warning) / 0.15); }
+.bg-warning\/20 { background-color: hsl(var(--warning) / 0.2); }
+.text-warning { color: hsl(var(--warning)); }
+.text-warning-foreground { color: hsl(var(--warning-foreground)); }
+.border-warning\/20 { border-color: hsl(var(--warning) / 0.2); }
+
+.bg-info { background-color: hsl(var(--info)); }
+.bg-info\/10 { background-color: hsl(var(--info) / 0.1); }
+.bg-info\/15 { background-color: hsl(var(--info) / 0.15); }
+.text-info { color: hsl(var(--info)); }
+.text-info-foreground { color: hsl(var(--info-foreground)); }
 
 /* Panel slide animation */
 .panel-backdrop {

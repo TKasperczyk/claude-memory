@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactElement } from 'react'
-import { ChevronDown, ChevronRight, RotateCcw, Save } from 'lucide-react'
-import ButtonSpinner from '@/components/ButtonSpinner'
+import { ChevronDown, ChevronRight, Loader2, RotateCcw, Save } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { type RetrievalSettings } from '@/lib/api'
 import { cn } from '../lib/utils'
 
@@ -32,7 +33,7 @@ export function ModifiedBadge({
   variant = 'header',
   className
 }: { variant?: ModifiedBadgeVariant; className?: string }) {
-  const baseClass = 'text-[10px] rounded bg-amber-500/20 text-amber-400'
+  const baseClass = 'text-[10px] rounded bg-primary/20 text-primary'
   const variantClass = variant === 'field' ? 'px-1.5 py-0.5' : 'px-2 py-0.5 font-medium'
   return <span className={cn(baseClass, variantClass, className)}>Modified</span>
 }
@@ -506,27 +507,13 @@ export function SettingsPanel<K extends string>({
               <p className="text-xs text-muted-foreground">Default: {defaultBool ? 'On' : 'Off'}</p>
             )}
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={isChecked}
+          <Switch
+            id={fieldId}
+            checked={isChecked}
+            onCheckedChange={(checked) => onChange(key, String(checked))}
             aria-labelledby={labelId}
-            onClick={() => onChange(key, String(!isChecked))}
             disabled={disabled}
-            className={cn(
-              'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-              isChecked ? 'bg-primary' : 'bg-muted',
-              disabled && 'opacity-50 cursor-not-allowed'
-            )}
-          >
-            <span
-              className={cn(
-                'pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform',
-                isChecked ? 'translate-x-5' : 'translate-x-0'
-              )}
-            />
-          </button>
+          />
         </div>
       )
     }
@@ -710,31 +697,28 @@ export function SettingsPanel<K extends string>({
       ? 'flex flex-wrap items-center gap-3 pt-2 border-t border-border'
       : 'flex flex-wrap items-center gap-3'}>
       {onSave && (
-        <button
+        <Button
+          size={variant === 'compact' ? 'sm' : 'default'}
           onClick={onSave}
           disabled={saveDisabled}
-          className={variant === 'compact'
-            ? 'flex items-center gap-2 h-8 px-3 rounded-md bg-foreground text-background text-xs font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base'
-            : 'flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base'}
         >
-          {isSaving ? <ButtonSpinner size="sm" /> : <Save className={variant === 'compact' ? 'w-3 h-3' : 'w-4 h-4'} />}
+          {isSaving ? <Loader2 className={variant === 'compact' ? 'w-3 h-3 animate-spin' : 'w-4 h-4 animate-spin'} /> : <Save className={variant === 'compact' ? 'w-3 h-3' : 'w-4 h-4'} />}
           {isSaving ? 'Saving...' : saveLabel}
-        </button>
+        </Button>
       )}
       {onReset && (
-        <button
+        <Button
+          variant="outline"
+          size={variant === 'compact' ? 'sm' : 'default'}
           onClick={onReset}
           disabled={resetDisabled}
-          className={variant === 'compact'
-            ? 'flex items-center gap-2 h-8 px-3 rounded-md border border-border text-xs font-medium text-foreground hover:bg-secondary/60 transition-base disabled:opacity-50'
-            : 'flex items-center gap-2 h-9 px-4 rounded-md border border-border text-sm font-medium text-foreground hover:bg-secondary/60 transition-base disabled:opacity-50'}
         >
           <RotateCcw className={variant === 'compact' ? 'w-3 h-3' : 'w-4 h-4'} />
           Reset
-        </button>
+        </Button>
       )}
       {status && (
-        <div className={`${variant === 'compact' ? 'text-xs' : 'text-sm'} ${status.type === 'success' ? 'text-emerald-400' : 'text-destructive'}`}>
+        <div className={`${variant === 'compact' ? 'text-xs' : 'text-sm'} ${status.type === 'success' ? 'text-success' : 'text-destructive'}`}>
           {status.text}
         </div>
       )}

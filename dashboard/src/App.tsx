@@ -22,31 +22,31 @@ function Sidebar() {
   const location = useLocation()
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-50 w-56 border-r border-border/50 bg-background flex flex-col">
+    <aside className="fixed inset-y-0 left-0 z-50 w-52 border-r border-border/40 bg-background/95 backdrop-blur-sm flex flex-col">
       {/* Logo */}
-      <div className="h-16 flex items-center px-5">
+      <div className="h-14 flex items-center px-4 border-b border-border/40">
         <div className="flex items-center gap-2.5">
-          <div className="w-2 h-2 rounded-full bg-type-discovery" />
-          <span className="font-semibold text-sm tracking-tight">Memory</span>
+          <div className="w-2.5 h-2.5 rounded-full bg-type-discovery shadow-[0_0_8px_rgba(96,165,250,0.4)]" />
+          <span className="font-semibold text-[15px] tracking-tight">Memory</span>
         </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-2">
-        <ul className="space-y-0.5">
+      <nav className="flex-1 px-2.5 py-4">
+        <ul className="space-y-1">
           {navigation.map((item) => {
             const isActive = location.pathname === item.href
             return (
               <li key={item.name}>
                 <NavLink
                   to={item.href}
-                  className={`flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg transition-base ${
+                  className={`flex items-center gap-3 px-3 py-2 text-[13px] rounded-lg transition-all duration-150 ${
                     isActive
-                      ? 'bg-secondary text-foreground font-medium'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
+                      ? 'bg-secondary/80 text-foreground font-medium shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-secondary/40'
                   }`}
                 >
-                  <item.icon className="w-4 h-4" strokeWidth={1.5} />
+                  <item.icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
                   {item.name}
                 </NavLink>
               </li>
@@ -56,8 +56,8 @@ function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-5 py-4">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60">
+      <div className="px-4 py-3 border-t border-border/40">
+        <div className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 font-medium">
           Claude Memory
         </div>
       </div>
@@ -70,8 +70,8 @@ export default function App() {
     <BrowserRouter>
       <div className="h-screen bg-background overflow-hidden">
         <Sidebar />
-        <main className="pl-56 h-full flex flex-col">
-          <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-8 py-8 w-full flex-1 min-h-0 flex flex-col">
+        <main className="pl-52 h-full flex flex-col">
+          <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 lg:px-8 py-6 w-full flex-1 min-h-0 flex flex-col">
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/memories" element={<MemoryPool />} />

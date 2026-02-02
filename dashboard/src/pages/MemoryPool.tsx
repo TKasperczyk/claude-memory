@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import ButtonSpinner from '@/components/ButtonSpinner'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import MemoryDetail from '@/components/MemoryDetail'
 import MemoryTable from '@/components/MemoryTable'
-import Skeleton from '@/components/Skeleton'
 import { useMemories, useMemoryTypes, useStats } from '@/hooks/queries'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
-import {
-  type RecordType
-} from '@/lib/api'
+import { type RecordType } from '@/lib/api'
 
 const PAGE_SIZE = 50
 
@@ -126,37 +127,39 @@ export default function MemoryPool() {
   const isRefreshing = isFetching && !isInitialLoading
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
+    <div className="flex-1 min-h-0 overflow-y-auto space-y-5">
       {memoriesError && memoriesData && (
-        <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
-          Failed to refresh data. Showing cached results.
-        </div>
+        <Alert className="bg-warning/10 border-warning/20">
+          <AlertDescription className="text-warning">
+            Failed to refresh data. Showing cached results.
+          </AlertDescription>
+        </Alert>
       )}
 
       {/* Filters */}
-      <div className="flex flex-wrap items-end gap-4">
+      <div className="flex flex-wrap items-end gap-3">
         {/* Search */}
-        <div className="flex-1 min-w-[200px]">
-          <label className="block text-xs text-muted-foreground mb-1.5">Search</label>
+        <div className="flex-1 min-w-[220px]">
+          <label className="block text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">Search</label>
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/60" />
+            <Input
               type="text"
               value={searchInput}
               onChange={e => setSearchInput(e.target.value)}
               placeholder="Search memories…"
-              className="w-full h-9 pl-9 pr-3 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              className="pl-9 bg-secondary"
             />
           </div>
         </div>
 
         {/* Type */}
         <div className="w-32">
-          <label className="block text-xs text-muted-foreground mb-1.5">Type</label>
+          <label className="block text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">Type</label>
           <select
             value={typeFilter}
             onChange={e => setTypeFilter(e.target.value as RecordType | 'all')}
-            className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            className="w-full h-9 px-3 rounded-lg border border-input bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors"
           >
             {typeOptions.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -166,11 +169,11 @@ export default function MemoryPool() {
 
         {/* Project */}
         <div className="w-40">
-          <label className="block text-xs text-muted-foreground mb-1.5">Project</label>
+          <label className="block text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">Project</label>
           <select
             value={projectFilter}
             onChange={e => setProjectFilter(e.target.value)}
-            className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            className="w-full h-9 px-3 rounded-lg border border-input bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors"
           >
             <option value="all">All projects</option>
             {projectOptions.map(p => (
@@ -180,12 +183,10 @@ export default function MemoryPool() {
         </div>
 
         {/* Deprecated toggle */}
-        <label className="flex items-center gap-2 h-9 px-3 rounded-md border border-border bg-background cursor-pointer">
-          <input
-            type="checkbox"
+        <label className="flex items-center gap-2.5 h-9 px-3 rounded-lg border border-input bg-secondary cursor-pointer hover:bg-secondary/80 transition-colors">
+          <Checkbox
             checked={showDeprecated}
-            onChange={e => setShowDeprecated(e.target.checked)}
-            className="w-4 h-4 rounded border-border"
+            onCheckedChange={(checked) => setShowDeprecated(checked === true)}
           />
           <span className="text-sm text-muted-foreground">Deprecated</span>
         </label>
@@ -202,14 +203,14 @@ export default function MemoryPool() {
       )}
 
       {notice && (
-        <div className={`text-sm ${notice.type === 'success' ? 'text-emerald-400' : 'text-destructive'}`}>
+        <div className={`text-sm ${notice.type === 'success' ? 'text-success' : 'text-destructive'}`}>
           {notice.message}
         </div>
       )}
 
       {isRefreshing && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <ButtonSpinner size="xs" className="text-muted-foreground" />
+          <Loader2 className="w-3 h-3 animate-spin" />
           Updating results...
         </div>
       )}
@@ -228,24 +229,26 @@ export default function MemoryPool() {
       )}
 
       {/* Pagination */}
-      <div className="flex items-center justify-between">
-        <button
+      <div className="flex items-center justify-between py-2">
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => setPage(p => Math.max(0, p - 1))}
           disabled={page === 0}
-          className="flex items-center gap-1 h-8 px-3 text-sm rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
         >
           <ChevronLeft className="w-4 h-4" />
           Previous
-        </button>
-        <span className="text-sm text-muted-foreground">{pageInfo()}</span>
-        <button
+        </Button>
+        <span className="text-sm text-muted-foreground font-medium tabular-nums">{pageInfo()}</span>
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => setPage(p => p + 1)}
           disabled={!hasMore}
-          className="flex items-center gap-1 h-8 px-3 text-sm rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
         >
           Next
           <ChevronRight className="w-4 h-4" />
-        </button>
+        </Button>
       </div>
 
       {/* Detail modal */}

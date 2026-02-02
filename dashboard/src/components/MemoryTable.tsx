@@ -1,5 +1,14 @@
+import { Card } from '@/components/ui/card'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import type { MemoryRecord } from '@/lib/api'
-import { formatRelativeTimeShort, truncateText } from '@/lib/format'
+import { truncateText } from '@/lib/format'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 
 interface MemoryTableProps {
@@ -11,67 +20,53 @@ interface MemoryTableProps {
 export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryTableProps) {
   if (records.length === 0) {
     return (
-      <div className="py-12 text-center text-sm text-muted-foreground">
+      <Card className="py-16 text-center text-sm text-muted-foreground/70">
         {emptyMessage ?? 'No memories found'}
-      </div>
+      </Card>
     )
   }
 
   return (
-    <div className="border border-border rounded-xl overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-border bg-secondary/30">
-            <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-8"></th>
-            <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3">Summary</th>
-            <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-32">Project</th>
-            <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-32">Domain</th>
-            <th className="text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-20">Retr.</th>
-            <th className="text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-20">Usage</th>
-            <th className="text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-4 py-3 w-16">Age</th>
-          </tr>
-        </thead>
-        <tbody>
+    <Card>
+      <Table>
+        <TableHeader>
+          <TableRow className="bg-secondary hover:bg-secondary">
+            <TableHead className="w-8 px-4"></TableHead>
+            <TableHead className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground px-4">Summary</TableHead>
+            <TableHead className="w-32 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground px-4">Project</TableHead>
+            <TableHead className="w-28 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground px-4">Domain</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {records.map(record => {
-            const summary = truncateText(getMemorySummary(record), 80, { ellipsis: '…' })
+            const summary = truncateText(getMemorySummary(record), 90, { ellipsis: '…' })
             return (
-              <tr
+              <TableRow
                 key={record.id}
                 onClick={() => onSelect(record)}
-                className={`border-b border-border last:border-0 cursor-pointer transition-base hover:bg-secondary/50 ${
-                  record.deprecated ? 'opacity-50' : ''
-                }`}
+                className={`cursor-pointer ${record.deprecated ? 'opacity-50' : ''}`}
               >
-                <td className="px-4 py-3">
+                <TableCell className="px-4 py-3">
                   <span
-                    className="block w-2 h-2 rounded-full"
+                    className="block w-2.5 h-2.5 rounded-full shadow-sm"
                     style={{ backgroundColor: TYPE_COLORS[record.type] }}
                     title={record.type}
                   />
-                </td>
-                <td className="px-4 py-3">
-                  <div className="font-medium truncate">{summary}</div>
-                </td>
-                <td className="px-4 py-3 text-muted-foreground truncate">
+                </TableCell>
+                <TableCell className="px-4 py-3">
+                  <div className="font-medium text-foreground/95 truncate">{summary}</div>
+                </TableCell>
+                <TableCell className="px-4 py-3 text-muted-foreground/80 truncate text-[13px]">
                   {record.project ?? '—'}
-                </td>
-                <td className="px-4 py-3 text-muted-foreground truncate">
+                </TableCell>
+                <TableCell className="px-4 py-3 text-muted-foreground/80 truncate text-[13px]">
                   {record.domain ?? '—'}
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
-                  {record.retrievalCount ?? 0}
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
-                  {record.usageCount ?? 0}
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
-                  {formatRelativeTimeShort(record.lastUsed ?? record.timestamp)}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )
           })}
-        </tbody>
-      </table>
-    </div>
+        </TableBody>
+      </Table>
+    </Card>
   )
 }

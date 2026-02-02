@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Check, ChevronRight, Copy, Sparkles } from 'lucide-react'
-import ButtonSpinner from '@/components/ButtonSpinner'
+import { Activity, Check, ChevronRight, Copy, Loader2, Sparkles } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import ListItem from '@/components/ListItem'
 import MemoryDetail from '@/components/MemoryDetail'
 import MetricTile from '@/components/MetricTile'
@@ -27,7 +27,7 @@ const PAGE_SIZE = 25
 
 const RATING_STYLES: Record<ExtractionReview['overallRating'], { badge: string; label: string }> = {
   good: {
-    badge: 'bg-emerald-500/15 text-emerald-400',
+    badge: 'bg-success/15 text-success',
     label: 'Good'
   },
   mixed: {
@@ -42,7 +42,7 @@ const RATING_STYLES: Record<ExtractionReview['overallRating'], { badge: string; 
 
 const SEVERITY_STYLES: Record<ExtractionReviewIssue['severity'], string> = {
   critical: 'bg-destructive/15 text-destructive',
-  major: 'bg-amber-500/15 text-amber-400',
+  major: 'bg-warning/15 text-warning',
   minor: 'bg-muted-foreground/15 text-muted-foreground'
 }
 
@@ -127,10 +127,10 @@ function getAccuracyBadge(
   const title = `Accuracy score ${score}/100`
 
   if (score >= 85) {
-    return { badge: 'bg-emerald-500/15 text-emerald-400', text: 'text-emerald-400', label, title }
+    return { badge: 'bg-success/15 text-success', text: 'text-success', label, title }
   }
   if (score >= 60) {
-    return { badge: 'bg-amber-500/15 text-amber-400', text: 'text-amber-400', label, title }
+    return { badge: 'bg-warning/15 text-warning', text: 'text-warning', label, title }
   }
   return { badge: 'bg-destructive/15 text-destructive', text: 'text-destructive', label, title }
 }
@@ -217,7 +217,7 @@ function FilterChip({
       onClick={onClick}
       className={`h-7 px-2.5 text-[11px] rounded-full border transition-base ${
         active
-          ? 'bg-foreground text-background border-foreground'
+          ? 'bg-primary text-primary-foreground border-foreground'
           : 'bg-background border-border text-muted-foreground hover:text-foreground'
       }`}
     >
@@ -275,27 +275,29 @@ function ExtractionReviewPanel({
         <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Opus review</div>
         <div className="flex items-center gap-1.5">
           {review && (
-            <button
+            <Button
+              variant="outline"
+              size="xs"
               onClick={() => copy(run.runId, formatExtractionReview(run, runRecords, review))}
-              className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border border-border bg-background hover:bg-secondary transition-base"
               title="Copy review"
             >
               {isCopied(run.runId) ? (
-                <Check className="w-2.5 h-2.5 text-emerald-400" />
+                <Check className="w-2.5 h-2.5 text-success" />
               ) : (
                 <Copy className="w-2.5 h-2.5" />
               )}
               Copy
-            </button>
+            </Button>
           )}
-          <button
+          <Button
+            variant="outline"
+            size="xs"
             onClick={handleReview}
             disabled={isStreaming}
-            className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
           >
-            {isStreaming && <ButtonSpinner size="xs" />}
+            {isStreaming && <Loader2 className="w-3 h-3 animate-spin" />}
             {isStreaming ? 'Reviewing...' : 'Review'}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -345,7 +347,7 @@ function ExtractionReviewPanel({
                         {issue.evidence}
                       </div>
                       {issue.type === 'missed' && (
-                        <div className="text-[10px] text-emerald-400 font-mono mt-1">
+                        <div className="text-[10px] text-success font-mono mt-1">
                           Suggested extraction: {issue.suggestedFix ?? issue.description}
                         </div>
                       )}
@@ -401,7 +403,7 @@ function ExtractionRunCard({
 }) {
   const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
   const hasErrors = run.parseErrorCount > 0
-  const dotClass = hasErrors ? 'bg-destructive' : 'bg-emerald-400'
+  const dotClass = hasErrors ? 'bg-destructive' : 'bg-success'
 
   return (
     <ListItem onClick={() => onSelect(run.runId)} selected={selected}>
@@ -588,14 +590,14 @@ export default function Extractions() {
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-4">
       {error && data && (
-        <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4 shrink-0">
+        <div className="bg-warning/10 text-warning text-sm px-4 py-2.5 rounded-lg border border-warning/20 shrink-0">
           Failed to refresh data. Showing cached results.
         </div>
       )}
 
       {isRefreshing && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground shrink-0">
-          <ButtonSpinner size="xs" className="text-muted-foreground" />
+        <div className="flex items-center gap-2 text-xs text-muted-foreground/70 shrink-0">
+          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
           Updating runs...
         </div>
       )}
@@ -603,46 +605,46 @@ export default function Extractions() {
       {isInitialLoading ? (
         <ExtractionListSkeleton />
       ) : allRuns.length === 0 ? (
-        <div className="py-12 text-center text-sm text-muted-foreground">
+        <div className="py-16 text-center text-sm text-muted-foreground/70">
           No extraction runs logged yet.
         </div>
       ) : (
         <div className="flex flex-col flex-1 min-h-0 gap-4">
           <section className="rounded-xl border border-border bg-card px-4 py-3 shrink-0">
             <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
-                <span className="uppercase tracking-wide">Extraction pulse</span>
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground/70">
+                <Sparkles className="h-3.5 w-3.5 text-success/80" />
+                <span className="uppercase tracking-[0.1em] font-medium">Extraction pulse</span>
               </div>
               <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
                 <span className="flex items-center gap-1.5">
-                  <Activity className="h-3.5 w-3.5 text-emerald-400" />
-                  <span className="text-foreground font-medium tabular-nums">{summary.totalRuns}</span>
-                  <span className="text-muted-foreground">runs</span>
+                  <Activity className="h-3.5 w-3.5 text-success" />
+                  <span className="text-foreground/90 font-medium tabular-nums">{summary.totalRuns}</span>
+                  <span className="text-muted-foreground/70">runs</span>
                 </span>
-                <span className="text-muted-foreground">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span>
-                  <span className="text-foreground font-medium tabular-nums">{summary.totalRecords}</span>
-                  <span className="text-muted-foreground ml-1">records</span>
+                  <span className="text-foreground/90 font-medium tabular-nums">{summary.totalRecords}</span>
+                  <span className="text-muted-foreground/70 ml-1">records</span>
                 </span>
-                <span className="text-muted-foreground">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span>
-                  <span className={`font-medium tabular-nums ${summary.totalErrors > 0 ? 'text-destructive' : 'text-foreground'}`}>
+                  <span className={`font-medium tabular-nums ${summary.totalErrors > 0 ? 'text-destructive' : 'text-foreground/90'}`}>
                     {summary.totalErrors}
                   </span>
-                  <span className="text-muted-foreground ml-1">parse errors</span>
+                  <span className="text-muted-foreground/70 ml-1">parse errors</span>
                 </span>
-                <span className="text-muted-foreground">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span>
-                  <span className="text-foreground font-medium tabular-nums">{formatDuration(summary.avgDuration)}</span>
-                  <span className="text-muted-foreground ml-1">avg</span>
+                  <span className="text-foreground/90 font-medium tabular-nums">{formatDuration(summary.avgDuration)}</span>
+                  <span className="text-muted-foreground/70 ml-1">avg</span>
                 </span>
-                <span className="text-muted-foreground">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span>
-                  <span className="text-foreground font-medium tabular-nums">
+                  <span className="text-foreground/90 font-medium tabular-nums">
                     {summary.latestTimestamp ? formatRelativeTimeShortAgo(summary.latestTimestamp) : '—'}
                   </span>
-                  <span className="text-muted-foreground ml-1">latest</span>
+                  <span className="text-muted-foreground/70 ml-1">latest</span>
                 </span>
               </div>
             </div>
@@ -661,7 +663,7 @@ export default function Extractions() {
                   </FilterChip>
                 ))}
               </div>
-              <div className="ml-auto text-xs text-muted-foreground">
+              <div className="ml-auto text-xs text-muted-foreground/70 font-medium tabular-nums">
                 {filteredRuns.length}/{allRuns.length}
               </div>
             </div>
@@ -669,9 +671,9 @@ export default function Extractions() {
 
           <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)] flex-1 min-h-0">
             <section className="rounded-xl border border-border bg-card p-3 flex flex-col min-h-0">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Runs</div>
-                <div className="text-[11px] text-muted-foreground">{filteredRuns.length}</div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-[11px] font-semibold text-muted-foreground/70 uppercase tracking-[0.1em]">Runs</div>
+                <div className="text-[11px] text-muted-foreground/60 font-medium tabular-nums">{filteredRuns.length}</div>
               </div>
               <div className="space-y-3 flex-1 min-h-0 lg:overflow-y-auto lg:pr-1">
                 {filteredRuns.length === 0 ? (
@@ -703,21 +705,23 @@ export default function Extractions() {
                 )}
               </div>
               <div className="mt-3 flex items-center justify-between">
-                <button
+                <Button
+                  variant="outline"
+                  size="xs"
                   onClick={() => setPage(p => Math.max(0, p - 1))}
                   disabled={page === 0}
-                  className="flex items-center gap-1 h-7 px-2.5 text-[11px] rounded border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
                 >
                   Previous
-                </button>
+                </Button>
                 <span className="text-[11px] text-muted-foreground">{pageInfo()}</span>
-                <button
+                <Button
+                  variant="outline"
+                  size="xs"
                   onClick={() => setPage(p => p + 1)}
                   disabled={total !== null && (page + 1) * PAGE_SIZE >= total}
-                  className="flex items-center gap-1 h-7 px-2.5 text-[11px] rounded border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
                 >
                   Next
-                </button>
+                </Button>
               </div>
             </section>
 

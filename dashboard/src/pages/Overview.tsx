@@ -1,18 +1,31 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Check, Link2, X } from 'lucide-react'
+import { AlertTriangle, Check, Link2, Loader2, X } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import ButtonSpinner from '@/components/ButtonSpinner'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import StatsCard from '@/components/StatsCard'
-import Skeleton from '@/components/Skeleton'
 import { useInstallationStatus, useStats } from '@/hooks/queries'
 import { installAll, resetCollection, uninstallAll, type HookEvent, type RecordType } from '@/lib/api'
+import { TYPE_COLORS } from '@/lib/memory-ui'
 
 const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
-  command: { label: 'Commands', color: '#2dd4bf' },
-  error: { label: 'Errors', color: '#f43f5e' },
-  discovery: { label: 'Discoveries', color: '#60a5fa' },
-  procedure: { label: 'Procedures', color: '#a78bfa' },
-  warning: { label: 'Warnings', color: '#fbbf24' },
+  command: { label: 'Commands', color: TYPE_COLORS.command },
+  error: { label: 'Errors', color: TYPE_COLORS.error },
+  discovery: { label: 'Discoveries', color: TYPE_COLORS.discovery },
+  procedure: { label: 'Procedures', color: TYPE_COLORS.procedure },
+  warning: { label: 'Warnings', color: TYPE_COLORS.warning },
 }
 
 const HOOK_ITEMS: { key: HookEvent; label: string; script: string }[] = [
@@ -285,362 +298,344 @@ export default function Overview() {
   const showInstallationRecovery = Boolean(installationError) && !installationLoading && !hasInstallationStatus
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {error && data && (
-        <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
-          Failed to refresh data. Showing cached results.
-        </div>
+        <Alert className="bg-warning/10 border-warning/20">
+          <AlertDescription className="text-warning">
+            Failed to refresh data. Showing cached results.
+          </AlertDescription>
+        </Alert>
       )}
 
       {/* Key Metrics */}
-      <section className="p-6 rounded-xl border border-border bg-card">
-        <h2 className="section-header mb-6">Metrics</h2>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-x-8 gap-y-6">
-          <StatsCard
-            label="Total memories"
-            value={isInitialLoading ? <Skeleton className="h-8 w-20" /> : formatNumber(data!.total)}
-          />
-          <StatsCard
-            label="Deprecated"
-            value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.deprecated)}
-          />
-          <StatsCard
-            label="Avg retrievals"
-            value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.avgRetrievalCount, 1)}
-          />
-          <StatsCard
-            label="Avg usage"
-            value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.avgUsageCount, 1)}
-          />
-          <StatsCard
-            label="Usage ratio"
-            value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : `${usagePercent}%`}
-            subtext="Helpfulness score"
-          />
-        </div>
-      </section>
+      <Card>
+        <CardContent className="p-5">
+          <h2 className="section-header mb-5">Metrics</h2>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-x-6 gap-y-5">
+            <StatsCard
+              label="Total memories"
+              value={isInitialLoading ? <Skeleton className="h-8 w-20" /> : formatNumber(data!.total)}
+            />
+            <StatsCard
+              label="Deprecated"
+              value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.deprecated)}
+            />
+            <StatsCard
+              label="Avg retrievals"
+              value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.avgRetrievalCount, 1)}
+            />
+            <StatsCard
+              label="Avg usage"
+              value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.avgUsageCount, 1)}
+            />
+            <StatsCard
+              label="Usage ratio"
+              value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : `${usagePercent}%`}
+              subtext="Helpfulness score"
+            />
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Distribution */}
-      <section className="p-6 rounded-xl border border-border bg-card">
-        <h2 className="section-header mb-5">Type distribution</h2>
-        {isInitialLoading ? <DistributionSkeleton /> : <DistributionBar data={typeData} />}
-      </section>
+      <Card>
+        <CardContent className="p-5">
+          <h2 className="section-header mb-4">Type distribution</h2>
+          {isInitialLoading ? <DistributionSkeleton /> : <DistributionBar data={typeData} />}
+        </CardContent>
+      </Card>
 
       {/* Lists */}
-      <div className="grid md:grid-cols-2 gap-6">
-        <section className="p-6 rounded-xl border border-border bg-card">
-          {isInitialLoading ? (
-            <TopListSkeleton title="Top projects" />
-          ) : (
-            <TopList title="Top projects" data={projectData} />
-          )}
-        </section>
-        <section className="p-6 rounded-xl border border-border bg-card">
-          {isInitialLoading ? (
-            <TopListSkeleton title="Top domains" />
-          ) : (
-            <TopList title="Top domains" data={domainData} />
-          )}
-        </section>
+      <div className="grid md:grid-cols-2 gap-5">
+        <Card>
+          <CardContent className="p-5">
+            {isInitialLoading ? (
+              <TopListSkeleton title="Top projects" />
+            ) : (
+              <TopList title="Top projects" data={projectData} />
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5">
+            {isInitialLoading ? (
+              <TopListSkeleton title="Top domains" />
+            ) : (
+              <TopList title="Top domains" data={domainData} />
+            )}
+          </CardContent>
+        </Card>
       </div>
 
-      <section className="p-6 rounded-xl border border-border bg-card space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Link2 className="w-4 h-4 text-muted-foreground" />
-            <h2 className="section-header">Installation</h2>
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <Link2 className="w-4 h-4 text-muted-foreground/70" />
+              <h2 className="section-header">Installation</h2>
+            </div>
+            {hasInstallationStatus && (
+              <Badge
+                variant="secondary"
+                className={
+                  allInstalled
+                    ? 'bg-success/15 text-success hover:bg-success/20'
+                    : 'bg-warning/15 text-warning hover:bg-warning/20'
+                }
+              >
+                {allInstalled ? 'Active' : 'Needs configuration'}
+              </Badge>
+            )}
           </div>
-          {hasInstallationStatus && (
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wide ${
-                allInstalled
-                  ? 'bg-emerald-500/15 text-emerald-300'
-                  : 'bg-amber-500/15 text-amber-300'
-              }`}
-            >
-              {allInstalled ? 'Active' : 'Needs configuration'}
-            </span>
+
+          {showInstallationRecovery && (
+            <Alert variant="destructive">
+              <AlertDescription className="space-y-2">
+                <p>Unable to read installation status.</p>
+                <p className="text-xs text-muted-foreground">{installationErrorMessage}</p>
+                <Button
+                  onClick={() => installMutation.mutate()}
+                  disabled={installMutation.isPending}
+                  className="mt-2"
+                >
+                  {installMutation.isPending && <Loader2 className="animate-spin" />}
+                  {installMutation.isPending ? 'Installing...' : 'Try Install Anyway'}
+                </Button>
+              </AlertDescription>
+            </Alert>
           )}
-        </div>
 
-        {showInstallationRecovery && (
-          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 space-y-2">
-            <p className="text-sm text-destructive">Unable to read installation status.</p>
-            <p className="text-xs text-muted-foreground">{installationErrorMessage}</p>
-            <button
-              onClick={() => installMutation.mutate()}
-              disabled={installMutation.isPending}
-              className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
-            >
-              {installMutation.isPending ? (
-                <>
-                  <ButtonSpinner size="sm" />
-                  Installing...
-                </>
-              ) : (
-                'Try Install Anyway'
-              )}
-            </button>
-          </div>
-        )}
+          {installationLoading && (
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-48" />
+              <Skeleton className="h-4 w-56" />
+              <Skeleton className="h-4 w-52" />
+            </div>
+          )}
 
-        {installationLoading && (
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-48" />
-            <Skeleton className="h-4 w-56" />
-            <Skeleton className="h-4 w-52" />
-          </div>
-        )}
-
-        {!installationLoading && hasInstallationStatus && (
-          <>
-            <p className="text-sm text-muted-foreground">
-              {allInstalled
-                ? 'All claude-memory hooks and commands are installed.'
-                : 'Install missing hooks and commands to enable automatic memory extraction, injection, and /memory.'}
-            </p>
-            <div className="space-y-4">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Hooks
-                </div>
-                <div className="mt-2 space-y-2">
-                  {HOOK_ITEMS.map(item => {
-                    const installed = hookData?.[item.key]?.installed
-                    return (
-                      <div key={item.key} className="flex items-center gap-2 text-sm">
-                        {installed ? (
-                          <Check className="w-4 h-4 text-emerald-400" />
-                        ) : (
-                          <X className="w-4 h-4 text-destructive" />
-                        )}
-                        <span className="font-medium">{item.label}</span>
-                        <span className="text-xs text-muted-foreground">({item.script})</span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Commands
-                </div>
-                <div className="mt-2 space-y-2">
-                  {commandEntries.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No commands found.</p>
-                  ) : (
-                    commandEntries.map(([name, entry]) => {
-                      const displayName = name.startsWith('/') ? name.slice(1) : name
-                      const statusLabel = entry.modified
-                        ? 'modified by user'
-                        : entry.installed
-                          ? 'installed'
-                          : 'not installed'
-                      const StatusIcon = entry.modified ? AlertTriangle : entry.installed ? Check : X
-                      const iconClass = entry.modified
-                        ? 'text-amber-400'
-                        : entry.installed
-                          ? 'text-emerald-400'
-                          : 'text-destructive'
+          {!installationLoading && hasInstallationStatus && (
+            <>
+              <p className="text-sm text-muted-foreground">
+                {allInstalled
+                  ? 'All claude-memory hooks and commands are installed.'
+                  : 'Install missing hooks and commands to enable automatic memory extraction, injection, and /memory.'}
+              </p>
+              <div className="space-y-4">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Hooks
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {HOOK_ITEMS.map(item => {
+                      const installed = hookData?.[item.key]?.installed
                       return (
-                        <div key={name} className="flex items-center gap-2 text-sm">
-                          <StatusIcon className={`w-4 h-4 ${iconClass}`} />
-                          <span className="font-medium">{displayName}</span>
-                          <span className="text-xs text-muted-foreground">({statusLabel})</span>
-                          <span className="text-xs text-muted-foreground">({entry.path})</span>
+                        <div key={item.key} className="flex items-center gap-2 text-sm">
+                          {installed ? (
+                            <Check className="w-4 h-4 text-success" />
+                          ) : (
+                            <X className="w-4 h-4 text-destructive" />
+                          )}
+                          <span className="font-medium">{item.label}</span>
+                          <span className="text-xs text-muted-foreground">({item.script})</span>
                         </div>
                       )
-                    })
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {hasInstallIssues && (
-              <button
-                onClick={() => installMutation.mutate()}
-                disabled={installMutation.isPending}
-                className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
-              >
-                {installMutation.isPending ? (
-                  <>
-                    <ButtonSpinner size="sm" />
-                    Installing...
-                  </>
-                ) : (
-                  hasModifiedCommands ? 'Repair Installation' : 'Install Missing Items'
-                )}
-              </button>
-            )}
-
-            {anyInstalled && (
-              <div className="flex items-center justify-end">
-                <button
-                  onClick={openUninstall}
-                  disabled={uninstallMutation.isPending}
-                  className="h-8 px-3 rounded-md border border-border bg-background text-xs text-muted-foreground hover:text-destructive hover:border-destructive/40 transition-base disabled:opacity-50"
-                >
-                  Uninstall
-                </button>
-              </div>
-            )}
-
-          </>
-        )}
-
-        {installNotice && (
-          <div className={`text-sm ${installNotice.type === 'success' ? 'text-emerald-400' : 'text-destructive'}`}>
-            {installNotice.text}
-          </div>
-        )}
-      </section>
-
-      <section className="p-6 rounded-xl border border-destructive/30 bg-card space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="section-header text-destructive">Danger zone</h2>
-            <p className="text-sm text-muted-foreground">
-              Resetting the collection will permanently delete all memories.
-            </p>
-          </div>
-          <button
-            onClick={openReset}
-            className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base"
-          >
-            Reset Collection
-          </button>
-        </div>
-        {resetNotice && (
-          <div className="text-sm text-emerald-400">{resetNotice}</div>
-        )}
-      </section>
-
-      {resetOpen && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/60 panel-backdrop open"
-            onClick={() => !resetRunning && setResetOpen(false)}
-          />
-          <div className="absolute inset-0 flex items-center justify-center px-4">
-            <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 space-y-4">
-              <div>
-                <h2 className="text-lg font-semibold text-destructive">Reset collection</h2>
-                <p className="text-sm text-muted-foreground">
-                  Type <span className="font-mono text-foreground">RESET</span> to confirm. This cannot be undone.
-                </p>
-              </div>
-              <input
-                type="text"
-                value={resetInput}
-                onChange={e => setResetInput(e.target.value)}
-                placeholder="RESET"
-                className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-              {resetError && (
-                <div className="text-sm text-destructive">{resetError}</div>
-              )}
-              <div className="flex items-center justify-end gap-3">
-                <button
-                  onClick={() => setResetOpen(false)}
-                  disabled={resetRunning}
-                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleReset}
-                  disabled={!resetReady || resetRunning}
-                  className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base disabled:opacity-50"
-                >
-                  {resetRunning ? (
-                    <span className="flex items-center gap-2">
-                      <ButtonSpinner size="sm" />
-                      Resetting...
-                    </span>
-                  ) : (
-                    'Reset'
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {uninstallOpen && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/60 panel-backdrop open"
-            onClick={() => {
-              if (uninstallMutation.isPending) return
-              setUninstallOpen(false)
-              setUninstallError(null)
-            }}
-          />
-          <div className="absolute inset-0 flex items-center justify-center px-4">
-            <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4">
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-                  <AlertTriangle className="h-5 w-5" />
+                    })}
+                  </div>
                 </div>
                 <div>
-                  <h2 className="text-lg font-semibold">Uninstall Memory Integration?</h2>
-                  <p className="text-sm text-muted-foreground">
-                    This will disable the claude-memory system.
-                  </p>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Commands
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {commandEntries.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No commands found.</p>
+                    ) : (
+                      commandEntries.map(([name, entry]) => {
+                        const displayName = name.startsWith('/') ? name.slice(1) : name
+                        const statusLabel = entry.modified
+                          ? 'modified by user'
+                          : entry.installed
+                            ? 'installed'
+                            : 'not installed'
+                        const StatusIcon = entry.modified ? AlertTriangle : entry.installed ? Check : X
+                        const iconClass = entry.modified
+                          ? 'text-warning'
+                          : entry.installed
+                            ? 'text-success'
+                            : 'text-destructive'
+                        return (
+                          <div key={name} className="flex items-center gap-2 text-sm">
+                            <StatusIcon className={`w-4 h-4 ${iconClass}`} />
+                            <span className="font-medium">{displayName}</span>
+                            <span className="text-xs text-muted-foreground">({statusLabel})</span>
+                            <span className="text-xs text-muted-foreground">({entry.path})</span>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="space-y-3 text-sm text-muted-foreground">
-                <p>If you continue:</p>
-                <ul className="list-disc list-inside space-y-2">
-                  <li>
-                    Memory injection will stop <span className="text-xs text-muted-foreground">(No context from past sessions)</span>
-                  </li>
-                  <li>
-                    Memory extraction will stop <span className="text-xs text-muted-foreground">(New learnings won&apos;t be saved)</span>
-                  </li>
-                  <li>
-                    The /memory command will be removed <span className="text-xs text-muted-foreground">(Command entry disappears)</span>
-                  </li>
-                </ul>
-                <p>
-                  Existing memories remain in the database and can be accessed via the dashboard.
-                  You can reinstall anytime.
-                </p>
-              </div>
-              {uninstallError && (
-                <div className="text-sm text-destructive">{uninstallError}</div>
+
+              {hasInstallIssues && (
+                <Button
+                  onClick={() => installMutation.mutate()}
+                  disabled={installMutation.isPending}
+                >
+                  {installMutation.isPending && <Loader2 className="animate-spin" />}
+                  {installMutation.isPending
+                    ? 'Installing...'
+                    : hasModifiedCommands
+                      ? 'Repair Installation'
+                      : 'Install Missing Items'}
+                </Button>
               )}
-              <div className="flex items-center justify-end gap-3">
-                <button
-                  onClick={() => {
-                    setUninstallOpen(false)
-                    setUninstallError(null)
-                  }}
-                  disabled={uninstallMutation.isPending}
-                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => uninstallMutation.mutate()}
-                  disabled={uninstallMutation.isPending}
-                  className="flex items-center gap-2 h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base disabled:opacity-50"
-                >
-                  {uninstallMutation.isPending ? (
-                    <>
-                      <ButtonSpinner size="sm" />
-                      Uninstalling...
-                    </>
-                  ) : (
-                    'Uninstall'
-                  )}
-                </button>
+
+              {anyInstalled && (
+                <div className="flex items-center justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={openUninstall}
+                    disabled={uninstallMutation.isPending}
+                    className="text-muted-foreground hover:text-destructive hover:border-destructive/40"
+                  >
+                    Uninstall
+                  </Button>
+                </div>
+              )}
+
+            </>
+          )}
+
+          {installNotice && (
+            <div className={`text-sm ${installNotice.type === 'success' ? 'text-success' : 'text-destructive'}`}>
+              {installNotice.text}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-destructive/20 bg-destructive/5">
+        <CardContent className="p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="section-header text-destructive/80 mb-1">Danger zone</h2>
+              <p className="text-sm text-muted-foreground">
+                Resetting the collection will permanently delete all memories.
+              </p>
+            </div>
+            <Button variant="destructive" onClick={openReset}>
+              Reset Collection
+            </Button>
+          </div>
+          {resetNotice && (
+            <div className="text-sm text-success">{resetNotice}</div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Reset Dialog */}
+      <Dialog open={resetOpen} onOpenChange={(open) => !resetRunning && setResetOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Reset collection</DialogTitle>
+            <DialogDescription>
+              Type <span className="font-mono text-foreground">RESET</span> to confirm. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            type="text"
+            value={resetInput}
+            onChange={e => setResetInput(e.target.value)}
+            placeholder="RESET"
+          />
+          {resetError && (
+            <div className="text-sm text-destructive">{resetError}</div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setResetOpen(false)}
+              disabled={resetRunning}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleReset}
+              disabled={!resetReady || resetRunning}
+            >
+              {resetRunning && <Loader2 className="animate-spin" />}
+              {resetRunning ? 'Resetting...' : 'Reset'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Uninstall Dialog */}
+      <Dialog open={uninstallOpen} onOpenChange={(open) => {
+        if (uninstallMutation.isPending) return
+        setUninstallOpen(open)
+        if (!open) setUninstallError(null)
+      }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <DialogTitle>Uninstall Memory Integration?</DialogTitle>
+                <DialogDescription>
+                  This will disable the claude-memory system.
+                </DialogDescription>
               </div>
             </div>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>If you continue:</p>
+            <ul className="list-disc list-inside space-y-2">
+              <li>
+                Memory injection will stop <span className="text-xs text-muted-foreground">(No context from past sessions)</span>
+              </li>
+              <li>
+                Memory extraction will stop <span className="text-xs text-muted-foreground">(New learnings won&apos;t be saved)</span>
+              </li>
+              <li>
+                The /memory command will be removed <span className="text-xs text-muted-foreground">(Command entry disappears)</span>
+              </li>
+            </ul>
+            <p>
+              Existing memories remain in the database and can be accessed via the dashboard.
+              You can reinstall anytime.
+            </p>
           </div>
-        </div>
-      )}
+          {uninstallError && (
+            <div className="text-sm text-destructive">{uninstallError}</div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setUninstallOpen(false)
+                setUninstallError(null)
+              }}
+              disabled={uninstallMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => uninstallMutation.mutate()}
+              disabled={uninstallMutation.isPending}
+            >
+              {uninstallMutation.isPending && <Loader2 className="animate-spin" />}
+              {uninstallMutation.isPending ? 'Uninstalling...' : 'Uninstall'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

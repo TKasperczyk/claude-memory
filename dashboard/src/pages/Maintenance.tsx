@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Check, Circle, Copy, Eye, Loader2, Play } from 'lucide-react'
-import ButtonSpinner from '@/components/ButtonSpinner'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import MemoryDetail from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
 import ThinkingPanel from '@/components/ThinkingPanel'
@@ -49,49 +57,49 @@ const ACTION_STYLES: Record<MaintenanceActionType, { badge: string; dot: string;
     label: 'Deprecate'
   },
   update: {
-    badge: 'bg-sky-500/15 text-sky-300',
-    dot: 'bg-sky-400',
+    badge: 'bg-info/15 text-info',
+    dot: 'bg-info',
     label: 'Update'
   },
   merge: {
-    badge: 'bg-purple-500/15 text-purple-300',
-    dot: 'bg-purple-400',
+    badge: 'bg-primary/15 text-primary',
+    dot: 'bg-primary',
     label: 'Merge'
   },
   promote: {
-    badge: 'bg-emerald-500/15 text-emerald-300',
-    dot: 'bg-emerald-400',
+    badge: 'bg-success/15 text-success',
+    dot: 'bg-success',
     label: 'Promote'
   },
   suggestion: {
-    badge: 'bg-amber-500/15 text-amber-300',
-    dot: 'bg-amber-400',
+    badge: 'bg-warning/15 text-warning',
+    dot: 'bg-warning',
     label: 'Suggestion'
   }
 }
 
 const RATING_STYLES: Record<MaintenanceReview['overallRating'], { badge: string; label: string }> = {
   good: {
-    badge: 'bg-emerald-500/15 text-emerald-300',
+    badge: 'bg-success/15 text-success',
     label: 'Good'
   },
   mixed: {
-    badge: 'bg-amber-500/15 text-amber-300',
+    badge: 'bg-warning/15 text-warning',
     label: 'Mixed'
   },
   poor: {
-    badge: 'bg-red-500/15 text-red-300',
+    badge: 'bg-destructive/15 text-destructive',
     label: 'Poor'
   }
 }
 
 const VERDICT_STYLES: Record<MaintenanceReview['actionVerdicts'][number]['verdict'], { badge: string; label: string }> = {
   correct: {
-    badge: 'bg-emerald-500/15 text-emerald-300',
+    badge: 'bg-success/15 text-success',
     label: 'Correct'
   },
   questionable: {
-    badge: 'bg-amber-500/15 text-amber-300',
+    badge: 'bg-warning/15 text-warning',
     label: 'Questionable'
   },
   incorrect: {
@@ -105,7 +113,7 @@ const SETTINGS_RECOMMENDATION_STYLES: Record<
   { badge: string; label: string }
 > = {
   too_aggressive: {
-    badge: 'bg-amber-500/15 text-amber-300',
+    badge: 'bg-warning/15 text-warning',
     label: 'Too aggressive'
   },
   too_lenient: {
@@ -113,7 +121,7 @@ const SETTINGS_RECOMMENDATION_STYLES: Record<
     label: 'Too lenient'
   },
   appropriate: {
-    badge: 'bg-emerald-500/15 text-emerald-300',
+    badge: 'bg-success/15 text-success',
     label: 'Appropriate'
   }
 }
@@ -122,16 +130,16 @@ type ConflictStatus = 'kept' | 'deprecated'
 
 const CONFLICT_STYLES: Record<ConflictVerdict, { badge: string; label: string; ring: string; background: string }> = {
   supersedes: {
-    badge: 'bg-emerald-500/15 text-emerald-300',
+    badge: 'bg-success/15 text-success',
     label: 'Supersedes',
-    ring: 'ring-emerald-500/30',
-    background: 'bg-emerald-500/5'
+    ring: 'ring-success/30',
+    background: 'bg-success/5'
   },
   variant: {
-    badge: 'bg-sky-500/15 text-sky-300',
+    badge: 'bg-info/15 text-info',
     label: 'Variant',
-    ring: 'ring-sky-500/30',
-    background: 'bg-sky-500/5'
+    ring: 'ring-info/30',
+    background: 'bg-info/5'
   },
   hallucination: {
     badge: 'bg-destructive/15 text-destructive',
@@ -142,7 +150,7 @@ const CONFLICT_STYLES: Record<ConflictVerdict, { badge: string; label: string; r
 }
 
 const CONFLICT_STATUS_STYLES: Record<ConflictStatus, string> = {
-  kept: 'bg-emerald-500/15 text-emerald-300',
+  kept: 'bg-success/15 text-success',
   deprecated: 'bg-destructive/15 text-destructive'
 }
 
@@ -475,13 +483,13 @@ function renderDetails(details?: MaintenanceAction['details'], onSelect?: (id: s
               const content = line || ' '
               let className = 'whitespace-pre px-3 py-0.5 text-muted-foreground/80'
               if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff')) {
-                className = 'whitespace-pre px-3 py-0.5 text-sky-200'
+                className = 'whitespace-pre px-3 py-0.5 text-muted-foreground'
               } else if (line.startsWith('@@')) {
-                className = 'whitespace-pre px-3 py-0.5 text-purple-200'
+                className = 'whitespace-pre px-3 py-0.5 text-muted-foreground'
               } else if (line.startsWith('+')) {
-                className = 'whitespace-pre px-3 py-0.5 text-emerald-200 bg-emerald-500/10'
+                className = 'whitespace-pre px-3 py-0.5 text-success bg-success/10'
               } else if (line.startsWith('-')) {
-                className = 'whitespace-pre px-3 py-0.5 text-rose-200 bg-rose-500/10'
+                className = 'whitespace-pre px-3 py-0.5 text-destructive bg-destructive/10'
               }
               return (
                 <div key={`${index}-${line.slice(0, 8)}`} className={className}>
@@ -527,14 +535,14 @@ function ActionRow({
     : ''
   const executedClasses = executed
     ? conflictStyle
-      ? 'border-emerald-500/30'
-      : 'border-emerald-500/30 bg-emerald-500/5 opacity-80'
+      ? 'border-success/20'
+      : 'border-success/20 bg-success/5 opacity-80'
     : ''
   const hoverClasses = isSelectable
     ? executed
       ? conflictStyle
         ? 'cursor-pointer hover:opacity-100'
-        : 'cursor-pointer hover:bg-emerald-500/10 hover:opacity-100'
+        : 'cursor-pointer hover:bg-success/10 hover:opacity-100'
       : 'cursor-pointer hover:bg-secondary/50'
     : ''
   const containerClasses = `p-3 rounded-md border border-border bg-secondary/30 transition-base ${conflictClasses} ${
@@ -567,13 +575,13 @@ function ActionRow({
             </span>
           )}
           {executed && (
-            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300">
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-success/15 text-success">
               <Check className="w-3 h-3" aria-hidden="true" />
               Done
             </span>
           )}
           {isApplied && (
-            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300">
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-success/15 text-success">
               <Check className="w-3 h-3" aria-hidden="true" />
               Applied
             </span>
@@ -585,17 +593,17 @@ function ActionRow({
           )}
           {canApply && (
             <span className="ml-auto flex items-center gap-2">
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="xs"
                 onClick={(event) => {
                   event.stopPropagation()
                   onApply?.(action)
                 }}
                 disabled={applyDisabled || isApplying || isApplied}
-                className="flex items-center gap-2 h-7 px-2.5 rounded-md border border-border bg-background text-[11px] uppercase tracking-wide disabled:opacity-50 hover:bg-secondary/60 transition-base"
               >
-                {isApplying ? <ButtonSpinner size="xs" /> : 'Apply'}
-              </button>
+                {isApplying ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Apply'}
+              </Button>
             </span>
           )}
         </div>
@@ -605,7 +613,7 @@ function ActionRow({
         </div>
         {renderDetails(action.details, onSelect)}
         {applyStatus?.message && (
-          <div className={`mt-2 text-xs ${applyStatus.state === 'error' ? 'text-destructive' : 'text-emerald-300'}`}>
+          <div className={`mt-2 text-xs ${applyStatus.state === 'error' ? 'text-destructive' : 'text-success'}`}>
             {applyStatus.message}
           </div>
         )}
@@ -756,15 +764,15 @@ function MaintenanceReviewDisplay({
     <div className="rounded-lg border border-border bg-background/40 p-4 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-xs text-muted-foreground">Opus review</div>
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => copy(result.operation, formatMaintenanceReview(result, review))}
-          className="inline-flex items-center gap-2 h-8 px-3 text-xs rounded-md border border-border bg-background hover:bg-secondary transition-base"
           title="Copy review for Claude analysis"
         >
           {isCopied(result.operation) ? (
             <>
-              <Check className="w-3 h-3 text-emerald-400" />
+              <Check className="w-3 h-3 text-success" />
               Copied
             </>
           ) : (
@@ -773,7 +781,7 @@ function MaintenanceReviewDisplay({
               Copy Review
             </>
           )}
-        </button>
+        </Button>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -886,21 +894,21 @@ function MaintenanceReviewDisplay({
                     </span>
                     <span className="text-[11px] text-muted-foreground font-mono">{rec.setting}</span>
                     {isApplied && (
-                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300">
+                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-success/15 text-success">
                         <Check className="w-3 h-3" aria-hidden="true" />
                         Applied
                       </span>
                     )}
                     {hasSuggestion && (
                       <span className="ml-auto flex items-center gap-2">
-                        <button
-                          type="button"
+                        <Button
+                          variant="outline"
+                          size="xs"
                           onClick={() => onApplySetting?.(applyKey, rec)}
                           disabled={applyDisabled || isApplying || isApplied}
-                          className="flex items-center gap-2 h-7 px-2.5 rounded-md border border-border bg-background text-[11px] uppercase tracking-wide disabled:opacity-50 hover:bg-secondary/60 transition-base"
                         >
-                          {isApplying ? <ButtonSpinner size="xs" /> : 'Apply'}
-                        </button>
+                          {isApplying ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Apply'}
+                        </Button>
                       </span>
                     )}
                   </div>
@@ -914,7 +922,7 @@ function MaintenanceReviewDisplay({
                   )}
                   <div className="text-xs text-muted-foreground">{rec.reason}</div>
                   {status?.message && (
-                    <div className={`text-xs ${status.state === 'error' ? 'text-destructive' : 'text-emerald-300'}`}>
+                    <div className={`text-xs ${status.state === 'error' ? 'text-destructive' : 'text-success'}`}>
                       {status.message}
                     </div>
                   )}
@@ -1020,15 +1028,15 @@ function ResultPanel({
           <span>
             {result.dryRun ? 'Preview' : 'Executed'} in {formatDuration(result.duration)}
           </span>
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="xs"
             onClick={handleReview}
             disabled={isReviewRunning}
-            className="inline-flex items-center gap-2 h-7 px-2.5 text-[11px] rounded-md border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
           >
-            {isReviewRunning && <ButtonSpinner size="xs" />}
+            {isReviewRunning && <Loader2 className="w-3 h-3 animate-spin" />}
             {isReviewRunning ? 'Reviewing...' : 'Review with Opus'}
-          </button>
+          </Button>
         </div>
         <div className="text-xs text-muted-foreground">
           {result.actions.length} actions
@@ -1521,38 +1529,37 @@ export default function Maintenance() {
   }
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
-      <section className="p-6 rounded-xl border border-border bg-card space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex-1 min-h-0 overflow-y-auto space-y-5">
+      <section className="p-5 rounded-xl border border-border bg-card space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h2 className="section-header">Batch operations</h2>
-            <p className="text-xs text-muted-foreground">Preview or execute all maintenance tasks in sequence.</p>
+            <h2 className="section-header mb-1">Batch operations</h2>
+            <p className="text-xs text-muted-foreground/70">Preview or execute all maintenance tasks in sequence.</p>
           </div>
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="secondary"
               onClick={() => handleRunAll(true)}
               disabled={bulkRunning}
-              className="flex items-center gap-2 h-9 px-3 rounded-md border border-border bg-background text-sm disabled:opacity-50 hover:bg-secondary/60 transition-base"
             >
               {bulkRunning && bulkMode === 'preview' ? (
-                <ButtonSpinner size="sm" />
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <Eye className="w-4 h-4" />
+                <Eye className="w-4 h-4 text-muted-foreground" />
               )}
               {bulkRunning && bulkMode === 'preview' ? 'Previewing...' : 'Preview all'}
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={requestExecuteAll}
               disabled={bulkRunning}
-              className="flex items-center gap-2 h-9 px-3 rounded-md bg-foreground text-background text-sm font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
             >
               {bulkRunning && bulkMode === 'run' ? (
-                <ButtonSpinner size="sm" />
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <Play className="w-4 h-4" />
               )}
               {bulkRunning && bulkMode === 'run' ? 'Running...' : 'Run all'}
-            </button>
+            </Button>
           </div>
         </div>
         {bulkProgress && (
@@ -1563,7 +1570,7 @@ export default function Maintenance() {
               return (
                 <div key={op.key} className="flex items-center gap-1.5">
                   {status === 'completed' ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <Check className="w-3.5 h-3.5 text-success" />
                   ) : status === 'running' ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-type-discovery" />
                   ) : (
@@ -1587,7 +1594,7 @@ export default function Maintenance() {
         )}
       </section>
 
-      <div className="space-y-6">
+      <div className="space-y-4">
         {operations.map(operation => {
           const result = results[operation.key]
           const isRunning = running[operation.key]
@@ -1599,35 +1606,36 @@ export default function Maintenance() {
           const hasDetailedProgress = detailedProgress?.[operation.key] !== undefined
           const isCurrent = bulkStatus === 'running' || (isRunning && hasDetailedProgress)
           return (
-            <section key={operation.key} className={`p-6 rounded-xl border bg-card space-y-4 transition-base ${isCurrent ? 'border-type-discovery ring-1 ring-type-discovery/30' : 'border-border'}`}>
+            <section key={operation.key} className={`p-5 rounded-xl border bg-card space-y-4 transition-all ${isCurrent ? 'border-type-discovery/60 ring-1 ring-type-discovery/20 bg-card/60' : 'border-border/50'}`}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   {isCurrent && (
-                    <Loader2 className="w-4 h-4 animate-spin text-type-discovery" />
+                    <Loader2 className="w-4 h-4 animate-spin text-type-discovery shrink-0" />
                   )}
                   <div>
-                    <h3 className="text-base font-semibold">{operation.label}</h3>
-                    <p className="text-sm text-muted-foreground">{operation.description}</p>
+                    <h3 className="text-[15px] font-semibold text-foreground/95">{operation.label}</h3>
+                    <p className="text-sm text-muted-foreground/70 mt-0.5">{operation.description}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => handleRunOperation(operation.key, true)}
                     disabled={isDisabled}
-                    className="flex items-center gap-2 h-8 px-3 rounded-md border border-border bg-background text-xs disabled:opacity-50 hover:bg-secondary/60 transition-base"
                   >
-                    {isPreviewRunning ? <ButtonSpinner size="xs" /> : <Eye className="w-4 h-4" />}
+                    {isPreviewRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eye className="w-3.5 h-3.5 text-muted-foreground" />}
                     {isPreviewRunning ? 'Previewing...' : 'Preview'}
-                  </button>
+                  </Button>
                   {operation.allowExecute && (
-                    <button
+                    <Button
+                      size="sm"
                       onClick={() => requestExecute(operation.key)}
                       disabled={isDisabled}
-                      className="flex items-center gap-2 h-8 px-3 rounded-md bg-foreground text-background text-xs font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
                     >
-                      {isRunRunning ? <ButtonSpinner size="xs" /> : <Play className="w-4 h-4" />}
+                      {isRunRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
                       {isRunRunning ? 'Running...' : 'Run'}
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>
@@ -1670,221 +1678,198 @@ export default function Maintenance() {
         })}
       </div>
 
-      {confirmState && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/60 panel-backdrop open"
-            onClick={() => setConfirmState(null)}
-          />
-          <div className="absolute inset-0 flex items-center justify-center px-4">
-            <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 space-y-4">
-              <div>
-                <h2 className="text-lg font-semibold">Confirm execution</h2>
-                <p className="text-sm text-muted-foreground">
-                  {confirmState.mode === 'all'
-                    ? 'Run all maintenance operations now?'
-                    : `Run ${operations.find(op => op.key === confirmState.operation)?.label} now?`}
-                </p>
-              </div>
-              <div className="flex items-center justify-end gap-3">
-                <button
-                  onClick={() => setConfirmState(null)}
-                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={confirmRun}
-                  className="h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base"
-                >
-                  Confirm
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <Dialog open={Boolean(confirmState)} onOpenChange={() => setConfirmState(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm execution</DialogTitle>
+            <DialogDescription>
+              {confirmState?.mode === 'all'
+                ? 'Run all maintenance operations now?'
+                : `Run ${operations.find(op => op.key === (confirmState as { operation: MaintenanceOperation })?.operation)?.label} now?`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmState(null)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmRun}>
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {applyConfirm && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/60 panel-backdrop open"
-            onClick={() => {
-              if (applyLoading) return
-              setApplyConfirm(null)
-              setApplyError(null)
-              setApplyConflict(false)
-            }}
-          />
-          <div className="absolute inset-0 flex items-center justify-center px-4">
-            <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4">
-              <div>
-                <h2 className="text-lg font-semibold">Apply suggestion</h2>
-                <p className="text-sm text-muted-foreground">
-                  Confirm the changes before applying this diff.
-                </p>
-              </div>
-              {(() => {
-                if (!applyPayload) {
-                  return (
-                    <div className="text-sm text-destructive">
-                      Suggestion details are incomplete.
-                    </div>
-                  )
-                }
-                const stats = applyStats ?? { addedLines: 0, hasDeletion: false, hasHunk: false }
-                const actionLabel = applyPayload.action === 'new' ? 'Create new file' : 'Edit existing file'
-                const summary = stats.hasHunk && stats.addedLines > 0
-                  ? `Will add ${stats.addedLines} line${stats.addedLines === 1 ? '' : 's'}.`
-                  : 'Diff summary unavailable.'
-                return (
-                  <div className="space-y-3 text-sm">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs uppercase tracking-wide text-muted-foreground">Action</span>
-                      <span className="font-medium text-foreground">{actionLabel}</span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs uppercase tracking-wide text-muted-foreground">Target</span>
-                      <span className="font-mono text-xs text-foreground">{applyPayload.targetFile}</span>
-                    </div>
-                    <div className="text-xs text-muted-foreground">{summary}</div>
-                    {applyPayload.action === 'new' ? (
-                      <div className="text-xs text-amber-300">
-                        This will create a new file. If the file already exists, you can overwrite it.
-                      </div>
-                    ) : (
-                      <div className="text-xs text-amber-300">
-                        This will append content to the existing file.
-                      </div>
-                    )}
-                    {stats.hasDeletion && (
-                      <div className="text-xs text-amber-300">
-                        Diff contains deletions and cannot be applied.
-                      </div>
-                    )}
+      <Dialog
+        open={Boolean(applyConfirm)}
+        onOpenChange={(open) => {
+          if (!open && !applyLoading) {
+            setApplyConfirm(null)
+            setApplyError(null)
+            setApplyConflict(false)
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Apply suggestion</DialogTitle>
+            <DialogDescription>
+              Confirm the changes before applying this diff.
+            </DialogDescription>
+          </DialogHeader>
+          {(() => {
+            if (!applyPayload) {
+              return (
+                <div className="text-sm text-destructive">
+                  Suggestion details are incomplete.
+                </div>
+              )
+            }
+            const stats = applyStats ?? { addedLines: 0, hasDeletion: false, hasHunk: false }
+            const actionLabel = applyPayload.action === 'new' ? 'Create new file' : 'Edit existing file'
+            const summary = stats.hasHunk && stats.addedLines > 0
+              ? `Will add ${stats.addedLines} line${stats.addedLines === 1 ? '' : 's'}.`
+              : 'Diff summary unavailable.'
+            return (
+              <div className="space-y-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs uppercase tracking-wide text-muted-foreground">Action</span>
+                  <span className="font-medium text-foreground">{actionLabel}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs uppercase tracking-wide text-muted-foreground">Target</span>
+                  <span className="font-mono text-xs text-foreground">{applyPayload.targetFile}</span>
+                </div>
+                <div className="text-xs text-muted-foreground">{summary}</div>
+                {applyPayload.action === 'new' ? (
+                  <div className="text-xs text-warning">
+                    This will create a new file. If the file already exists, you can overwrite it.
                   </div>
-                )
-              })()}
-              {applyError && (
-                <div className="text-sm text-destructive">{applyError}</div>
-              )}
-              <div className="flex items-center justify-end gap-3">
-                <button
-                  onClick={() => {
-                    setApplyConfirm(null)
-                    setApplyError(null)
-                    setApplyConflict(false)
-                  }}
-                  disabled={applyLoading}
-                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                {applyConflict && (
-                  <button
-                    onClick={() => handleApplySuggestion(true)}
-                    disabled={applyLoading || applyBlocked}
-                    className="flex items-center gap-2 h-9 px-4 rounded-md bg-amber-500 text-background text-sm font-medium hover:bg-amber-500/90 transition-base disabled:opacity-50"
-                  >
-                    {applyLoading ? (
-                      <>
-                        <ButtonSpinner size="md" />
-                        Overwriting...
-                      </>
-                    ) : (
-                      'Overwrite'
-                    )}
-                  </button>
+                ) : (
+                  <div className="text-xs text-warning">
+                    This will append content to the existing file.
+                  </div>
                 )}
-                <button
-                  onClick={() => handleApplySuggestion(false)}
-                  disabled={applyConflict || applyLoading || applyBlocked}
-                  className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
-                >
-                  {applyLoading ? (
-                    <>
-                      <ButtonSpinner size="md" />
-                      Applying...
-                    </>
-                  ) : (
-                    'Apply'
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {settingsApplyConfirm && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/60 panel-backdrop open"
-            onClick={() => {
-              if (settingsApplyLoading) return
-              setSettingsApplyConfirm(null)
-              setSettingsApplyError(null)
-            }}
-          />
-          <div className="absolute inset-0 flex items-center justify-center px-4">
-            <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4">
-              <div>
-                <h2 className="text-lg font-semibold">Apply setting change</h2>
-                <p className="text-sm text-muted-foreground">
-                  Confirm the update before applying Opus's recommendation.
-                </p>
-              </div>
-              {(() => {
-                const recommendation = settingsApplyConfirm.recommendation
-                const currentValue = settingsAppliedValues[recommendation.setting] ?? recommendation.currentValue
-                return (
-                  <div className="space-y-3 text-sm">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs uppercase tracking-wide text-muted-foreground">Setting</span>
-                      <span className="font-mono text-xs text-foreground">{recommendation.setting}</span>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      Current value <span className="font-mono text-foreground">{currentValue}</span>
-                      <span className="mx-1">-&gt;</span>
-                      New value <span className="font-mono text-foreground">{recommendation.suggestedValue}</span>
-                    </div>
-                    <div className="text-xs text-muted-foreground">{recommendation.reason}</div>
+                {stats.hasDeletion && (
+                  <div className="text-xs text-warning">
+                    Diff contains deletions and cannot be applied.
                   </div>
-                )
-              })()}
-              {settingsApplyError && (
-                <div className="text-sm text-destructive">{settingsApplyError}</div>
-              )}
-              <div className="flex items-center justify-end gap-3">
-                <button
-                  onClick={() => {
-                    setSettingsApplyConfirm(null)
-                    setSettingsApplyError(null)
-                  }}
-                  disabled={settingsApplyLoading}
-                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleApplySetting}
-                  disabled={settingsApplyLoading}
-                  className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-base disabled:opacity-50"
-                >
-                  {settingsApplyLoading ? (
-                    <>
-                      <ButtonSpinner size="md" />
-                      Applying...
-                    </>
-                  ) : (
-                    'Apply'
-                  )}
-                </button>
+                )}
               </div>
-            </div>
-          </div>
-        </div>
-      )}
+            )
+          })()}
+          {applyError && (
+            <div className="text-sm text-destructive">{applyError}</div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setApplyConfirm(null)
+                setApplyError(null)
+                setApplyConflict(false)
+              }}
+              disabled={applyLoading}
+            >
+              Cancel
+            </Button>
+            {applyConflict && (
+              <Button
+                variant="secondary"
+                className="bg-warning hover:bg-warning/90 text-background"
+                onClick={() => handleApplySuggestion(true)}
+                disabled={applyLoading || applyBlocked}
+              >
+                {applyLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Overwriting...
+                  </>
+                ) : (
+                  'Overwrite'
+                )}
+              </Button>
+            )}
+            <Button
+              onClick={() => handleApplySuggestion(false)}
+              disabled={applyConflict || applyLoading || applyBlocked}
+            >
+              {applyLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Applying...
+                </>
+              ) : (
+                'Apply'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(settingsApplyConfirm)}
+        onOpenChange={(open) => {
+          if (!open && !settingsApplyLoading) {
+            setSettingsApplyConfirm(null)
+            setSettingsApplyError(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Apply setting change</DialogTitle>
+            <DialogDescription>
+              Confirm the update before applying Opus's recommendation.
+            </DialogDescription>
+          </DialogHeader>
+          {settingsApplyConfirm && (() => {
+            const recommendation = settingsApplyConfirm.recommendation
+            const currentValue = settingsAppliedValues[recommendation.setting] ?? recommendation.currentValue
+            return (
+              <div className="space-y-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs uppercase tracking-wide text-muted-foreground">Setting</span>
+                  <span className="font-mono text-xs text-foreground">{recommendation.setting}</span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Current value <span className="font-mono text-foreground">{currentValue}</span>
+                  <span className="mx-1">-&gt;</span>
+                  New value <span className="font-mono text-foreground">{recommendation.suggestedValue}</span>
+                </div>
+                <div className="text-xs text-muted-foreground">{recommendation.reason}</div>
+              </div>
+            )
+          })()}
+          {settingsApplyError && (
+            <div className="text-sm text-destructive">{settingsApplyError}</div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSettingsApplyConfirm(null)
+                setSettingsApplyError(null)
+              }}
+              disabled={settingsApplyLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleApplySetting}
+              disabled={settingsApplyLoading}
+            >
+              {settingsApplyLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Applying...
+                </>
+              ) : (
+                'Apply'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <MemoryDetail
         record={selected}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
-import { RotateCcw } from 'lucide-react'
+import { Loader2, RotateCcw } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import ButtonSpinner from '@/components/ButtonSpinner'
+import { Button } from '@/components/ui/button'
 import {
   RETRIEVAL_FIELDS,
   SettingsPanel,
@@ -694,10 +694,10 @@ export default function Settings() {
   }
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto space-y-6" onFocusCapture={handleFocusCapture} onBlurCapture={handleBlurCapture}>
-      <div className="p-6 rounded-xl border border-border bg-card space-y-6">
-        <div className="text-xs text-muted-foreground">
-          Stored in <span className="font-mono">~/.claude-memory/settings.json</span>
+    <div className="flex-1 min-h-0 overflow-y-auto space-y-5" onFocusCapture={handleFocusCapture} onBlurCapture={handleBlurCapture}>
+      <div className="p-5 rounded-xl border border-border bg-card space-y-5">
+        <div className="text-[11px] text-muted-foreground/60 font-mono">
+          Stored in ~/.claude-memory/settings.json
         </div>
 
         {error && (
@@ -707,7 +707,7 @@ export default function Settings() {
         )}
 
         {isPending && !settings && (
-          <div className="text-sm text-muted-foreground">
+          <div className="text-sm text-muted-foreground/70">
             Loading settings...
           </div>
         )}
@@ -732,10 +732,10 @@ export default function Settings() {
         />
       </div>
 
-      <div className="p-6 rounded-xl border border-border bg-card space-y-5">
+      <div className="p-5 rounded-xl border border-border bg-card space-y-5">
         <div>
-          <div className="text-sm font-semibold">Maintenance settings</div>
-          <p className="text-xs text-muted-foreground">
+          <div className="text-sm font-semibold text-foreground/95">Maintenance settings</div>
+          <p className="text-xs text-muted-foreground/70 mt-1">
             Configure cleanup, consolidation, and promotion behavior.
           </p>
         </div>
@@ -764,15 +764,15 @@ export default function Settings() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <button
+      <div className="flex flex-wrap items-center gap-3 pb-4">
+        <Button
+          variant="outline"
           onClick={handleReset}
           disabled={isPending || resetMutation.isPending || isAutoSaving}
-          className="flex items-center gap-2 h-9 px-4 rounded-md border border-border text-sm font-medium text-foreground hover:bg-secondary/60 transition-base disabled:opacity-50"
         >
-          {resetMutation.isPending ? <ButtonSpinner size="sm" /> : <RotateCcw className="w-4 h-4" />}
+          {resetMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4 text-muted-foreground" />}
           {resetMutation.isPending ? 'Resetting...' : 'Reset to defaults'}
-        </button>
+        </Button>
 
         {status && (
           <div
@@ -780,19 +780,20 @@ export default function Settings() {
               status.type === 'error'
                 ? 'text-destructive'
                 : status.type === 'success'
-                  ? 'text-emerald-400'
-                  : 'text-muted-foreground'
+                  ? 'text-success'
+                  : 'text-muted-foreground/70'
             }`}
           >
             <span>{status.text}</span>
             {status.type === 'error' && status.context === 'save' && (
-              <button
-                type="button"
+              <Button
+                variant="link"
+                size="xs"
                 onClick={handleRetry}
-                className="ml-2 text-xs font-medium text-destructive underline-offset-2 hover:underline"
+                className="ml-2 text-destructive"
               >
                 Retry
-              </button>
+              </Button>
             )}
           </div>
         )}

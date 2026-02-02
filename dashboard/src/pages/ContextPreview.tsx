@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play } from 'lucide-react'
-import ButtonSpinner from '@/components/ButtonSpinner'
+import { Loader2, Play } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
 import MemoryDetail from '@/components/MemoryDetail'
 import NearMissesPanel from '@/components/NearMissesPanel'
 import {
@@ -184,56 +187,51 @@ export default function ContextPreview() {
   const previewDisabled = loading || settingsPending
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
+    <div className="flex-1 min-h-0 overflow-y-auto space-y-5">
       {/* Input form */}
-      <div className="p-6 rounded-xl border border-border bg-card space-y-4">
-        <div>
-          <label className="block text-xs text-muted-foreground mb-1.5">Prompt</label>
-          <textarea
-            value={prompt}
-            onChange={e => setPrompt(e.target.value)}
-            rows={5}
-            placeholder="Enter a prompt to test memory injection…"
-            className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
-
-        <div className="flex flex-wrap items-end gap-4">
-          <div className="flex-1">
-            <label className="block text-xs text-muted-foreground mb-1.5">
-              Working directory (optional)
-            </label>
-            <input
-              type="text"
-              value={cwd}
-              onChange={e => setCwd(e.target.value)}
-              placeholder="/home/user/project"
-              className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <div>
+            <label className="block text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">Prompt</label>
+            <textarea
+              value={prompt}
+              onChange={e => setPrompt(e.target.value)}
+              rows={5}
+              placeholder="Enter a prompt to test memory injection…"
+              className="w-full px-3 py-2.5 rounded-lg border border-border bg-background text-sm placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
             />
           </div>
-          <label className="flex items-center gap-2 h-9 px-3 rounded-md border border-border bg-background cursor-pointer">
-            <input
-              type="checkbox"
-              checked={diagnosticEnabled}
-              onChange={e => handleDiagnosticToggle(e.target.checked)}
-              className="w-4 h-4 rounded border-border"
-            />
-            <span className="text-sm text-muted-foreground">Diagnostic mode</span>
-          </label>
-          <button
-            onClick={handlePreview}
-            disabled={previewDisabled}
-            className="flex items-center gap-2 h-9 px-4 rounded-md bg-foreground text-background text-sm font-medium disabled:opacity-50 hover:bg-foreground/90 transition-base"
-          >
-            {loading ? <ButtonSpinner size="sm" /> : <Play className="w-4 h-4" />}
-            {loading ? 'Running...' : 'Preview'}
-          </button>
-        </div>
 
-        {error && (
-          <div className="text-sm text-destructive">{error}</div>
-        )}
-      </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex-1">
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">
+                Working directory (optional)
+              </label>
+              <Input
+                type="text"
+                value={cwd}
+                onChange={e => setCwd(e.target.value)}
+                placeholder="/home/user/project"
+              />
+            </div>
+            <label className="flex items-center gap-2.5 h-9 px-3 rounded-lg border border-border bg-secondary/50 cursor-pointer hover:bg-secondary transition-colors">
+              <Checkbox
+                checked={diagnosticEnabled}
+                onCheckedChange={(checked) => handleDiagnosticToggle(checked === true)}
+              />
+              <span className="text-sm text-muted-foreground">Diagnostic mode</span>
+            </label>
+            <Button onClick={handlePreview} disabled={previewDisabled}>
+              {loading ? <Loader2 className="animate-spin" /> : <Play className="w-4 h-4" />}
+              {loading ? 'Running...' : 'Preview'}
+            </Button>
+          </div>
+
+          {error && (
+            <div className="text-sm text-destructive">{error}</div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Retrieval Settings */}
       <SettingsPanel
@@ -262,75 +260,79 @@ export default function ContextPreview() {
           {/* Left column: Signals & Matches */}
           <div className="space-y-6">
             {/* Signals */}
-            <div className="p-6 rounded-xl border border-border bg-card">
-              <h3 className="section-header mb-4">Extracted signals</h3>
-              <div className="space-y-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Project</span>
-                  <span>{result.signals.projectName ?? '—'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Domain</span>
-                  <span>{result.signals.domain ?? '—'}</span>
-                </div>
-                {result.signals.errors.length > 0 && (
-                  <div>
-                    <span className="text-muted-foreground">Errors</span>
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {result.signals.errors.map((e, i) => (
-                        <span key={i} className="px-2 py-0.5 rounded text-xs bg-type-error/20 text-type-error">
-                          {e}
-                        </span>
-                      ))}
-                    </div>
+            <Card>
+              <CardContent className="p-6">
+                <h3 className="section-header mb-4">Extracted signals</h3>
+                <div className="space-y-3 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Project</span>
+                    <span>{result.signals.projectName ?? '—'}</span>
                   </div>
-                )}
-                {result.signals.commands.length > 0 && (
-                  <div>
-                    <span className="text-muted-foreground">Commands</span>
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {result.signals.commands.map((c, i) => (
-                        <span key={i} className="px-2 py-0.5 rounded text-xs bg-type-command/20 text-type-command">
-                          {c}
-                        </span>
-                      ))}
-                    </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Domain</span>
+                    <span>{result.signals.domain ?? '—'}</span>
                   </div>
-                )}
-              </div>
-            </div>
+                  {result.signals.errors.length > 0 && (
+                    <div>
+                      <span className="text-muted-foreground">Errors</span>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {result.signals.errors.map((e, i) => (
+                          <span key={i} className="px-2 py-0.5 rounded text-xs bg-type-error/20 text-type-error">
+                            {e}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {result.signals.commands.length > 0 && (
+                    <div>
+                      <span className="text-muted-foreground">Commands</span>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {result.signals.commands.map((c, i) => (
+                          <span key={i} className="px-2 py-0.5 rounded text-xs bg-type-command/20 text-type-command">
+                            {c}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
 
             {/* Matches */}
-            <div className="p-6 rounded-xl border border-border bg-card">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="section-header">Search results</h3>
-                <span className="text-xs text-muted-foreground tabular-nums">{result.results.length} matches</span>
-              </div>
-              {result.results.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No matches found</p>
-              ) : (
-                <div className="space-y-2">
-                  {result.results.map(match => (
-                    <button
-                      key={match.record.id}
-                      onClick={() => setSelected(match.record)}
-                      className="w-full text-left p-3 rounded-md bg-secondary/30 text-sm cursor-pointer hover:bg-secondary/50 transition-base"
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        <span
-                          className="w-2 h-2 rounded-full"
-                          style={{ backgroundColor: TYPE_COLORS[match.record.type] }}
-                        />
-                        <span className="text-xs text-muted-foreground">
-                          Score {match.score.toFixed(2)} · Sim {match.similarity.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="truncate">{getMemorySummary(match.record)}</div>
-                    </button>
-                  ))}
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="section-header">Search results</h3>
+                  <span className="text-xs text-muted-foreground tabular-nums">{result.results.length} matches</span>
                 </div>
-              )}
-            </div>
+                {result.results.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No matches found</p>
+                ) : (
+                  <div className="space-y-2">
+                    {result.results.map(match => (
+                      <button
+                        key={match.record.id}
+                        onClick={() => setSelected(match.record)}
+                        className="w-full text-left p-3 rounded-md bg-secondary/30 text-sm cursor-pointer hover:bg-secondary/50 transition-colors"
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <span
+                            className="w-2 h-2 rounded-full"
+                            style={{ backgroundColor: TYPE_COLORS[match.record.type] }}
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            Score {match.score.toFixed(2)} · Sim {match.similarity.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="truncate">{getMemorySummary(match.record)}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
             {diagnosticEnabled && (
               <NearMissesPanel
@@ -342,47 +344,51 @@ export default function ContextPreview() {
 
           {/* Right column: Injected context */}
           <div className="space-y-6">
-            <div className="p-6 rounded-xl border border-border bg-card">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="section-header">Injected context</h3>
-                <span className="text-xs text-muted-foreground tabular-nums">
-                  {result.injectedRecords.length} memories
-                </span>
-              </div>
-              {result.context ? (
-                <pre
-                  className="p-4 rounded-md bg-secondary text-xs font-mono overflow-x-auto max-h-[400px]"
-                  dangerouslySetInnerHTML={{ __html: highlightContext(result.context) }}
-                />
-              ) : (
-                <p className="text-sm text-muted-foreground">No context would be injected</p>
-              )}
-            </div>
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="section-header">Injected context</h3>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {result.injectedRecords.length} memories
+                  </span>
+                </div>
+                {result.context ? (
+                  <pre
+                    className="p-4 rounded-md bg-secondary text-xs font-mono overflow-x-auto max-h-[400px]"
+                    dangerouslySetInnerHTML={{ __html: highlightContext(result.context) }}
+                  />
+                ) : (
+                  <p className="text-sm text-muted-foreground">No context would be injected</p>
+                )}
+              </CardContent>
+            </Card>
 
             {result.injectedRecords.length > 0 && (
-              <div className="p-6 rounded-xl border border-border bg-card">
-                <h3 className="section-header mb-4">Injected memories</h3>
-                <div className="space-y-2">
-                  {result.injectedRecords.map(record => (
-                    <button
-                      key={record.id}
-                      onClick={() => setSelected(record)}
-                      className="w-full text-left flex items-start gap-2 text-sm p-2 -mx-2 rounded cursor-pointer hover:bg-secondary/50 transition-base"
-                    >
-                      <span
-                        className="w-2 h-2 rounded-full mt-1.5 shrink-0"
-                        style={{ backgroundColor: TYPE_COLORS[record.type] }}
-                      />
-                      <div className="min-w-0">
-                        <div className="truncate">{getMemorySummary(record)}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {record.project ?? '—'} · {record.domain ?? '—'}
+              <Card>
+                <CardContent className="p-6">
+                  <h3 className="section-header mb-4">Injected memories</h3>
+                  <div className="space-y-2">
+                    {result.injectedRecords.map(record => (
+                      <button
+                        key={record.id}
+                        onClick={() => setSelected(record)}
+                        className="w-full text-left flex items-start gap-2 text-sm p-2 -mx-2 rounded cursor-pointer hover:bg-secondary/50 transition-colors"
+                      >
+                        <span
+                          className="w-2 h-2 rounded-full mt-1.5 shrink-0"
+                          style={{ backgroundColor: TYPE_COLORS[record.type] }}
+                        />
+                        <div className="min-w-0">
+                          <div className="truncate">{getMemorySummary(record)}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {record.project ?? '—'} · {record.domain ?? '—'}
+                          </div>
                         </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
+                      </button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             )}
           </div>
         </div>

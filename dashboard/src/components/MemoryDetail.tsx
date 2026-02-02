@@ -1,7 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
-import { Trash2, X } from 'lucide-react'
-import ButtonSpinner from '@/components/ButtonSpinner'
-import Skeleton from '@/components/Skeleton'
+import { useState } from 'react'
+import { Loader2, Trash2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from '@/components/ui/sheet'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Badge } from '@/components/ui/badge'
 import { deleteMemory, type MemoryRecord } from '@/lib/api'
 import { formatDateTime, formatRelativeTimeLong } from '@/lib/format'
 import { TYPE_COLORS, getMemoryTitle } from '@/lib/memory-ui'
@@ -23,20 +40,18 @@ interface MemoryDetailProps {
   onDeleted?: (id: string) => void
 }
 
-const ANIMATION_DURATION = 200
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-xs text-muted-foreground mb-1">{label}</div>
-      <div className="text-sm">{children}</div>
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">{label}</div>
+      <div className="text-sm text-foreground/90">{children}</div>
     </div>
   )
 }
 
 function CodeBlock({ children, wrap }: { children: string; wrap?: boolean }) {
   return (
-    <pre className={`p-3 rounded-md bg-secondary text-sm font-mono ${wrap ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'}`}>
+    <pre className={`p-3 rounded-lg bg-secondary/60 border border-border/40 text-sm font-mono text-foreground/85 ${wrap ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'}`}>
       {children}
     </pre>
   )
@@ -53,35 +68,39 @@ function SkeletonField() {
 
 function DetailSkeleton({ showRetrieval }: { showRetrieval: boolean }) {
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+    <div className="flex-1 overflow-y-auto py-6 space-y-6">
       <div className="grid grid-cols-2 gap-4">
         {Array.from({ length: 4 }).map((_, index) => (
           <SkeletonField key={index} />
         ))}
       </div>
 
-      <div className="p-4 rounded-lg border border-border bg-card space-y-3">
-        <Skeleton className="h-3 w-24" />
-        <div className="grid grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="space-y-2 text-center">
-              <Skeleton className="h-6 w-10 mx-auto" />
-              <Skeleton className="h-3 w-14 mx-auto" />
-            </div>
-          ))}
-        </div>
-      </div>
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <Skeleton className="h-3 w-24" />
+          <div className="grid grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <div key={index} className="space-y-2 text-center">
+                <Skeleton className="h-6 w-10 mx-auto" />
+                <Skeleton className="h-3 w-14 mx-auto" />
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
 
       {showRetrieval && (
-        <div className="p-4 rounded-lg border border-border bg-card space-y-3">
-          <Skeleton className="h-3 w-32" />
-          <Skeleton className="h-14 w-full" />
-          <div className="flex flex-wrap gap-4">
-            <Skeleton className="h-3 w-20" />
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="h-3 w-16" />
-          </div>
-        </div>
+        <Card>
+          <CardContent className="p-4 space-y-3">
+            <Skeleton className="h-3 w-32" />
+            <Skeleton className="h-14 w-full" />
+            <div className="flex flex-wrap gap-4">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-3 w-16" />
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       <div className="space-y-4">
@@ -103,7 +122,7 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
           </Field>
           <div className="grid grid-cols-2 gap-4">
             <Field label="Exit code">
-              <span className={record.exitCode === 0 ? 'text-green-400' : 'text-red-400'}>
+              <span className={record.exitCode === 0 ? 'text-success' : 'text-destructive'}>
                 {record.exitCode}
               </span>
             </Field>
@@ -177,7 +196,7 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
             </div>
           </Field>
           <Field label="Use instead">
-            <div className="p-3 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-sm">
+            <div className="p-3 rounded-md bg-success/10 border border-success/20 text-sm">
               {record.useInstead}
             </div>
           </Field>
@@ -186,7 +205,7 @@ function TypeDetails({ record }: { record: MemoryRecord }) {
             <Field label="Severity">
               <span className={
                 record.severity === 'critical' ? 'text-destructive font-medium' :
-                record.severity === 'warning' ? 'text-amber-400' :
+                record.severity === 'warning' ? 'text-warning' :
                 'text-muted-foreground'
               }>
                 {record.severity}
@@ -210,60 +229,11 @@ export default function MemoryDetail({
   onClose,
   onDeleted
 }: MemoryDetailProps) {
-  const panelRef = useRef<HTMLDivElement>(null)
-  const closeRef = useRef<HTMLButtonElement>(null)
-  const [isOpen, setIsOpen] = useState(false)
-  const [isVisible, setIsVisible] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const isActive = open ?? Boolean(record)
   const isLoading = isActive && loading
-
-  // Handle open animation
-  useEffect(() => {
-    if (isActive) {
-      setIsVisible(true)
-      setConfirmDelete(false)
-      setDeleteError(null)
-      setIsDeleting(false)
-      // Trigger animation on next frame
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => setIsOpen(true))
-      })
-    } else if (isVisible) {
-      setIsOpen(false)
-      const timer = setTimeout(() => {
-        setIsVisible(false)
-      }, ANIMATION_DURATION)
-      return () => clearTimeout(timer)
-    }
-  }, [isActive, isVisible])
-
-  // Handle keyboard and focus
-  useEffect(() => {
-    if (!isActive) return
-
-    const prevFocus = document.activeElement as HTMLElement | null
-    closeRef.current?.focus()
-
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleClose()
-    }
-
-    window.addEventListener('keydown', handleKey)
-    return () => {
-      window.removeEventListener('keydown', handleKey)
-      prevFocus?.focus()
-    }
-  }, [isActive])
-
-  const handleClose = () => {
-    setDeleteError(null)
-    setConfirmDelete(false)
-    setIsOpen(false)
-    onClose()
-  }
 
   const handleDelete = async () => {
     if (!record || isDeleting || loading) return
@@ -273,7 +243,7 @@ export default function MemoryDetail({
       await deleteMemory(record.id)
       setConfirmDelete(false)
       onDeleted?.(record.id)
-      handleClose()
+      onClose()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete memory'
       setDeleteError(message)
@@ -282,226 +252,213 @@ export default function MemoryDetail({
     }
   }
 
-  if (!isVisible) return null
+  const handleOpenChange = (open: boolean) => {
+    if (!open) {
+      setDeleteError(null)
+      setConfirmDelete(false)
+      onClose()
+    }
+  }
 
   return (
-    <div className="fixed inset-0 z-50">
-      {/* Backdrop */}
-      <div
-        className={`absolute inset-0 bg-black/60 panel-backdrop ${isOpen ? 'open' : ''}`}
-        onClick={handleClose}
-      />
-
-      {/* Panel */}
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        className={`absolute inset-y-0 right-0 w-full max-w-2xl bg-background border-l border-border flex flex-col panel-slide ${isOpen ? 'open' : ''}`}
-      >
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-border">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-2">
-              {record ? (
-                <>
-                  <span
-                    className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: TYPE_COLORS[record.type] }}
-                  />
-                  <span className="text-xs text-muted-foreground capitalize">{record.type}</span>
-                  {record.deprecated && (
-                    <span className="text-xs text-destructive">Deprecated</span>
-                  )}
-                </>
-              ) : (
-                <>
-                  <Skeleton className="w-2 h-2 rounded-full" />
-                  <Skeleton className="h-3 w-16" />
-                </>
-              )}
-            </div>
-            {record ? (
-              <>
-                <h2 className="text-lg font-semibold truncate">{getMemoryTitle(record)}</h2>
-                <p className="text-xs text-muted-foreground font-mono mt-1">{record.id}</p>
-              </>
-            ) : (
-              <>
-                <Skeleton className="h-6 w-3/4" />
-                <Skeleton className="h-3 w-32 mt-2" />
-              </>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => {
-                setDeleteError(null)
-                setConfirmDelete(true)
-              }}
-              disabled={!record || loading || isDeleting}
-              className="flex items-center gap-2 h-8 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-medium disabled:opacity-50 hover:bg-destructive/90 transition-base"
-            >
-              <Trash2 className="w-4 h-4" />
-              Delete
-            </button>
-            <button
-              ref={closeRef}
-              onClick={handleClose}
-              className="p-2 rounded-md hover:bg-secondary transition-base"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {error && !record && !isLoading ? (
-          <div className="flex-1 overflow-y-auto px-6 py-6">
-            <div className="text-sm text-destructive">{error}</div>
-          </div>
-        ) : isLoading ? (
-          <DetailSkeleton showRetrieval={Boolean(retrievalContext)} />
-        ) : record ? (
-          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-            {/* Metadata */}
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Project">{record.project ?? '—'}</Field>
-              <Field label="Domain">{record.domain ?? '—'}</Field>
-              <Field label="Created">{formatDateTime(record.timestamp)}</Field>
-              <Field label="Last used">
-                {formatRelativeTimeLong(record.lastUsed ?? record.timestamp)}
-              </Field>
-            </div>
-
-            {/* Usage stats */}
-            <div className="p-4 rounded-lg border border-border bg-card">
-              <div className="text-xs text-muted-foreground mb-3">Usage metrics</div>
-              <div className="grid grid-cols-4 gap-4 text-center">
-                <div>
-                  <div className="text-xl font-semibold tabular-nums">{record.retrievalCount ?? 0}</div>
-                  <div className="text-xs text-muted-foreground">Retrievals</div>
-                </div>
-                <div>
-                  <div className="text-xl font-semibold tabular-nums">{record.usageCount ?? 0}</div>
-                  <div className="text-xs text-muted-foreground">Usage</div>
-                </div>
-                <div>
-                  <div className="text-xl font-semibold tabular-nums">{record.successCount ?? 0}</div>
-                  <div className="text-xs text-muted-foreground">Success</div>
-                </div>
-                <div>
-                  <div className="text-xl font-semibold tabular-nums">
-                    {record.retrievalCount
-                      ? Math.round(((record.usageCount ?? 0) / record.retrievalCount) * 100)
-                      : 0}
-                    %
-                  </div>
-                  <div className="text-xs text-muted-foreground">Ratio</div>
-                </div>
-              </div>
-              {retrievalContext && (record.retrievalCount ?? 0) === 0 && (
-                <div className="mt-3 text-xs text-muted-foreground text-center">
-                  Stats update when the session ends
-                </div>
-              )}
-            </div>
-
-            {/* Retrieval context (from session) */}
-            {retrievalContext && (retrievalContext.prompt || retrievalContext.similarity != null) && (
-              <div className="p-4 rounded-lg border border-border bg-card">
-                <div className="text-xs text-muted-foreground mb-3">Last retrieval trigger</div>
-                <div className="space-y-3">
-                  {retrievalContext.prompt && (
-                    <div>
-                      <div className="text-xs text-muted-foreground mb-1">Triggered by prompt</div>
-                      <div className="text-sm p-2 rounded bg-secondary/50 font-mono text-foreground/80">
-                        "{retrievalContext.prompt}"
-                      </div>
-                    </div>
-                  )}
-                  <div className="flex gap-4 text-sm">
-                    {retrievalContext.similarity != null && (
-                      <div>
-                        <span className="text-muted-foreground">Similarity: </span>
-                        <span className="text-cyan-400 font-mono">{(retrievalContext.similarity * 100).toFixed(1)}%</span>
-                      </div>
-                    )}
-                    {retrievalContext.keywordMatch != null && (
-                      <div>
-                        <span className="text-muted-foreground">Keyword match: </span>
-                        <span className={retrievalContext.keywordMatch ? 'text-amber-400' : 'text-muted-foreground'}>
-                          {retrievalContext.keywordMatch ? 'Yes' : 'No'}
-                        </span>
-                      </div>
-                    )}
-                    {retrievalContext.score != null && (
-                      <div>
-                        <span className="text-muted-foreground">Score: </span>
-                        <span className="font-mono">{retrievalContext.score.toFixed(3)}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Type-specific details */}
-            <TypeDetails record={record} />
-          </div>
-        ) : null}
-      </div>
-
-      {confirmDelete && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/60 panel-backdrop open"
-            onClick={() => {
-              if (isDeleting) return
-              setDeleteError(null)
-              setConfirmDelete(false)
-            }}
-          />
-          <div className="absolute inset-0 flex items-center justify-center px-4">
-            <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 space-y-4">
-              <div>
-                <h2 className="text-lg font-semibold text-destructive">Delete this memory?</h2>
-                <p className="text-sm text-muted-foreground">
-                  This permanently removes the memory from the collection.
-                </p>
-              </div>
-              {deleteError && (
-                <div className="text-sm text-destructive">{deleteError}</div>
-              )}
-              <div className="flex items-center justify-end gap-3">
-                <button
-                  onClick={() => {
-                    setDeleteError(null)
-                    setConfirmDelete(false)
-                  }}
-                  disabled={isDeleting}
-                  className="h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-secondary/60 transition-base disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={isDeleting}
-                  className="flex items-center gap-2 h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-base disabled:opacity-50"
-                >
-                  {isDeleting ? (
+    <>
+      <Sheet open={isActive} onOpenChange={handleOpenChange}>
+        <SheetContent className="w-full max-w-2xl sm:max-w-2xl p-0 flex flex-col">
+          {/* Header */}
+          <SheetHeader className="px-6 py-4 border-b border-border bg-secondary shrink-0">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2.5 mb-2">
+                  {record ? (
                     <>
-                      <ButtonSpinner size="md" />
-                      Deleting...
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shadow-sm"
+                        style={{ backgroundColor: TYPE_COLORS[record.type] }}
+                      />
+                      <span className="text-[11px] uppercase tracking-wide text-muted-foreground/70 font-medium">{record.type}</span>
+                      {record.deprecated && (
+                        <Badge variant="destructive" className="text-[10px] px-1.5 py-0">Deprecated</Badge>
+                      )}
                     </>
                   ) : (
-                    'Delete'
+                    <>
+                      <Skeleton className="w-2.5 h-2.5 rounded-full" />
+                      <Skeleton className="h-3 w-16" />
+                    </>
                   )}
-                </button>
+                </div>
+                {record ? (
+                  <>
+                    <SheetTitle className="text-lg font-semibold tracking-tight truncate text-foreground/95">
+                      {getMemoryTitle(record)}
+                    </SheetTitle>
+                    <SheetDescription className="text-[11px] text-muted-foreground/60 font-mono mt-1.5">
+                      {record.id}
+                    </SheetDescription>
+                  </>
+                ) : (
+                  <>
+                    <Skeleton className="h-6 w-3/4" />
+                    <Skeleton className="h-3 w-32 mt-2" />
+                  </>
+                )}
               </div>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => {
+                  setDeleteError(null)
+                  setConfirmDelete(true)
+                }}
+                disabled={!record || loading || isDeleting}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete
+              </Button>
             </div>
-          </div>
-        </div>
-      )}
-    </div>
+          </SheetHeader>
+
+          {error && !record && !isLoading ? (
+            <div className="flex-1 overflow-y-auto px-6 py-6">
+              <div className="text-sm text-destructive">{error}</div>
+            </div>
+          ) : isLoading ? (
+            <div className="flex-1 overflow-y-auto px-6">
+              <DetailSkeleton showRetrieval={Boolean(retrievalContext)} />
+            </div>
+          ) : record ? (
+            <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+              {/* Metadata */}
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Project">{record.project ?? '—'}</Field>
+                <Field label="Domain">{record.domain ?? '—'}</Field>
+                <Field label="Created">{formatDateTime(record.timestamp)}</Field>
+                <Field label="Last used">
+                  {formatRelativeTimeLong(record.lastUsed ?? record.timestamp)}
+                </Field>
+              </div>
+
+              {/* Usage stats */}
+              <Card className="bg-secondary">
+                <CardContent className="p-4">
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-3 font-medium">Usage metrics</div>
+                  <div className="grid grid-cols-4 gap-3 text-center">
+                    <div className="py-2">
+                      <div className="text-2xl font-semibold tabular-nums text-foreground/90">{record.retrievalCount ?? 0}</div>
+                      <div className="text-[11px] text-muted-foreground/60 mt-0.5">Retrievals</div>
+                    </div>
+                    <div className="py-2">
+                      <div className="text-2xl font-semibold tabular-nums text-foreground/90">{record.usageCount ?? 0}</div>
+                      <div className="text-[11px] text-muted-foreground/60 mt-0.5">Usage</div>
+                    </div>
+                    <div className="py-2">
+                      <div className="text-2xl font-semibold tabular-nums text-foreground/90">{record.successCount ?? 0}</div>
+                      <div className="text-[11px] text-muted-foreground/60 mt-0.5">Success</div>
+                    </div>
+                    <div className="py-2">
+                      <div className="text-2xl font-semibold tabular-nums text-foreground/90">
+                        {record.retrievalCount
+                          ? Math.round(((record.usageCount ?? 0) / record.retrievalCount) * 100)
+                          : 0}
+                        %
+                      </div>
+                      <div className="text-[11px] text-muted-foreground/60 mt-0.5">Ratio</div>
+                    </div>
+                  </div>
+                  {retrievalContext && (record.retrievalCount ?? 0) === 0 && (
+                    <div className="mt-3 text-[11px] text-muted-foreground/50 text-center">
+                      Stats update when the session ends
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Retrieval context (from session) */}
+              {retrievalContext && (retrievalContext.prompt || retrievalContext.similarity != null) && (
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="text-xs text-muted-foreground mb-3">Last retrieval trigger</div>
+                    <div className="space-y-3">
+                      {retrievalContext.prompt && (
+                        <div>
+                          <div className="text-xs text-muted-foreground mb-1">Triggered by prompt</div>
+                          <div className="text-sm p-2 rounded bg-secondary/50 font-mono text-foreground/80">
+                            "{retrievalContext.prompt}"
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex gap-4 text-sm">
+                        {retrievalContext.similarity != null && (
+                          <div>
+                            <span className="text-muted-foreground">Similarity: </span>
+                            <span className="text-info font-mono">{(retrievalContext.similarity * 100).toFixed(1)}%</span>
+                          </div>
+                        )}
+                        {retrievalContext.keywordMatch != null && (
+                          <div>
+                            <span className="text-muted-foreground">Keyword match: </span>
+                            <span className={retrievalContext.keywordMatch ? 'text-warning' : 'text-muted-foreground'}>
+                              {retrievalContext.keywordMatch ? 'Yes' : 'No'}
+                            </span>
+                          </div>
+                        )}
+                        {retrievalContext.score != null && (
+                          <div>
+                            <span className="text-muted-foreground">Score: </span>
+                            <span className="font-mono">{retrievalContext.score.toFixed(3)}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Type-specific details */}
+              <TypeDetails record={record} />
+            </div>
+          ) : null}
+        </SheetContent>
+      </Sheet>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={confirmDelete} onOpenChange={(open) => {
+        if (isDeleting) return
+        setConfirmDelete(open)
+        if (!open) setDeleteError(null)
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Delete this memory?</DialogTitle>
+            <DialogDescription>
+              This permanently removes the memory from the collection.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError && (
+            <div className="text-sm text-destructive">{deleteError}</div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteError(null)
+                setConfirmDelete(false)
+              }}
+              disabled={isDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isDeleting}
+            >
+              {isDeleting && <Loader2 className="animate-spin" />}
+              {isDeleting ? 'Deleting...' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }

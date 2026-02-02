@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Activity, Check, ChevronRight, Copy, Search, Sparkles } from 'lucide-react'
-import ButtonSpinner from '@/components/ButtonSpinner'
+import { Activity, Check, ChevronRight, Copy, Loader2, Search, Sparkles } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import ListItem from '@/components/ListItem'
 import MetricTile from '@/components/MetricTile'
 import ReviewSkeleton from '@/components/ReviewSkeleton'
@@ -28,7 +29,7 @@ import { formatInjectionReview } from '@/lib/review-format'
 const TYPE_ORDER: RecordType[] = ['error', 'command', 'discovery', 'procedure']
 
 const STATUS_STYLES: Record<InjectionStatus, { badge: string; label: string }> = {
-  injected: { badge: 'bg-emerald-500/15 text-emerald-400', label: 'Injected' },
+  injected: { badge: 'bg-success/15 text-success', label: 'Injected' },
   no_matches: { badge: 'bg-muted-foreground/15 text-muted-foreground', label: 'No matches' },
   empty_prompt: { badge: 'bg-muted-foreground/15 text-muted-foreground', label: 'Empty' },
   timeout: { badge: 'bg-destructive/15 text-destructive', label: 'Timeout' },
@@ -38,9 +39,9 @@ const STATUS_STYLES: Record<InjectionStatus, { badge: string; label: string }> =
 const HEALTH_STYLES = {
   healthy: {
     label: 'Healthy',
-    badge: 'bg-emerald-500/15 text-emerald-400',
-    bar: 'bg-emerald-500/70',
-    text: 'text-emerald-400'
+    badge: 'bg-success/15 text-success',
+    bar: 'bg-success/70',
+    text: 'text-success'
   },
   mixed: {
     label: 'Mixed',
@@ -110,17 +111,17 @@ function getInjectionRatioBadge(
   }
   // Color-code injection ratio: green (≥70%), orange (>0%), red (0%)
   if (ratio >= 0.7) {
-    return { badge: 'bg-emerald-500/15 text-emerald-400', text: 'text-emerald-400', label, title }
+    return { badge: 'bg-success/15 text-success', text: 'text-success', label, title }
   }
   if (ratio > 0) {
-    return { badge: 'bg-amber-500/15 text-amber-400', text: 'text-amber-400', label, title }
+    return { badge: 'bg-warning/15 text-warning', text: 'text-warning', label, title }
   }
-  return { badge: 'bg-red-500/15 text-red-400', text: 'text-red-400', label, title }
+  return { badge: 'bg-destructive/15 text-destructive', text: 'text-destructive', label, title }
 }
 
 const RATING_STYLES: Record<InjectionReview['overallRating'], { badge: string; label: string }> = {
   good: {
-    badge: 'bg-emerald-500/15 text-emerald-400',
+    badge: 'bg-success/15 text-success',
     label: 'Good'
   },
   mixed: {
@@ -135,7 +136,7 @@ const RATING_STYLES: Record<InjectionReview['overallRating'], { badge: string; l
 
 const VERDICT_STYLES: Record<InjectedMemoryVerdict['verdict'], { badge: string; label: string }> = {
   relevant: {
-    badge: 'bg-emerald-500/15 text-emerald-400',
+    badge: 'bg-success/15 text-success',
     label: 'Relevant'
   },
   partially_relevant: {
@@ -209,7 +210,7 @@ function formatUsageRatio(stats: MemoryStats | null | undefined): string {
 function getUsageColor(stats: MemoryStats | null | undefined): string {
   if (!stats || stats.retrievalCount === 0) return 'text-muted-foreground'
   const ratio = stats.usageCount / stats.retrievalCount
-  if (ratio >= 0.7) return 'text-emerald-400'
+  if (ratio >= 0.7) return 'text-success'
   return 'text-muted-foreground'
 }
 
@@ -243,7 +244,7 @@ function getSessionHealth(session: SessionRecord) {
 function getActivityStatus(session: SessionRecord): { label: string; badge: string; dot: string } {
   const diff = Date.now() - session.lastActivity
   if (diff < ACTIVE_WINDOW_MS) {
-    return { label: 'Active', badge: 'bg-emerald-500/15 text-emerald-400', dot: 'bg-emerald-400' }
+    return { label: 'Active', badge: 'bg-success/15 text-success', dot: 'bg-success' }
   }
   if (diff < STALE_WINDOW_MS) {
     return { label: 'Recent', badge: 'bg-foreground/10 text-foreground/70', dot: 'bg-foreground/50' }
@@ -436,23 +437,25 @@ function SessionReviewPanel({
         <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Opus review</div>
         <div className="flex items-center gap-1.5">
           {review && (
-            <button
+            <Button
+              variant="outline"
+              size="xs"
               onClick={() => copy(session.sessionId, formatInjectionReview(session, review))}
-              className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border border-border bg-background hover:bg-secondary transition-base"
               title="Copy review"
             >
-              {isCopied(session.sessionId) ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+              {isCopied(session.sessionId) ? <Check className="w-2.5 h-2.5 text-success" /> : <Copy className="w-2.5 h-2.5" />}
               Copy
-            </button>
+            </Button>
           )}
-          <button
+          <Button
+            variant="outline"
+            size="xs"
             onClick={handleReview}
             disabled={isStreaming}
-            className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border border-border bg-background disabled:opacity-40 disabled:cursor-not-allowed hover:bg-secondary transition-base"
           >
-            {isStreaming && <ButtonSpinner size="xs" />}
+            {isStreaming && <Loader2 className="w-3 h-3 animate-spin" />}
             {isStreaming ? 'Reviewing...' : 'Review'}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -540,7 +543,7 @@ function FilterChip({
       onClick={onClick}
       className={`h-7 px-2.5 text-[11px] rounded-full border transition-base ${
         active
-          ? 'bg-foreground text-background border-foreground'
+          ? 'bg-primary text-primary-foreground border-foreground'
           : 'bg-background border-border text-muted-foreground hover:text-foreground'
       }`}
     >
@@ -910,7 +913,7 @@ export default function Sessions() {
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-4">
       {error && data && (
-        <div className="bg-amber-500/10 text-amber-400 text-sm px-3 py-2 rounded mb-4">
+        <div className="bg-warning/10 text-warning text-sm px-4 py-2.5 rounded-lg border border-warning/20">
           Failed to refresh data. Showing cached results.
         </div>
       )}
@@ -918,49 +921,49 @@ export default function Sessions() {
       {isInitialLoading ? (
         <SessionListSkeleton />
       ) : sessions.length === 0 ? (
-        <div className="py-12 text-center text-sm text-muted-foreground">
+        <div className="py-16 text-center text-sm text-muted-foreground/70">
           No sessions tracked yet. Sessions appear when Claude Code runs with memory hooks enabled.
         </div>
       ) : (
         <div className="flex flex-col flex-1 min-h-0 gap-4">
           <section className="rounded-xl border border-border bg-card px-4 py-3 shrink-0">
             <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
-                <span className="uppercase tracking-wide">Pulse</span>
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground/70">
+                <Sparkles className="h-3.5 w-3.5 text-success/80" />
+                <span className="uppercase tracking-[0.1em] font-medium">Pulse</span>
               </div>
               <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
                 <span className="flex items-center gap-1.5">
-                  <Activity className="h-3.5 w-3.5 text-emerald-400" />
-                  <span className="text-foreground font-medium tabular-nums">{summary.activeCount}</span>
-                  <span className="text-muted-foreground">active</span>
+                  <Activity className="h-3.5 w-3.5 text-success" />
+                  <span className="text-foreground/90 font-medium tabular-nums">{summary.activeCount}</span>
+                  <span className="text-muted-foreground/70">active</span>
                 </span>
-                <span className="text-muted-foreground">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span>
-                  <span className="text-foreground font-medium tabular-nums">{summary.totalSessions}</span>
-                  <span className="text-muted-foreground ml-1">sessions</span>
+                  <span className="text-foreground/90 font-medium tabular-nums">{summary.totalSessions}</span>
+                  <span className="text-muted-foreground/70 ml-1">sessions</span>
                 </span>
-                <span className="text-muted-foreground">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span>
-                  <span className="text-foreground font-medium tabular-nums">{summary.totalPrompts ?? '—'}</span>
-                  <span className="text-muted-foreground ml-1">prompts</span>
+                  <span className="text-foreground/90 font-medium tabular-nums">{summary.totalPrompts ?? '—'}</span>
+                  <span className="text-muted-foreground/70 ml-1">prompts</span>
                 </span>
-                <span className="text-muted-foreground">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span>
-                  <span className="text-foreground font-medium tabular-nums">{summary.totalInjections}</span>
-                  <span className="text-muted-foreground ml-1">injections</span>
+                  <span className="text-foreground/90 font-medium tabular-nums">{summary.totalInjections}</span>
+                  <span className="text-muted-foreground/70 ml-1">injections</span>
                 </span>
-                <span className="text-muted-foreground">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span>
-                  <span className="text-foreground font-medium tabular-nums">{summary.totalMemories}</span>
-                  <span className="text-muted-foreground ml-1">memories</span>
+                  <span className="text-foreground/90 font-medium tabular-nums">{summary.totalMemories}</span>
+                  <span className="text-muted-foreground/70 ml-1">memories</span>
                 </span>
                 {summary.injectionRate != null && (
                   <>
-                    <span className="text-muted-foreground">·</span>
+                    <span className="text-muted-foreground/40">·</span>
                     <span>
-                      <span className="text-foreground font-medium tabular-nums">{(summary.injectionRate * 100).toFixed(0)}%</span>
-                      <span className="text-muted-foreground ml-1">rate</span>
+                      <span className="text-foreground/90 font-medium tabular-nums">{(summary.injectionRate * 100).toFixed(0)}%</span>
+                      <span className="text-muted-foreground/70 ml-1">rate</span>
                     </span>
                   </>
                 )}
@@ -971,18 +974,18 @@ export default function Sessions() {
           <section className="rounded-xl border border-border bg-card px-4 py-3 space-y-3 shrink-0">
             <div className="flex flex-wrap items-center gap-3">
               <div className="relative min-w-[180px] flex-1 max-w-xs">
-                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <input
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60 z-10" />
+                <Input
                   value={searchQuery}
                   onChange={event => setSearchQuery(event.target.value)}
                   placeholder="Search..."
-                  className="h-8 w-full rounded-md border border-border bg-background pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                  className="h-8 pl-8 bg-secondary"
                 />
               </div>
               <select
                 value={projectFilter}
                 onChange={event => setProjectFilter(event.target.value)}
-                className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+                className="h-8 rounded-lg border border-border bg-secondary px-2 text-xs text-foreground cursor-pointer transition-colors"
               >
                 <option value="all">All projects</option>
                 {projectOptions.map(option => (
@@ -992,7 +995,7 @@ export default function Sessions() {
               <select
                 value={sortKey}
                 onChange={event => setSortKey(event.target.value as SortKey)}
-                className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+                className="h-8 rounded-lg border border-border bg-secondary px-2 text-xs text-foreground cursor-pointer transition-colors"
               >
                 {SORT_OPTIONS.map(option => (
                   <option key={option.key} value={option.key}>{option.label}</option>
@@ -1174,27 +1177,28 @@ export default function Sessions() {
                                 return (
                                   <>
                                     <div className="flex items-center justify-between mb-2">
-                                      <button
-                                        type="button"
+                                      <Button
+                                        variant="ghost"
+                                        size="xs"
                                         onClick={() => setExpandedPromptIndex(null)}
-                                        className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground transition-base"
+                                        className="text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
                                       >
                                         <ChevronRight className="w-3 h-3 rotate-180" />
                                         Back to prompts
-                                      </button>
+                                      </Button>
                                       <div className="flex items-center gap-2">
                                         {expandedPrompt.status && (
                                           <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide ${STATUS_STYLES[expandedPrompt.status].badge}`}>
                                             {STATUS_STYLES[expandedPrompt.status].label}
                                           </span>
                                         )}
-                                        <button
-                                          type="button"
+                                        <Button
+                                          variant="outline"
+                                          size="xs"
                                           onClick={() => handleSendToSimulator(expandedPrompt.text, selectedSession.cwd)}
-                                          className="text-[10px] px-2 py-1 rounded border border-border bg-background hover:bg-secondary transition-base"
                                         >
                                           Simulator
-                                        </button>
+                                        </Button>
                                       </div>
                                     </div>
                                     <div className="max-h-64 overflow-y-auto space-y-3 pr-1">

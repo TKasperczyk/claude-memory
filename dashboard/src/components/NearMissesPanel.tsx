@@ -4,12 +4,12 @@ import { type ExclusionReason, type MemoryRecord, type NearMissRecord } from '@/
 import { getMemorySummary } from '@/lib/memory-ui'
 
 const EXCLUSION_REASON_STYLES: Record<ExclusionReason['reason'], string> = {
-  score_below_threshold: 'bg-amber-500/15 text-amber-300',
-  semantic_only_score_below_threshold: 'bg-amber-500/15 text-amber-300',
-  similarity_below_threshold: 'bg-sky-500/15 text-sky-300',
-  mmr_diversity_penalty: 'bg-purple-500/15 text-purple-300',
+  score_below_threshold: 'bg-warning/15 text-warning',
+  semantic_only_score_below_threshold: 'bg-warning/15 text-warning',
+  similarity_below_threshold: 'bg-info/15 text-info',
+  mmr_diversity_penalty: 'bg-primary/15 text-primary',
   exceeded_max_records: 'bg-muted-foreground/15 text-muted-foreground',
-  exceeded_token_budget: 'bg-red-500/15 text-red-300'
+  exceeded_token_budget: 'bg-destructive/15 text-destructive'
 }
 
 function formatDecimal(value: number, digits = 2): string {
