@@ -64,6 +64,11 @@ Priority guidance:
 - Focus on insights that would help orient a future session in this codebase.
 - Extract warnings when there's a clear "don't do X, do Y instead" pattern.
 
+Skip trivial commands:
+- Do NOT extract routine/trivial commands: ls, cd, cat, pwd, echo, mkdir, rm, cp, mv, touch, head, tail, wc, grep (basic usage), find (basic usage), git status, git log, git diff, git branch, git checkout, npm/pnpm/yarn install (without special flags), basic file reads.
+- Only extract commands that required problem-solving, had non-obvious flags/options, or produced unexpected results that led to learning.
+- A command is worth extracting if a future session would benefit from knowing "this specific invocation worked" or "this flag combination solved a problem".
+
 Scope guidance:
 If a discovery or procedure applies universally (not specific to this project),
 set scope: "global". Examples: general CLI flags, common error patterns,
