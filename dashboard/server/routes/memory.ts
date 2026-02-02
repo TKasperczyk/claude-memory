@@ -231,6 +231,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         generalized: asBoolean(body.generalized) ?? undefined,
         lastGeneralizationCheck: asNumber(body.lastGeneralizationCheck) ?? undefined,
         lastGlobalCheck: asNumber(body.lastGlobalCheck) ?? undefined,
+        lastConsolidationCheck: asNumber(body.lastConsolidationCheck) ?? undefined,
         lastConflictCheck: asNumber(body.lastConflictCheck) ?? undefined,
         lastWarningSynthesisCheck: asNumber(body.lastWarningSynthesisCheck) ?? undefined,
         embedding

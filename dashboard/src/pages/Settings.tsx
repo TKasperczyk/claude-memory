@@ -136,13 +136,27 @@ const MAINTENANCE_GROUPS: SettingsGroup[] = [
         kind: 'float'
       },
       {
+        key: 'consolidationRecheckDays',
+        label: 'Recheck cadence (days)',
+        description: 'Days before re-evaluating a consolidation cluster.',
+        step: 1,
+        min: 1,
+        kind: 'int'
+      },
+      {
         key: 'crossTypeConsolidationThreshold',
         label: 'Cross-type consolidation threshold',
         description: 'Higher similarity threshold for cross-type merges (0-1).',
         step: 0.01,
-        min: 0.93,
+        min: 0.75,
         max: 1,
         kind: 'float'
+      },
+      {
+        key: 'enableConsolidationLlmVerification',
+        label: 'LLM consolidation verification',
+        description: 'Use LLM to verify clusters are true duplicates before merging.',
+        kind: 'bool'
       },
       {
         key: 'consolidationTextSimilarityRatio',

@@ -48,12 +48,14 @@ const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
   'consolidation': [
     'consolidationThreshold',
     'consolidationSearchLimit',
-    'consolidationMaxClusterSize'
+    'consolidationMaxClusterSize',
+    'consolidationRecheckDays'
   ],
   'cross-type-consolidation': [
     'crossTypeConsolidationThreshold',
     'consolidationSearchLimit',
-    'consolidationMaxClusterSize'
+    'consolidationMaxClusterSize',
+    'consolidationRecheckDays'
   ],
   'conflict-resolution': ['conflictSimilarityThreshold', 'conflictCheckBatchSize'],
   'warning-synthesis': [
@@ -441,6 +443,7 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
     generalized: record.generalized,
     lastGeneralizationCheck: record.lastGeneralizationCheck,
     lastGlobalCheck: record.lastGlobalCheck,
+    lastConsolidationCheck: record.lastConsolidationCheck,
     lastConflictCheck: record.lastConflictCheck,
     lastWarningSynthesisCheck: record.lastWarningSynthesisCheck
   }

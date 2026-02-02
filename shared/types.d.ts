@@ -19,6 +19,7 @@ export interface BaseRecord {
   generalized?: boolean
   lastGeneralizationCheck?: number
   lastGlobalCheck?: number
+  lastConsolidationCheck?: number
   lastConflictCheck?: number
   lastWarningSynthesisCheck?: number
   embedding?: number[]
@@ -184,7 +185,9 @@ export interface MaintenanceSettings {
   consolidationSearchLimit: number
   consolidationMaxClusterSize: number
   consolidationThreshold: number
+  consolidationRecheckDays: number
   crossTypeConsolidationThreshold: number
+  enableConsolidationLlmVerification: boolean
   consolidationTextSimilarityRatio: number
   conflictSimilarityThreshold: number
   conflictCheckBatchSize: number

@@ -54,8 +54,8 @@ const WARNING_SYNTHESIS_BATCH_SIZE = 10
 const WARNING_SYNTHESIS_MAX_TOKENS = 800
 const WARNING_SYNTHESIS_TOOL_NAME = 'emit_warning'
 const WARNING_SYNTHESIS_DEDUP_THRESHOLD = 0.9
-const CROSS_TYPE_CONSOLIDATION_MAX_TOKENS = 600
-const CROSS_TYPE_CONSOLIDATION_TOOL_NAME = 'emit_cross_type_consolidation'
+const CONSOLIDATION_VERIFICATION_MAX_TOKENS = 600
+const CONSOLIDATION_VERIFICATION_TOOL_NAME = 'emit_consolidation_verification'
 
 const GENERALIZATION_PROMPT = `Evaluate this memory record for reusability across different contexts.
 
@@ -136,17 +136,27 @@ Return JSON:
   "reason": "brief explanation"
 }`
 
-const CROSS_TYPE_CONSOLIDATION_PROMPT = `Select the single best representative memory from a highly similar cross-type cluster.
+const CONSOLIDATION_VERIFICATION_PROMPT = `Verify if a cluster of similar memory records should be consolidated, and if so, select the best representative.
 
-Goal: keep the most actionable, reusable record; deprecate the rest.
+First, determine if these records are TRUE DUPLICATES (same information, different wording) vs RELATED BUT DISTINCT (different systems, APIs, environments, or complementary information).
 
-Consider:
-- Actionability priority: procedure > warning > error > discovery.
-- Commands can be chosen if they are the clearest reusable instruction; otherwise prefer the ordered types above.
-- Usage stats (usageCount, retrievalCount, successCount), and recency (lastUsed, timestamp).
-- Prefer records that provide concrete steps or fixes.
+MERGE if:
+- Records describe the same fact, error, or procedure with minor wording differences
+- Records are redundant - one subsumes the other completely
+- Records describe the same system/API/environment with different levels of detail
 
-Return ONLY via the tool call "${CROSS_TYPE_CONSOLIDATION_TOOL_NAME}" exactly once.`
+DO NOT MERGE if:
+- Records describe DIFFERENT systems (e.g., Anthropic API vs Gemini API)
+- Records describe DIFFERENT environments (e.g., local vs remote, dev vs prod)
+- Records contain COMPLEMENTARY information (both are useful together)
+- Records describe different aspects of the same topic that aren't redundant
+
+If merging, select the best representative considering:
+- For cross-type clusters: procedure > warning > error > discovery > command
+- Usage stats (usageCount, retrievalCount, successCount), and recency
+- Prefer records that provide concrete steps or actionable fixes
+
+Return ONLY via the tool call "${CONSOLIDATION_VERIFICATION_TOOL_NAME}" exactly once.`
 
 const WARNING_SYNTHESIS_PROMPT = `Analyze these failure records and synthesize a warning if there's a clear anti-pattern.
 
@@ -193,16 +203,26 @@ const WARNING_SYNTHESIS_TOOL: Anthropic.Tool = {
   }
 }
 
-const CROSS_TYPE_CONSOLIDATION_TOOL: Anthropic.Tool = {
-  name: CROSS_TYPE_CONSOLIDATION_TOOL_NAME,
-  description: 'Select the representative record id for cross-type consolidation.',
+const CONSOLIDATION_VERIFICATION_TOOL: Anthropic.Tool = {
+  name: CONSOLIDATION_VERIFICATION_TOOL_NAME,
+  description: 'Verify consolidation and select the representative record.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['keptId', 'reason'],
+    required: ['shouldMerge', 'reason'],
     properties: {
-      keptId: { type: 'string' },
-      reason: { type: 'string' }
+      shouldMerge: {
+        type: 'boolean',
+        description: 'True if records are true duplicates and should be merged. False if they are related but distinct.'
+      },
+      keptId: {
+        type: 'string',
+        description: 'ID of the record to keep. Required if shouldMerge is true.'
+      },
+      reason: {
+        type: 'string',
+        description: 'Explanation of why records should or should not be merged.'
+      }
     }
   }
 }
@@ -246,9 +266,10 @@ interface ConsolidationResult {
   lastUsed: number
 }
 
-interface CrossTypeSelectionResult {
-  keptId: string
-  reason?: string
+interface ConsolidationVerificationResult {
+  shouldMerge: boolean
+  keptId?: string
+  reason: string
 }
 
 export interface ContradictionPair {
@@ -459,6 +480,8 @@ export async function findSimilarClusters(
   const resolvedThreshold = typeof similarityThreshold === 'number'
     ? similarityThreshold
     : maintenance.consolidationThreshold
+  const recheckCutoff = Date.now() - maintenance.consolidationRecheckDays * 24 * 60 * 60 * 1000
+  const recheckCutoffValue = Math.trunc(recheckCutoff)
   const clusters: ConsolidationCluster[] = []
   const clusteredIds = new Set<string>()
   let offset = 0
@@ -478,6 +501,7 @@ export async function findSimilarClusters(
 
     for (const record of batch) {
       if (clusteredIds.has(record.id)) continue
+      if (wasRecentlyConsolidationChecked(record, recheckCutoffValue)) continue
       if (!isValidEmbedding(record.embedding)) continue
 
       const matches = await vectorSearchSimilar(
@@ -499,6 +523,7 @@ export async function findSimilarClusters(
         const candidate = match.record
         if (clusteredIds.has(candidate.id)) continue
         if (candidate.deprecated) continue
+        if (wasRecentlyConsolidationChecked(candidate, recheckCutoffValue)) continue
 
         // Rely purely on vector similarity - text similarity check was too strict
         // and missed semantic duplicates with different wording
@@ -531,6 +556,8 @@ export async function findCrossTypeClusters(
   const resolvedThreshold = typeof similarityThreshold === 'number'
     ? similarityThreshold
     : maintenance.crossTypeConsolidationThreshold
+  const recheckCutoff = Date.now() - maintenance.consolidationRecheckDays * 24 * 60 * 60 * 1000
+  const recheckCutoffValue = Math.trunc(recheckCutoff)
   const clusters: ConsolidationCluster[] = []
   const clusteredIds = new Set<string>()
   let offset = 0
@@ -550,6 +577,7 @@ export async function findCrossTypeClusters(
 
     for (const record of batch) {
       if (clusteredIds.has(record.id)) continue
+      if (wasRecentlyConsolidationChecked(record, recheckCutoffValue)) continue
       if (!isValidEmbedding(record.embedding)) continue
 
       const matches = await vectorSearchSimilar(
@@ -575,6 +603,7 @@ export async function findCrossTypeClusters(
         if (clusteredIds.has(candidate.id)) continue
         if (candidate.deprecated) continue
         if (candidate.type === record.type) continue
+        if (wasRecentlyConsolidationChecked(candidate, recheckCutoffValue)) continue
 
         cluster.push(candidate)
         members.push({ record: candidate, similarity: match.similarity })
@@ -664,7 +693,7 @@ function getUsageRatio(record: MemoryRecord): number {
   return usageCount / retrievalCount
 }
 
-export function pickCrossTypeFallback(cluster: MemoryRecord[]): CrossTypeSelectionResult {
+export function pickConsolidationFallback(cluster: MemoryRecord[]): ConsolidationVerificationResult {
   const sorted = [...cluster].sort((a, b) => {
     const typeDiff = (CROSS_TYPE_PRIORITY[b.type] ?? 0) - (CROSS_TYPE_PRIORITY[a.type] ?? 0)
     if (typeDiff !== 0) return typeDiff
@@ -680,12 +709,20 @@ export function pickCrossTypeFallback(cluster: MemoryRecord[]): CrossTypeSelecti
   })
 
   const keeper = sorted[0]
-  return { keptId: keeper.id, reason: 'fallback: best by type, usage, and recency' }
+  return { shouldMerge: true, keptId: keeper.id, reason: 'fallback: best by type, usage, and recency' }
 }
 
-function buildCrossTypeConsolidationInput(cluster: MemoryRecord[]): Record<string, unknown> {
+/** @deprecated Use pickConsolidationFallback instead */
+export function pickCrossTypeFallback(cluster: MemoryRecord[]): ConsolidationVerificationResult {
+  return pickConsolidationFallback(cluster)
+}
+
+function buildConsolidationVerificationInput(cluster: MemoryRecord[], crossType: boolean): Record<string, unknown> {
+  const types = new Set(cluster.map(r => r.type))
   return {
-    typePriority: ['procedure', 'warning', 'error', 'discovery', 'command'],
+    crossType,
+    clusterTypes: Array.from(types),
+    typePriority: crossType ? ['procedure', 'warning', 'error', 'discovery', 'command'] : undefined,
     records: cluster.map(record => ({
       id: record.id,
       type: record.type,
@@ -702,57 +739,79 @@ function buildCrossTypeConsolidationInput(cluster: MemoryRecord[]): Record<strin
   }
 }
 
-function coerceCrossTypeSelection(value: unknown): CrossTypeSelectionResult | null {
+function coerceConsolidationVerification(value: unknown): ConsolidationVerificationResult | null {
   if (!isPlainObject(value)) return null
+  const shouldMerge = typeof value.shouldMerge === 'boolean' ? value.shouldMerge : null
   const keptId = typeof value.keptId === 'string' ? value.keptId.trim() : ''
   const reason = typeof value.reason === 'string' ? value.reason.trim() : ''
-  if (!keptId) return null
-  return reason ? { keptId, reason } : { keptId }
+
+  if (shouldMerge === null || !reason) return null
+
+  // If shouldMerge is true, keptId is required
+  if (shouldMerge && !keptId) return null
+
+  return { shouldMerge, keptId: keptId || undefined, reason }
 }
 
-export async function selectCrossTypeRepresentative(
+/**
+ * LLM-based verification for consolidation clusters.
+ * Determines if records should be merged and selects the best representative.
+ */
+export async function llmVerifyConsolidation(
   cluster: MemoryRecord[],
-  config: Config
-): Promise<CrossTypeSelectionResult> {
+  config: Config,
+  options: { crossType?: boolean } = {}
+): Promise<ConsolidationVerificationResult> {
   const client = await getAnthropicClient()
   if (!client) {
-    throw new Error('No authentication available for cross-type consolidation.')
+    throw new Error('No authentication available for consolidation verification.')
   }
 
-  const payload = JSON.stringify(buildCrossTypeConsolidationInput(cluster), null, 2)
+  const crossType = options.crossType ?? false
+  const payload = JSON.stringify(buildConsolidationVerificationInput(cluster, crossType), null, 2)
 
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: Math.min(CROSS_TYPE_CONSOLIDATION_MAX_TOKENS, config.extraction.maxTokens),
+    max_tokens: Math.min(CONSOLIDATION_VERIFICATION_MAX_TOKENS, config.extraction.maxTokens),
     temperature: 0,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: CROSS_TYPE_CONSOLIDATION_PROMPT }
+      { type: 'text', text: CONSOLIDATION_VERIFICATION_PROMPT }
     ],
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
-    tools: [CROSS_TYPE_CONSOLIDATION_TOOL],
-    tool_choice: { type: 'tool', name: CROSS_TYPE_CONSOLIDATION_TOOL_NAME }
+    tools: [CONSOLIDATION_VERIFICATION_TOOL],
+    tool_choice: { type: 'tool', name: CONSOLIDATION_VERIFICATION_TOOL_NAME }
   })
 
   const toolInput = response.content.find((block): block is ToolUseBlock =>
-    isToolUseBlock(block) && block.name === CROSS_TYPE_CONSOLIDATION_TOOL_NAME
+    isToolUseBlock(block) && block.name === CONSOLIDATION_VERIFICATION_TOOL_NAME
   )?.input
 
   if (!toolInput) {
-    throw new Error('Cross-type consolidation tool call missing in response.')
+    throw new Error('Consolidation verification tool call missing in response.')
   }
 
-  const parsed = coerceCrossTypeSelection(toolInput)
+  const parsed = coerceConsolidationVerification(toolInput)
   if (!parsed) {
-    throw new Error('Cross-type consolidation response invalid or incomplete.')
+    throw new Error('Consolidation verification response invalid or incomplete.')
   }
 
-  const validIds = new Set(cluster.map(record => record.id))
-  if (!validIds.has(parsed.keptId)) {
-    throw new Error('Cross-type consolidation response referenced an unknown record.')
+  if (parsed.shouldMerge && parsed.keptId) {
+    const validIds = new Set(cluster.map(record => record.id))
+    if (!validIds.has(parsed.keptId)) {
+      throw new Error('Consolidation verification response referenced an unknown record.')
+    }
   }
 
   return parsed
+}
+
+/** @deprecated Use llmVerifyConsolidation instead */
+export async function selectCrossTypeRepresentative(
+  cluster: MemoryRecord[],
+  config: Config
+): Promise<ConsolidationVerificationResult> {
+  return llmVerifyConsolidation(cluster, config, { crossType: true })
 }
 
 /**
@@ -1314,6 +1373,11 @@ async function fetchRecords(
 
 function isValidEmbedding(embedding: number[] | undefined): embedding is number[] {
   return Array.isArray(embedding) && embedding.length === EMBEDDING_DIM
+}
+
+function wasRecentlyConsolidationChecked(record: MemoryRecord, cutoff: number): boolean {
+  const lastCheck = record.lastConsolidationCheck ?? 0
+  return lastCheck !== 0 && lastCheck >= cutoff
 }
 
 function isExactTextSimilar(seed: string, candidate: string, ratio: number): boolean {

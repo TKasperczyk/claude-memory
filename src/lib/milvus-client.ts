@@ -2,6 +2,7 @@ import { MilvusClient } from '@zilliz/milvus2-sdk-node'
 import { DEFAULT_CONFIG, type Config } from './types.js'
 import {
   createCollection,
+  ensureConsolidationCheckField,
   ensureConflictField,
   ensureGeneralizationFields,
   ensureGlobalCheckField,
@@ -31,6 +32,7 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
     await ensureScopeField(nextClient, config)
     await ensureGeneralizationFields(nextClient, config)
     await ensureGlobalCheckField(nextClient, config)
+    await ensureConsolidationCheckField(nextClient, config)
     await ensureConflictField(nextClient, config)
     await ensureWarningSynthesisField(nextClient, config)
     await ensureSourceFields(nextClient, config)

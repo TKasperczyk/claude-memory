@@ -48,6 +48,7 @@ export async function buildMilvusRow(record: MemoryRecord, config: Config): Prom
     generalized: Boolean(normalized.generalized),
     last_generalization_check: toInt64(normalized.lastGeneralizationCheck, 0),
     last_global_check: toInt64(normalized.lastGlobalCheck, 0),
+    last_consolidation_check: toInt64(normalized.lastConsolidationCheck, 0),
     last_conflict_check: toInt64(normalized.lastConflictCheck, 0),
     last_warning_synthesis_check: toInt64(normalized.lastWarningSynthesisCheck, 0),
     source_session_id: sourceSessionId ? truncateString(sourceSessionId, SOURCE_SESSION_ID_MAX_LENGTH) : null,
@@ -112,6 +113,10 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
     ),
     lastGlobalCheck: toInt64(
       (row.last_global_check as number | string | undefined) ?? parsed.lastGlobalCheck,
+      0
+    ),
+    lastConsolidationCheck: toInt64(
+      (row.last_consolidation_check as number | string | undefined) ?? parsed.lastConsolidationCheck,
       0
     ),
     lastConflictCheck: toInt64(
@@ -185,6 +190,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const generalized = toBoolean(record.generalized, false)
   const lastGeneralizationCheck = toInt64(record.lastGeneralizationCheck, 0)
   const lastGlobalCheck = toInt64(record.lastGlobalCheck, 0)
+  const lastConsolidationCheck = toInt64(record.lastConsolidationCheck, 0)
   const lastConflictCheck = toInt64(record.lastConflictCheck, 0)
 
   return {
@@ -202,6 +208,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     generalized,
     lastGeneralizationCheck,
     lastGlobalCheck,
+    lastConsolidationCheck,
     lastConflictCheck
   }
 }

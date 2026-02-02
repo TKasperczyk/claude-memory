@@ -39,7 +39,9 @@ const SETTING_RULES = {
   consolidationSearchLimit: { kind: 'int', min: 1 },
   consolidationMaxClusterSize: { kind: 'int', min: 1 },
   consolidationThreshold: { kind: 'float', min: 0, max: 1 },
-  crossTypeConsolidationThreshold: { kind: 'float', min: 0.93, max: 1 },
+  consolidationRecheckDays: { kind: 'int', min: 1 },
+  crossTypeConsolidationThreshold: { kind: 'float', min: 0.75, max: 1 },
+  enableConsolidationLlmVerification: { kind: 'bool' },
   consolidationTextSimilarityRatio: { kind: 'float', min: 0, max: 1 },
   conflictSimilarityThreshold: { kind: 'float', min: 0, max: 1 },
   conflictCheckBatchSize: { kind: 'int', min: 1 },
@@ -93,7 +95,9 @@ export function getDefaultMaintenanceSettings(): MaintenanceSettings {
     consolidationSearchLimit: 12,
     consolidationMaxClusterSize: 8,
     consolidationThreshold: SIMILARITY_THRESHOLDS.CONSOLIDATION,
+    consolidationRecheckDays: 7,
     crossTypeConsolidationThreshold: 0.93,
+    enableConsolidationLlmVerification: true,
     consolidationTextSimilarityRatio: 0.2,
     conflictSimilarityThreshold: 0.85,
     conflictCheckBatchSize: 10,
@@ -285,10 +289,19 @@ function coerceMaintenanceSettings(value: Record<string, unknown>, fallback: Mai
       value.consolidationThreshold,
       fallback.consolidationThreshold
     ),
+    consolidationRecheckDays: coerceSettingValue(
+      SETTING_RULES.consolidationRecheckDays,
+      value.consolidationRecheckDays,
+      fallback.consolidationRecheckDays
+    ),
     crossTypeConsolidationThreshold: coerceSettingValue(
       SETTING_RULES.crossTypeConsolidationThreshold,
       value.crossTypeConsolidationThreshold,
       fallback.crossTypeConsolidationThreshold
+    ),
+    enableConsolidationLlmVerification: coerceBooleanValue(
+      value.enableConsolidationLlmVerification,
+      fallback.enableConsolidationLlmVerification
     ),
     consolidationTextSimilarityRatio: coerceSettingValue(
       SETTING_RULES.consolidationTextSimilarityRatio,

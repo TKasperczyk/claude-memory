@@ -24,6 +24,7 @@ export const OUTPUT_FIELDS = [
   'generalized',
   'last_generalization_check',
   'last_global_check',
+  'last_consolidation_check',
   'last_conflict_check',
   'last_warning_synthesis_check',
   'source_session_id',
@@ -51,6 +52,7 @@ export async function createCollection(client: MilvusClient, config: Config): Pr
       { name: 'generalized', data_type: DataType.Bool },
       { name: 'last_generalization_check', data_type: DataType.Int64 },
       { name: 'last_global_check', data_type: DataType.Int64 },
+      { name: 'last_consolidation_check', data_type: DataType.Int64 },
       { name: 'last_conflict_check', data_type: DataType.Int64 },
       { name: 'last_warning_synthesis_check', data_type: DataType.Int64 },
       { name: 'source_session_id', data_type: DataType.VarChar, max_length: SOURCE_SESSION_ID_MAX_LENGTH, nullable: true },
@@ -181,6 +183,32 @@ export async function ensureGlobalCheckField(client: MilvusClient, config: Confi
     console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_global_check`)
   } catch (error) {
     console.error('[claude-memory] Failed to ensure global check field:', error)
+  }
+}
+
+export async function ensureConsolidationCheckField(client: MilvusClient, config: Config): Promise<void> {
+  try {
+    const description = await client.describeCollection({
+      collection_name: config.milvus.collection
+    })
+
+    const fields = description.schema?.fields ?? []
+    const fieldNames = new Set(fields.map(field => field.name))
+    if (fieldNames.has('last_consolidation_check')) return
+
+    const result = await client.addCollectionFields({
+      collection_name: config.milvus.collection,
+      fields: [{ name: 'last_consolidation_check', data_type: DataType.Int64, nullable: true }]
+    })
+
+    if (result.error_code !== 'Success') {
+      console.error(`[claude-memory] Failed to add consolidation check field: ${result.reason}`)
+      return
+    }
+
+    console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_consolidation_check`)
+  } catch (error) {
+    console.error('[claude-memory] Failed to ensure consolidation check field:', error)
   }
 }
 
