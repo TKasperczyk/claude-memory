@@ -35,6 +35,7 @@ const SETTING_RULES = {
   lowUsageMinRetrievals: { kind: 'int', min: 1 },
   lowUsageRatioThreshold: { kind: 'float', min: 0, max: 1 },
   lowUsageHighRetrievalMin: { kind: 'int', min: 1 },
+  staleUnusedDays: { kind: 'int', min: 1 },
   consolidationSearchLimit: { kind: 'int', min: 1 },
   consolidationMaxClusterSize: { kind: 'int', min: 1 },
   consolidationThreshold: { kind: 'float', min: 0, max: 1 },
@@ -86,7 +87,8 @@ export function getDefaultMaintenanceSettings(): MaintenanceSettings {
     discoveryMaxAgeDays: 180,
     lowUsageMinRetrievals: 5,
     lowUsageRatioThreshold: 0.1,
-    lowUsageHighRetrievalMin: 10,
+    lowUsageHighRetrievalMin: 5,
+    staleUnusedDays: 30,
     consolidationSearchLimit: 12,
     consolidationMaxClusterSize: 8,
     consolidationThreshold: SIMILARITY_THRESHOLDS.CONSOLIDATION,
@@ -260,6 +262,11 @@ function coerceMaintenanceSettings(value: Record<string, unknown>, fallback: Mai
       SETTING_RULES.lowUsageHighRetrievalMin,
       value.lowUsageHighRetrievalMin,
       fallback.lowUsageHighRetrievalMin
+    ),
+    staleUnusedDays: coerceSettingValue(
+      SETTING_RULES.staleUnusedDays,
+      value.staleUnusedDays,
+      fallback.staleUnusedDays
     ),
     consolidationSearchLimit: coerceSettingValue(
       SETTING_RULES.consolidationSearchLimit,

@@ -94,6 +94,14 @@ const MAINTENANCE_GROUPS: SettingsGroup[] = [
         step: 1,
         min: 1,
         kind: 'int'
+      },
+      {
+        key: 'staleUnusedDays',
+        label: 'Stale unused days',
+        description: 'Deprecate memories older than this with zero usage.',
+        step: 1,
+        min: 1,
+        kind: 'int'
       }
     ]
   },
@@ -129,8 +137,8 @@ const MAINTENANCE_GROUPS: SettingsGroup[] = [
       },
       {
         key: 'consolidationTextSimilarityRatio',
-        label: 'Text similarity ratio',
-        description: 'Levenshtein ratio for text-level duplicate detection.',
+        label: 'Contradiction text similarity ratio',
+        description: 'Levenshtein ratio used to skip near-duplicate text during contradiction detection.',
         step: 0.01,
         min: 0,
         max: 1,

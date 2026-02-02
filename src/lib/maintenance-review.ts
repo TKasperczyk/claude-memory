@@ -29,6 +29,7 @@ const REVIEW_MAX_ACTION_DIFF_CHARS = 2000
 
 const OPERATION_PROMPTS: Record<string, string> = {
   'stale-check': 'This operation identifies records unused for 90+ days. Goal: Deprecate truly obsolete records while preserving valuable niche knowledge. Key question: Are deprecated records truly obsolete?',
+  'stale-unused-deprecation': 'This operation deprecates old records that have never been used. Goal: Remove unused memories while preserving niche knowledge.',
   'low-usage': 'This operation deprecates records with poor usage ratios. Goal: Remove memories that consistently fail to help. Key question: Are these bad memories or valuable niche knowledge?',
   'low-usage-deprecation': 'This operation deprecates records with zero usage despite retrievals. Goal: Remove memories that never provide value.',
   'consolidation': 'This operation merges near-duplicate records. Goal: Reduce redundancy while keeping the best version. Key question: Were the right records kept?',
@@ -40,11 +41,11 @@ const OPERATION_PROMPTS: Record<string, string> = {
 
 const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
   'stale-check': ['staleDays', 'discoveryMaxAgeDays', 'procedureStepCheckCount'],
+  'stale-unused-deprecation': ['staleUnusedDays'],
   'low-usage': ['lowUsageMinRetrievals', 'lowUsageRatioThreshold'],
   'low-usage-deprecation': ['lowUsageHighRetrievalMin'],
   'consolidation': [
     'consolidationThreshold',
-    'consolidationTextSimilarityRatio',
     'consolidationSearchLimit',
     'consolidationMaxClusterSize'
   ],

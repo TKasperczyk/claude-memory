@@ -312,6 +312,21 @@ export async function findLowUsageHighRetrieval(
   return records.filter(record => (record.usageCount ?? 0) === 0)
 }
 
+/**
+ * Find records older than staleUnusedDays with zero usage.
+ * These are memories that were extracted but never proved useful.
+ */
+export async function findStaleUnusedRecords(
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
+): Promise<MemoryRecord[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
+  const cutoff = Date.now() - maintenance.staleUnusedDays * 24 * 60 * 60 * 1000
+  const filter = ['deprecated == false', `timestamp < ${Math.trunc(cutoff)}`].join(' && ')
+  const records = await fetchRecords(filter, config, false)
+  return records.filter(record => (record.usageCount ?? 0) === 0)
+}
+
 async function findNewConflicts(
   config: Config = DEFAULT_CONFIG,
   settings?: MaintenanceSettings
@@ -423,9 +438,6 @@ export async function findSimilarClusters(
       if (clusteredIds.has(record.id)) continue
       if (!isValidEmbedding(record.embedding)) continue
 
-      const seedText = normalizeExactText(buildExactText(record))
-      if (!seedText) continue
-
       const matches = await vectorSearchSimilar(
         record.embedding,
         {
@@ -446,10 +458,8 @@ export async function findSimilarClusters(
         if (clusteredIds.has(candidate.id)) continue
         if (candidate.deprecated) continue
 
-        const candidateText = normalizeExactText(buildExactText(candidate))
-        if (!candidateText) continue
-        if (!isExactTextSimilar(seedText, candidateText, maintenance.consolidationTextSimilarityRatio)) continue
-
+        // Rely purely on vector similarity - text similarity check was too strict
+        // and missed semantic duplicates with different wording
         cluster.push(candidate)
         members.push({ record: candidate, similarity: match.similarity })
         if (cluster.length >= maintenance.consolidationMaxClusterSize) break

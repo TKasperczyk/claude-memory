@@ -180,6 +180,7 @@ export interface MaintenanceSettings {
   lowUsageMinRetrievals: number
   lowUsageRatioThreshold: number
   lowUsageHighRetrievalMin: number
+  staleUnusedDays: number
   consolidationSearchLimit: number
   consolidationMaxClusterSize: number
   consolidationThreshold: number

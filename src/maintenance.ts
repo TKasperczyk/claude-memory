@@ -11,6 +11,7 @@ import {
   findLowUsageHighRetrieval,
   findLowUsageRecords,
   findSimilarClusters,
+  findStaleUnusedRecords,
   GLOBAL_PROMOTION_MIN_CONFIDENCE,
   runConflictResolution,
   runWarningSynthesis as runWarningSynthesisInternal,
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
   console.error('[claude-memory] Maintenance started.')
 
   logMaintenanceResult('Stale check', await runStaleCheck(dryRun, config, maintenanceSettings), dryRun)
+  logMaintenanceResult('Stale unused deprecation', await runStaleUnusedDeprecation(dryRun, config, maintenanceSettings), dryRun)
   logMaintenanceResult('Low usage deprecation', await runLowUsageDeprecation(dryRun, config, maintenanceSettings), dryRun)
   logMaintenanceResult('Low usage check', await runLowUsageCheck(dryRun, config, maintenanceSettings), dryRun)
   logMaintenanceResult('Consolidation', await runConsolidation(dryRun, config, maintenanceSettings), dryRun)
@@ -195,6 +197,72 @@ export async function runLowUsageDeprecation(
         snippet: truncateSnippet(buildRecordSnippet(record)),
         reason,
         details: { retrievalCount, usageCount }
+      }
+
+      try {
+        if (dryRun) {
+          actions.push(action)
+          deprecated += 1
+        } else {
+          const updated = await markDeprecated(record.id, config)
+          if (updated) {
+            actions.push(action)
+            deprecated += 1
+          }
+        }
+      } catch {
+        errors += 1
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { actions, summary: { candidates, deprecated, errors }, candidates: candidateGroups, error: message }
+  }
+
+  return { actions, summary: { candidates, deprecated, errors }, candidates: candidateGroups }
+}
+
+/**
+ * Deprecate old memories that have never been used.
+ * These are memories that were extracted but never proved useful.
+ */
+export async function runStaleUnusedDeprecation(
+  dryRun: boolean,
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
+): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
+  const actions: MaintenanceAction[] = []
+  const candidateGroups: MaintenanceCandidateGroup[] = []
+  let candidates = 0
+  let deprecated = 0
+  let errors = 0
+
+  try {
+    const records = await findStaleUnusedRecords(config, maintenance)
+    candidates = records.length
+    if (records.length > 0) {
+      const candidateRecords = records.map(record => {
+        const ageInDays = Math.floor((Date.now() - (record.timestamp ?? 0)) / DAY_MS)
+        const reason = `stale-unused:${ageInDays} days old, never used`
+        return buildCandidateRecord(record, reason, { ageInDays, usageCount: 0 })
+      })
+      candidateGroups.push({
+        id: 'stale-unused',
+        label: 'Stale unused candidates',
+        records: candidateRecords
+      })
+    }
+
+    for (const record of records) {
+      const ageInDays = Math.floor((Date.now() - (record.timestamp ?? 0)) / DAY_MS)
+      const reason = `stale-unused:${ageInDays} days old, never used`
+      const action: MaintenanceAction = {
+        type: 'deprecate',
+        recordId: record.id,
+        snippet: truncateSnippet(buildRecordSnippet(record)),
+        reason,
+        details: { ageInDays, usageCount: 0 }
       }
 
       try {

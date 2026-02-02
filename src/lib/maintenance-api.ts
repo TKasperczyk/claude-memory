@@ -6,6 +6,7 @@ import { loadSettings, type MaintenanceSettings } from './settings.js'
 import type { MaintenanceOperationInfo, OperationResult } from '../../shared/types.js'
 import {
   runStaleCheck,
+  runStaleUnusedDeprecation,
   runLowUsageDeprecation,
   runLowUsageCheck,
   runConsolidation,
@@ -21,6 +22,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     key: 'stale-check',
     label: 'Stale Check',
     description: 'Find records unused for the configured number of days',
+    allowExecute: true
+  },
+  {
+    key: 'stale-unused-deprecation',
+    label: 'Stale Unused Deprecation',
+    description: 'Deprecate old records that have never been used',
     allowExecute: true
   },
   {
@@ -136,6 +143,8 @@ async function runOperation(
   switch (operation) {
     case 'stale-check':
       return runStaleCheck(dryRun, config, settings)
+    case 'stale-unused-deprecation':
+      return runStaleUnusedDeprecation(dryRun, config, settings)
     case 'low-usage-deprecation':
       return runLowUsageDeprecation(dryRun, config, settings)
     case 'low-usage':

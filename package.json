@@ -7,6 +7,9 @@
     "build": "tsc",
     "dev": "tsx watch src/",
     "maintenance": "tsx src/maintenance.ts",
+    "audit": "tsx scripts/gemini-audit.ts",
+    "audit:auto": "tsx scripts/gemini-audit.ts --auto",
+    "apply-audit": "tsx scripts/apply-audit.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui"
