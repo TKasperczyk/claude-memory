@@ -371,6 +371,12 @@ export interface MaintenanceOperationInfo {
   allowExecute: boolean
 }
 
+export interface MaintenanceProgress {
+  current: number
+  total: number
+  message?: string
+}
+
 export interface OperationResult {
   operation: string
   dryRun: boolean

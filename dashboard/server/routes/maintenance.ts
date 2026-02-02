@@ -264,13 +264,29 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
   router.get('/api/maintenance/stream', async (req, res) => {
     const dryRun = req.query.dryRun === 'true'
+    const singleOperation = typeof req.query.operation === 'string' ? req.query.operation : null
+    const operationsToRun = singleOperation
+      ? MAINTENANCE_OPERATIONS.filter(op => op === singleOperation)
+      : MAINTENANCE_OPERATIONS
+
+    if (singleOperation && !MAINTENANCE_OPERATIONS.includes(singleOperation as MaintenanceOperation)) {
+      return res.status(400).json({ error: 'Unknown operation' })
+    }
 
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
     res.flushHeaders()
 
+    const abortController = new AbortController()
+
+    res.on('close', () => {
+      abortController.abort()
+      logger.info('Client disconnected from maintenance stream')
+    })
+
     const sendEvent = (event: string, data: unknown) => {
+      if (abortController.signal.aborted || res.writableEnded) return
       res.write(`event: ${event}\n`)
       res.write(`data: ${JSON.stringify(data)}\n\n`)
     }
@@ -279,16 +295,34 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       const config = await ensureConfigInitialized(req, baseConfig)
 
       sendEvent('start', {
-        operations: MAINTENANCE_OPERATIONS,
+        operations: operationsToRun,
         dryRun
       })
 
-      for (const operation of MAINTENANCE_OPERATIONS) {
+      for (const operation of operationsToRun) {
+        if (abortController.signal.aborted) break
+
         sendEvent('progress', { operation, status: 'running' })
 
         try {
           const effectiveDryRun = operation === 'promotion-suggestions' ? true : dryRun
-          const result = await runMaintenanceOperation(operation, effectiveDryRun, config)
+          const result = await runMaintenanceOperation(
+            operation,
+            effectiveDryRun,
+            config,
+            undefined,
+            (progress) => {
+              // Emit detailed progress updates for consolidation operations
+              if (!abortController.signal.aborted && !res.writableEnded) {
+                sendEvent('detailed-progress', {
+                  operation,
+                  current: progress.current,
+                  total: progress.total,
+                  message: progress.message
+                })
+              }
+            }
+          )
           sendEvent('result', result)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
@@ -301,7 +335,9 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       const message = error instanceof Error ? error.message : String(error)
       sendEvent('error', { error: message })
     } finally {
-      res.end()
+      if (!res.writableEnded) {
+        res.end()
+      }
     }
   })
 

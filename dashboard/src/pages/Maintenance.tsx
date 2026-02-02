@@ -18,6 +18,7 @@ import {
   type MaintenanceCandidateGroup,
   type MaintenanceCandidateRecord,
   type MaintenanceOperationInfo,
+  type MaintenanceProgress,
   type MaintenanceReview,
   type OperationResult,
   type Settings
@@ -1127,6 +1128,7 @@ export default function Maintenance() {
   const [bulkRunning, setBulkRunning] = useState(false)
   const [bulkMode, setBulkMode] = useState<'preview' | 'run' | null>(null)
   const [bulkProgress, setBulkProgress] = useState<Record<MaintenanceOperation, BulkProgressState> | null>(null)
+  const [detailedProgress, setDetailedProgress] = useState<Record<MaintenanceOperation, MaintenanceProgress> | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState>(null)
   const [applyConfirm, setApplyConfirm] = useState<ApplyConfirmState>(null)
@@ -1179,26 +1181,103 @@ export default function Maintenance() {
   const handleRunOperation = async (operation: MaintenanceOperation, dryRun: boolean) => {
     setOperationRunning(operation, true)
     setRunningMode(prev => ({ ...prev, [operation]: dryRun ? 'preview' : 'run' }))
-    try {
-      const result = await runMaintenance(operation, dryRun)
-      setResults(prev => ({ ...prev, [operation]: result }))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to run maintenance operation'
-      setResults(prev => ({
-        ...prev,
-        [operation]: {
-          operation,
-          dryRun,
-          actions: [],
-          summary: {},
-          candidates: [],
-          duration: 0,
-          error: message
+
+    // Use streaming for operations that support progress
+    const supportsProgress = operation === 'consolidation' || operation === 'cross-type-consolidation'
+
+    if (supportsProgress) {
+      // Use SSE streaming for progress
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
+        eventSourceRef.current = null
+      }
+
+      const eventSource = new EventSource(`/api/maintenance/stream?dryRun=${dryRun}&operation=${operation}`)
+      eventSourceRef.current = eventSource
+
+      eventSource.addEventListener('detailed-progress', (event) => {
+        const data = JSON.parse(event.data)
+        if (data.operation && data.current !== undefined && data.total !== undefined) {
+          const op = data.operation as MaintenanceOperation
+          setDetailedProgress(prev => ({
+            ...(prev || {}),
+            [op]: { current: data.current, total: data.total, message: data.message }
+          }))
         }
-      }))
-    } finally {
-      setOperationRunning(operation, false)
-      setRunningMode(prev => ({ ...prev, [operation]: null }))
+      })
+
+      eventSource.addEventListener('result', (event) => {
+        const result = JSON.parse(event.data) as OperationResult
+        if (result.operation === operation) {
+          setDetailedProgress(prev => {
+            if (!prev) return null
+            const { [operation]: _, ...rest } = prev
+            return Object.keys(rest).length > 0 ? rest as Record<MaintenanceOperation, MaintenanceProgress> : null
+          })
+          setResults(prev => ({ ...prev, [operation]: result }))
+        }
+      })
+
+      eventSource.addEventListener('error', (event) => {
+        if (event instanceof MessageEvent) {
+          const data = JSON.parse(event.data)
+          const message = data.error || 'Failed to run maintenance operation'
+          setResults(prev => ({
+            ...prev,
+            [operation]: {
+              operation,
+              dryRun,
+              actions: [],
+              summary: {},
+              candidates: [],
+              duration: 0,
+              error: message
+            }
+          }))
+        }
+      })
+
+      eventSource.addEventListener('complete', () => {
+        setOperationRunning(operation, false)
+        setRunningMode(prev => ({ ...prev, [operation]: null }))
+        eventSource.close()
+        eventSourceRef.current = null
+      })
+
+      eventSource.onerror = () => {
+        setOperationRunning(operation, false)
+        setRunningMode(prev => ({ ...prev, [operation]: null }))
+        setDetailedProgress(prev => {
+          if (!prev) return null
+          const { [operation]: _, ...rest } = prev
+          return Object.keys(rest).length > 0 ? rest as Record<MaintenanceOperation, MaintenanceProgress> : null
+        })
+        eventSource.close()
+        eventSourceRef.current = null
+      }
+    } else {
+      // Use non-streaming for operations without progress
+      try {
+        const result = await runMaintenance(operation, dryRun)
+        setResults(prev => ({ ...prev, [operation]: result }))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to run maintenance operation'
+        setResults(prev => ({
+          ...prev,
+          [operation]: {
+            operation,
+            dryRun,
+            actions: [],
+            summary: {},
+            candidates: [],
+            duration: 0,
+            error: message
+          }
+        }))
+      } finally {
+        setOperationRunning(operation, false)
+        setRunningMode(prev => ({ ...prev, [operation]: null }))
+      }
     }
   }
 
@@ -1229,11 +1308,27 @@ export default function Maintenance() {
       }
     })
 
+    eventSource.addEventListener('detailed-progress', (event) => {
+      const data = JSON.parse(event.data)
+      if (data.operation && data.current !== undefined && data.total !== undefined) {
+        const op = data.operation as MaintenanceOperation
+        setDetailedProgress(prev => ({
+          ...(prev || {}),
+          [op]: { current: data.current, total: data.total, message: data.message }
+        }))
+      }
+    })
+
     eventSource.addEventListener('result', (event) => {
       const result = JSON.parse(event.data) as OperationResult
       if (result.operation) {
         const op = result.operation as MaintenanceOperation
         setBulkProgress(prev => prev ? { ...prev, [op]: 'completed' } : null)
+        setDetailedProgress(prev => {
+          if (!prev) return null
+          const { [op]: _, ...rest } = prev
+          return Object.keys(rest).length > 0 ? rest as Record<MaintenanceOperation, MaintenanceProgress> : null
+        })
         setResults(prev => ({
           ...prev,
           [op]: result
@@ -1251,6 +1346,7 @@ export default function Maintenance() {
     eventSource.addEventListener('complete', () => {
       setBulkRunning(false)
       setBulkProgress(null)
+      setDetailedProgress(null)
       setBulkMode(null)
       eventSource.close()
       eventSourceRef.current = null
@@ -1259,6 +1355,7 @@ export default function Maintenance() {
     eventSource.onerror = () => {
       setBulkRunning(false)
       setBulkProgress(null)
+      setDetailedProgress(null)
       setBulkMode(null)
       eventSource.close()
       eventSourceRef.current = null
@@ -1499,7 +1596,8 @@ export default function Maintenance() {
           const isRunRunning = mode === 'run'
           const isDisabled = isRunning || bulkRunning
           const bulkStatus = bulkProgress?.[operation.key]
-          const isCurrent = bulkStatus === 'running'
+          const hasDetailedProgress = detailedProgress?.[operation.key] !== undefined
+          const isCurrent = bulkStatus === 'running' || (isRunning && hasDetailedProgress)
           return (
             <section key={operation.key} className={`p-6 rounded-xl border bg-card space-y-4 transition-base ${isCurrent ? 'border-type-discovery ring-1 ring-type-discovery/30' : 'border-border'}`}>
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1533,6 +1631,27 @@ export default function Maintenance() {
                   )}
                 </div>
               </div>
+
+              {isCurrent && detailedProgress && detailedProgress[operation.key] && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">
+                      {detailedProgress[operation.key].message || 'Processing...'}
+                    </span>
+                    <span className="text-muted-foreground font-mono">
+                      {detailedProgress[operation.key].current}/{detailedProgress[operation.key].total}
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-secondary/30 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-type-discovery transition-all duration-300 ease-out"
+                      style={{
+                        width: `${(detailedProgress[operation.key].current / detailedProgress[operation.key].total) * 100}%`
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
 
               {result && (
                 <ResultPanel

@@ -29,12 +29,14 @@ import { findClaudeMdCandidates, findSkillCandidates, writeSuggestions } from '.
 import { loadConfig } from './lib/config.js'
 import { createLogger } from './lib/logger.js'
 
+type ProgressCallback = (progress: MaintenanceProgress) => void
+
 const logger = createLogger('maintenance')
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './lib/types.js'
 import { loadSettings, type MaintenanceSettings } from './lib/settings.js'
 import { batchUpdateRecords, queryRecords, updateRecord } from './lib/milvus.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from './lib/shared.js'
-import type { MaintenanceAction, MaintenanceActionDetails, MaintenanceActionType, MaintenanceMergeRecord } from '../shared/types.js'
+import type { MaintenanceAction, MaintenanceActionDetails, MaintenanceActionType, MaintenanceMergeRecord, MaintenanceProgress } from '../shared/types.js'
 
 export { runConflictResolution }
 
@@ -399,7 +401,8 @@ export async function runLowUsageCheck(
 export async function runConsolidation(
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG,
-  settings?: MaintenanceSettings
+  settings?: MaintenanceSettings,
+  onProgress?: ProgressCallback
 ): Promise<MaintenanceRunResult> {
   const maintenance = resolveMaintenanceSettings(settings)
   const actions: MaintenanceAction[] = []
@@ -432,6 +435,16 @@ export async function runConsolidation(
       let checkedAt: number | null = null
       const types = [...new Set(clusterRecords.map(r => r.type))].join(', ')
       logger.info(`Processing cluster ${i + 1}/${clusters.length} (${clusterRecords.length} records, types: ${types})`)
+
+      // Report progress if callback provided
+      if (onProgress) {
+        onProgress({
+          current: i + 1,
+          total: clusters.length,
+          message: `Processing cluster ${i + 1}/${clusters.length} (${types})`
+        })
+      }
+
       try {
         const recordById = new Map(clusterRecords.map(record => [record.id, record]))
         const buildDeprecatedRecords = (deprecatedIds: string[]) =>
@@ -551,7 +564,8 @@ export async function runConsolidation(
 export async function runCrossTypeConsolidation(
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG,
-  settings?: MaintenanceSettings
+  settings?: MaintenanceSettings,
+  onProgress?: ProgressCallback
 ): Promise<MaintenanceRunResult> {
   const maintenance = resolveMaintenanceSettings(settings)
   const actions: MaintenanceAction[] = []
@@ -584,6 +598,15 @@ export async function runCrossTypeConsolidation(
       let checkedAt: number | null = null
       const types = [...new Set(clusterRecords.map(r => r.type))].join(', ')
       logger.info(`Processing cross-type cluster ${i + 1}/${clusters.length} (${clusterRecords.length} records, types: ${types})`)
+
+      // Report progress if callback provided
+      if (onProgress) {
+        onProgress({
+          current: i + 1,
+          total: clusters.length,
+          message: `Processing cluster ${i + 1}/${clusters.length} (${types})`
+        })
+      }
       try {
         const recordById = new Map(clusterRecords.map(record => [record.id, record]))
         const buildDeprecatedRecords = (deprecatedIds: string[]) =>

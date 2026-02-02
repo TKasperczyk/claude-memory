@@ -3,7 +3,7 @@ import { findGitRoot } from './context.js'
 import { buildPromotionDiffs } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { loadSettings, type MaintenanceSettings } from './settings.js'
-import type { MaintenanceOperationInfo, OperationResult } from '../../shared/types.js'
+import type { MaintenanceOperationInfo, MaintenanceProgress, OperationResult } from '../../shared/types.js'
 import {
   runStaleCheck,
   runStaleUnusedDeprecation,
@@ -93,17 +93,20 @@ function resolveMaintenanceSettings(settings?: MaintenanceSettings): Maintenance
   return settings ?? loadSettings()
 }
 
+export type MaintenanceProgressCallback = (progress: MaintenanceProgress) => void
+
 export async function runMaintenanceOperation(
   operation: MaintenanceOperation,
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG,
-  settings?: MaintenanceSettings
+  settings?: MaintenanceSettings,
+  onProgress?: MaintenanceProgressCallback
 ): Promise<OperationResult> {
   const started = Date.now()
   const maintenance = resolveMaintenanceSettings(settings)
 
   try {
-    const payload = await runOperation(operation, dryRun, config, maintenance)
+    const payload = await runOperation(operation, dryRun, config, maintenance, onProgress)
     return {
       operation,
       dryRun,
@@ -145,7 +148,8 @@ async function runOperation(
   operation: MaintenanceOperation,
   dryRun: boolean,
   config: Config,
-  settings: MaintenanceSettings
+  settings: MaintenanceSettings,
+  onProgress?: MaintenanceProgressCallback
 ): Promise<MaintenanceRunResult> {
   switch (operation) {
     case 'stale-check':
@@ -157,9 +161,9 @@ async function runOperation(
     case 'low-usage':
       return runLowUsageCheck(dryRun, config, settings)
     case 'consolidation':
-      return runConsolidation(dryRun, config, settings)
+      return runConsolidation(dryRun, config, settings, onProgress)
     case 'cross-type-consolidation':
-      return runCrossTypeConsolidation(dryRun, config, settings)
+      return runCrossTypeConsolidation(dryRun, config, settings, onProgress)
     case 'conflict-resolution':
       return runConflictResolution(dryRun, config, settings)
     case 'warning-synthesis':
