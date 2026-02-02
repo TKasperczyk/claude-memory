@@ -102,9 +102,9 @@ type CCJsonlEntry = {
   isError?: boolean
 }
 
-const TOOL_OUTPUT_MAX_CHARS = 8000
-const TOOL_SNIPPET_MAX_CHARS = 400
-const MESSAGE_TEXT_MAX_CHARS = 20000
+const TOOL_OUTPUT_MAX_CHARS = 30000
+const TOOL_SNIPPET_MAX_CHARS = 1000
+const MESSAGE_TEXT_MAX_CHARS = 60000
 const PARSE_WARN_LIMIT = 5
 
 export type TranscriptTurn = {

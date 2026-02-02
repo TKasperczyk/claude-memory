@@ -70,17 +70,17 @@ export function getDefaultRetrievalSettings(): RetrievalSettings {
     minSemanticSimilarity: 0.70,
     minScore: 0.45,
     minSemanticOnlyScore: 0.65,
-    maxRecords: 5,
-    maxTokens: 2000,
+    maxRecords: 8,
+    maxTokens: 4000,
     mmrLambda: 0.7,
     usageRatioWeight: 0.2,
     enableHaikuRetrieval: false,
-    maxKeywordQueries: 4,
-    maxKeywordErrors: 2,
-    maxKeywordCommands: 2,
+    maxKeywordQueries: 6,
+    maxKeywordErrors: 3,
+    maxKeywordCommands: 3,
     prePromptTimeoutMs: 5000,
     haikuQueryTimeoutMs: 2500,
-    maxSemanticQueryChars: 1200
+    maxSemanticQueryChars: 3000
   }
 }
 

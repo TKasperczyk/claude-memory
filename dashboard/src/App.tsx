@@ -22,9 +22,9 @@ function Sidebar() {
   const location = useLocation()
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-50 w-52 border-r border-border/40 bg-background/95 backdrop-blur-sm flex flex-col">
+    <aside className="fixed inset-y-0 left-0 z-50 w-52 border-r border-sidebar-border bg-sidebar backdrop-blur-sm flex flex-col">
       {/* Logo */}
-      <div className="h-14 flex items-center px-4 border-b border-border/40">
+      <div className="h-14 flex items-center px-4 border-b border-sidebar-border">
         <div className="flex items-center gap-2.5">
           <div className="w-2.5 h-2.5 rounded-full bg-type-discovery shadow-[0_0_8px_rgba(96,165,250,0.4)]" />
           <span className="font-semibold text-[15px] tracking-tight">Memory</span>
@@ -56,7 +56,7 @@ function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-4 py-3 border-t border-border/40">
+      <div className="px-4 py-3 border-t border-sidebar-border">
         <div className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 font-medium">
           Claude Memory
         </div>
@@ -68,10 +68,10 @@ function Sidebar() {
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="h-screen bg-background overflow-hidden">
+      <div className="min-h-screen bg-background">
         <Sidebar />
-        <main className="pl-52 h-full flex flex-col">
-          <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 lg:px-8 py-6 w-full flex-1 min-h-0 flex flex-col">
+        <main className="pl-52 min-h-screen">
+          <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 lg:px-8 py-6 w-full">
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/memories" element={<MemoryPool />} />

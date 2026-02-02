@@ -21,11 +21,11 @@ export interface ExtractionContext {
 
 const TOOL_NAME = 'emit_records'
 const USEFULNESS_TOOL_NAME = 'emit_usefulness'
-const MAX_TRANSCRIPT_CHARS = 60000
-const MAX_USEFULNESS_TRANSCRIPT_CHARS = 40000
-const MAX_INTENT_CHARS = 240
-const MAX_TRUNCATED_OUTPUT_CHARS = 6000
-const MAX_TOOL_INPUT_CHARS = 4000
+const MAX_TRANSCRIPT_CHARS = 500000  // ~125k tokens, leaves room for system prompt + response in 200k context
+const MAX_USEFULNESS_TRANSCRIPT_CHARS = 300000
+const MAX_INTENT_CHARS = 400
+const MAX_TRUNCATED_OUTPUT_CHARS = 20000
+const MAX_TOOL_INPUT_CHARS = 12000
 const USEFULNESS_MAX_TOKENS = 800
 const DOMAIN_EXAMPLES_TTL_MS = 5 * 60 * 1000
 
@@ -47,16 +47,37 @@ Rules:
 - When transcript output includes a "[truncated]" marker, do not include that marker in extracted text.
 - Extract warnings when Claude explicitly learns that an approach doesn't work and identifies a better alternative.
 
-CRITICAL - Source Evidence:
-- EVERY record MUST include a sourceExcerpt field with a verbatim quote from the transcript.
-- The sourceExcerpt must contain the actual text that supports the extraction.
-- For commands: quote the tool call or result that shows the command.
-- For errors: quote the error message as it appears in the transcript.
-- For discoveries: quote the specific transcript segment that establishes the fact.
-- For procedures: quote the steps as they appear in the conversation.
-- For warnings: quote the conversation that shows the failed approach and the working alternative.
-- If you cannot find a specific transcript segment to cite, DO NOT extract that record.
-- Do not synthesize or infer information that isn't directly supported by transcript text.
+CRITICAL - Source Evidence (Citation Anchor):
+- EVERY record MUST include a sourceExcerpt field that anchors the record to the transcript.
+- sourceExcerpt points to WHERE in the transcript this knowledge came from.
+
+For records with clear single sources (VERBATIM required):
+- Commands: quote the tool result showing the command execution
+- Errors: quote the error message itself
+- These have unambiguous sources - copy them exactly.
+
+For synthesized records (DESCRIPTIVE anchor allowed):
+- Discoveries: may synthesize facts from multiple transcript locations
+- Procedures: may combine steps mentioned in different places
+- Warnings: may combine problem identification and solution from different moments
+- For these, sourceExcerpt can be EITHER:
+  a) A verbatim quote from the KEY MOMENT (preferred if one exists)
+  b) A short descriptive anchor like "Assistant explanation after Edit to extract.ts" or "Discussion of reviewer validation issue"
+- The anchor should help someone LOCATE the relevant part of the transcript.
+
+General rules:
+- sourceExcerpt does NOT need to contain every detail in the record.
+- Other fields (what, evidence, steps) can synthesize broader context.
+- If the record synthesizes from multiple places, anchor to the MOST IMPORTANT moment.
+- If you cannot point to any transcript location, DO NOT extract that record.
+
+CRITICAL - No Hallucination:
+- All facts in the record (what, evidence, steps, etc.) must appear SOMEWHERE in the transcript.
+- The evidence field can synthesize facts from multiple transcript locations, but every fact must be grounded in actual transcript content.
+- Do NOT add specific values (colors, numbers, file names) unless they literally appear in the transcript.
+- Do NOT describe sources incorrectly - if you didn't see "grep output", don't say "grep output shows".
+- If the transcript says "uses orange theme", extract that - don't add HSL values you didn't see.
+- When in doubt, include less detail rather than risk hallucination.
 
 Priority guidance:
 - Prefer extracting project-level context over routine commands.
@@ -64,8 +85,20 @@ Priority guidance:
 - Focus on insights that would help orient a future session in this codebase.
 - Extract warnings when there's a clear "don't do X, do Y instead" pattern.
 
+Record consolidation:
+- Prefer fewer, comprehensive records over many granular ones.
+- If multiple related changes were made (e.g., fixing several aspects of a system), extract ONE discovery that captures the overall change with key details, not separate records for each file touched.
+- A single "overhauled authentication system: added JWT tokens, refresh logic, and logout endpoint" is better than three separate discoveries.
+- Do NOT extract both a warning AND a discovery for the same issue/fix. If a discovery documents a fix, don't also extract a warning about the original problem - the discovery already captures the lesson.
+
+External system bugs:
+- When the transcript reveals a bug or unexpected behavior in an external tool/system (not the project being worked on), extract it as a warning with scope: "global".
+- Example: "npm has race condition in postinstall scripts" or "Docker build cache invalidates unexpectedly".
+- These are valuable because they help future sessions avoid the same debugging journey.
+
 Skip trivial commands:
-- Do NOT extract routine/trivial commands: ls, cd, cat, pwd, echo, mkdir, rm, cp, mv, touch, head, tail, wc, grep (basic usage), find (basic usage), git status, git log, git diff, git branch, git checkout, npm/pnpm/yarn install (without special flags), basic file reads.
+- Do NOT extract routine/trivial commands: ls, cd, cat, pwd, echo, mkdir, rm, cp, mv, touch, head, tail, wc, grep (basic usage), find (basic usage), git status, git log, git diff, git branch, git checkout, npm/pnpm/yarn install/build/test (without special flags or unless they fail interestingly), tsc, basic file reads.
+- Do NOT extract verification builds (pnpm build, npm run build, tsc) that just confirm code compiles - these are routine.
 - Only extract commands that required problem-solving, had non-obvious flags/options, or produced unexpected results that led to learning.
 - A command is worth extracting if a future session would benefit from knowing "this specific invocation worked" or "this flag combination solved a problem".
 
@@ -261,8 +294,16 @@ Extraction guidance:
    - Key patterns & conventions ("API routes at /api/[resource]/+server.ts")
    - Important dependencies & integrations ("uses TanStack Query for data fetching")
    - Project structure insights ("tests in /tests, e2e uses Playwright")
+   - Bug fixes and solutions implemented ("added lock file mechanism to prevent duplicate extractions")
+   - Design decisions and their rationale ("reviewer loads actual transcript for validation")
+   - Configuration changes (model versions, thresholds, limits, environment settings)
    Also include specific tool/config discoveries when genuinely useful.
+   IMPORTANT: Extract BOTH problems found AND solutions implemented - don't just extract warnings about what's wrong.
 4) ProcedureRecord: step-by-step procedures with exact commands.
+   Also extract brief "how to" instructions that appear in assistant messages, e.g.:
+   - "To enable dark mode, add class='dark' to the <html> element"
+   - "To run in dev mode, use --watch flag"
+   These are valuable even if they're single-step - they document non-obvious activation patterns.
 5) WarningRecord: extract when Claude learns something doesn't work.
    - avoid: the approach that failed (be specific)
    - useInstead: what works instead
@@ -275,8 +316,8 @@ Formatting rules:
 - Use short, specific intent strings.
 - If exit code is not explicit, infer 0 for success and 1 for failure.
 - Do not include the "[truncated]" marker in extracted fields.
-- sourceExcerpt MUST be a verbatim quote from the transcript above that justifies this extraction.
-- If no transcript segment directly supports the extraction, do not extract the record.
+- sourceExcerpt anchors the record to the transcript (verbatim for commands/errors, can be descriptive for discoveries/procedures/warnings).
+- If no transcript location supports the extraction, do not extract the record.
 
 Transcript:
 ${transcriptText}
@@ -316,6 +357,13 @@ function buildPriorKnowledgeSection(injectedMemories?: InjectedMemoryEntry[]): s
 Prior knowledge (memories injected during this session):
 ${memoriesText}
 
+IMPORTANT - Duplicate prevention:
+Do NOT extract records that duplicate information already captured in prior knowledge above.
+If a discovery/procedure/warning is essentially the same as an injected memory, skip it entirely.
+Only extract if:
+- The information is NEW (not in prior knowledge)
+- OR the transcript shows prior knowledge is OUTDATED/INCORRECT (use supersedes field)
+
 IMPORTANT - Change detection:
 If the transcript shows that any of the above prior knowledge is now OUTDATED, INCORRECT, or SUPERSEDED:
 - Extract a new discovery or warning that captures the CURRENT correct information
@@ -326,7 +374,7 @@ If the transcript shows that any of the above prior knowledge is now OUTDATED, I
 `
 }
 
-function formatTranscript(events: TranscriptEvent[], maxChars: number): string {
+export function formatTranscript(events: TranscriptEvent[], maxChars: number): string {
   const formatted: string[] = []
   for (const event of events) {
     const block = formatEvent(event)

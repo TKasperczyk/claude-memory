@@ -14,9 +14,9 @@ export interface RetrievalQueryPlan {
 }
 
 const TOOL_NAME = 'emit_query_plan'
-const QUERY_MAX_TOKENS = 500
-const MAX_CONTEXT_TURNS = 5
-const MAX_TURN_CHARS = 1200
+const QUERY_MAX_TOKENS = 1000
+const MAX_CONTEXT_TURNS = 8
+const MAX_TURN_CHARS = 4000
 
 const SYSTEM_PROMPT = `You generate search queries for a technical memory database.
 

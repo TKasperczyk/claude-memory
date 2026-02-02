@@ -38,11 +38,11 @@ const logger = createLogger('maintenance')
 export type { MaintenanceCandidateGroup, MaintenanceCandidateRecord } from '../../shared/types.js'
 
 const QUERY_PAGE_SIZE = 500
-const GENERALIZATION_MAX_TOKENS = 800
-const CONTRADICTION_MAX_TOKENS = 600
-const CONFLICT_ADJUDICATION_MAX_TOKENS = 600
+const GENERALIZATION_MAX_TOKENS = 1500
+const CONTRADICTION_MAX_TOKENS = 1200
+const CONFLICT_ADJUDICATION_MAX_TOKENS = 1200
 const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
-const GLOBAL_PROMOTION_MAX_TOKENS = 400
+const GLOBAL_PROMOTION_MAX_TOKENS = 800
 export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
 function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
   return settings ?? loadSettings()
@@ -50,11 +50,11 @@ function resolveMaintenanceSettings(settings?: MaintenanceSettings): Maintenance
 
 // Warning synthesis constants
 const WARNING_SYNTHESIS_MIN_FAILURES = 2
-const WARNING_SYNTHESIS_BATCH_SIZE = 10
-const WARNING_SYNTHESIS_MAX_TOKENS = 800
+const WARNING_SYNTHESIS_BATCH_SIZE = 15
+const WARNING_SYNTHESIS_MAX_TOKENS = 1500
 const WARNING_SYNTHESIS_TOOL_NAME = 'emit_warning'
 const WARNING_SYNTHESIS_DEDUP_THRESHOLD = 0.9
-const CONSOLIDATION_VERIFICATION_MAX_TOKENS = 600
+const CONSOLIDATION_VERIFICATION_MAX_TOKENS = 1200
 const CONSOLIDATION_VERIFICATION_TOOL_NAME = 'emit_consolidation_verification'
 
 const GENERALIZATION_PROMPT = `Evaluate this memory record for reusability across different contexts.

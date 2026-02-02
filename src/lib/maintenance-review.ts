@@ -19,13 +19,13 @@ export type { MaintenanceReview } from '../../shared/types.js'
 
 const REVIEW_MODEL = 'claude-opus-4-5-20251101'
 const REVIEW_TOOL_NAME = 'emit_maintenance_review'
-const REVIEW_MAX_TOKENS = 3000
-const REVIEW_MAX_ACTIONS = 30
-const REVIEW_MAX_CANDIDATE_GROUPS = 20
-const REVIEW_MAX_CANDIDATE_RECORDS = 20
-const REVIEW_MAX_RECORDS = 60
-const REVIEW_MAX_RECORD_DETAILS = 30
-const REVIEW_MAX_ACTION_DIFF_CHARS = 2000
+const REVIEW_MAX_TOKENS = 6000
+const REVIEW_MAX_ACTIONS = 50
+const REVIEW_MAX_CANDIDATE_GROUPS = 30
+const REVIEW_MAX_CANDIDATE_RECORDS = 30
+const REVIEW_MAX_RECORDS = 100
+const REVIEW_MAX_RECORD_DETAILS = 50
+const REVIEW_MAX_ACTION_DIFF_CHARS = 8000
 
 const OPERATION_PROMPTS: Record<string, string> = {
   'stale-check': 'This operation identifies records unused for 90+ days. Goal: Deprecate truly obsolete records while preserving valuable niche knowledge. Key question: Are deprecated records truly obsolete?',

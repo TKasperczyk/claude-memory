@@ -22,14 +22,14 @@ export interface ContextSignals {
   domain?: string
 }
 
-const MAX_ERROR_SIGNALS = 4
-const MAX_COMMAND_SIGNALS = 4
-const MAX_SIGNAL_CHARS = 240
-const MAX_ENTRY_CHARS = 600
-const MAX_PROCEDURE_STEPS = 3
-const MAX_STEP_CHARS = 160
-const MAX_WARNING_RECORDS = 3
-const MAX_WARNING_CHARS = 400
+const MAX_ERROR_SIGNALS = 6
+const MAX_COMMAND_SIGNALS = 6
+const MAX_SIGNAL_CHARS = 500
+const MAX_ENTRY_CHARS = 1500
+const MAX_PROCEDURE_STEPS = 5
+const MAX_STEP_CHARS = 400
+const MAX_WARNING_RECORDS = 5
+const MAX_WARNING_CHARS = 1000
 
 // Words/phrases to strip from prompts before memory processing
 const NOISE_PATTERNS = [

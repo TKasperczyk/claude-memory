@@ -21,7 +21,49 @@ import { findGitRoot } from '../lib/context.js'
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
 const DEBUG_LOG_FILE = `${homedir()}/.claude-memory/debug.log`
+const AUDIT_LOG_FILE = `${homedir()}/.claude-memory/extraction-audit.log`
+const LOCKS_DIR = `${homedir()}/.claude-memory/locks`
 const workerStartTime = Date.now()
+
+/** Try to acquire a lock for this session. Returns true if acquired, false if already locked. */
+function tryAcquireLock(sessionId: string): boolean {
+  const lockFile = `${LOCKS_DIR}/${sessionId}.lock`
+  try {
+    fs.mkdirSync(LOCKS_DIR, { recursive: true })
+    // Use exclusive flag - fails if file exists
+    fs.writeFileSync(lockFile, `${process.pid}\n${Date.now()}`, { flag: 'wx' })
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      // Lock already exists - check if it's stale (older than 5 minutes)
+      try {
+        const stat = fs.statSync(lockFile)
+        const ageMs = Date.now() - stat.mtimeMs
+        if (ageMs > 5 * 60 * 1000) {
+          // Stale lock, remove and retry
+          fs.unlinkSync(lockFile)
+          fs.writeFileSync(lockFile, `${process.pid}\n${Date.now()}`, { flag: 'wx' })
+          return true
+        }
+      } catch {
+        // ignore
+      }
+      return false
+    }
+    // Other error, log and proceed (don't block on lock issues)
+    console.error('[claude-memory] Lock acquisition error:', error)
+    return true
+  }
+}
+
+function releaseLock(sessionId: string): void {
+  const lockFile = `${LOCKS_DIR}/${sessionId}.lock`
+  try {
+    fs.unlinkSync(lockFile)
+  } catch {
+    // ignore
+  }
+}
 
 function debugLog(msg: string): void {
   if (!DEBUG) return
@@ -31,6 +73,17 @@ function debugLog(msg: string): void {
   console.error(line.trim())
   try {
     appendFileSync(DEBUG_LOG_FILE, line)
+  } catch {
+    // ignore
+  }
+}
+
+/** Always-on audit log for debugging extraction issues */
+function auditLog(msg: string): void {
+  const ts = new Date().toISOString()
+  const line = `${ts} [pid=${process.pid}] ${msg}\n`
+  try {
+    appendFileSync(AUDIT_LOG_FILE, line)
   } catch {
     // ignore
   }
@@ -89,82 +142,98 @@ async function main(): Promise<void> {
 
   const payload = basePayload as ExtractionHookInput
   debugLog(`Parsed payload: event=${payload.hook_event_name}, session=${payload.session_id}`)
+  auditLog(`START event=${payload.hook_event_name} session=${payload.session_id} transcript=${payload.transcript_path}`)
+
+  // Try to acquire lock - prevents duplicate extractions when hook fires multiple times
+  if (!tryAcquireLock(payload.session_id)) {
+    debugLog('Skipping: lock already held by another process')
+    auditLog(`SKIP reason=locked session=${payload.session_id}`)
+    return
+  }
 
   // Skip extraction if session was cleared
   if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
     debugLog('Skipping: reason=clear')
+    auditLog(`SKIP reason=clear session=${payload.session_id}`)
     console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
     removeSessionTracking(payload.session_id)
+    releaseLock(payload.session_id)
     return
   }
 
   if (!payload.transcript_path) {
     debugLog('Skipping: no transcript_path')
+    auditLog(`SKIP reason=no_transcript session=${payload.session_id}`)
     console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
     if (payload.hook_event_name === 'SessionEnd') {
       removeSessionTracking(payload.session_id)
     }
+    releaseLock(payload.session_id)
     return
   }
 
-  debugLog('Initializing Milvus...')
-  const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
-  const config = loadConfig(configRoot)
-  await initMilvus(config)
-  debugLog('Milvus initialized')
-
-  // Load session tracking to get injected memories for change detection
-  const session = loadSessionTracking(payload.session_id)
-  const injectedMemories = session ? dedupeInjectedMemories(session.memories) : []
-  debugLog(`Loaded ${injectedMemories.length} injected memories for change detection`)
-
-  let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
-  let shouldFlush = false
-  const extractionStart = Date.now()
-  let extractionDuration = 0
   try {
-    debugLog('Running extraction...')
-    result = await handlePostSession(payload, config, {
-      flush: 'end-of-batch',
-      injectedMemories,
-      recordAugmenter: (record, transcript) => ({
-        ...record,
-        sourceSessionId: payload.session_id,
-        // Prefer LLM-provided sourceExcerpt, fall back to heuristic search
-        sourceExcerpt: record.sourceExcerpt ?? buildSourceExcerpt(record, transcript)
+    debugLog('Initializing Milvus...')
+    const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
+    const config = loadConfig(configRoot)
+    await initMilvus(config)
+    debugLog('Milvus initialized')
+
+    // Load session tracking to get injected memories for change detection
+    const session = loadSessionTracking(payload.session_id)
+    const injectedMemories = session ? dedupeInjectedMemories(session.memories) : []
+    debugLog(`Loaded ${injectedMemories.length} injected memories for change detection`)
+
+    let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
+    let shouldFlush = false
+    const extractionStart = Date.now()
+    let extractionDuration = 0
+    try {
+      debugLog('Running extraction...')
+      result = await handlePostSession(payload, config, {
+        flush: 'end-of-batch',
+        injectedMemories,
+        recordAugmenter: (record, transcript) => ({
+          ...record,
+          sourceSessionId: payload.session_id,
+          // Prefer LLM-provided sourceExcerpt, fall back to heuristic search
+          sourceExcerpt: record.sourceExcerpt ?? buildSourceExcerpt(record, transcript)
+        })
       })
-    })
-    debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
-    shouldFlush = (result.inserted + result.updated) > 0
-    extractionDuration = Date.now() - extractionStart
-    saveRunLog(payload, result, extractionDuration)
+      debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
+      shouldFlush = (result.inserted + result.updated) > 0
+      extractionDuration = Date.now() - extractionStart
+      saveRunLog(payload, result, extractionDuration)
+    } finally {
+      debugLog('Running usefulness rating...')
+      shouldFlush = (await processUsefulnessRating(payload, config, result?.transcript)) || shouldFlush
+      debugLog('Usefulness rating done')
+    }
+
+    if (shouldFlush) {
+      debugLog('Flushing Milvus writes...')
+      await flushCollection(config)
+    }
+
+    if (!result) return
+
+    if (result.reason === 'no_transcript') {
+      console.warn(`[claude-memory] Transcript not found; skipping extraction. path=${payload.transcript_path}`)
+      return
+    }
+
+    if (result.reason === 'no_records') {
+      console.error('[claude-memory] No records extracted.')
+      return
+    }
+
+    console.error(
+      `[claude-memory] Extraction complete: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`
+    )
+    debugLog('COMPLETE')
   } finally {
-    debugLog('Running usefulness rating...')
-    shouldFlush = (await processUsefulnessRating(payload, config, result?.transcript)) || shouldFlush
-    debugLog('Usefulness rating done')
+    releaseLock(payload.session_id)
   }
-
-  if (shouldFlush) {
-    debugLog('Flushing Milvus writes...')
-    await flushCollection(config)
-  }
-
-  if (!result) return
-
-  if (result.reason === 'no_transcript') {
-    console.warn(`[claude-memory] Transcript not found; skipping extraction. path=${payload.transcript_path}`)
-    return
-  }
-
-  if (result.reason === 'no_records') {
-    console.error('[claude-memory] No records extracted.')
-    return
-  }
-
-  console.error(
-    `[claude-memory] Extraction complete: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`
-  )
-  debugLog('COMPLETE')
 }
 
 function saveRunLog(
@@ -172,7 +241,10 @@ function saveRunLog(
   result: Awaited<ReturnType<typeof handlePostSession>>,
   duration: number
 ): void {
-  if (result.reason === 'no_transcript' || result.reason === 'clear' || result.reason === 'wrong_event') return
+  if (result.reason === 'no_transcript' || result.reason === 'clear' || result.reason === 'wrong_event') {
+    auditLog(`DONE session=${payload.session_id} reason=${result.reason} (no run saved)`)
+    return
+  }
 
   const extractedIds = [...(result.insertedIds ?? []), ...(result.updatedIds ?? [])]
   const uniqueIds = Array.from(new Set(extractedIds))
@@ -192,6 +264,8 @@ function saveRunLog(
     extractedRecords,
     duration
   })
+
+  auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms`)
 }
 
 function buildRecordSummary(record: MemoryRecord): ExtractionRecordSummary | null {
@@ -288,8 +362,8 @@ function countRetrievalDeltas(memories: InjectedMemoryEntry[]): Map<string, numb
   return counts
 }
 
-const SEGMENT_MAX_CHARS = 3000
-const SEGMENT_EVENT_WINDOW = 2
+const SEGMENT_MAX_CHARS = 8000
+const SEGMENT_EVENT_WINDOW = 3
 
 function buildSourceExcerpt(record: MemoryRecord, transcript: Transcript): string | undefined {
   const candidates = buildExcerptCandidates(record)

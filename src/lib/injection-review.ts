@@ -15,10 +15,10 @@ export type { InjectedMemoryVerdict, InjectionReview, MissedMemory } from '../..
 
 const REVIEW_MODEL = 'claude-opus-4-5-20251101'
 const REVIEW_TOOL_NAME = 'emit_injection_review'
-const REVIEW_MAX_TOKENS = 1800
+const REVIEW_MAX_TOKENS = 4000
 const REVIEW_SIMILARITY_THRESHOLD = 0.35
 const REVIEW_SIMILAR_LIMIT = 15
-const REVIEW_SIMILAR_COMBINED_MAX_CHARS = 12000
+const REVIEW_SIMILAR_COMBINED_MAX_CHARS = 30000
 
 const REVIEW_SYSTEM_PROMPT = `You are reviewing the quality of memory injection for a live Claude Code session.
 
