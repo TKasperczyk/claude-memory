@@ -453,6 +453,7 @@ export default function Settings() {
   }, [settings])
 
   useEffect(() => {
+    isMountedRef.current = true
     return () => {
       isMountedRef.current = false
       abortControllerRef.current?.abort()
