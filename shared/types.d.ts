@@ -184,6 +184,7 @@ export interface MaintenanceSettings {
   consolidationSearchLimit: number
   consolidationMaxClusterSize: number
   consolidationThreshold: number
+  crossTypeConsolidationThreshold: number
   consolidationTextSimilarityRatio: number
   conflictSimilarityThreshold: number
   conflictCheckBatchSize: number

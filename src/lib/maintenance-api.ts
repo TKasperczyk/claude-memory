@@ -10,6 +10,7 @@ import {
   runLowUsageDeprecation,
   runLowUsageCheck,
   runConsolidation,
+  runCrossTypeConsolidation,
   runConflictResolution,
   runGlobalPromotion,
   runWarningSynthesis,
@@ -46,6 +47,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     key: 'consolidation',
     label: 'Consolidation',
     description: 'Merge duplicate records using the configured similarity threshold',
+    allowExecute: true
+  },
+  {
+    key: 'cross-type-consolidation',
+    label: 'Cross-Type Consolidation',
+    description: 'Merge highly similar records across different types',
     allowExecute: true
   },
   {
@@ -151,6 +158,8 @@ async function runOperation(
       return runLowUsageCheck(dryRun, config, settings)
     case 'consolidation':
       return runConsolidation(dryRun, config, settings)
+    case 'cross-type-consolidation':
+      return runCrossTypeConsolidation(dryRun, config, settings)
     case 'conflict-resolution':
       return runConflictResolution(dryRun, config, settings)
     case 'warning-synthesis':

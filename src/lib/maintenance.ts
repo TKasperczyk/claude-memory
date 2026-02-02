@@ -27,6 +27,7 @@ import {
   buildCandidateRecord,
   buildExactText,
   buildRecordSnippet,
+  escapeFilterValue,
   normalizeExactText,
   normalizeStep,
   truncateSnippet
@@ -53,6 +54,8 @@ const WARNING_SYNTHESIS_BATCH_SIZE = 10
 const WARNING_SYNTHESIS_MAX_TOKENS = 800
 const WARNING_SYNTHESIS_TOOL_NAME = 'emit_warning'
 const WARNING_SYNTHESIS_DEDUP_THRESHOLD = 0.9
+const CROSS_TYPE_CONSOLIDATION_MAX_TOKENS = 600
+const CROSS_TYPE_CONSOLIDATION_TOOL_NAME = 'emit_cross_type_consolidation'
 
 const GENERALIZATION_PROMPT = `Evaluate this memory record for reusability across different contexts.
 
@@ -133,6 +136,18 @@ Return JSON:
   "reason": "brief explanation"
 }`
 
+const CROSS_TYPE_CONSOLIDATION_PROMPT = `Select the single best representative memory from a highly similar cross-type cluster.
+
+Goal: keep the most actionable, reusable record; deprecate the rest.
+
+Consider:
+- Actionability priority: procedure > warning > error > discovery.
+- Commands can be chosen if they are the clearest reusable instruction; otherwise prefer the ordered types above.
+- Usage stats (usageCount, retrievalCount, successCount), and recency (lastUsed, timestamp).
+- Prefer records that provide concrete steps or fixes.
+
+Return ONLY via the tool call "${CROSS_TYPE_CONSOLIDATION_TOOL_NAME}" exactly once.`
+
 const WARNING_SYNTHESIS_PROMPT = `Analyze these failure records and synthesize a warning if there's a clear anti-pattern.
 
 You're looking at records that have failed multiple times. Determine if they represent:
@@ -178,6 +193,20 @@ const WARNING_SYNTHESIS_TOOL: Anthropic.Tool = {
   }
 }
 
+const CROSS_TYPE_CONSOLIDATION_TOOL: Anthropic.Tool = {
+  name: CROSS_TYPE_CONSOLIDATION_TOOL_NAME,
+  description: 'Select the representative record id for cross-type consolidation.',
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['keptId', 'reason'],
+    properties: {
+      keptId: { type: 'string' },
+      reason: { type: 'string' }
+    }
+  }
+}
+
 const CONFLICT_ADJUDICATION_TOOL: Anthropic.Tool = {
   name: CONFLICT_ADJUDICATION_TOOL_NAME,
   description: 'Emit verdict for memory conflict resolution',
@@ -190,6 +219,14 @@ const CONFLICT_ADJUDICATION_TOOL: Anthropic.Tool = {
       reason: { type: 'string' }
     }
   }
+}
+
+const CROSS_TYPE_PRIORITY: Record<RecordType, number> = {
+  procedure: 4,
+  warning: 3,
+  error: 2,
+  discovery: 1,
+  command: 0
 }
 
 let cachedAnthropicClient: Awaited<ReturnType<typeof createAnthropicClient>> | undefined
@@ -207,6 +244,11 @@ interface ConsolidationResult {
   retrievalCount: number
   usageCount: number
   lastUsed: number
+}
+
+interface CrossTypeSelectionResult {
+  keptId: string
+  reason?: string
 }
 
 export interface ContradictionPair {
@@ -480,21 +522,99 @@ export async function findSimilarClusters(
   return clusters
 }
 
+export async function findCrossTypeClusters(
+  similarityThreshold: number | undefined = undefined,
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
+): Promise<ConsolidationCluster[]> {
+  const maintenance = resolveMaintenanceSettings(settings)
+  const resolvedThreshold = typeof similarityThreshold === 'number'
+    ? similarityThreshold
+    : maintenance.crossTypeConsolidationThreshold
+  const clusters: ConsolidationCluster[] = []
+  const clusteredIds = new Set<string>()
+  let offset = 0
+
+  while (true) {
+    const batch = await queryRecords(
+      {
+        filter: 'deprecated == false',
+        limit: QUERY_PAGE_SIZE,
+        offset,
+        includeEmbeddings: true
+      },
+      config
+    )
+
+    if (batch.length === 0) break
+
+    for (const record of batch) {
+      if (clusteredIds.has(record.id)) continue
+      if (!isValidEmbedding(record.embedding)) continue
+
+      const matches = await vectorSearchSimilar(
+        record.embedding,
+        {
+          filter: buildCrossTypeConsolidationFilter(record),
+          limit: maintenance.consolidationSearchLimit,
+          similarityThreshold: resolvedThreshold
+        },
+        config
+      )
+
+      if (matches.length === 0) continue
+
+      const members: ConsolidationClusterMember[] = [{ record, similarity: 1 }]
+      const cluster = [record] as ConsolidationCluster
+      cluster.seedId = record.id
+      cluster.members = members
+      const types = new Set<RecordType>([record.type])
+
+      for (const match of matches) {
+        const candidate = match.record
+        if (clusteredIds.has(candidate.id)) continue
+        if (candidate.deprecated) continue
+        if (candidate.type === record.type) continue
+
+        cluster.push(candidate)
+        members.push({ record: candidate, similarity: match.similarity })
+        types.add(candidate.type)
+        if (cluster.length >= maintenance.consolidationMaxClusterSize) break
+      }
+
+      if (cluster.length > 1 && types.size > 1) {
+        clusters.push(cluster)
+        for (const member of cluster) {
+          clusteredIds.add(member.id)
+        }
+      }
+    }
+
+    if (batch.length < QUERY_PAGE_SIZE) break
+    offset += batch.length
+  }
+
+  return clusters
+}
+
 export async function consolidateCluster(
   cluster: MemoryRecord[],
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  options: { keeperId?: string } = {}
 ): Promise<ConsolidationResult | null> {
   if (cluster.length < 2) return null
 
-  const sorted = [...cluster].sort((a, b) => {
+  const explicitKeeper = options.keeperId
+    ? cluster.find(record => record.id === options.keeperId)
+    : undefined
+
+  const keeper = explicitKeeper ?? [...cluster].sort((a, b) => {
     const successDiff = (b.successCount ?? 0) - (a.successCount ?? 0)
     if (successDiff !== 0) return successDiff
     const lastUsedDiff = (b.lastUsed ?? 0) - (a.lastUsed ?? 0)
     if (lastUsedDiff !== 0) return lastUsedDiff
     return (b.timestamp ?? 0) - (a.timestamp ?? 0)
-  })
-
-  const keeper = sorted[0]
+  })[0]
   const totals = cluster.reduce(
     (acc, record) => {
       acc.success += record.successCount ?? 0
@@ -535,6 +655,104 @@ export async function consolidateCluster(
     usageCount: totals.usage,
     lastUsed: totals.lastUsed
   }
+}
+
+function getUsageRatio(record: MemoryRecord): number {
+  const retrievalCount = record.retrievalCount ?? 0
+  const usageCount = record.usageCount ?? 0
+  if (retrievalCount <= 0) return 0
+  return usageCount / retrievalCount
+}
+
+export function pickCrossTypeFallback(cluster: MemoryRecord[]): CrossTypeSelectionResult {
+  const sorted = [...cluster].sort((a, b) => {
+    const typeDiff = (CROSS_TYPE_PRIORITY[b.type] ?? 0) - (CROSS_TYPE_PRIORITY[a.type] ?? 0)
+    if (typeDiff !== 0) return typeDiff
+    const usageRatioDiff = getUsageRatio(b) - getUsageRatio(a)
+    if (usageRatioDiff !== 0) return usageRatioDiff
+    const usageDiff = (b.usageCount ?? 0) - (a.usageCount ?? 0)
+    if (usageDiff !== 0) return usageDiff
+    const successDiff = (b.successCount ?? 0) - (a.successCount ?? 0)
+    if (successDiff !== 0) return successDiff
+    const lastUsedDiff = (b.lastUsed ?? 0) - (a.lastUsed ?? 0)
+    if (lastUsedDiff !== 0) return lastUsedDiff
+    return (b.timestamp ?? 0) - (a.timestamp ?? 0)
+  })
+
+  const keeper = sorted[0]
+  return { keptId: keeper.id, reason: 'fallback: best by type, usage, and recency' }
+}
+
+function buildCrossTypeConsolidationInput(cluster: MemoryRecord[]): Record<string, unknown> {
+  return {
+    typePriority: ['procedure', 'warning', 'error', 'discovery', 'command'],
+    records: cluster.map(record => ({
+      id: record.id,
+      type: record.type,
+      snippet: buildRecordSnippet(record),
+      usageCount: record.usageCount ?? 0,
+      retrievalCount: record.retrievalCount ?? 0,
+      usageRatio: getUsageRatio(record),
+      successCount: record.successCount ?? 0,
+      failureCount: record.failureCount ?? 0,
+      lastUsed: record.lastUsed ?? 0,
+      timestamp: record.timestamp ?? 0,
+      record: buildGeneralizationInput(record)
+    }))
+  }
+}
+
+function coerceCrossTypeSelection(value: unknown): CrossTypeSelectionResult | null {
+  if (!isPlainObject(value)) return null
+  const keptId = typeof value.keptId === 'string' ? value.keptId.trim() : ''
+  const reason = typeof value.reason === 'string' ? value.reason.trim() : ''
+  if (!keptId) return null
+  return reason ? { keptId, reason } : { keptId }
+}
+
+export async function selectCrossTypeRepresentative(
+  cluster: MemoryRecord[],
+  config: Config
+): Promise<CrossTypeSelectionResult> {
+  const client = await getAnthropicClient()
+  if (!client) {
+    throw new Error('No authentication available for cross-type consolidation.')
+  }
+
+  const payload = JSON.stringify(buildCrossTypeConsolidationInput(cluster), null, 2)
+
+  const response = await client.messages.create({
+    model: config.extraction.model,
+    max_tokens: Math.min(CROSS_TYPE_CONSOLIDATION_MAX_TOKENS, config.extraction.maxTokens),
+    temperature: 0,
+    system: [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+      { type: 'text', text: CROSS_TYPE_CONSOLIDATION_PROMPT }
+    ],
+    messages: [{ role: 'user', content: `Records:\n${payload}` }],
+    tools: [CROSS_TYPE_CONSOLIDATION_TOOL],
+    tool_choice: { type: 'tool', name: CROSS_TYPE_CONSOLIDATION_TOOL_NAME }
+  })
+
+  const toolInput = response.content.find((block): block is ToolUseBlock =>
+    isToolUseBlock(block) && block.name === CROSS_TYPE_CONSOLIDATION_TOOL_NAME
+  )?.input
+
+  if (!toolInput) {
+    throw new Error('Cross-type consolidation tool call missing in response.')
+  }
+
+  const parsed = coerceCrossTypeSelection(toolInput)
+  if (!parsed) {
+    throw new Error('Cross-type consolidation response invalid or incomplete.')
+  }
+
+  const validIds = new Set(cluster.map(record => record.id))
+  if (!validIds.has(parsed.keptId)) {
+    throw new Error('Cross-type consolidation response referenced an unknown record.')
+  }
+
+  return parsed
 }
 
 /**
@@ -1118,6 +1336,14 @@ function buildConsolidationFilter(record: MemoryRecord): string {
     excludeId: record.id,
     excludeDeprecated: true
   }) ?? 'deprecated == false'
+}
+
+function buildCrossTypeConsolidationFilter(record: MemoryRecord): string {
+  const baseFilter = buildFilter({
+    excludeId: record.id,
+    excludeDeprecated: true
+  }) ?? 'deprecated == false'
+  return `${baseFilter} && type != "${escapeFilterValue(record.type)}"`
 }
 
 /**

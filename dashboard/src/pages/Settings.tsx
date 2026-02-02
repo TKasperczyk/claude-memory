@@ -136,6 +136,15 @@ const MAINTENANCE_GROUPS: SettingsGroup[] = [
         kind: 'float'
       },
       {
+        key: 'crossTypeConsolidationThreshold',
+        label: 'Cross-type consolidation threshold',
+        description: 'Higher similarity threshold for cross-type merges (0-1).',
+        step: 0.01,
+        min: 0.93,
+        max: 1,
+        kind: 'float'
+      },
+      {
         key: 'consolidationTextSimilarityRatio',
         label: 'Contradiction text similarity ratio',
         description: 'Levenshtein ratio used to skip near-duplicate text during contradiction detection.',

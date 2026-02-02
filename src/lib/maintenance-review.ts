@@ -33,6 +33,7 @@ const OPERATION_PROMPTS: Record<string, string> = {
   'low-usage': 'This operation deprecates records with poor usage ratios. Goal: Remove memories that consistently fail to help. Key question: Are these bad memories or valuable niche knowledge?',
   'low-usage-deprecation': 'This operation deprecates records with zero usage despite retrievals. Goal: Remove memories that never provide value.',
   'consolidation': 'This operation merges near-duplicate records. Goal: Reduce redundancy while keeping the best version. Key question: Were the right records kept?',
+  'cross-type-consolidation': 'This operation merges highly similar records across different types. Goal: Keep the most actionable representative record. Key question: Did the chosen type and recency make sense?',
   'conflict-resolution': 'This operation resolves conflicts between new and existing records. Goal: Deprecate superseded knowledge. Key question: Are the LLM verdicts correct?',
   'warning-synthesis': 'This operation creates warning records from repeated failures. Goal: Extract actionable warnings. Key question: Are synthesized warnings useful?',
   'global-promotion': 'This operation elevates project-scoped records to global scope. Goal: Share universal knowledge. Key question: Are promoted records truly universal?',
@@ -46,6 +47,11 @@ const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
   'low-usage-deprecation': ['lowUsageHighRetrievalMin'],
   'consolidation': [
     'consolidationThreshold',
+    'consolidationSearchLimit',
+    'consolidationMaxClusterSize'
+  ],
+  'cross-type-consolidation': [
+    'crossTypeConsolidationThreshold',
     'consolidationSearchLimit',
     'consolidationMaxClusterSize'
   ],

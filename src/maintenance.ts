@@ -7,14 +7,17 @@ import {
   checkValidity,
   checkGlobalPromotion,
   consolidateCluster,
+  findCrossTypeClusters,
   findGlobalCandidates,
   findLowUsageHighRetrieval,
   findLowUsageRecords,
   findSimilarClusters,
   findStaleUnusedRecords,
   GLOBAL_PROMOTION_MIN_CONFIDENCE,
+  pickCrossTypeFallback,
   runConflictResolution,
   runWarningSynthesis as runWarningSynthesisInternal,
+  selectCrossTypeRepresentative,
   findStaleRecords,
   isConfidenceSufficient,
   markDeprecated,
@@ -54,6 +57,7 @@ async function main(): Promise<void> {
   logMaintenanceResult('Low usage deprecation', await runLowUsageDeprecation(dryRun, config, maintenanceSettings), dryRun)
   logMaintenanceResult('Low usage check', await runLowUsageCheck(dryRun, config, maintenanceSettings), dryRun)
   logMaintenanceResult('Consolidation', await runConsolidation(dryRun, config, maintenanceSettings), dryRun)
+  logMaintenanceResult('Cross-type consolidation', await runCrossTypeConsolidation(dryRun, config, maintenanceSettings), dryRun)
   logMaintenanceResult('Conflict resolution', await runConflictResolution(dryRun, config, maintenanceSettings), dryRun)
   logMaintenanceResult('Global promotion', await runGlobalPromotion(dryRun, config, maintenanceSettings), dryRun)
   logMaintenanceResult('Warning synthesis', await runWarningSynthesis(dryRun, config, maintenanceSettings), dryRun)
@@ -434,6 +438,127 @@ export async function runConsolidation(
             keptId: result.keptId,
             deprecatedIds: result.deprecatedIds,
             deprecatedRecords: buildDeprecatedRecords(result.deprecatedIds)
+          }
+        })
+        clustersMerged += 1
+        deprecated += result.deprecatedIds.length
+      } catch {
+        errors += 1
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      actions,
+      summary: { clusters: clustersFound, merged: clustersMerged, deprecated, errors },
+      candidates: candidateGroups,
+      error: message
+    }
+  }
+
+  return { actions, summary: { clusters: clustersFound, merged: clustersMerged, deprecated, errors }, candidates: candidateGroups }
+}
+
+export async function runCrossTypeConsolidation(
+  dryRun: boolean,
+  config: Config = DEFAULT_CONFIG,
+  settings?: MaintenanceSettings
+): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(settings)
+  const actions: MaintenanceAction[] = []
+  const candidateGroups: MaintenanceCandidateGroup[] = []
+  let clustersFound = 0
+  let clustersMerged = 0
+  let deprecated = 0
+  let errors = 0
+
+  try {
+    const clusters = await findCrossTypeClusters(maintenance.crossTypeConsolidationThreshold, config, maintenance)
+    clustersFound = clusters.length
+    if (clusters.length > 0) {
+      const thresholdPercent = Math.round(maintenance.crossTypeConsolidationThreshold * 100)
+      candidateGroups.push(...clusters.map((cluster, index) => ({
+        id: `cross-type-cluster-${index + 1}`,
+        label: `Cross-type cluster ${index + 1}`,
+        reason: `similarity >= ${thresholdPercent}%`,
+        records: cluster.members.map(member =>
+          buildCandidateRecord(member.record, 'similar record', { similarity: member.similarity })
+        )
+      })))
+    }
+
+    for (const cluster of clusters) {
+      const clusterRecords = cluster.members.map(member => member.record)
+      try {
+        const recordById = new Map(clusterRecords.map(record => [record.id, record]))
+        const buildDeprecatedRecords = (deprecatedIds: string[]) =>
+          deprecatedIds.map(id => {
+            const record = recordById.get(id)
+            return {
+              id,
+              snippet: record ? truncateSnippet(buildRecordSnippet(record)) : null
+            }
+          })
+
+        let selection: { keptId: string; reason?: string } | null = null
+        let decisionReason: string | undefined
+        let selectionError: string | undefined
+        try {
+          selection = await selectCrossTypeRepresentative(clusterRecords, config)
+          decisionReason = selection.reason
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (message.includes('No authentication available')) {
+            throw error
+          }
+          const fallback = pickCrossTypeFallback(clusterRecords)
+          selection = fallback
+          decisionReason = fallback.reason
+          selectionError = message
+          console.warn(
+            `[claude-memory] Cross-type consolidation: LLM selection failed, using fallback (${message}).`
+          )
+          errors += 1
+        }
+
+        if (!selection) continue
+        const deprecatedIds = clusterRecords.filter(record => record.id !== selection.keptId).map(record => record.id)
+        if (deprecatedIds.length === 0) continue
+        const keeperRecord = clusterRecords.find(record => record.id === selection.keptId)
+        const snippet = keeperRecord ? truncateSnippet(buildRecordSnippet(keeperRecord)) : 'cluster'
+
+        if (dryRun) {
+          actions.push({
+            type: 'merge',
+            recordId: selection.keptId,
+            snippet,
+            reason: `merge ${deprecatedIds.length} cross-type duplicates`,
+            details: {
+              keptId: selection.keptId,
+              deprecatedIds,
+              deprecatedRecords: buildDeprecatedRecords(deprecatedIds),
+              ...(decisionReason ? { decisionReason } : {}),
+              ...(selectionError ? { selectionError } : {})
+            }
+          })
+          clustersMerged += 1
+          deprecated += deprecatedIds.length
+          continue
+        }
+
+        const result = await consolidateCluster(clusterRecords, config, { keeperId: selection.keptId })
+        if (!result || result.deprecatedIds.length === 0) continue
+        actions.push({
+          type: 'merge',
+          recordId: result.keptId,
+          snippet,
+          reason: `merge ${result.deprecatedIds.length} cross-type duplicates`,
+          details: {
+            keptId: result.keptId,
+            deprecatedIds: result.deprecatedIds,
+            deprecatedRecords: buildDeprecatedRecords(result.deprecatedIds),
+            ...(decisionReason ? { decisionReason } : {}),
+            ...(selectionError ? { selectionError } : {})
           }
         })
         clustersMerged += 1
