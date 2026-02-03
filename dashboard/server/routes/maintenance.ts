@@ -13,6 +13,7 @@ import {
 import { getMaintenanceReview, saveMaintenanceReview } from '../../../src/lib/review-storage.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
+import { createSseStream, sendSseError } from '../lib/sse.js'
 import { isPlainObject } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
 
@@ -78,43 +79,20 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
       const wantsStream = req.query.stream === 'true'
       if (wantsStream) {
-        res.setHeader('Content-Type', 'text/event-stream')
-        res.setHeader('Cache-Control', 'no-cache')
-        res.setHeader('Connection', 'keep-alive')
-        res.flushHeaders()
-
-        const abortController = new AbortController()
-        res.on('close', () => {
-          abortController.abort()
-        })
-
-        const send = (payload: unknown) => {
-          if (abortController.signal.aborted || res.writableEnded) return
-          res.write(`data: ${JSON.stringify(payload)}\n\n`)
-        }
-        const onThinking = (chunk: string) => {
-          if (!chunk || abortController.signal.aborted || res.writableEnded) return
-          send({ thinking: chunk })
-        }
+        const stream = createSseStream(res)
 
         try {
           const config = await ensureConfigInitialized(req, baseConfig)
-          const review = await reviewMaintenanceResultStreaming(normalizedResult, config, onThinking, abortController.signal)
+          const review = await reviewMaintenanceResultStreaming(normalizedResult, config, stream.onThinking, stream.signal)
           saveMaintenanceReview(review)
-          send({ result: review })
-          if (!abortController.signal.aborted && !res.writableEnded) {
-            res.write('data: [DONE]\n\n')
-          }
+          stream.sendData({ result: review })
+          stream.done()
         } catch (error) {
-          if (abortController.signal.aborted) return
-          const message = error instanceof Error ? error.message : String(error)
+          if (stream.signal.aborted) return
           logger.error('Maintenance review error', error)
-          send({ error: message || 'Failed to run maintenance review' })
-          if (!abortController.signal.aborted && !res.writableEnded) {
-            res.write('data: [DONE]\n\n')
-          }
+          sendSseError(stream, error, 'Failed to run maintenance review')
         } finally {
-          res.end()
+          stream.end()
         }
         return
       }
@@ -273,22 +251,14 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       return res.status(400).json({ error: 'Unknown operation' })
     }
 
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('Connection', 'keep-alive')
-    res.flushHeaders()
-
-    const abortController = new AbortController()
-
-    res.on('close', () => {
-      abortController.abort()
-      logger.info('Client disconnected from maintenance stream')
+    const stream = createSseStream(res, {
+      onClose: () => {
+        logger.info('Client disconnected from maintenance stream')
+      }
     })
 
     const sendEvent = (event: string, data: unknown) => {
-      if (abortController.signal.aborted || res.writableEnded) return
-      res.write(`event: ${event}\n`)
-      res.write(`data: ${JSON.stringify(data)}\n\n`)
+      stream.send(event, data)
     }
 
     try {
@@ -300,7 +270,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       })
 
       for (const operation of operationsToRun) {
-        if (abortController.signal.aborted) break
+        if (stream.signal.aborted) break
 
         sendEvent('progress', { operation, status: 'running' })
 
@@ -313,7 +283,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
             undefined,
             (progress) => {
               // Emit detailed progress updates for consolidation operations
-              if (!abortController.signal.aborted && !res.writableEnded) {
+              if (!stream.signal.aborted && !res.writableEnded) {
                 sendEvent('detailed-progress', {
                   operation,
                   current: progress.current,
@@ -336,7 +306,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       sendEvent('error', { error: message })
     } finally {
       if (!res.writableEnded) {
-        res.end()
+        stream.end()
       }
     }
   })

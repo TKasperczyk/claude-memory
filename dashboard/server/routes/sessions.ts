@@ -5,6 +5,7 @@ import { getInjectionReview, saveInjectionReview } from '../../../src/lib/review
 import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../../../src/lib/session-tracking.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
+import { createSseStream, sendSseError } from '../lib/sse.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
 
 const logger = createLogger('sessions')
@@ -72,43 +73,20 @@ export function createSessionsRouter(context: ServerContext): express.Router {
 
       const wantsStream = req.query.stream === 'true'
       if (wantsStream) {
-        res.setHeader('Content-Type', 'text/event-stream')
-        res.setHeader('Cache-Control', 'no-cache')
-        res.setHeader('Connection', 'keep-alive')
-        res.flushHeaders()
-
-        const abortController = new AbortController()
-        res.on('close', () => {
-          abortController.abort()
-        })
-
-        const send = (payload: unknown) => {
-          if (abortController.signal.aborted || res.writableEnded) return
-          res.write(`data: ${JSON.stringify(payload)}\n\n`)
-        }
-        const onThinking = (chunk: string) => {
-          if (!chunk || abortController.signal.aborted || res.writableEnded) return
-          send({ thinking: chunk })
-        }
+        const stream = createSseStream(res)
 
         try {
           const config = await ensureConfigInitialized(req, baseConfig)
-          const review = await reviewInjectionStreaming(sessionId, config, onThinking, abortController.signal)
+          const review = await reviewInjectionStreaming(sessionId, config, stream.onThinking, stream.signal)
           saveInjectionReview(review)
-          send({ result: review })
-          if (!abortController.signal.aborted && !res.writableEnded) {
-            res.write('data: [DONE]\n\n')
-          }
+          stream.sendData({ result: review })
+          stream.done()
         } catch (error) {
-          if (abortController.signal.aborted) return
-          const message = error instanceof Error ? error.message : String(error)
+          if (stream.signal.aborted) return
           logger.error('Injection review error', error)
-          send({ error: message || 'Failed to run injection review' })
-          if (!abortController.signal.aborted && !res.writableEnded) {
-            res.write('data: [DONE]\n\n')
-          }
+          sendSseError(stream, error, 'Failed to run injection review')
         } finally {
-          res.end()
+          stream.end()
         }
         return
       }
