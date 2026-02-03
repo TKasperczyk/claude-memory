@@ -1,458 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Check, ChevronRight, Copy, Loader2, Sparkles } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import ListItem from '@/components/ListItem'
+import { useEffect, useMemo, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import MemoryDetail from '@/components/MemoryDetail'
-import MetricTile from '@/components/MetricTile'
-import ReviewSkeleton from '@/components/ReviewSkeleton'
-import ThinkingPanel from '@/components/ThinkingPanel'
+import ExtractionDetail from '@/components/extractions/ExtractionDetail'
+import ExtractionFilters from '@/components/extractions/ExtractionFilters'
+import ExtractionList from '@/components/extractions/ExtractionList'
+import ExtractionSummary from '@/components/extractions/ExtractionSummary'
+import { ExtractionListSkeleton } from '@/components/extractions/ExtractionSkeletons'
+import { extractProjectFromPath, TIME_FILTERS, type TimeFilterKey } from '@/components/extractions/utils'
 import { useExtractions } from '@/hooks/queries'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
-import { useStreamingReview } from '@/hooks/useStreamingReview'
-import Skeleton from '@/components/Skeleton'
-import {
-  fetchExtractionReview,
-  fetchExtractionRun,
-  type ExtractionReview,
-  type ExtractionReviewIssue,
-  type ExtractionRun,
-  type MemoryRecord
-} from '@/lib/api'
-import { formatDateTime, formatDuration, formatRelativeTimeShort, truncateText } from '@/lib/format'
-import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
-import { formatExtractionReview } from '@/lib/review-format'
+import { useExtractionRunData } from '@/hooks/useExtractionRunData'
 
 const PAGE_SIZE = 25
-
-const RATING_STYLES: Record<ExtractionReview['overallRating'], { badge: string; label: string }> = {
-  good: {
-    badge: 'bg-success/15 text-success',
-    label: 'Good'
-  },
-  mixed: {
-    badge: 'bg-foreground/10 text-foreground/70',
-    label: 'Mixed'
-  },
-  poor: {
-    badge: 'bg-muted-foreground/15 text-muted-foreground',
-    label: 'Poor'
-  }
-}
-
-const SEVERITY_STYLES: Record<ExtractionReviewIssue['severity'], string> = {
-  critical: 'bg-destructive/15 text-destructive',
-  major: 'bg-warning/15 text-warning',
-  minor: 'bg-muted-foreground/15 text-muted-foreground'
-}
-
-const ISSUE_LABELS: Record<ExtractionReviewIssue['type'], string> = {
-  inaccurate: 'Inaccurate',
-  partial: 'Partial',
-  hallucinated: 'Hallucinated',
-  missed: 'Missed',
-  duplicate: 'Duplicate'
-}
-
-const TIME_FILTERS = [
-  { key: 'all', label: 'All time', ms: Number.POSITIVE_INFINITY },
-  { key: '12h', label: '12h', ms: 12 * 60 * 60 * 1000 },
-  { key: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
-  { key: '7d', label: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
-  { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 }
-] as const
-
-type TimeFilterKey = typeof TIME_FILTERS[number]['key']
-
-function truncateSessionId(sessionId: string): string {
-  if (sessionId.length <= 10) return sessionId
-  return `${sessionId.slice(0, 10)}...`
-}
-
-/**
- * Extract project name from transcript path.
- * Path format: /home/user/.claude/projects/-home-user-Programming-project-name/session.jsonl
- * The project directory is encoded with dashes replacing path separators.
- */
-function extractProjectFromPath(transcriptPath: string | undefined): string {
-  if (!transcriptPath) return 'Unknown'
-
-  // Split path and find the projects directory segment
-  const parts = transcriptPath.split(/[\\/]/)
-  const projectsIdx = parts.findIndex(p => p === 'projects')
-  if (projectsIdx === -1 || projectsIdx >= parts.length - 1) return 'Unknown'
-
-  // Get the encoded project directory (e.g., "-home-user-Programming-project-name")
-  const encodedDir = parts[projectsIdx + 1]
-  if (!encodedDir || encodedDir.startsWith('.')) return 'Unknown'
-
-  // Split by dash and filter common path segments to find the project name
-  const segments = encodedDir.split('-').filter(Boolean)
-  const commonPrefixes = ['home', 'users', 'programming', 'projects', 'code', 'dev', 'src', 'work']
-
-  // Filter out all common prefixes and user-like segments (single short words at the start)
-  const projectParts: string[] = []
-  let foundProject = false
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const seg = segments[i].toLowerCase()
-    if (commonPrefixes.includes(seg)) {
-      // Stop when we hit a common path segment from the end
-      break
-    }
-    projectParts.unshift(segments[i])
-    foundProject = true
-  }
-
-  if (!foundProject || projectParts.length === 0) {
-    // Fallback: just use the last segment
-    return segments[segments.length - 1] || 'Unknown'
-  }
-
-  return projectParts.join('-')
-}
-
-function getAccuracyBadge(
-  score: number | null | undefined
-): { badge: string; text: string; label: string; title: string } {
-  if (typeof score !== 'number') {
-    return {
-      badge: 'bg-muted-foreground/15 text-muted-foreground',
-      text: 'text-muted-foreground',
-      label: '—',
-      title: 'Accuracy unavailable'
-    }
-  }
-
-  const label = String(score)
-  const title = `Accuracy score ${score}/100`
-
-  if (score >= 85) {
-    return { badge: 'bg-success/15 text-success', text: 'text-success', label, title }
-  }
-  if (score >= 60) {
-    return { badge: 'bg-warning/15 text-warning', text: 'text-warning', label, title }
-  }
-  return { badge: 'bg-destructive/15 text-destructive', text: 'text-destructive', label, title }
-}
-
-function RecordsSkeleton() {
-  const items = Array.from({ length: 3 })
-
-  return (
-    <div className="space-y-2">
-      {items.map((_, index) => (
-        <div key={index} className="rounded-md border border-border bg-secondary/30 px-3 py-2 space-y-2">
-          <div className="flex items-center gap-2">
-            <Skeleton className="h-2 w-2 rounded-full" />
-            <Skeleton className="h-3 w-12" />
-            <Skeleton className="h-3 w-20" />
-            <Skeleton className="h-3 w-3 ml-auto" />
-          </div>
-          <Skeleton className="h-4 w-4/5" />
-          <Skeleton className="h-3 w-full" />
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function ExtractionListSkeleton() {
-  const cards = Array.from({ length: 4 })
-
-  return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
-      <div className="rounded-xl border border-border bg-card p-3">
-        <div className="flex items-center justify-between mb-2">
-          <Skeleton className="h-3 w-20" />
-          <Skeleton className="h-3 w-6" />
-        </div>
-        <div className="space-y-2">
-          {cards.map((_, index) => (
-            <div key={index} className="rounded-lg border border-border bg-card p-3 space-y-2">
-              <div className="flex items-center gap-3">
-                <Skeleton className="h-2.5 w-2.5 rounded-full" />
-                <Skeleton className="h-4 w-28" />
-                <Skeleton className="h-3 w-16 ml-auto" />
-              </div>
-              <Skeleton className="h-3 w-40" />
-              <div className="flex gap-2">
-                <Skeleton className="h-5 w-14" />
-                <Skeleton className="h-5 w-20" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-        <div className="rounded-lg border border-border bg-background/50 p-3 space-y-2">
-          <Skeleton className="h-4 w-32" />
-          <Skeleton className="h-3 w-48" />
-          <div className="flex gap-3">
-            <Skeleton className="h-3 w-16" />
-            <Skeleton className="h-3 w-20" />
-            <Skeleton className="h-3 w-14" />
-          </div>
-        </div>
-        <ReviewSkeleton />
-        <div className="rounded-lg border border-border bg-background/40 p-3">
-          <RecordsSkeleton />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function FilterChip({
-  active,
-  onClick,
-  children
-}: {
-  active: boolean
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`h-7 px-2.5 text-[11px] rounded-full border transition-base ${
-        active
-          ? 'bg-primary text-primary-foreground border-foreground'
-          : 'bg-background border-border text-muted-foreground hover:text-foreground'
-      }`}
-    >
-      {children}
-    </button>
-  )
-}
-
-function ExtractionReviewPanel({
-  run,
-  runRecords,
-  review,
-  reviewLoadingState,
-  reviewError,
-  hasReviewLoaded,
-  onSelect,
-  onReviewUpdate,
-  onReviewError,
-  copy,
-  isCopied
-}: {
-  run: ExtractionRun
-  runRecords: MemoryRecord[]
-  review: ExtractionReview | null
-  reviewLoadingState: boolean
-  reviewError?: string
-  hasReviewLoaded: boolean
-  onSelect: (recordId: string) => void
-  onReviewUpdate: (runId: string, nextReview: ExtractionReview) => void
-  onReviewError: (runId: string, message: string) => void
-  copy: (id: string, value: string) => void
-  isCopied: (id: string) => boolean
-}) {
-  const { trigger, thinking, isStreaming } = useStreamingReview<ExtractionReview>({
-    endpoint: `/api/extractions/${run.runId}/review`,
-    onComplete: (nextReview) => {
-      onReviewUpdate(run.runId, nextReview)
-      onReviewError(run.runId, '')
-    },
-    onError: (err) => {
-      onReviewError(run.runId, err.message || 'Failed to run review')
-    }
-  })
-
-  const handleReview = () => {
-    onReviewError(run.runId, '')
-    trigger()
-  }
-
-  const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
-
-  return (
-    <div className="rounded-lg border border-border bg-background/40 p-3 space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Opus review</div>
-        <div className="flex items-center gap-1.5">
-          {review && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => copy(run.runId, formatExtractionReview(run, runRecords, review))}
-              title="Copy review"
-            >
-              {isCopied(run.runId) ? (
-                <Check className="w-2.5 h-2.5 text-success" />
-              ) : (
-                <Copy className="w-2.5 h-2.5" />
-              )}
-              Copy
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={handleReview}
-            disabled={isStreaming}
-          >
-            {isStreaming && <Loader2 className="w-3 h-3 animate-spin" />}
-            {isStreaming ? 'Reviewing...' : 'Review'}
-          </Button>
-        </div>
-      </div>
-
-      <ThinkingPanel thinking={thinking} isStreaming={isStreaming} />
-
-      {reviewError && (
-        <div className="text-xs text-destructive">{reviewError}</div>
-      )}
-
-      {review ? (
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${RATING_STYLES[review.overallRating].badge}`}>
-              {RATING_STYLES[review.overallRating].label}
-            </span>
-            <span className="text-[10px] text-muted-foreground">
-              Accuracy <span className={`font-semibold tabular-nums ${accuracyBadge?.text ?? 'text-muted-foreground'}`}>{accuracyBadge?.label ?? '—'}</span>
-            </span>
-            <span className="text-[10px] text-muted-foreground">{formatDateTime(review.reviewedAt)}</span>
-          </div>
-          <div className="text-xs text-foreground">{review.summary}</div>
-
-          {review.issues.length === 0 ? (
-            <div className="text-[11px] text-muted-foreground">No issues flagged.</div>
-          ) : (
-            <div className="space-y-1">
-              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Issues</div>
-              <div className="space-y-2">
-                {review.issues.map((issue, index) => {
-                  const issueSelectable = Boolean(issue.recordId)
-
-                  const issueContent = (
-                    <>
-                      <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                        <span className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${SEVERITY_STYLES[issue.severity]}`}>
-                          {issue.severity}
-                        </span>
-                        <span className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                          {ISSUE_LABELS[issue.type]}
-                        </span>
-                        {issue.recordId && (
-                          <span className="text-[10px] text-muted-foreground font-mono">{issue.recordId}</span>
-                        )}
-                      </div>
-                      <div className="text-xs text-foreground">{issue.description}</div>
-                      <div className="text-[10px] text-muted-foreground font-mono whitespace-pre-wrap mt-1">
-                        {issue.evidence}
-                      </div>
-                      {issue.type === 'missed' && (
-                        <div className="text-[10px] text-success font-mono mt-1">
-                          Suggested extraction: {issue.suggestedFix ?? issue.description}
-                        </div>
-                      )}
-                      {issue.type !== 'missed' && issue.suggestedFix && (
-                        <div className="text-[10px] text-muted-foreground font-mono mt-1">
-                          Suggested fix: {issue.suggestedFix}
-                        </div>
-                      )}
-                    </>
-                  )
-
-                  const recordId = issue.recordId
-                  if (issueSelectable && recordId) {
-                    return (
-                      <ListItem key={`${issue.type}-${recordId}-${index}`} onClick={() => onSelect(recordId)}>
-                        {issueContent}
-                      </ListItem>
-                    )
-                  }
-
-                  return (
-                    <div
-                      key={`${issue.type}-missing-${index}`}
-                      className="rounded-lg border border-border bg-secondary/80 px-3 py-2"
-                    >
-                      {issueContent}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      ) : hasReviewLoaded ? (
-        <div className="text-[11px] text-muted-foreground">No review yet.</div>
-      ) : reviewLoadingState ? (
-        <ReviewSkeleton />
-      ) : null}
-    </div>
-  )
-}
-
-function ExtractionRunCard({
-  run,
-  selected,
-  review,
-  onSelect
-}: {
-  run: ExtractionRun
-  selected: boolean
-  review: ExtractionReview | null | undefined
-  onSelect: (runId: string) => void
-}) {
-  const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
-  const hasErrors = run.parseErrorCount > 0
-  const dotClass = hasErrors ? 'bg-destructive' : 'bg-success'
-
-  return (
-    <ListItem onClick={() => onSelect(run.runId)} selected={selected}>
-      {/* Row 1: Activity + badges + time */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className={`h-2 w-2 rounded-full shrink-0 ${dotClass}`} />
-          <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-foreground/10 text-foreground/70">
-            {run.recordCount} rec
-          </span>
-          <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-foreground/10 text-foreground/70">
-            {formatDuration(run.duration)}
-          </span>
-          {accuracyBadge && (
-            <span
-              className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${accuracyBadge.badge}`}
-              title={accuracyBadge.title}
-            >
-              Acc {accuracyBadge.label}
-            </span>
-          )}
-          {hasErrors && (
-            <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
-              {run.parseErrorCount} err
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1 text-[11px] text-muted-foreground shrink-0">
-          <span>{formatRelativeTimeShort(run.timestamp, { includeAgo: true })}</span>
-          {selected && <ChevronRight className="w-3.5 h-3.5 text-foreground" />}
-        </div>
-      </div>
-    </ListItem>
-  )
-}
 
 export default function Extractions() {
   const [page, setPage] = useState(0)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('12h')
   const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose } = useSelectedMemory()
-  const [recordsByRun, setRecordsByRun] = useState<Record<string, MemoryRecord[]>>({})
-  const [loadingRunId, setLoadingRunId] = useState<string | null>(null)
-  const [runErrors, setRunErrors] = useState<Record<string, string>>({})
-  const [reviewsByRun, setReviewsByRun] = useState<Record<string, ExtractionReview | null>>({})
-  const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
-  const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const { copy, isCopied } = useCopyToClipboard(2000)
-  const loadSeqRef = useRef(0)
+
+  const {
+    recordsByRun,
+    loadingRunId,
+    runErrors,
+    reviewsByRun,
+    reviewLoading,
+    reviewErrors,
+    loadRunDetails,
+    loadReview,
+    handleReviewUpdate,
+    handleReviewError
+  } = useExtractionRunData()
 
   const { data, error, isPending, isFetching } = useExtractions({ page, limit: PAGE_SIZE })
   const allRuns = data?.runs ?? []
@@ -471,46 +51,6 @@ export default function Extractions() {
     return `${filteredRuns.length}/${allRuns.length}`
   }
 
-  const loadRunDetails = async (run: ExtractionRun) => {
-    if (recordsByRun[run.runId]) return
-
-    const loadSeq = loadSeqRef.current + 1
-    loadSeqRef.current = loadSeq
-    setLoadingRunId(run.runId)
-    setRunErrors(prev => ({ ...prev, [run.runId]: '' }))
-
-    try {
-      const response = await fetchExtractionRun(run.runId)
-      if (loadSeqRef.current !== loadSeq) return
-      setRecordsByRun(prev => ({ ...prev, [run.runId]: response.records }))
-    } catch (err) {
-      if (loadSeqRef.current !== loadSeq) return
-      const message = err instanceof Error ? err.message : 'Failed to load extraction'
-      setRunErrors(prev => ({ ...prev, [run.runId]: message }))
-    } finally {
-      if (loadSeqRef.current === loadSeq) {
-        setLoadingRunId(null)
-      }
-    }
-  }
-
-  const loadReview = async (run: ExtractionRun) => {
-    if (reviewLoading[run.runId]) return
-    if (Object.prototype.hasOwnProperty.call(reviewsByRun, run.runId)) return
-
-    setReviewLoading(prev => ({ ...prev, [run.runId]: true }))
-    setReviewErrors(prev => ({ ...prev, [run.runId]: '' }))
-    try {
-      const review = await fetchExtractionReview(run.runId)
-      setReviewsByRun(prev => ({ ...prev, [run.runId]: review }))
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load review'
-      setReviewErrors(prev => ({ ...prev, [run.runId]: message }))
-    } finally {
-      setReviewLoading(prev => ({ ...prev, [run.runId]: false }))
-    }
-  }
-
   useEffect(() => {
     if (filteredRuns.length === 0) {
       setSelectedRunId(null)
@@ -524,20 +64,6 @@ export default function Extractions() {
     if (!selectedRunId) return null
     return filteredRuns.find(run => run.runId === selectedRunId) ?? null
   }, [filteredRuns, selectedRunId])
-
-  useEffect(() => {
-    if (!selectedRun) return
-    void loadRunDetails(selectedRun)
-    void loadReview(selectedRun)
-  }, [selectedRun])
-
-  const handleReviewUpdate = (runId: string, review: ExtractionReview) => {
-    setReviewsByRun(prev => ({ ...prev, [runId]: review }))
-  }
-
-  const handleReviewError = (runId: string, message: string) => {
-    setReviewErrors(prev => ({ ...prev, [runId]: message }))
-  }
 
   const summary = useMemo(() => {
     let totalRecords = 0
@@ -564,7 +90,7 @@ export default function Extractions() {
   }, [filteredRuns])
 
   const groupedRuns = useMemo(() => {
-    const groups = new Map<string, ExtractionRun[]>()
+    const groups = new Map<string, typeof filteredRuns>()
     for (const run of filteredRuns) {
       const projectName = extractProjectFromPath(run.transcriptPath)
       if (!groups.has(projectName)) {
@@ -610,289 +136,44 @@ export default function Extractions() {
         </div>
       ) : (
         <div className="flex flex-col flex-1 min-h-0 gap-4">
-          <section className="rounded-xl border border-border bg-card px-4 py-3 shrink-0">
-            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-              <div className="flex items-center gap-2 text-[11px] text-muted-foreground/70">
-                <Sparkles className="h-3.5 w-3.5 text-success/80" />
-                <span className="uppercase tracking-[0.1em] font-medium">Extraction pulse</span>
-              </div>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
-                <span className="flex items-center gap-1.5">
-                  <Activity className="h-3.5 w-3.5 text-success" />
-                  <span className="text-foreground/90 font-medium tabular-nums">{summary.totalRuns}</span>
-                  <span className="text-muted-foreground/70">runs</span>
-                </span>
-                <span className="text-muted-foreground/40">·</span>
-                <span>
-                  <span className="text-foreground/90 font-medium tabular-nums">{summary.totalRecords}</span>
-                  <span className="text-muted-foreground/70 ml-1">records</span>
-                </span>
-                <span className="text-muted-foreground/40">·</span>
-                <span>
-                  <span className={`font-medium tabular-nums ${summary.totalErrors > 0 ? 'text-destructive' : 'text-foreground/90'}`}>
-                    {summary.totalErrors}
-                  </span>
-                  <span className="text-muted-foreground/70 ml-1">parse errors</span>
-                </span>
-                <span className="text-muted-foreground/40">·</span>
-                <span>
-                  <span className="text-foreground/90 font-medium tabular-nums">{formatDuration(summary.avgDuration)}</span>
-                  <span className="text-muted-foreground/70 ml-1">avg</span>
-                </span>
-                <span className="text-muted-foreground/40">·</span>
-                <span>
-                  <span className="text-foreground/90 font-medium tabular-nums">
-                    {summary.latestTimestamp ? formatRelativeTimeShort(summary.latestTimestamp, { includeAgo: true }) : '—'}
-                  </span>
-                  <span className="text-muted-foreground/70 ml-1">latest</span>
-                </span>
-              </div>
-            </div>
-          </section>
+          <ExtractionSummary summary={summary} />
 
-          <section className="rounded-xl border border-border bg-card px-4 py-3 shrink-0">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-1">
-                {TIME_FILTERS.map(filter => (
-                  <FilterChip
-                    key={filter.key}
-                    active={timeFilter === filter.key}
-                    onClick={() => setTimeFilter(filter.key)}
-                  >
-                    {filter.label}
-                  </FilterChip>
-                ))}
-              </div>
-              <div className="ml-auto text-xs text-muted-foreground/70 font-medium tabular-nums">
-                {filteredRuns.length}/{allRuns.length}
-              </div>
-            </div>
-          </section>
+          <ExtractionFilters
+            timeFilter={timeFilter}
+            onTimeFilterChange={setTimeFilter}
+            filteredCount={filteredRuns.length}
+            totalCount={allRuns.length}
+          />
 
           <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)] flex-1 min-h-0">
-            <section className="rounded-xl border border-border bg-card p-3 flex flex-col min-h-0">
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-[11px] font-semibold text-muted-foreground/70 uppercase tracking-[0.1em]">Runs</div>
-                <div className="text-[11px] text-muted-foreground/60 font-medium tabular-nums">{filteredRuns.length}</div>
-              </div>
-              <div className="space-y-3 flex-1 min-h-0 lg:overflow-y-auto lg:pr-1">
-                {filteredRuns.length === 0 ? (
-                  <div className="py-6 text-center text-sm text-muted-foreground">
-                    No runs match filters.
-                  </div>
-                ) : (
-                  groupedRuns.map(group => (
-                    <div key={group.name} className="space-y-1.5">
-                      <div
-                        className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground px-1 pt-1 truncate"
-                        title={group.name}
-                      >
-                        {group.name}
-                      </div>
-                      <div className="space-y-1.5">
-                        {group.runs.map(run => (
-                          <ExtractionRunCard
-                            key={run.runId}
-                            run={run}
-                            selected={run.runId === selectedRunId}
-                            review={reviewsByRun[run.runId]}
-                            onSelect={setSelectedRunId}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-              <div className="mt-3 flex items-center justify-between">
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => setPage(p => Math.max(0, p - 1))}
-                  disabled={page === 0}
-                >
-                  Previous
-                </Button>
-                <span className="text-[11px] text-muted-foreground">{pageInfo()}</span>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => setPage(p => p + 1)}
-                  disabled={total !== null && (page + 1) * PAGE_SIZE >= total}
-                >
-                  Next
-                </Button>
-              </div>
-            </section>
+            <ExtractionList
+              groupedRuns={groupedRuns}
+              selectedRunId={selectedRunId}
+              reviewsByRun={reviewsByRun}
+              onSelect={setSelectedRunId}
+              page={page}
+              onPreviousPage={() => setPage(p => Math.max(0, p - 1))}
+              onNextPage={() => setPage(p => p + 1)}
+              pageInfo={pageInfo()}
+              disableNext={total !== null && (page + 1) * PAGE_SIZE >= total}
+            />
 
-            <section className="rounded-xl border border-border bg-card p-4 flex flex-col min-h-0">
-              {!selectedRun ? (
-                <div className="flex-1 flex flex-col items-center justify-center text-center text-sm text-muted-foreground">
-                  Select an extraction run to view details.
-                </div>
-              ) : (
-                (() => {
-                  const runRecords = recordsByRun[selectedRun.runId] ?? []
-                  const isLoadingRecords = loadingRunId === selectedRun.runId
-                  const runError = runErrors[selectedRun.runId]
-                  const review = reviewsByRun[selectedRun.runId] ?? null
-                  const reviewLoadingState = reviewLoading[selectedRun.runId] ?? false
-                  const reviewError = reviewErrors[selectedRun.runId]
-                  const hasReviewLoaded = Object.prototype.hasOwnProperty.call(reviewsByRun, selectedRun.runId)
-                  const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
-                  const transcriptPath = selectedRun.transcriptPath || '—'
-                  const projectName = extractProjectFromPath(selectedRun.transcriptPath)
-
-                  return (
-                    <div className="flex flex-col flex-1 min-h-0 gap-3">
-                      <div className="rounded-lg border border-border bg-background/50 p-3 shrink-0">
-                        <div className="flex items-start justify-between gap-3 mb-2">
-                          <div className="min-w-0">
-                            <div
-                              className="text-lg font-semibold truncate"
-                              title={transcriptPath}
-                              style={{ direction: 'rtl', textAlign: 'left' }}
-                            >
-                              {projectName}
-                            </div>
-                            <div className="text-[11px] text-muted-foreground truncate">
-                              Session {truncateSessionId(selectedRun.sessionId)}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {accuracyBadge && (
-                              <span
-                                className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${accuracyBadge.badge}`}
-                                title={accuracyBadge.title}
-                              >
-                                Acc {accuracyBadge.label}
-                              </span>
-                            )}
-                            {selectedRun.parseErrorCount > 0 && (
-                              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
-                                {selectedRun.parseErrorCount} parse {selectedRun.parseErrorCount === 1 ? 'error' : 'errors'}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
-                          <MetricTile label="Records" value={selectedRun.recordCount} />
-                          <MetricTile label="Duration" value={formatDuration(selectedRun.duration)} />
-                          <MetricTile
-                            label="Errors"
-                            value={selectedRun.parseErrorCount}
-                            valueClassName={selectedRun.parseErrorCount > 0 ? 'text-destructive' : undefined}
-                          />
-                          <MetricTile
-                            label="Reviewed"
-                            value={review ? formatRelativeTimeShort(review.reviewedAt, { includeAgo: true }) : '—'}
-                          />
-                        </div>
-
-                        <div className="text-[11px] text-muted-foreground">
-                          Run {formatDateTime(selectedRun.timestamp)}
-                        </div>
-                      </div>
-
-                      <div className="shrink-0">
-                        <ExtractionReviewPanel
-                          run={selectedRun}
-                          runRecords={runRecords}
-                          review={review}
-                          reviewLoadingState={reviewLoadingState}
-                          reviewError={reviewError}
-                          hasReviewLoaded={hasReviewLoaded}
-                          onSelect={handleSelect}
-                          onReviewUpdate={handleReviewUpdate}
-                          onReviewError={handleReviewError}
-                          copy={copy}
-                          isCopied={isCopied}
-                        />
-                      </div>
-
-                      <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
-                        <div className="rounded-lg border border-border bg-background/40 p-3">
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Records</div>
-                            <div className="text-[11px] text-muted-foreground">{selectedRun.recordCount}</div>
-                          </div>
-                          {isLoadingRecords ? (
-                            <RecordsSkeleton />
-                          ) : runError ? (
-                            <div className="text-xs text-destructive">{runError}</div>
-                          ) : runRecords.length === 0 ? (
-                            <div className="text-xs text-muted-foreground">No records extracted.</div>
-                          ) : (
-                            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                              {runRecords.map(record => {
-                                const summaryText = truncateText(getMemorySummary(record), 100)
-                                const excerpt = record.sourceExcerpt
-                                  ? truncateText(record.sourceExcerpt, 220)
-                                  : 'No source excerpt available.'
-
-                                return (
-                                  <ListItem key={record.id} onClick={() => handleSelect(record.id)}>
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <span
-                                        className="w-2 h-2 rounded-full"
-                                        style={{ backgroundColor: TYPE_COLORS[record.type] }}
-                                      />
-                                      <span className="text-[11px] text-muted-foreground uppercase tracking-wide">
-                                        {record.type}
-                                      </span>
-                                      <span className="text-[11px] text-muted-foreground font-mono truncate">
-                                        {record.id}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-foreground mb-1 line-clamp-2">{summaryText}</div>
-                                    <div className="text-[10px] text-muted-foreground font-mono line-clamp-2">{excerpt}</div>
-                                  </ListItem>
-                                )
-                              })}
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="rounded-lg border border-border bg-background/40 p-3 space-y-2">
-                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Run details</div>
-                          <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
-                            <div>
-                              <span className="text-muted-foreground">Session</span>
-                              <span className="ml-2 font-mono text-foreground">{selectedRun.sessionId}</span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Run ID</span>
-                              <span className="ml-2 font-mono text-foreground">{selectedRun.runId}</span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Started</span>
-                              <span className="ml-2 text-foreground">{formatDateTime(selectedRun.timestamp)}</span>
-                            </div>
-                            {review && (
-                              <>
-                                <div>
-                                  <span className="text-muted-foreground">Review model</span>
-                                  <span className="ml-2 font-mono text-foreground">{review.model}</span>
-                                </div>
-                                <div>
-                                  <span className="text-muted-foreground">Review time</span>
-                                  <span className="ml-2 text-foreground">{formatDuration(review.durationMs)}</span>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                          <div className="text-xs">
-                            <span className="text-muted-foreground">Transcript</span>
-                            <span className="ml-2 font-mono text-foreground break-all">{transcriptPath}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })()
-              )}
-            </section>
+            <ExtractionDetail
+              run={selectedRun}
+              recordsByRun={recordsByRun}
+              loadingRunId={loadingRunId}
+              runErrors={runErrors}
+              reviewsByRun={reviewsByRun}
+              reviewLoading={reviewLoading}
+              reviewErrors={reviewErrors}
+              onSelectMemory={handleSelect}
+              onReviewUpdate={handleReviewUpdate}
+              onReviewError={handleReviewError}
+              onLoadRunDetails={loadRunDetails}
+              onLoadReview={loadReview}
+              copy={copy}
+              isCopied={isCopied}
+            />
           </div>
         </div>
       )}
