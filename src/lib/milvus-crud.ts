@@ -233,27 +233,31 @@ export async function getRecordStats(
 
   try {
     const client = await ensureClient(config)
-
     const uniqueIds = [...new Set(ids)]
-    const idFilter = uniqueIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
-
-    const result = await client.query({
-      collection_name: config.milvus.collection,
-      filter: `id in [${idFilter}]`,
-      output_fields: ['id', 'retrieval_count', 'usage_count', 'success_count', 'failure_count']
-    })
-
     const statsMap = new Map<string, MemoryStats>()
-    for (const row of result.data ?? []) {
-      const r = row as Record<string, unknown>
-      const id = r.id as string
-      statsMap.set(id, {
-        id,
-        retrievalCount: (r.retrieval_count as number) ?? 0,
-        usageCount: (r.usage_count as number) ?? 0,
-        successCount: (r.success_count as number) ?? 0,
-        failureCount: (r.failure_count as number) ?? 0
+    const batchSize = 1000
+
+    for (let i = 0; i < uniqueIds.length; i += batchSize) {
+      const batchIds = uniqueIds.slice(i, i + batchSize)
+      const idFilter = batchIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
+
+      const result = await client.query({
+        collection_name: config.milvus.collection,
+        filter: `id in [${idFilter}]`,
+        output_fields: ['id', 'retrieval_count', 'usage_count', 'success_count', 'failure_count']
       })
+
+      for (const row of result.data ?? []) {
+        const r = row as Record<string, unknown>
+        const id = r.id as string
+        statsMap.set(id, {
+          id,
+          retrievalCount: (r.retrieval_count as number) ?? 0,
+          usageCount: (r.usage_count as number) ?? 0,
+          successCount: (r.success_count as number) ?? 0,
+          failureCount: (r.failure_count as number) ?? 0
+        })
+      }
     }
 
     return statsMap
