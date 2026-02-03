@@ -194,6 +194,17 @@ function buildSettingsRecommendationKey(
   return `${operation}:${recommendation.setting}:${suggestedValue}:${index}`
 }
 
+// Fallback hash for non-secure contexts where crypto.subtle is unavailable (HTTP, non-localhost)
+function simpleHash(str: string): string {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash
+  }
+  return Math.abs(hash).toString(16).padStart(8, '0')
+}
+
 async function buildResultId(result: OperationResult): Promise<string> {
   const actionIds = result.actions.map(action => action.recordId).filter(Boolean).join(',')
   const candidateIds = result.candidates
@@ -209,10 +220,14 @@ async function buildResultId(result: OperationResult): Promise<string> {
     actionIds,
     candidateIds
   ].join('|')
-  const data = new TextEncoder().encode(payload)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  return hashArray.map(byte => byte.toString(16).padStart(2, '0')).join('').slice(0, 16)
+
+  if (crypto.subtle) {
+    const data = new TextEncoder().encode(payload)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+    const hashArray = Array.from(new Uint8Array(hashBuffer))
+    return hashArray.map(byte => byte.toString(16).padStart(2, '0')).join('').slice(0, 16)
+  }
+  return simpleHash(payload).slice(0, 16)
 }
 
 function getSuggestionPayload(action: MaintenanceAction): {
