@@ -84,7 +84,9 @@ export function parseSeverity(value: unknown): ExtractionReviewIssue['severity']
 }
 
 export function clampScore(value: number): number {
-  return Math.max(0, Math.min(100, Math.round(value)))
+  // Detect 0-1 scale and convert to 0-100
+  const normalized = value > 0 && value <= 1 ? value * 100 : value
+  return Math.max(0, Math.min(100, Math.round(normalized)))
 }
 
 export type InjectionVerdict = 'relevant' | 'partially_relevant' | 'irrelevant' | 'unknown'

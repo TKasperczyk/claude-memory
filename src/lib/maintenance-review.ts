@@ -99,7 +99,7 @@ const REVIEW_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
     dryRun: { type: 'boolean' },
     reviewedAt: { type: 'number' },
     overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
-    assessmentScore: { type: 'number' },
+    assessmentScore: { type: 'number', description: 'Assessment score from 0 to 100 (not 0-1)' },
     actionVerdicts: {
       type: 'array',
       items: {

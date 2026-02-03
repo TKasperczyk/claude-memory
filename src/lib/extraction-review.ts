@@ -72,7 +72,7 @@ const REVIEW_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
     runId: { type: 'string' },
     reviewedAt: { type: 'number' },
     overallRating: { type: 'string', enum: ['good', 'mixed', 'poor'] },
-    accuracyScore: { type: 'number' },
+    accuracyScore: { type: 'number', description: 'Accuracy score from 0 to 100 (not 0-1)' },
     issues: {
       type: 'array',
       items: {
