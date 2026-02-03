@@ -5,19 +5,24 @@ import {
   fetchInstallationStatus,
   fetchMemories,
   fetchMemoryTypes,
+  fetchRetrievalActivity,
   fetchSettings,
   fetchSettingsDefaults,
   fetchSessions,
   fetchStats,
+  fetchStatsHistory,
   searchMemories,
   type ExtractionListResponse,
   type HookStatusResponse,
   type InstallationStatusResponse,
   type MemoryListResponse,
   type RecordType,
+  type RetrievalActivity,
+  type RetrievalActivityPeriod,
   type Settings,
   type SettingsDefaultsResponse,
   type SessionsResponse,
+  type StatsHistoryResponse,
   type StatsResponse
 } from '@/lib/api'
 
@@ -146,5 +151,27 @@ export function useInstallationStatus() {
   return useQuery<InstallationStatusResponse>({
     queryKey: ['installationStatus'],
     queryFn: fetchInstallationStatus
+  })
+}
+
+export function useRetrievalActivity(params: {
+  period?: RetrievalActivityPeriod
+  limit?: number
+} = {}) {
+  return useQuery<RetrievalActivity>({
+    queryKey: ['retrievalActivity', params],
+    queryFn: () => fetchRetrievalActivity(params),
+    refetchInterval: 60000
+  })
+}
+
+export function useStatsHistory(params: {
+  period?: RetrievalActivityPeriod
+  limit?: number
+} = {}) {
+  return useQuery<StatsHistoryResponse>({
+    queryKey: ['statsHistory', params],
+    queryFn: () => fetchStatsHistory(params),
+    refetchInterval: 60000
   })
 }

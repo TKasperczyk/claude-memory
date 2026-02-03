@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, Link2, Loader2, X } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
@@ -16,7 +16,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import StatsCard from '@/components/StatsCard'
-import { useInstallationStatus, useStats } from '@/hooks/queries'
+import { RetrievalActivityChart, MemoryGrowthChart } from '@/components/charts'
+import { useInstallationStatus, useRetrievalActivity, useStats, useStatsHistory } from '@/hooks/queries'
 import { installAll, resetCollection, uninstallAll, type HookEvent, type RecordType } from '@/lib/api'
 import { TYPE_COLORS } from '@/lib/memory-ui'
 
@@ -164,6 +165,8 @@ export default function Overview() {
   const queryClient = useQueryClient()
   const { data, error, isPending, refetch } = useStats()
   const { data: installationStatus, error: installationError, isPending: installationPending } = useInstallationStatus()
+  const { data: retrievalActivity, isPending: retrievalActivityPending } = useRetrievalActivity({ period: 'day', limit: 30 })
+  const { data: statsHistory, isPending: statsHistoryPending } = useStatsHistory({ period: 'day', limit: 30 })
   const [resetOpen, setResetOpen] = useState(false)
   const [resetInput, setResetInput] = useState('')
   const [resetError, setResetError] = useState<string | null>(null)
@@ -274,6 +277,21 @@ export default function Overview() {
     : []
 
   const usagePercent = data ? Math.round(data.avgUsageRatio * 100) : 0
+
+  // Extract sparkline data from stats history
+  const sparklineData = useMemo(() => {
+    if (!statsHistory?.buckets) return null
+    const validBuckets = statsHistory.buckets.filter(b => b.snapshot !== null)
+    if (validBuckets.length < 2) return null
+    return {
+      total: validBuckets.map(b => b.snapshot!.total),
+      deprecated: validBuckets.map(b => b.snapshot!.deprecated),
+      avgRetrievals: validBuckets.map(b => b.snapshot!.avgRetrievalCount),
+      avgUsage: validBuckets.map(b => b.snapshot!.avgUsageCount),
+      usageRatio: validBuckets.map(b => Math.round(b.snapshot!.avgUsageRatio * 100)),
+    }
+  }, [statsHistory])
+
   const hookData = installationStatus?.hooks ?? null
   const commandData = installationStatus?.commands ?? null
   const commandEntries = commandData ? Object.entries(commandData) : []
@@ -311,27 +329,36 @@ export default function Overview() {
       <Card>
         <CardContent className="p-5">
           <h2 className="section-header mb-5">Metrics</h2>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-x-6 gap-y-5">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <StatsCard
               label="Total memories"
-              value={isInitialLoading ? <Skeleton className="h-8 w-20" /> : formatNumber(data!.total)}
+              value={isInitialLoading ? <Skeleton className="h-7 w-16" /> : formatNumber(data!.total)}
+              sparklineData={sparklineData?.total}
             />
             <StatsCard
               label="Deprecated"
-              value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.deprecated)}
+              value={isInitialLoading ? <Skeleton className="h-7 w-12" /> : formatNumber(data!.deprecated)}
+              sparklineData={sparklineData?.deprecated}
+              sparklineColor="hsl(var(--destructive))"
             />
             <StatsCard
               label="Avg retrievals"
-              value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.avgRetrievalCount, 1)}
+              value={isInitialLoading ? <Skeleton className="h-7 w-12" /> : formatNumber(data!.avgRetrievalCount, 1)}
+              sparklineData={sparklineData?.avgRetrievals}
+              sparklineColor="hsl(var(--type-discovery))"
             />
             <StatsCard
               label="Avg usage"
-              value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : formatNumber(data!.avgUsageCount, 1)}
+              value={isInitialLoading ? <Skeleton className="h-7 w-12" /> : formatNumber(data!.avgUsageCount, 1)}
+              sparklineData={sparklineData?.avgUsage}
+              sparklineColor="hsl(var(--type-procedure))"
             />
             <StatsCard
               label="Usage ratio"
-              value={isInitialLoading ? <Skeleton className="h-8 w-16" /> : `${usagePercent}%`}
+              value={isInitialLoading ? <Skeleton className="h-7 w-12" /> : `${usagePercent}%`}
               subtext="Helpfulness score"
+              sparklineData={sparklineData?.usageRatio}
+              sparklineColor="hsl(var(--success))"
             />
           </div>
         </CardContent>
@@ -344,6 +371,22 @@ export default function Overview() {
           {isInitialLoading ? <DistributionSkeleton /> : <DistributionBar data={typeData} />}
         </CardContent>
       </Card>
+
+      {/* Activity Charts */}
+      <div className="grid md:grid-cols-2 gap-5">
+        <Card>
+          <CardContent className="p-5">
+            <h2 className="section-header mb-4">Memory growth</h2>
+            <MemoryGrowthChart data={statsHistory} isLoading={statsHistoryPending} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5">
+            <h2 className="section-header mb-4">Retrieval activity</h2>
+            <RetrievalActivityChart data={retrievalActivity} isLoading={retrievalActivityPending} />
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Lists */}
       <div className="grid md:grid-cols-2 gap-5">
