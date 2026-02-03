@@ -9,26 +9,19 @@ export function formatDateTime(timestamp?: number): string {
   return new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
 }
 
-export function formatRelativeTimeShort(timestamp?: number): string {
+export function formatRelativeTimeShort(
+  timestamp?: number,
+  options: { includeAgo?: boolean } = {}
+): string {
   if (!timestamp) return '—'
   const diff = Date.now() - timestamp
   const mins = Math.floor(diff / 60000)
   const hours = Math.floor(mins / 60)
   const days = Math.floor(hours / 24)
-  if (days > 0) return `${days}d`
-  if (hours > 0) return `${hours}h`
-  if (mins > 0) return `${mins}m`
-  return 'now'
-}
-
-export function formatRelativeTimeShortAgo(timestamp: number): string {
-  const diff = Date.now() - timestamp
-  const mins = Math.floor(diff / 60000)
-  const hours = Math.floor(mins / 60)
-  const days = Math.floor(hours / 24)
-  if (days > 0) return `${days}d ago`
-  if (hours > 0) return `${hours}h ago`
-  if (mins > 0) return `${mins}m ago`
+  const suffix = options.includeAgo ? ' ago' : ''
+  if (days > 0) return `${days}d${suffix}`
+  if (hours > 0) return `${hours}h${suffix}`
+  if (mins > 0) return `${mins}m${suffix}`
   return 'now'
 }
 

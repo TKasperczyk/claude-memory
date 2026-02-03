@@ -19,7 +19,7 @@ import {
   type ExtractionRun,
   type MemoryRecord
 } from '@/lib/api'
-import { formatDateTime, formatDuration, formatRelativeTimeShortAgo, truncateText } from '@/lib/format'
+import { formatDateTime, formatDuration, formatRelativeTimeShort, truncateText } from '@/lib/format'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 import { formatExtractionReview } from '@/lib/review-format'
 
@@ -432,7 +432,7 @@ function ExtractionRunCard({
           )}
         </div>
         <div className="flex items-center gap-1 text-[11px] text-muted-foreground shrink-0">
-          <span>{formatRelativeTimeShortAgo(run.timestamp)}</span>
+          <span>{formatRelativeTimeShort(run.timestamp, { includeAgo: true })}</span>
           {selected && <ChevronRight className="w-3.5 h-3.5 text-foreground" />}
         </div>
       </div>
@@ -642,7 +642,7 @@ export default function Extractions() {
                 <span className="text-muted-foreground/40">·</span>
                 <span>
                   <span className="text-foreground/90 font-medium tabular-nums">
-                    {summary.latestTimestamp ? formatRelativeTimeShortAgo(summary.latestTimestamp) : '—'}
+                    {summary.latestTimestamp ? formatRelativeTimeShort(summary.latestTimestamp, { includeAgo: true }) : '—'}
                   </span>
                   <span className="text-muted-foreground/70 ml-1">latest</span>
                 </span>
@@ -786,7 +786,7 @@ export default function Extractions() {
                           />
                           <MetricTile
                             label="Reviewed"
-                            value={review ? formatRelativeTimeShortAgo(review.reviewedAt) : '—'}
+                            value={review ? formatRelativeTimeShort(review.reviewedAt, { includeAgo: true }) : '—'}
                           />
                         </div>
 

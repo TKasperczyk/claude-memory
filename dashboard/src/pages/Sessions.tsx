@@ -13,7 +13,7 @@ import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import { useStreamingReview } from '@/hooks/useStreamingReview'
 import MemoryDetail, { type RetrievalContext } from '@/components/MemoryDetail'
 import Skeleton from '@/components/Skeleton'
-import { formatDateTime, formatRelativeTimeShortAgo } from '@/lib/format'
+import { formatDateTime, formatRelativeTimeShort } from '@/lib/format'
 import {
   fetchInjectionReview,
   type InjectedMemoryVerdict,
@@ -585,7 +585,7 @@ function SessionCard({
           )}
         </div>
         <div className="flex items-center gap-1 text-[11px] text-muted-foreground shrink-0">
-          <span>{formatRelativeTimeShortAgo(session.lastActivity)}</span>
+          <span>{formatRelativeTimeShort(session.lastActivity, { includeAgo: true })}</span>
           {selected && <ChevronRight className="w-3.5 h-3.5 text-foreground" />}
         </div>
       </div>
@@ -1116,7 +1116,7 @@ export default function Sessions() {
                           <MetricTile label="Prompts" value={promptCount ?? '—'} />
                           <MetricTile label="Inj" value={injectionCount} />
                           <MetricTile label="Mem" value={memories.length} />
-                          <MetricTile label="Active" value={formatRelativeTimeShortAgo(selectedSession.lastActivity)} />
+                          <MetricTile label="Active" value={formatRelativeTimeShort(selectedSession.lastActivity, { includeAgo: true })} />
                           {selectedSession.lastStatus && (
                             <span className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${STATUS_STYLES[selectedSession.lastStatus].badge}`}>
                               {STATUS_STYLES[selectedSession.lastStatus].label}
