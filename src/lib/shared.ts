@@ -1,4 +1,5 @@
 import fs from 'fs'
+import { getRecordExactTextParts } from './record-fields.js'
 import { getRecordSummary, type RecordSummarySource } from './record-summary.js'
 import { type MemoryRecord, type RecordType } from './types.js'
 
@@ -37,18 +38,7 @@ export function normalizeStep(step: string): string {
 }
 
 export function buildExactText(record: MemoryRecord): string {
-  switch (record.type) {
-    case 'command':
-      return record.command
-    case 'error':
-      return record.errorText
-    case 'discovery':
-      return [record.what, record.where].filter(Boolean).join('\n')
-    case 'procedure':
-      return [record.name, ...record.steps].filter(Boolean).join('\n')
-    case 'warning':
-      return [record.avoid, record.useInstead, record.reason].filter(Boolean).join('\n')
-  }
+  return getRecordExactTextParts(record).filter(Boolean).join('\n')
 }
 
 export function normalizeExactText(value: string): string {

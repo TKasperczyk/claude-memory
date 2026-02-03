@@ -11,6 +11,7 @@ import {
   type ScoredRecord,
   type WarningRecord
 } from './types.js'
+import { getRecordTextGroups } from './record-fields.js'
 import { looksLikeCommand, truncateText } from './shared.js'
 import { buildExclusionReason } from './diagnostics.js'
 
@@ -516,49 +517,62 @@ function formatRelativeAge(timestamp: number | undefined): string | null {
 }
 
 function formatRecord(record: MemoryRecord): string | null {
+  const { primary, secondary } = getRecordTextGroups(record)
+
   switch (record.type) {
     case 'command': {
+      const command = primary[0] as string
+      const resolution = secondary[0]
       const parts = [
-        `command: ${cleanInline(record.command)}`
+        `command: ${cleanInline(command)}`
       ]
       if (record.outcome) parts.push(`outcome: ${record.outcome}`)
       if (typeof record.exitCode === 'number') parts.push(`exit: ${record.exitCode}`)
       // Use "last result" instead of "resolution" to emphasize this is historical
-      if (record.resolution) parts.push(`last result: ${cleanInline(record.resolution)}`)
+      if (resolution) parts.push(`last result: ${cleanInline(resolution)}`)
       return truncateText(parts.join(' | '), MAX_ENTRY_CHARS)
     }
     case 'error': {
+      const errorText = primary[0] as string
+      const resolution = secondary[0] as string
+      const cause = secondary[1]
       const parts = [
-        `error: ${cleanInline(record.errorText)}`,
-        `resolution: ${cleanInline(record.resolution)}`
+        `error: ${cleanInline(errorText)}`,
+        `resolution: ${cleanInline(resolution)}`
       ]
-      if (record.cause) parts.push(`cause: ${cleanInline(record.cause)}`)
+      if (cause) parts.push(`cause: ${cleanInline(cause)}`)
       return truncateText(parts.join(' | '), MAX_ENTRY_CHARS)
     }
     case 'discovery': {
+      const what = primary[0] as string
+      const where = secondary[0]
       const parts = [
-        `discovery: ${cleanInline(record.what)}`
+        `discovery: ${cleanInline(what)}`
       ]
-      if (record.where) parts.push(`where: ${cleanInline(record.where)}`)
+      if (where) parts.push(`where: ${cleanInline(where)}`)
       if (record.confidence) parts.push(`confidence: ${record.confidence}`)
       return truncateText(parts.join(' | '), MAX_ENTRY_CHARS)
     }
     case 'procedure': {
+      const name = primary[0] as string
       const steps = record.steps
         .slice(0, MAX_PROCEDURE_STEPS)
         .map(step => truncateText(cleanInline(step), MAX_STEP_CHARS))
       const parts = [
-        `procedure: ${cleanInline(record.name)}`,
+        `procedure: ${cleanInline(name)}`,
         `steps: ${steps.join('; ')}`
       ]
       if (record.verification) parts.push(`verify: ${cleanInline(record.verification)}`)
       return truncateText(parts.join(' | '), MAX_ENTRY_CHARS)
     }
     case 'warning': {
+      const avoid = primary[0] as string
+      const useInstead = secondary[0] as string
+      const reason = secondary[1] as string
       const parts = [
-        `warning: Don't ${cleanInline(record.avoid)}`,
-        `use instead: ${cleanInline(record.useInstead)}`,
-        `reason: ${cleanInline(record.reason)}`
+        `warning: Don't ${cleanInline(avoid)}`,
+        `use instead: ${cleanInline(useInstead)}`,
+        `reason: ${cleanInline(reason)}`
       ]
       return truncateText(parts.join(' | '), MAX_ENTRY_CHARS)
     }

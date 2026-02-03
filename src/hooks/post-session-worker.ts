@@ -15,6 +15,7 @@ import { loadConfig } from '../lib/config.js'
 import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
+import { getRecordSearchableTextParts } from '../lib/record-fields.js'
 import { getRecordSummary } from '../lib/record-summary.js'
 import { acquireFileLock } from '../lib/lock.js'
 import { handlePostSession } from './post-session.js'
@@ -364,20 +365,7 @@ function buildSourceExcerpt(record: MemoryRecord, transcript: Transcript): strin
 }
 
 function buildExcerptCandidates(record: MemoryRecord): string[] {
-  const base = (() => {
-    switch (record.type) {
-      case 'command':
-        return compactStrings([record.command, record.truncatedOutput, record.resolution])
-      case 'error':
-        return compactStrings([record.errorText, record.resolution, record.cause])
-      case 'discovery':
-        return compactStrings([record.what, record.evidence, record.where])
-      case 'procedure':
-        return compactStrings([record.name, ...record.steps, record.verification, ...(record.prerequisites ?? [])])
-      case 'warning':
-        return compactStrings([record.avoid, record.useInstead, record.reason])
-    }
-  })()
+  const base = compactStrings(getRecordSearchableTextParts(record))
 
   return expandSearchCandidates(base)
 }

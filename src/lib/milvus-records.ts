@@ -1,5 +1,6 @@
 import { type RowData } from '@zilliz/milvus2-sdk-node'
 import { embed, ensureEmbeddingDim } from './embed.js'
+import { getRecordSupplementalEmbeddingParts } from './record-fields.js'
 import { buildExactText } from './shared.js'
 import {
   CONTENT_MAX_LENGTH,
@@ -214,18 +215,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
 }
 
 function buildSupplementalEmbeddingText(record: MemoryRecord): string | undefined {
-  switch (record.type) {
-    case 'command':
-      return joinEmbeddingParts([record.resolution])
-    case 'error':
-      return joinEmbeddingParts([record.cause, record.resolution])
-    case 'discovery':
-      return joinEmbeddingParts([record.evidence])
-    case 'procedure':
-      return joinEmbeddingParts([record.prerequisites?.join('\n'), record.verification])
-    case 'warning':
-      return undefined
-  }
+  return joinEmbeddingParts(getRecordSupplementalEmbeddingParts(record))
 }
 
 function joinEmbeddingParts(parts: Array<string | undefined>): string | undefined {
