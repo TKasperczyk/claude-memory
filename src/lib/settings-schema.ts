@@ -1,5 +1,5 @@
 import type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
-import { SIMILARITY_THRESHOLDS } from './types.js'
+import { SIMILARITY_THRESHOLDS } from './constants.js'
 
 export type SettingKind = 'int' | 'float' | 'bool'
 export type SettingsSection = 'retrieval' | 'maintenance'
