@@ -729,6 +729,7 @@ export default function Settings() {
           showFieldModified
           disabled={isPending}
           gridClassName="grid gap-5 md:grid-cols-2"
+          containerClassName="rounded-xl border border-border border-l-[3px] border-l-primary/50 bg-background/40"
         />
       </div>
 
@@ -740,26 +741,29 @@ export default function Settings() {
           </p>
         </div>
 
-        <div className="space-y-3">
-          {MAINTENANCE_GROUPS.map(group => (
-            <SettingsPanel
-              key={group.id}
-              collapsible
-              size="sm"
-              defaultOpen
-              title={group.label}
-              description={group.description}
-              fields={group.fields}
-              values={form}
-              onChange={handleFieldChange}
-              savedValues={(defaultSettings ?? undefined) as Settings | undefined}
-              defaultValues={(defaultSettings ?? undefined) as Settings | undefined}
-              errors={formErrors}
-              showFieldModified
-              showModifiedBadge
-              disabled={isPending}
-              variant="full"
-            />
+        <div className="space-y-4">
+          {MAINTENANCE_GROUPS.map((group, index) => (
+            <div key={group.id}>
+              {index > 0 && <hr className="border-border/50 mb-4" />}
+              <SettingsPanel
+                collapsible
+                size="sm"
+                defaultOpen
+                title={group.label}
+                description={group.description}
+                fields={group.fields}
+                values={form}
+                onChange={handleFieldChange}
+                savedValues={(defaultSettings ?? undefined) as Settings | undefined}
+                defaultValues={(defaultSettings ?? undefined) as Settings | undefined}
+                errors={formErrors}
+                showFieldModified
+                showModifiedBadge
+                disabled={isPending}
+                variant="full"
+                containerClassName="rounded-xl border border-border border-l-[3px] border-l-primary/50 bg-background/40"
+              />
+            </div>
           ))}
         </div>
       </div>

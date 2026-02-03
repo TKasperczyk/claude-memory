@@ -422,7 +422,7 @@ export function SettingsPanel<K extends string>({
   const gridClasses = gridClassName
     ?? (variant === 'compact' ? 'grid gap-4 md:grid-cols-2 lg:grid-cols-3' : 'grid gap-5 md:grid-cols-2')
 
-  const headerTitleClass = variant === 'compact' ? 'font-medium text-sm' : 'text-sm font-semibold'
+  const headerTitleClass = variant === 'compact' ? 'font-medium text-sm' : 'text-base font-semibold'
   const headerDescriptionClass = variant === 'compact' ? 'text-xs text-muted-foreground' : 'text-xs text-muted-foreground'
   const fieldLabelClass = variant === 'compact' ? 'block text-xs font-medium' : 'block text-sm font-medium'
   const fieldDescriptionClass = variant === 'compact'

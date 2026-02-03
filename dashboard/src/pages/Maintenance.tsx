@@ -1530,10 +1530,10 @@ export default function Maintenance() {
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto space-y-5">
-      <section className="p-5 rounded-xl border border-border bg-card space-y-4">
+      <section className="p-5 rounded-xl border border-border border-l-[3px] border-l-primary/50 bg-card space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h2 className="section-header mb-1">Batch operations</h2>
+            <h2 className="text-base font-semibold text-foreground/95 mb-1">Batch operations</h2>
             <p className="text-xs text-muted-foreground/70">Preview or execute all maintenance tasks in sequence.</p>
           </div>
           <div className="flex items-center gap-2">
@@ -1594,8 +1594,8 @@ export default function Maintenance() {
         )}
       </section>
 
-      <div className="space-y-4">
-        {operations.map(operation => {
+      <div className="space-y-2">
+        {operations.map((operation) => {
           const result = results[operation.key]
           const isRunning = running[operation.key]
           const mode = runningMode[operation.key]
@@ -1606,15 +1606,15 @@ export default function Maintenance() {
           const hasDetailedProgress = detailedProgress?.[operation.key] !== undefined
           const isCurrent = bulkStatus === 'running' || (isRunning && hasDetailedProgress)
           return (
-            <section key={operation.key} className={`p-5 rounded-xl border bg-card space-y-4 transition-all ${isCurrent ? 'border-type-discovery/60 ring-1 ring-type-discovery/20 bg-card/60' : 'border-border/50'}`}>
+            <section key={operation.key} className={`p-4 rounded-lg border border-l-[3px] border-l-primary/40 bg-card/60 space-y-3 transition-all ${isCurrent ? 'border-type-discovery/60 ring-1 ring-type-discovery/20 bg-card/80' : 'border-border/60'}`}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   {isCurrent && (
                     <Loader2 className="w-4 h-4 animate-spin text-type-discovery shrink-0" />
                   )}
                   <div>
-                    <h3 className="text-[15px] font-semibold text-foreground/95">{operation.label}</h3>
-                    <p className="text-sm text-muted-foreground/70 mt-0.5">{operation.description}</p>
+                    <h3 className="text-sm font-semibold text-foreground/90">{operation.label}</h3>
+                    <p className="text-xs text-muted-foreground/70">{operation.description}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
