@@ -13,6 +13,7 @@ import { resolveMaintenanceSettings, type MaintenanceSettings } from '../setting
 import { normalizeStep } from '../shared.js'
 
 export const QUERY_PAGE_SIZE = 500
+const COMMAND_EXISTS_CACHE_TTL_MS = 2 * 60 * 1000
 
 interface ValidityResult {
   valid: boolean
@@ -352,9 +353,22 @@ function commandExists(command: string, cwd?: string): boolean {
     return isExecutablePath(command, cwd)
   }
 
-  if (checkWhich(command)) return true
-  if (checkType(command)) return true
-  return false
+  const cacheKey = commandCacheKey(command, cwd)
+  const cached = commandExistsCache.get(cacheKey)
+  if (cached && isCommandCacheEntryValid(cached)) {
+    return cached.value
+  }
+
+  const now = Date.now()
+  const resolved = findCommandPath(command)
+  if (resolved) {
+    commandExistsCache.set(cacheKey, { value: true, checkedAt: now, kind: 'path', resolvedPath: resolved })
+    return true
+  }
+
+  const exists = checkType(command)
+  commandExistsCache.set(cacheKey, { value: exists, checkedAt: now, kind: exists ? 'builtin' : 'missing' })
+  return exists
 }
 
 function looksLikePath(command: string): boolean {
@@ -372,12 +386,47 @@ function isExecutablePath(command: string, cwd?: string): boolean {
   }
 }
 
-function checkWhich(command: string): boolean {
+type CommandExistsCacheEntry = {
+  value: boolean
+  checkedAt: number
+  kind: 'path' | 'builtin' | 'missing'
+  resolvedPath?: string
+}
+
+const commandExistsCache = new Map<string, CommandExistsCacheEntry>()
+
+function commandCacheKey(command: string, cwd?: string): string {
+  const envSignature = `${process.env.PATH ?? ''}|${process.env.SHELL ?? ''}`
+  return `${envSignature}|${cwd ?? ''}|${command}`
+}
+
+function isCommandCacheEntryValid(entry: CommandExistsCacheEntry): boolean {
+  if (Date.now() - entry.checkedAt > COMMAND_EXISTS_CACHE_TTL_MS) return false
+  if (entry.kind === 'path' && entry.resolvedPath) {
+    return isExecutableFile(entry.resolvedPath)
+  }
+  return true
+}
+
+function isExecutableFile(commandPath: string): boolean {
   try {
-    execFileSync('which', [command], { stdio: 'ignore' })
+    fs.accessSync(commandPath, fs.constants.X_OK)
     return true
   } catch {
     return false
+  }
+}
+
+function findCommandPath(command: string): string | null {
+  try {
+    const output = execFileSync('which', [command], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8'
+    }).trim()
+    if (!output) return null
+    return output.split(/\r?\n/)[0]
+  } catch {
+    return null
   }
 }
 

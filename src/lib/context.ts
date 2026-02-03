@@ -32,6 +32,8 @@ const MAX_STEP_CHARS = 400
 const MAX_WARNING_RECORDS = 5
 const MAX_WARNING_CHARS = 1000
 
+const GIT_ROOT_CACHE_TTL_MS = 30 * 1000
+
 // Words/phrases to strip from prompts before memory processing
 const NOISE_PATTERNS = [
   /\bultrathink\b/gi,
@@ -677,8 +679,46 @@ function safeReadDir(root: string): string[] {
   }
 }
 
+type GitRootCacheEntry = {
+  value?: string
+  checkedAt: number
+}
+
+const gitRootCache = new Map<string, GitRootCacheEntry>()
+
+function readGitRootCache(cwd: string): GitRootCacheEntry | null {
+  const cached = gitRootCache.get(cwd)
+  if (!cached) return null
+  if (!isGitRootCacheEntryValid(cwd, cached)) {
+    gitRootCache.delete(cwd)
+    return null
+  }
+  return cached
+}
+
+function isGitRootCacheEntryValid(cwd: string, entry: GitRootCacheEntry): boolean {
+  if (Date.now() - entry.checkedAt > GIT_ROOT_CACHE_TTL_MS) return false
+  if (entry.value) {
+    if (!fs.existsSync(entry.value)) return false
+    if (!hasGitMarker(entry.value)) return false
+    return true
+  }
+  if (hasGitMarker(cwd)) return false
+  return true
+}
+
+function hasGitMarker(root: string): boolean {
+  try {
+    return fs.existsSync(path.join(root, '.git'))
+  } catch {
+    return false
+  }
+}
+
 export function findGitRoot(cwd: string): string | undefined {
   if (!cwd) return undefined
+  const cached = readGitRootCache(cwd)
+  if (cached) return cached.value
   try {
     const output = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd,
@@ -686,8 +726,11 @@ export function findGitRoot(cwd: string): string | undefined {
       encoding: 'utf-8',
       timeout: 500
     }).trim()
-    return output || undefined
+    const root = output || undefined
+    gitRootCache.set(cwd, { value: root, checkedAt: Date.now() })
+    return root
   } catch {
+    gitRootCache.set(cwd, { value: undefined, checkedAt: Date.now() })
     return undefined
   }
 }
