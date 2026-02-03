@@ -91,13 +91,15 @@ Record consolidation:
 - A single "overhauled authentication system: added JWT tokens, refresh logic, and logout endpoint" is better than three separate discoveries.
 - Do NOT extract both a warning AND a discovery for the same issue/fix. If a discovery documents a fix, don't also extract a warning about the original problem - the discovery already captures the lesson.
 
-Iteration and refinement (CRITICAL for procedures):
+Iteration and refinement (CRITICAL):
 - Sessions often involve iteration: initial approach → user feedback → refinements.
 - ALWAYS extract the FINAL state, not intermediate attempts.
 - When you see patterns like "change X to Y", "reduce the timeout", "add a retry loop":
   - The earlier value is obsolete - extract only the final value/step
 - If code was modified multiple times, look at the LAST edit to determine actual behavior.
 - If manual steps were later automated in the script, describe the automated behavior.
+- sourceExcerpt must also reflect the final state - don't quote an earlier iteration.
+  If feature A was added then replaced by feature B, quote the moment B was added.
 
 External system bugs:
 - When the transcript reveals a bug or unexpected behavior in an external tool/system (not the project being worked on), extract it as a warning with scope: "global".
