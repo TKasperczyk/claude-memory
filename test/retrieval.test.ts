@@ -6,8 +6,22 @@ import { loadSettings } from '../src/lib/settings.js'
 import { closeMilvus, hybridSearch, initMilvus } from '../src/lib/milvus.js'
 import { embed } from '../src/lib/embed.js'
 import { generateRetrievalQueryPlan } from '../src/lib/retrieval-query-generator.js'
-import { buildContext } from '../src/lib/context.js'
 import { withTimeout } from '../src/lib/shared.js'
+
+type BuildContextOptions = { diagnostic?: boolean; mmrExclusions?: unknown[] }
+
+function buildContextMock(records: unknown, _config: unknown, options?: BuildContextOptions) {
+  const scored = Array.isArray(records) ? records : []
+  if (options?.diagnostic) {
+    return {
+      context: 'mock-context',
+      injectedRecords: scored,
+      exclusions: options?.mmrExclusions ?? []
+    }
+  }
+  const normalized = scored.map((entry: any) => (entry && typeof entry === 'object' && 'record' in entry ? entry.record : entry))
+  return { context: 'mock-context', records: normalized }
+}
 
 vi.mock('../src/lib/shared.js', async () => {
   const actual = await vi.importActual<typeof import('../src/lib/shared.js')>('../src/lib/shared.js')
@@ -39,18 +53,7 @@ vi.mock('../src/lib/context.js', async () => {
   const actual = await vi.importActual<typeof import('../src/lib/context.js')>('../src/lib/context.js')
   return {
     ...actual,
-    buildContext: vi.fn((records: unknown, _config: unknown, options?: { diagnostic?: boolean; mmrExclusions?: unknown[] }) => {
-      const scored = Array.isArray(records) ? records : []
-      if (options?.diagnostic) {
-        return {
-          context: 'mock-context',
-          injectedRecords: scored,
-          exclusions: options?.mmrExclusions ?? []
-        }
-      }
-      const normalized = scored.map((entry: any) => (entry && typeof entry === 'object' && 'record' in entry ? entry.record : entry))
-      return { context: 'mock-context', records: normalized }
-    })
+    buildContext: vi.fn(buildContextMock)
   }
 })
 
@@ -79,7 +82,6 @@ const mockedEmbed = vi.mocked(embed)
 const mockedGenerateRetrievalQueryPlan = vi.mocked(generateRetrievalQueryPlan)
 const mockedInitMilvus = vi.mocked(initMilvus)
 const mockedCloseMilvus = vi.mocked(closeMilvus)
-const mockedBuildContext = vi.mocked(buildContext)
 const mockedWithTimeout = vi.mocked(withTimeout)
 
 const makeSettings = (overrides: Partial<RetrievalSettings> = {}): RetrievalSettings => ({
@@ -112,18 +114,6 @@ beforeEach(async () => {
   mockedHybridSearch.mockResolvedValue([])
   mockedInitMilvus.mockResolvedValue(undefined)
   mockedCloseMilvus.mockResolvedValue(undefined)
-  mockedBuildContext.mockImplementation((records: unknown, _config: unknown, options?: { diagnostic?: boolean; mmrExclusions?: unknown[] }) => {
-    const scored = Array.isArray(records) ? records : []
-    if (options?.diagnostic) {
-      return {
-        context: 'mock-context',
-        injectedRecords: scored,
-        exclusions: options?.mmrExclusions ?? []
-      }
-    }
-    const normalized = scored.map((entry: any) => (entry && typeof entry === 'object' && 'record' in entry ? entry.record : entry))
-    return { context: 'mock-context', records: normalized }
-  })
   mockedWithTimeout.mockImplementation(actualShared.withTimeout)
 })
 

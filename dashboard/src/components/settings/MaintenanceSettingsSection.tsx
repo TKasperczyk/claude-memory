@@ -1,5 +1,5 @@
 import { SettingsPanel } from '@/components/SettingsPanel'
-import { MAINTENANCE_GROUPS } from '../../../src/lib/settings-schema.js'
+import { MAINTENANCE_GROUPS } from '../../../../src/lib/settings-schema.js'
 import type { Settings } from '@/lib/api'
 
 export default function MaintenanceSettingsSection({

@@ -1,5 +1,5 @@
 import { SettingsPanel, type RetrievalSettingsFormState } from '@/components/SettingsPanel'
-import { RETRIEVAL_FIELDS } from '../../../src/lib/settings-schema.js'
+import { RETRIEVAL_FIELDS } from '../../../../src/lib/settings-schema.js'
 import type { RetrievalSettings, Settings } from '@/lib/api'
 
 export default function RetrievalSettingsSection({
