@@ -132,24 +132,12 @@ describe('milvus-client', () => {
     })
 
     const createSpy = vi.spyOn(milvusSchema, 'createCollection').mockResolvedValue(undefined)
-    const usageSpy = vi.spyOn(milvusSchema, 'ensureUsageFields').mockResolvedValue(undefined)
-    const scopeSpy = vi.spyOn(milvusSchema, 'ensureScopeField').mockResolvedValue(undefined)
-    const generalizationSpy = vi.spyOn(milvusSchema, 'ensureGeneralizationFields').mockResolvedValue(undefined)
-    const globalSpy = vi.spyOn(milvusSchema, 'ensureGlobalCheckField').mockResolvedValue(undefined)
-    const conflictSpy = vi.spyOn(milvusSchema, 'ensureConflictField').mockResolvedValue(undefined)
-    const warningSpy = vi.spyOn(milvusSchema, 'ensureWarningSynthesisField').mockResolvedValue(undefined)
-    const sourceSpy = vi.spyOn(milvusSchema, 'ensureSourceFields').mockResolvedValue(undefined)
+    const ensureSpy = vi.spyOn(milvusSchema, 'ensureSchemaFields').mockResolvedValue(undefined)
 
     await milvusClient.initMilvus(DEFAULT_CONFIG)
 
     expect(createSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
-    expect(usageSpy).not.toHaveBeenCalled()
-    expect(scopeSpy).not.toHaveBeenCalled()
-    expect(generalizationSpy).not.toHaveBeenCalled()
-    expect(globalSpy).not.toHaveBeenCalled()
-    expect(conflictSpy).not.toHaveBeenCalled()
-    expect(warningSpy).not.toHaveBeenCalled()
-    expect(sourceSpy).not.toHaveBeenCalled()
+    expect(ensureSpy).not.toHaveBeenCalled()
     expect(client.releaseCollection).toHaveBeenCalled()
     expect(client.loadCollection).toHaveBeenCalled()
   })
@@ -162,24 +150,12 @@ describe('milvus-client', () => {
     })
 
     const createSpy = vi.spyOn(milvusSchema, 'createCollection').mockResolvedValue(undefined)
-    const usageSpy = vi.spyOn(milvusSchema, 'ensureUsageFields').mockResolvedValue(undefined)
-    const scopeSpy = vi.spyOn(milvusSchema, 'ensureScopeField').mockResolvedValue(undefined)
-    const generalizationSpy = vi.spyOn(milvusSchema, 'ensureGeneralizationFields').mockResolvedValue(undefined)
-    const globalSpy = vi.spyOn(milvusSchema, 'ensureGlobalCheckField').mockResolvedValue(undefined)
-    const conflictSpy = vi.spyOn(milvusSchema, 'ensureConflictField').mockResolvedValue(undefined)
-    const warningSpy = vi.spyOn(milvusSchema, 'ensureWarningSynthesisField').mockResolvedValue(undefined)
-    const sourceSpy = vi.spyOn(milvusSchema, 'ensureSourceFields').mockResolvedValue(undefined)
+    const ensureSpy = vi.spyOn(milvusSchema, 'ensureSchemaFields').mockResolvedValue(undefined)
 
     await milvusClient.initMilvus(DEFAULT_CONFIG)
 
     expect(createSpy).not.toHaveBeenCalled()
-    expect(usageSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
-    expect(scopeSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
-    expect(generalizationSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
-    expect(globalSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
-    expect(conflictSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
-    expect(warningSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
-    expect(sourceSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
+    expect(ensureSpy).toHaveBeenCalledWith(client, DEFAULT_CONFIG)
     expect(client.releaseCollection).toHaveBeenCalled()
     expect(client.loadCollection).toHaveBeenCalled()
   })
@@ -218,7 +194,7 @@ describe('milvus-client', () => {
 })
 
 describe('milvus-schema', () => {
-  it('ensureUsageFields adds missing fields', async () => {
+  it('ensureSchemaFields adds missing fields', async () => {
     const client = makeMockClient()
     client.describeCollection.mockResolvedValue({
       schema: {
@@ -226,26 +202,52 @@ describe('milvus-schema', () => {
       }
     })
 
-    await milvusSchema.ensureUsageFields(client as any, DEFAULT_CONFIG)
+    await milvusSchema.ensureSchemaFields(client as any, DEFAULT_CONFIG)
 
-    expect(client.addCollectionFields).toHaveBeenCalledWith({
-      collection_name: DEFAULT_CONFIG.milvus.collection,
-      fields: expect.arrayContaining([
-        expect.objectContaining({ name: 'retrieval_count' }),
-        expect.objectContaining({ name: 'usage_count' })
-      ])
-    })
+    const expectedFields = [
+      'retrieval_count',
+      'usage_count',
+      'scope',
+      'generalized',
+      'last_generalization_check',
+      'last_global_check',
+      'last_consolidation_check',
+      'last_conflict_check',
+      'last_warning_synthesis_check',
+      'source_session_id',
+      'source_excerpt'
+    ]
+
+    expect(client.addCollectionFields).toHaveBeenCalledTimes(1)
+    const call = client.addCollectionFields.mock.calls[0]?.[0]
+    expect(call.collection_name).toBe(DEFAULT_CONFIG.milvus.collection)
+    const fieldNames = call.fields.map((field: { name: string }) => field.name)
+    expect(fieldNames).toHaveLength(expectedFields.length)
+    expect(fieldNames).toEqual(expect.arrayContaining(expectedFields))
   })
 
-  it('ensureUsageFields skips when fields exist', async () => {
+  it('ensureSchemaFields skips when fields exist', async () => {
     const client = makeMockClient()
+    const existingFields = [
+      'retrieval_count',
+      'usage_count',
+      'scope',
+      'generalized',
+      'last_generalization_check',
+      'last_global_check',
+      'last_consolidation_check',
+      'last_conflict_check',
+      'last_warning_synthesis_check',
+      'source_session_id',
+      'source_excerpt'
+    ]
     client.describeCollection.mockResolvedValue({
       schema: {
-        fields: [{ name: 'retrieval_count' }, { name: 'usage_count' }]
+        fields: existingFields.map(name => ({ name }))
       }
     })
 
-    await milvusSchema.ensureUsageFields(client as any, DEFAULT_CONFIG)
+    await milvusSchema.ensureSchemaFields(client as any, DEFAULT_CONFIG)
 
     expect(client.addCollectionFields).not.toHaveBeenCalled()
   })

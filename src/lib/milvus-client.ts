@@ -1,16 +1,6 @@
 import { MilvusClient } from '@zilliz/milvus2-sdk-node'
 import { DEFAULT_CONFIG, type Config } from './types.js'
-import {
-  createCollection,
-  ensureConsolidationCheckField,
-  ensureConflictField,
-  ensureGeneralizationFields,
-  ensureGlobalCheckField,
-  ensureScopeField,
-  ensureSourceFields,
-  ensureUsageFields,
-  ensureWarningSynthesisField
-} from './milvus-schema.js'
+import { createCollection, ensureSchemaFields } from './milvus-schema.js'
 
 // Single-client module: switching configs replaces the active client for the process.
 let client: MilvusClient | null = null
@@ -28,14 +18,7 @@ export async function initMilvus(config: Config = DEFAULT_CONFIG): Promise<void>
   if (!hasCollection.value) {
     await createCollection(nextClient, config)
   } else {
-    await ensureUsageFields(nextClient, config)
-    await ensureScopeField(nextClient, config)
-    await ensureGeneralizationFields(nextClient, config)
-    await ensureGlobalCheckField(nextClient, config)
-    await ensureConsolidationCheckField(nextClient, config)
-    await ensureConflictField(nextClient, config)
-    await ensureWarningSynthesisField(nextClient, config)
-    await ensureSourceFields(nextClient, config)
+    await ensureSchemaFields(nextClient, config)
   }
 
   // Release first in case collection is in an inconsistent state

@@ -73,7 +73,7 @@ const finalScore = baseScore + (recencyBoost * recencyWeight)
 
 **Implementation**:
 - `scope` field added to `BaseRecord` in `types.ts`
-- Milvus schema updated with migration (`ensureScopeField`)
+- Milvus schema updated with migration (`ensureSchemaFields`)
 - Extraction prompt includes scope guidance for all record types
 - `hybridSearch` filter: `(project == X OR scope == "global")` when project is set
 - Defaults to `'project'` for backwards compatibility

@@ -72,7 +72,21 @@ export async function createCollection(client: MilvusClient, config: Config): Pr
   console.error('[claude-memory] Created collection:', config.milvus.collection)
 }
 
-export async function ensureUsageFields(client: MilvusClient, config: Config): Promise<void> {
+const MIGRATION_FIELDS = [
+  { name: 'retrieval_count', data_type: DataType.Int64, nullable: true },
+  { name: 'usage_count', data_type: DataType.Int64, nullable: true },
+  { name: 'scope', data_type: DataType.VarChar, max_length: 16, nullable: true },
+  { name: 'generalized', data_type: DataType.Bool, nullable: true },
+  { name: 'last_generalization_check', data_type: DataType.Int64, nullable: true },
+  { name: 'last_global_check', data_type: DataType.Int64, nullable: true },
+  { name: 'last_consolidation_check', data_type: DataType.Int64, nullable: true },
+  { name: 'last_conflict_check', data_type: DataType.Int64, nullable: true },
+  { name: 'last_warning_synthesis_check', data_type: DataType.Int64, nullable: true },
+  { name: 'source_session_id', data_type: DataType.VarChar, max_length: SOURCE_SESSION_ID_MAX_LENGTH, nullable: true },
+  { name: 'source_excerpt', data_type: DataType.VarChar, max_length: SOURCE_EXCERPT_MAX_LENGTH, nullable: true }
+]
+
+export async function ensureSchemaFields(client: MilvusClient, config: Config): Promise<void> {
   try {
     const description = await client.describeCollection({
       collection_name: config.milvus.collection
@@ -80,10 +94,7 @@ export async function ensureUsageFields(client: MilvusClient, config: Config): P
 
     const fields = description.schema?.fields ?? []
     const fieldNames = new Set(fields.map(field => field.name))
-    const missing = [
-      { name: 'retrieval_count', data_type: DataType.Int64, nullable: true },
-      { name: 'usage_count', data_type: DataType.Int64, nullable: true }
-    ].filter(field => !fieldNames.has(field.name))
+    const missing = MIGRATION_FIELDS.filter(field => !fieldNames.has(field.name))
 
     if (missing.length === 0) return
 
@@ -99,198 +110,6 @@ export async function ensureUsageFields(client: MilvusClient, config: Config): P
 
     console.error(`[claude-memory] Added fields to ${config.milvus.collection}: ${missing.map(field => field.name).join(', ')}`)
   } catch (error) {
-    console.error('[claude-memory] Failed to ensure usage fields:', error)
-  }
-}
-
-export async function ensureScopeField(client: MilvusClient, config: Config): Promise<void> {
-  try {
-    const description = await client.describeCollection({
-      collection_name: config.milvus.collection
-    })
-
-    const fields = description.schema?.fields ?? []
-    const fieldNames = new Set(fields.map(field => field.name))
-    if (fieldNames.has('scope')) return
-
-    const result = await client.addCollectionFields({
-      collection_name: config.milvus.collection,
-      fields: [{ name: 'scope', data_type: DataType.VarChar, max_length: 16, nullable: true }]
-    })
-
-    if (result.error_code !== 'Success') {
-      console.error(`[claude-memory] Failed to add scope field: ${result.reason}`)
-      return
-    }
-
-    console.error(`[claude-memory] Added field to ${config.milvus.collection}: scope`)
-  } catch (error) {
-    console.error('[claude-memory] Failed to ensure scope field:', error)
-  }
-}
-
-export async function ensureGeneralizationFields(client: MilvusClient, config: Config): Promise<void> {
-  try {
-    const description = await client.describeCollection({
-      collection_name: config.milvus.collection
-    })
-
-    const fields = description.schema?.fields ?? []
-    const fieldNames = new Set(fields.map(field => field.name))
-    const missing = [
-      { name: 'generalized', data_type: DataType.Bool, nullable: true },
-      { name: 'last_generalization_check', data_type: DataType.Int64, nullable: true }
-    ].filter(field => !fieldNames.has(field.name))
-
-    if (missing.length === 0) return
-
-    const result = await client.addCollectionFields({
-      collection_name: config.milvus.collection,
-      fields: missing
-    })
-
-    if (result.error_code !== 'Success') {
-      console.error(`[claude-memory] Failed to add generalization fields: ${result.reason}`)
-      return
-    }
-
-    console.error(`[claude-memory] Added fields to ${config.milvus.collection}: ${missing.map(field => field.name).join(', ')}`)
-  } catch (error) {
-    console.error('[claude-memory] Failed to ensure generalization fields:', error)
-  }
-}
-
-export async function ensureGlobalCheckField(client: MilvusClient, config: Config): Promise<void> {
-  try {
-    const description = await client.describeCollection({
-      collection_name: config.milvus.collection
-    })
-
-    const fields = description.schema?.fields ?? []
-    const fieldNames = new Set(fields.map(field => field.name))
-    if (fieldNames.has('last_global_check')) return
-
-    const result = await client.addCollectionFields({
-      collection_name: config.milvus.collection,
-      fields: [{ name: 'last_global_check', data_type: DataType.Int64, nullable: true }]
-    })
-
-    if (result.error_code !== 'Success') {
-      console.error(`[claude-memory] Failed to add global check field: ${result.reason}`)
-      return
-    }
-
-    console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_global_check`)
-  } catch (error) {
-    console.error('[claude-memory] Failed to ensure global check field:', error)
-  }
-}
-
-export async function ensureConsolidationCheckField(client: MilvusClient, config: Config): Promise<void> {
-  try {
-    const description = await client.describeCollection({
-      collection_name: config.milvus.collection
-    })
-
-    const fields = description.schema?.fields ?? []
-    const fieldNames = new Set(fields.map(field => field.name))
-    if (fieldNames.has('last_consolidation_check')) return
-
-    const result = await client.addCollectionFields({
-      collection_name: config.milvus.collection,
-      fields: [{ name: 'last_consolidation_check', data_type: DataType.Int64, nullable: true }]
-    })
-
-    if (result.error_code !== 'Success') {
-      console.error(`[claude-memory] Failed to add consolidation check field: ${result.reason}`)
-      return
-    }
-
-    console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_consolidation_check`)
-  } catch (error) {
-    console.error('[claude-memory] Failed to ensure consolidation check field:', error)
-  }
-}
-
-export async function ensureConflictField(client: MilvusClient, config: Config): Promise<void> {
-  try {
-    const description = await client.describeCollection({
-      collection_name: config.milvus.collection
-    })
-
-    const fields = description.schema?.fields ?? []
-    const fieldNames = new Set(fields.map(field => field.name))
-    if (fieldNames.has('last_conflict_check')) return
-
-    const result = await client.addCollectionFields({
-      collection_name: config.milvus.collection,
-      fields: [{ name: 'last_conflict_check', data_type: DataType.Int64, nullable: true }]
-    })
-
-    if (result.error_code !== 'Success') {
-      console.error(`[claude-memory] Failed to add conflict check field: ${result.reason}`)
-      return
-    }
-
-    console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_conflict_check`)
-  } catch (error) {
-    console.error('[claude-memory] Failed to ensure conflict check field:', error)
-  }
-}
-
-export async function ensureWarningSynthesisField(client: MilvusClient, config: Config): Promise<void> {
-  try {
-    const description = await client.describeCollection({
-      collection_name: config.milvus.collection
-    })
-
-    const fields = description.schema?.fields ?? []
-    const fieldNames = new Set(fields.map(field => field.name))
-    if (fieldNames.has('last_warning_synthesis_check')) return
-
-    const result = await client.addCollectionFields({
-      collection_name: config.milvus.collection,
-      fields: [{ name: 'last_warning_synthesis_check', data_type: DataType.Int64, nullable: true }]
-    })
-
-    if (result.error_code !== 'Success') {
-      console.error(`[claude-memory] Failed to add warning synthesis field: ${result.reason}`)
-      return
-    }
-
-    console.error(`[claude-memory] Added field to ${config.milvus.collection}: last_warning_synthesis_check`)
-  } catch (error) {
-    console.error('[claude-memory] Failed to ensure warning synthesis field:', error)
-  }
-}
-
-export async function ensureSourceFields(client: MilvusClient, config: Config): Promise<void> {
-  try {
-    const description = await client.describeCollection({
-      collection_name: config.milvus.collection
-    })
-
-    const fields = description.schema?.fields ?? []
-    const fieldNames = new Set(fields.map(field => field.name))
-    const missing = [
-      { name: 'source_session_id', data_type: DataType.VarChar, max_length: SOURCE_SESSION_ID_MAX_LENGTH, nullable: true },
-      { name: 'source_excerpt', data_type: DataType.VarChar, max_length: SOURCE_EXCERPT_MAX_LENGTH, nullable: true }
-    ].filter(field => !fieldNames.has(field.name))
-
-    if (missing.length === 0) return
-
-    const result = await client.addCollectionFields({
-      collection_name: config.milvus.collection,
-      fields: missing
-    })
-
-    if (result.error_code !== 'Success') {
-      console.error(`[claude-memory] Failed to add source fields: ${result.reason}`)
-      return
-    }
-
-    console.error(`[claude-memory] Added fields to ${config.milvus.collection}: ${missing.map(field => field.name).join(', ')}`)
-  } catch (error) {
-    console.error('[claude-memory] Failed to ensure source fields:', error)
+    console.error('[claude-memory] Failed to ensure schema fields:', error)
   }
 }
