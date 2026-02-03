@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, isPlainObject } from './parsing.js'
-import { readJsonFile, writeJsonFile } from './json.js'
+import { readJsonFileSafe, writeJsonFile } from './json.js'
 import { acquireFileLock } from './lock.js'
 import { sanitizeSessionId } from './shared.js'
 import {
@@ -58,8 +58,8 @@ function withSessionLock<T>(sessionId: string, action: () => T): T {
 
 export function loadSessionTracking(sessionId: string): InjectionSessionRecord | null {
   const filePath = getSessionTrackingPath(sessionId)
-  return readJsonFile(filePath, {
-    onError: error => console.error('[claude-memory] Failed to read session tracking file:', error),
+  return readJsonFileSafe(filePath, {
+    errorMessage: '[claude-memory] Failed to read session tracking file:',
     coerce: data => coerceSessionRecord(data, sessionId)
   })
 }

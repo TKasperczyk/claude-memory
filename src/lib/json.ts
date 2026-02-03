@@ -7,6 +7,12 @@ type ReadJsonFileOptions<T> = {
   coerce?: (data: unknown) => T | null
 }
 
+type ReadJsonFileSafeOptions<T> = {
+  fallback?: T | null
+  coerce?: (data: unknown) => T | null
+  errorMessage: string
+}
+
 type WriteJsonFileOptions = {
   ensureDir?: boolean
   pretty?: number | boolean
@@ -32,6 +38,21 @@ export function readJsonFile<T>(filePath: string, options: ReadJsonFileOptions<T
     }
     throw error
   }
+}
+
+function isEnoentError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT'
+}
+
+export function readJsonFileSafe<T>(filePath: string, options: ReadJsonFileSafeOptions<T>): T | null {
+  return readJsonFile(filePath, {
+    fallback: options.fallback,
+    coerce: options.coerce,
+    onError: error => {
+      if (isEnoentError(error)) return
+      console.error(options.errorMessage, error)
+    }
+  })
 }
 
 export function writeJsonFile(filePath: string, value: unknown, options: WriteJsonFileOptions = {}): void {

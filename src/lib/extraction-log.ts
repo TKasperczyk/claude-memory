@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
-import { readJsonFile, writeJsonFile } from './json.js'
+import { readJsonFileSafe, writeJsonFile } from './json.js'
 import { sanitizeRunId } from './shared.js'
 import { getRecordSummary } from './record-summary.js'
 import { loadSettings } from './settings.js'
@@ -76,8 +76,8 @@ export function listExtractionRuns(): ExtractionRun[] {
 
 export function getExtractionRun(runId: string): ExtractionRun | null {
   const filePath = getExtractionRunPath(runId)
-  return readJsonFile(filePath, {
-    onError: error => console.error('[claude-memory] Failed to read extraction run log:', error),
+  return readJsonFileSafe(filePath, {
+    errorMessage: '[claude-memory] Failed to read extraction run log:',
     coerce: data => coerceExtractionRun(data, runId)
   })
 }

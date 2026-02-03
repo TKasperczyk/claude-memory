@@ -4,7 +4,7 @@ import { homedir } from 'os'
 import { type ExtractionReview, type ExtractionReviewIssue } from './extraction-review.js'
 import { type InjectedMemoryVerdict, type InjectionReview, type MissedMemory } from './injection-review.js'
 import { asBoolean, asInteger, asNumber, asString, isPlainObject } from './parsing.js'
-import { readJsonFile, writeJsonFile } from './json.js'
+import { readJsonFileSafe, writeJsonFile } from './json.js'
 import { sanitizeRunId, sanitizeSessionId } from './shared.js'
 import { loadSessionTracking, saveSessionTracking } from './session-tracking.js'
 import {
@@ -29,8 +29,8 @@ function saveReviewFile<T>(filePath: string, review: T): void {
 }
 
 function loadReviewFile<T>(filePath: string, coerce: (data: unknown) => T | null): T | null {
-  return readJsonFile(filePath, {
-    onError: error => console.error('[claude-memory] Failed to read review:', error),
+  return readJsonFileSafe(filePath, {
+    errorMessage: '[claude-memory] Failed to read review:',
     coerce
   })
 }

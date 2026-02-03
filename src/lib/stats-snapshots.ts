@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { asInteger, asNumber, isPlainObject } from './parsing.js'
-import { readJsonFile, writeJsonFile } from './json.js'
+import { readJsonFileSafe, writeJsonFile } from './json.js'
 import { sanitizeRunId } from './shared.js'
 import { DEFAULT_CONFIG } from './types.js'
 import {
@@ -132,8 +132,8 @@ export function saveStatsSnapshotIfNeeded(
 
 export function getStatsSnapshot(dateKey: string, collection?: string): StatsSnapshot | null {
   const filePath = getSnapshotPath(dateKey, collection)
-  return readJsonFile(filePath, {
-    onError: error => console.error('[claude-memory] Failed to read stats snapshot:', error),
+  return readJsonFileSafe(filePath, {
+    errorMessage: '[claude-memory] Failed to read stats snapshot:',
     coerce: data => coerceStatsSnapshot(data, dateKey)
   })
 }
