@@ -33,7 +33,7 @@ type ProgressCallback = (progress: MaintenanceProgress) => void
 
 const logger = createLogger('maintenance')
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './lib/types.js'
-import { loadSettings, type MaintenanceSettings } from './lib/settings.js'
+import { resolveMaintenanceSettings, type MaintenanceSettings } from './lib/settings.js'
 import { batchUpdateRecords, queryRecords, updateRecord } from './lib/milvus.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from './lib/shared.js'
 import type { MaintenanceAction, MaintenanceActionDetails, MaintenanceActionType, MaintenanceMergeRecord, MaintenanceProgress } from '../shared/types.js'
@@ -52,7 +52,7 @@ export interface MaintenanceRunResult {
 async function main(): Promise<void> {
   const config = loadConfig(process.cwd())
   const dryRun = process.argv.slice(2).includes('--dry-run')
-  const maintenanceSettings = loadSettings()
+  const maintenanceSettings = resolveMaintenanceSettings()
   await initMilvus(config)
 
   console.error('[claude-memory] Maintenance started.')
@@ -94,10 +94,6 @@ function formatSummary(summary: Record<string, number>): string {
   return Object.entries(summary)
     .map(([key, value]) => `${key}=${value}`)
     .join(' ')
-}
-
-function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
-  return settings ?? loadSettings()
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000

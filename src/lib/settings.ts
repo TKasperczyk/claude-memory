@@ -141,6 +141,10 @@ export function loadSettings(): Settings {
   }) ?? defaults
 }
 
+export function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
+  return settings ?? loadSettings()
+}
+
 export function saveSettings(settings: Partial<Settings>): void {
   const current = loadSettings()
   const merged = coerceSettings({ ...current, ...settings }, current)

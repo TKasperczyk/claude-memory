@@ -2,7 +2,7 @@ import { DEFAULT_CONFIG, type Config } from './types.js'
 import { findGitRoot } from './context.js'
 import { buildPromotionDiffs } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
-import { loadSettings, type MaintenanceSettings } from './settings.js'
+import { resolveMaintenanceSettings, type MaintenanceSettings } from './settings.js'
 import type { MaintenanceOperationInfo, MaintenanceProgress, OperationResult } from '../../shared/types.js'
 import {
   runStaleCheck,
@@ -88,10 +88,6 @@ export type { OperationResult } from '../../shared/types.js'
 
 export const MAINTENANCE_OPERATIONS: MaintenanceOperation[] =
   MAINTENANCE_OPERATION_DEFINITIONS.map(definition => definition.key) as MaintenanceOperation[]
-
-function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
-  return settings ?? loadSettings()
-}
 
 export type MaintenanceProgressCallback = (progress: MaintenanceProgress) => void
 

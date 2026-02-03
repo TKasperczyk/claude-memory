@@ -21,7 +21,7 @@ import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js
 import { embed } from './embed.js'
 import { createLogger } from './logger.js'
 import { batchUpdateRecords, buildEmbeddingInput, buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from './milvus.js'
-import { loadSettings, type MaintenanceSettings } from './settings.js'
+import { resolveMaintenanceSettings, type MaintenanceSettings } from './settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import {
   buildCandidateRecord,
@@ -44,9 +44,6 @@ const CONFLICT_ADJUDICATION_MAX_TOKENS = 1200
 const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
 const GLOBAL_PROMOTION_MAX_TOKENS = 800
 export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
-function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {
-  return settings ?? loadSettings()
-}
 
 // Warning synthesis constants
 const WARNING_SYNTHESIS_MIN_FAILURES = 2
