@@ -9,6 +9,7 @@ import { findGitRoot, formatRecordSnippet, stripNoiseWords } from '../lib/contex
 import { loadConfig } from '../lib/config.js'
 import { loadSettings } from '../lib/settings.js'
 import { handlePrePrompt } from '../lib/retrieval.js'
+import { recordRetrievalEvents } from '../lib/retrieval-events.js'
 import {
   type HybridSearchResult,
   type InjectionStatus,
@@ -94,19 +95,19 @@ async function main(): Promise<void> {
 
     if (result.timedOut) {
       console.error(`[claude-memory] Pre-prompt timed out after ${settings.prePromptTimeoutMs}ms; skipping injection.`)
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout')
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout', config.milvus.collection)
       return
     }
 
     if (result.results.length === 0) {
       console.error('[claude-memory] No matching memories found.')
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches')
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.milvus.collection)
       return
     }
 
     if (!result.context) {
       console.error('[claude-memory] Context empty after formatting.')
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches')
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.milvus.collection)
       return
     }
 
@@ -119,9 +120,17 @@ async function main(): Promise<void> {
     }
 
     if (injected) {
-      trackSession(payload.session_id, result.injectedRecords, result.results, payload.cwd, payload.prompt, 'injected')
+      trackSession(
+        payload.session_id,
+        result.injectedRecords,
+        result.results,
+        payload.cwd,
+        payload.prompt,
+        'injected',
+        config.milvus.collection
+      )
     } else {
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error')
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error', config.milvus.collection)
     }
   } finally {
     await closeMilvus()
@@ -133,7 +142,8 @@ function trackSession(
   searchResults: HybridSearchResult[],
   cwd: string,
   prompt: string,
-  status: InjectionStatus
+  status: InjectionStatus,
+  collection?: string
 ): void {
   if (!sessionId) return
   try {
@@ -154,6 +164,13 @@ function trackSession(
       }
     })
     appendSessionTracking(sessionId, entries, cwd, cleanPrompt, status)
+    if (status === 'injected' && entries.length > 0) {
+      recordRetrievalEvents(entries.map(entry => ({
+        id: entry.id,
+        type: entry.type,
+        timestamp: entry.injectedAt
+      })), { collection })
+    }
   } catch (error) {
     console.error('[claude-memory] Failed to track session:', error)
   }

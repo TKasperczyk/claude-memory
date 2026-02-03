@@ -346,7 +346,7 @@ export function buildErrorTranscriptEntries(): object[] {
       message: {
         role: 'assistant',
         content: [
-          { type: 'text', text: 'TypeScript error. Let me fix the undefined variable.' },
+          { type: 'text', text: 'TypeScript error. Fixing by renaming foo to bar in src/index.ts.' },
           { type: 'tool_use', id: 'tool_2', name: 'Edit', input: { file_path: 'src/index.ts', old_string: 'foo', new_string: 'bar' } }
         ]
       }

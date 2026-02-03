@@ -196,7 +196,7 @@ export async function resetCollection(
 
 function clearFilesystemStorage(): void {
   const baseDir = path.join(homedir(), '.claude-memory')
-  const dirsToClean = ['sessions', 'extractions', 'reviews']
+  const dirsToClean = ['sessions', 'extractions', 'reviews', 'retrieval-events', 'stats-snapshots']
 
   for (const dir of dirsToClean) {
     const dirPath = path.join(baseDir, dir)

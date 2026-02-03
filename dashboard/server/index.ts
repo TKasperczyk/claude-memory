@@ -14,11 +14,14 @@ import { createMemoryRouter } from './routes/memory.js'
 import { createPreviewRouter } from './routes/preview.js'
 import { createSessionsRouter } from './routes/sessions.js'
 import { createSettingsRouter } from './routes/settings.js'
+import { startStatsSnapshotScheduler } from './lib/stats-snapshot-scheduler.js'
 
 const logger = createLogger('server')
 const app = express()
 const PORT = process.env.PORT ?? 3001
 const context = createServerContext()
+
+startStatsSnapshotScheduler(context.config)
 
 app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] }))
 app.use(express.json())

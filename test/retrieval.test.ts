@@ -257,7 +257,7 @@ describe('Project to domain fallback', () => {
     expect(result.signals.domain).toBe('node')
   })
 
-  it('retries with domain-only scope when project match is empty', async () => {
+  it('does not retry with domain-only scope when project match is empty', async () => {
     const fallbackResult = makeResult('fallback', [0, 1], 0.6)
 
     mockedHybridSearch.mockImplementation(async params => {
@@ -276,11 +276,10 @@ describe('Project to domain fallback', () => {
       { projectRoot: PROJECT_ROOT }
     )
 
-    expect(result.results).toHaveLength(1)
-    expect(result.results[0].record.id).toBe('fallback')
+    expect(result.results).toHaveLength(0)
 
     const fallbackCall = mockedHybridSearch.mock.calls.find(([params]) => !params.project)
-    expect(fallbackCall?.[0].domain).toBe('node')
+    expect(fallbackCall).toBeUndefined()
   })
 })
 

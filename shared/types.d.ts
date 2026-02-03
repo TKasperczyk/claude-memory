@@ -96,6 +96,40 @@ export interface MemoryStats {
   failureCount: number
 }
 
+export interface MemoryStatsSummary {
+  total: number
+  byType: Record<string, number>
+  byProject: Record<string, number>
+  byDomain: Record<string, number>
+  avgRetrievalCount: number
+  avgUsageCount: number
+  avgUsageRatio: number
+  deprecated: number
+}
+
+export interface StatsSnapshot extends MemoryStatsSummary {
+  timestamp: number
+}
+
+export interface RetrievalEvent {
+  id: string
+  type?: RecordType
+  timestamp: number
+}
+
+export type RetrievalActivityPeriod = 'day' | 'week'
+
+export interface RetrievalActivityBucket {
+  start: number
+  end: number
+  count: number
+}
+
+export interface RetrievalActivity {
+  period: RetrievalActivityPeriod
+  buckets: RetrievalActivityBucket[]
+}
+
 export interface InjectedMemoryEntry {
   id: string
   snippet: string

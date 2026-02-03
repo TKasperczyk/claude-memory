@@ -7,11 +7,14 @@ import {
   getRecord,
   hybridSearch,
   insertRecord,
-  iterateRecords,
   queryRecords,
   resetCollection,
   buildKeywordFilter
 } from '../../../src/lib/milvus.js'
+import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
+import { getRetrievalActivity } from '../../../src/lib/retrieval-events.js'
+import { getStatsHistory } from '../../../src/lib/stats-snapshots.js'
+import type { TimeBucketPeriod } from '../../../src/lib/time-buckets.js'
 import { EMBEDDING_DIM } from '../../../src/lib/types.js'
 import {
   asBoolean,
@@ -26,6 +29,7 @@ import {
 import type { MemoryRecord, RecordType } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
+import { getRequestConfig } from '../utils/config.js'
 import { isPlainObject, parseNonNegativeInt } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
 
@@ -42,52 +46,47 @@ export function createMemoryRouter(context: ServerContext): express.Router {
   router.get('/api/stats', async (req, res) => {
     try {
       const config = await ensureConfigInitialized(req, baseConfig)
-      const total = await countRecords({}, config)
-      const stats = {
-        total,
-        byType: {} as Record<string, number>,
-        byProject: {} as Record<string, number>,
-        byDomain: {} as Record<string, number>,
-        avgRetrievalCount: 0,
-        avgUsageCount: 0,
-        avgUsageRatio: 0,
-        deprecated: 0
-      }
-
-      let totalRetrieval = 0
-      let totalUsage = 0
-      let recordsWithRetrieval = 0
-
-      for await (const record of iterateRecords({}, config)) {
-        stats.byType[record.type] = (stats.byType[record.type] ?? 0) + 1
-
-        const project = record.project ?? 'unknown'
-        stats.byProject[project] = (stats.byProject[project] ?? 0) + 1
-
-        const domain = record.domain ?? 'unknown'
-        stats.byDomain[domain] = (stats.byDomain[domain] ?? 0) + 1
-
-        if (record.deprecated) stats.deprecated++
-
-        const retrieval = record.retrievalCount ?? 0
-        const usage = record.usageCount ?? 0
-        if (retrieval > 0) {
-          recordsWithRetrieval++
-          totalRetrieval += retrieval
-          totalUsage += usage
-        }
-      }
-
-      if (recordsWithRetrieval > 0) {
-        stats.avgRetrievalCount = totalRetrieval / recordsWithRetrieval
-        stats.avgUsageCount = totalUsage / recordsWithRetrieval
-        stats.avgUsageRatio = totalUsage / totalRetrieval
-      }
-
+      const stats = await buildMemoryStats(config)
       res.json(stats)
     } catch (error) {
       logger.error('Failed to get stats', error)
       res.status(500).json({ error: 'Failed to get stats' })
+    }
+  })
+
+  router.get('/api/retrieval-activity', (req, res) => {
+    try {
+      const period = parsePeriod(req.query.period, 'day')
+      const limit = parseNonNegativeInt(req.query.limit, period === 'week' ? 12 : 30)
+      const config = getRequestConfig(req, baseConfig)
+
+      const activity = getRetrievalActivity(period, {
+        limit,
+        collection: config.milvus.collection
+      })
+
+      res.json(activity)
+    } catch (error) {
+      logger.error('Failed to get retrieval activity', error)
+      res.status(500).json({ error: 'Failed to get retrieval activity' })
+    }
+  })
+
+  router.get('/api/stats-history', async (req, res) => {
+    try {
+      const period = parsePeriod(req.query.period, 'day')
+      const limit = parseNonNegativeInt(req.query.limit, period === 'week' ? 12 : 30)
+      const requestConfig = getRequestConfig(req, baseConfig)
+
+      const history = getStatsHistory(period, {
+        limit,
+        collection: requestConfig.milvus.collection
+      })
+
+      res.json(history)
+    } catch (error) {
+      logger.error('Failed to get stats history', error)
+      res.status(500).json({ error: 'Failed to get stats history' })
     }
   })
 
@@ -482,6 +481,17 @@ export function createMemoryRouter(context: ServerContext): express.Router {
   })
 
   return router
+}
+
+function parsePeriod(value: unknown, fallback: TimeBucketPeriod): TimeBucketPeriod {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (typeof raw === 'string') {
+    const normalized = raw.trim().toLowerCase()
+    if (normalized === 'day' || normalized === 'week') {
+      return normalized
+    }
+  }
+  return fallback
 }
 
 function buildSearchFilter(filters: { type?: RecordType; project?: string; deprecated?: boolean }): string | undefined {

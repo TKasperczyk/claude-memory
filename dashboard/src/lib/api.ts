@@ -11,13 +11,17 @@ import type {
   MaintenanceReview,
   MaintenanceSettings,
   MemoryRecord,
+  MemoryStatsSummary,
   NearMissRecord,
   OperationResult,
   RecordType,
+  RetrievalActivity,
+  RetrievalActivityPeriod,
   RetrievalSettings,
   ScoredRecord,
   SearchResult,
-  Settings
+  Settings,
+  StatsSnapshot
 } from '../../../shared/types.js'
 
 export type {
@@ -47,15 +51,21 @@ export type {
   MaintenanceSettings,
   MemoryRecord,
   MemoryStats,
+  MemoryStatsSummary,
   MissedMemory,
   NearMissRecord,
   OperationResult,
   ProcedureRecord,
   RecordType,
+  RetrievalActivity,
+  RetrievalActivityBucket,
+  RetrievalActivityPeriod,
+  RetrievalEvent,
   RetrievalSettings,
   ScoredRecord,
   SearchResult,
   Settings,
+  StatsSnapshot,
   WarningRecord,
   WarningSeverity
 } from '../../../shared/types.js'
@@ -70,15 +80,17 @@ export interface SettingsDefaultsResponse {
   maintenance: MaintenanceSettings
 }
 
-export interface StatsResponse {
-  total: number
-  byType: Record<string, number>
-  byProject: Record<string, number>
-  byDomain: Record<string, number>
-  avgRetrievalCount: number
-  avgUsageCount: number
-  avgUsageRatio: number
-  deprecated: number
+export type StatsResponse = MemoryStatsSummary
+
+export interface StatsHistoryBucket {
+  start: number
+  end: number
+  snapshot: StatsSnapshot | null
+}
+
+export interface StatsHistoryResponse {
+  period: RetrievalActivityPeriod
+  buckets: StatsHistoryBucket[]
 }
 
 export interface MemoryListResponse {
@@ -233,6 +245,28 @@ async function requestWithStatus<T>(path: string, options?: RequestInit): Promis
 
 export function fetchStats(): Promise<StatsResponse> {
   return request('/stats')
+}
+
+export function fetchRetrievalActivity(params: {
+  period?: RetrievalActivityPeriod
+  limit?: number
+} = {}): Promise<RetrievalActivity> {
+  const search = new URLSearchParams()
+  if (params.period) search.set('period', params.period)
+  if (typeof params.limit === 'number') search.set('limit', String(params.limit))
+  const query = search.toString()
+  return request(`/retrieval-activity${query ? `?${query}` : ''}`)
+}
+
+export function fetchStatsHistory(params: {
+  period?: RetrievalActivityPeriod
+  limit?: number
+} = {}): Promise<StatsHistoryResponse> {
+  const search = new URLSearchParams()
+  if (params.period) search.set('period', params.period)
+  if (typeof params.limit === 'number') search.set('limit', String(params.limit))
+  const query = search.toString()
+  return request(`/stats-history${query ? `?${query}` : ''}`)
 }
 
 export function fetchSettings(): Promise<Settings> {

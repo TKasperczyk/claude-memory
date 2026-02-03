@@ -214,7 +214,7 @@ this is not valid json
     it.skipIf(extractionSkipReasons.length > 0)(
       `should extract and store records from transcript${extractionSkipSuffix}`,
       async () => {
-        const entries = buildTypicalTranscriptEntries()
+        const entries = buildErrorTranscriptEntries()
         const transcriptPath = createMockTranscript(entries)
 
         const hookInput: SessionEndInput = {
