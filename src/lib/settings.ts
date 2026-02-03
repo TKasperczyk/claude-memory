@@ -3,130 +3,33 @@ import path from 'path'
 import { homedir } from 'os'
 import { isPlainObject } from './parsing.js'
 import { readJsonFile, writeJsonFile } from './json.js'
-import { SIMILARITY_THRESHOLDS } from './types.js'
 import type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
+import {
+  DEFAULT_MAINTENANCE_SETTINGS,
+  DEFAULT_RETRIEVAL_SETTINGS,
+  DEFAULT_SETTINGS,
+  MAINTENANCE_FIELDS,
+  RETRIEVAL_FIELDS,
+  SETTING_RULES,
+  type NumericSettingRule,
+  type SettingsFieldDefinition
+} from './settings-schema.js'
 
 export type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
 
 const SETTINGS_DIR = path.join(homedir(), '.claude-memory')
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json')
 
-type NumericSettingRule = { kind: 'int' | 'float'; min?: number; max?: number }
-type BooleanSettingRule = { kind: 'bool' }
-type SettingRule = NumericSettingRule | BooleanSettingRule
-
-const SETTING_RULES = {
-  minSemanticSimilarity: { kind: 'float', min: 0, max: 1 },
-  minScore: { kind: 'float', min: 0, max: 1 },
-  minSemanticOnlyScore: { kind: 'float', min: 0, max: 1 },
-  maxRecords: { kind: 'int', min: 1, max: 20 },
-  maxTokens: { kind: 'int', min: 1, max: 10000 },
-  mmrLambda: { kind: 'float', min: 0, max: 1 },
-  usageRatioWeight: { kind: 'float', min: 0, max: 1 },
-  enableHaikuRetrieval: { kind: 'bool' },
-  maxKeywordQueries: { kind: 'int', min: 1 },
-  maxKeywordErrors: { kind: 'int', min: 1 },
-  maxKeywordCommands: { kind: 'int', min: 1 },
-  prePromptTimeoutMs: { kind: 'int', min: 1 },
-  haikuQueryTimeoutMs: { kind: 'int', min: 1 },
-  maxSemanticQueryChars: { kind: 'int', min: 1 },
-  staleDays: { kind: 'int', min: 1 },
-  discoveryMaxAgeDays: { kind: 'int', min: 1 },
-  lowUsageMinRetrievals: { kind: 'int', min: 1 },
-  lowUsageRatioThreshold: { kind: 'float', min: 0, max: 1 },
-  lowUsageHighRetrievalMin: { kind: 'int', min: 1 },
-  staleUnusedDays: { kind: 'int', min: 1 },
-  consolidationSearchLimit: { kind: 'int', min: 1 },
-  consolidationMaxClusterSize: { kind: 'int', min: 1 },
-  consolidationThreshold: { kind: 'float', min: 0, max: 1 },
-  consolidationRecheckDays: { kind: 'int', min: 1 },
-  crossTypeConsolidationThreshold: { kind: 'float', min: 0.75, max: 1 },
-  enableConsolidationLlmVerification: { kind: 'bool' },
-  consolidationTextSimilarityRatio: { kind: 'float', min: 0, max: 1 },
-  conflictSimilarityThreshold: { kind: 'float', min: 0, max: 1 },
-  conflictCheckBatchSize: { kind: 'int', min: 1 },
-  contradictionSimilarityThreshold: { kind: 'float', min: 0, max: 1 },
-  contradictionSearchLimit: { kind: 'int', min: 1 },
-  contradictionBatchSize: { kind: 'int', min: 1 },
-  globalPromotionBatchSize: { kind: 'int', min: 1 },
-  globalPromotionRecheckDays: { kind: 'int', min: 1 },
-  globalPromotionMinSuccessCount: { kind: 'int', min: 1 },
-  globalPromotionMinUsageRatio: { kind: 'float', min: 0, max: 1 },
-  globalPromotionMinRetrievalsForUsageRatio: { kind: 'int', min: 1 },
-  warningClusterSimilarityThreshold: { kind: 'float', min: 0, max: 1 },
-  warningClusterLimit: { kind: 'int', min: 1 },
-  warningSynthesisMinFailures: { kind: 'int', min: 1 },
-  warningSynthesisBatchSize: { kind: 'int', min: 1 },
-  warningSynthesisRecheckDays: { kind: 'int', min: 1 },
-  procedureStepCheckCount: { kind: 'int', min: 1 },
-  extractionDedupThreshold: { kind: 'float', min: 0, max: 1 },
-  reviewSimilarThreshold: { kind: 'float', min: 0, max: 1 },
-  reviewDuplicateWarningThreshold: { kind: 'float', min: 0, max: 1 },
-  extractionLogRetentionDays: { kind: 'int', min: 1 }
-} satisfies Record<keyof Settings, SettingRule>
-
 export function getDefaultRetrievalSettings(): RetrievalSettings {
-  return {
-    minSemanticSimilarity: 0.70,
-    minScore: 0.45,
-    minSemanticOnlyScore: 0.65,
-    maxRecords: 8,
-    maxTokens: 4000,
-    mmrLambda: 0.7,
-    usageRatioWeight: 0.2,
-    enableHaikuRetrieval: false,
-    maxKeywordQueries: 6,
-    maxKeywordErrors: 3,
-    maxKeywordCommands: 3,
-    prePromptTimeoutMs: 5000,
-    haikuQueryTimeoutMs: 2500,
-    maxSemanticQueryChars: 3000
-  }
+  return { ...DEFAULT_RETRIEVAL_SETTINGS }
 }
 
 export function getDefaultMaintenanceSettings(): MaintenanceSettings {
-  return {
-    staleDays: 90,
-    discoveryMaxAgeDays: 180,
-    lowUsageMinRetrievals: 5,
-    lowUsageRatioThreshold: 0.1,
-    lowUsageHighRetrievalMin: 5,
-    staleUnusedDays: 30,
-    consolidationSearchLimit: 12,
-    consolidationMaxClusterSize: 8,
-    consolidationThreshold: SIMILARITY_THRESHOLDS.CONSOLIDATION,
-    consolidationRecheckDays: 7,
-    crossTypeConsolidationThreshold: 0.93,
-    enableConsolidationLlmVerification: true,
-    consolidationTextSimilarityRatio: 0.2,
-    conflictSimilarityThreshold: 0.85,
-    conflictCheckBatchSize: 10,
-    contradictionSimilarityThreshold: 0.75,
-    contradictionSearchLimit: 8,
-    contradictionBatchSize: 15,
-    globalPromotionBatchSize: 20,
-    globalPromotionRecheckDays: 30,
-    globalPromotionMinSuccessCount: 2,
-    globalPromotionMinUsageRatio: 0.3,
-    globalPromotionMinRetrievalsForUsageRatio: 3,
-    warningClusterSimilarityThreshold: 0.8,
-    warningClusterLimit: 5,
-    warningSynthesisMinFailures: 2,
-    warningSynthesisBatchSize: 10,
-    warningSynthesisRecheckDays: 30,
-    procedureStepCheckCount: 3,
-    extractionDedupThreshold: SIMILARITY_THRESHOLDS.EXTRACTION_DEDUP,
-    reviewSimilarThreshold: SIMILARITY_THRESHOLDS.REVIEW_SIMILAR,
-    reviewDuplicateWarningThreshold: SIMILARITY_THRESHOLDS.REVIEW_DUPLICATE_WARNING,
-    extractionLogRetentionDays: 14
-  }
+  return { ...DEFAULT_MAINTENANCE_SETTINGS }
 }
 
 export function getDefaultSettings(): Settings {
-  return {
-    ...getDefaultRetrievalSettings(),
-    ...getDefaultMaintenanceSettings()
-  }
+  return { ...DEFAULT_SETTINGS }
 }
 
 export function loadSettings(): Settings {
@@ -179,240 +82,30 @@ export function validateSettingValue(setting: keyof Settings, value: unknown): S
   return validateNumericSetting(rule, value)
 }
 
-export function coerceRetrievalSettings(value: Record<string, unknown>, fallback: RetrievalSettings): RetrievalSettings {
-  return {
-    minSemanticSimilarity: coerceSettingValue(
-      SETTING_RULES.minSemanticSimilarity,
-      value.minSemanticSimilarity,
-      fallback.minSemanticSimilarity
-    ),
-    minScore: coerceSettingValue(
-      SETTING_RULES.minScore,
-      value.minScore,
-      fallback.minScore
-    ),
-    minSemanticOnlyScore: coerceSettingValue(
-      SETTING_RULES.minSemanticOnlyScore,
-      value.minSemanticOnlyScore,
-      fallback.minSemanticOnlyScore
-    ),
-    maxRecords: coerceSettingValue(
-      SETTING_RULES.maxRecords,
-      value.maxRecords,
-      fallback.maxRecords
-    ),
-    maxTokens: coerceSettingValue(
-      SETTING_RULES.maxTokens,
-      value.maxTokens,
-      fallback.maxTokens
-    ),
-    mmrLambda: coerceSettingValue(
-      SETTING_RULES.mmrLambda,
-      value.mmrLambda,
-      fallback.mmrLambda
-    ),
-    usageRatioWeight: coerceSettingValue(
-      SETTING_RULES.usageRatioWeight,
-      value.usageRatioWeight,
-      fallback.usageRatioWeight
-    ),
-    enableHaikuRetrieval: coerceBooleanValue(value.enableHaikuRetrieval, fallback.enableHaikuRetrieval),
-    maxKeywordQueries: coerceSettingValue(
-      SETTING_RULES.maxKeywordQueries,
-      value.maxKeywordQueries,
-      fallback.maxKeywordQueries
-    ),
-    maxKeywordErrors: coerceSettingValue(
-      SETTING_RULES.maxKeywordErrors,
-      value.maxKeywordErrors,
-      fallback.maxKeywordErrors
-    ),
-    maxKeywordCommands: coerceSettingValue(
-      SETTING_RULES.maxKeywordCommands,
-      value.maxKeywordCommands,
-      fallback.maxKeywordCommands
-    ),
-    prePromptTimeoutMs: coerceSettingValue(
-      SETTING_RULES.prePromptTimeoutMs,
-      value.prePromptTimeoutMs,
-      fallback.prePromptTimeoutMs
-    ),
-    haikuQueryTimeoutMs: coerceSettingValue(
-      SETTING_RULES.haikuQueryTimeoutMs,
-      value.haikuQueryTimeoutMs,
-      fallback.haikuQueryTimeoutMs
-    ),
-    maxSemanticQueryChars: coerceSettingValue(
-      SETTING_RULES.maxSemanticQueryChars,
-      value.maxSemanticQueryChars,
-      fallback.maxSemanticQueryChars
-    )
+function coerceSettingsByFields<T extends Partial<Settings>>(
+  fields: SettingsFieldDefinition[],
+  value: Record<string, unknown>,
+  fallback: Settings
+): T {
+  const output: Record<string, number | boolean> = {}
+  for (const field of fields) {
+    const fallbackValue = fallback[field.key]
+    const rule = SETTING_RULES[field.key]
+    if (rule.kind === 'bool') {
+      output[field.key] = coerceBooleanValue(value[field.key], fallbackValue as boolean)
+      continue
+    }
+    output[field.key] = coerceSettingValue(rule, value[field.key], fallbackValue as number)
   }
+  return output as T
+}
+
+export function coerceRetrievalSettings(value: Record<string, unknown>, fallback: RetrievalSettings): RetrievalSettings {
+  return coerceSettingsByFields<RetrievalSettings>(RETRIEVAL_FIELDS, value, fallback as Settings)
 }
 
 function coerceMaintenanceSettings(value: Record<string, unknown>, fallback: MaintenanceSettings): MaintenanceSettings {
-  return {
-    staleDays: coerceSettingValue(SETTING_RULES.staleDays, value.staleDays, fallback.staleDays),
-    discoveryMaxAgeDays: coerceSettingValue(
-      SETTING_RULES.discoveryMaxAgeDays,
-      value.discoveryMaxAgeDays,
-      fallback.discoveryMaxAgeDays
-    ),
-    lowUsageMinRetrievals: coerceSettingValue(
-      SETTING_RULES.lowUsageMinRetrievals,
-      value.lowUsageMinRetrievals,
-      fallback.lowUsageMinRetrievals
-    ),
-    lowUsageRatioThreshold: coerceSettingValue(
-      SETTING_RULES.lowUsageRatioThreshold,
-      value.lowUsageRatioThreshold,
-      fallback.lowUsageRatioThreshold
-    ),
-    lowUsageHighRetrievalMin: coerceSettingValue(
-      SETTING_RULES.lowUsageHighRetrievalMin,
-      value.lowUsageHighRetrievalMin,
-      fallback.lowUsageHighRetrievalMin
-    ),
-    staleUnusedDays: coerceSettingValue(
-      SETTING_RULES.staleUnusedDays,
-      value.staleUnusedDays,
-      fallback.staleUnusedDays
-    ),
-    consolidationSearchLimit: coerceSettingValue(
-      SETTING_RULES.consolidationSearchLimit,
-      value.consolidationSearchLimit,
-      fallback.consolidationSearchLimit
-    ),
-    consolidationMaxClusterSize: coerceSettingValue(
-      SETTING_RULES.consolidationMaxClusterSize,
-      value.consolidationMaxClusterSize,
-      fallback.consolidationMaxClusterSize
-    ),
-    consolidationThreshold: coerceSettingValue(
-      SETTING_RULES.consolidationThreshold,
-      value.consolidationThreshold,
-      fallback.consolidationThreshold
-    ),
-    consolidationRecheckDays: coerceSettingValue(
-      SETTING_RULES.consolidationRecheckDays,
-      value.consolidationRecheckDays,
-      fallback.consolidationRecheckDays
-    ),
-    crossTypeConsolidationThreshold: coerceSettingValue(
-      SETTING_RULES.crossTypeConsolidationThreshold,
-      value.crossTypeConsolidationThreshold,
-      fallback.crossTypeConsolidationThreshold
-    ),
-    enableConsolidationLlmVerification: coerceBooleanValue(
-      value.enableConsolidationLlmVerification,
-      fallback.enableConsolidationLlmVerification
-    ),
-    consolidationTextSimilarityRatio: coerceSettingValue(
-      SETTING_RULES.consolidationTextSimilarityRatio,
-      value.consolidationTextSimilarityRatio,
-      fallback.consolidationTextSimilarityRatio
-    ),
-    conflictSimilarityThreshold: coerceSettingValue(
-      SETTING_RULES.conflictSimilarityThreshold,
-      value.conflictSimilarityThreshold,
-      fallback.conflictSimilarityThreshold
-    ),
-    conflictCheckBatchSize: coerceSettingValue(
-      SETTING_RULES.conflictCheckBatchSize,
-      value.conflictCheckBatchSize,
-      fallback.conflictCheckBatchSize
-    ),
-    contradictionSimilarityThreshold: coerceSettingValue(
-      SETTING_RULES.contradictionSimilarityThreshold,
-      value.contradictionSimilarityThreshold,
-      fallback.contradictionSimilarityThreshold
-    ),
-    contradictionSearchLimit: coerceSettingValue(
-      SETTING_RULES.contradictionSearchLimit,
-      value.contradictionSearchLimit,
-      fallback.contradictionSearchLimit
-    ),
-    contradictionBatchSize: coerceSettingValue(
-      SETTING_RULES.contradictionBatchSize,
-      value.contradictionBatchSize,
-      fallback.contradictionBatchSize
-    ),
-    globalPromotionBatchSize: coerceSettingValue(
-      SETTING_RULES.globalPromotionBatchSize,
-      value.globalPromotionBatchSize,
-      fallback.globalPromotionBatchSize
-    ),
-    globalPromotionRecheckDays: coerceSettingValue(
-      SETTING_RULES.globalPromotionRecheckDays,
-      value.globalPromotionRecheckDays,
-      fallback.globalPromotionRecheckDays
-    ),
-    globalPromotionMinSuccessCount: coerceSettingValue(
-      SETTING_RULES.globalPromotionMinSuccessCount,
-      value.globalPromotionMinSuccessCount,
-      fallback.globalPromotionMinSuccessCount
-    ),
-    globalPromotionMinUsageRatio: coerceSettingValue(
-      SETTING_RULES.globalPromotionMinUsageRatio,
-      value.globalPromotionMinUsageRatio,
-      fallback.globalPromotionMinUsageRatio
-    ),
-    globalPromotionMinRetrievalsForUsageRatio: coerceSettingValue(
-      SETTING_RULES.globalPromotionMinRetrievalsForUsageRatio,
-      value.globalPromotionMinRetrievalsForUsageRatio,
-      fallback.globalPromotionMinRetrievalsForUsageRatio
-    ),
-    warningClusterSimilarityThreshold: coerceSettingValue(
-      SETTING_RULES.warningClusterSimilarityThreshold,
-      value.warningClusterSimilarityThreshold,
-      fallback.warningClusterSimilarityThreshold
-    ),
-    warningClusterLimit: coerceSettingValue(
-      SETTING_RULES.warningClusterLimit,
-      value.warningClusterLimit,
-      fallback.warningClusterLimit
-    ),
-    warningSynthesisMinFailures: coerceSettingValue(
-      SETTING_RULES.warningSynthesisMinFailures,
-      value.warningSynthesisMinFailures,
-      fallback.warningSynthesisMinFailures
-    ),
-    warningSynthesisBatchSize: coerceSettingValue(
-      SETTING_RULES.warningSynthesisBatchSize,
-      value.warningSynthesisBatchSize,
-      fallback.warningSynthesisBatchSize
-    ),
-    warningSynthesisRecheckDays: coerceSettingValue(
-      SETTING_RULES.warningSynthesisRecheckDays,
-      value.warningSynthesisRecheckDays,
-      fallback.warningSynthesisRecheckDays
-    ),
-    procedureStepCheckCount: coerceSettingValue(
-      SETTING_RULES.procedureStepCheckCount,
-      value.procedureStepCheckCount,
-      fallback.procedureStepCheckCount
-    ),
-    extractionDedupThreshold: coerceSettingValue(
-      SETTING_RULES.extractionDedupThreshold,
-      value.extractionDedupThreshold,
-      fallback.extractionDedupThreshold
-    ),
-    reviewSimilarThreshold: coerceSettingValue(
-      SETTING_RULES.reviewSimilarThreshold,
-      value.reviewSimilarThreshold,
-      fallback.reviewSimilarThreshold
-    ),
-    reviewDuplicateWarningThreshold: coerceSettingValue(
-      SETTING_RULES.reviewDuplicateWarningThreshold,
-      value.reviewDuplicateWarningThreshold,
-      fallback.reviewDuplicateWarningThreshold
-    ),
-    extractionLogRetentionDays: coerceSettingValue(
-      SETTING_RULES.extractionLogRetentionDays,
-      value.extractionLogRetentionDays,
-      fallback.extractionLogRetentionDays
-    )
-  }
+  return coerceSettingsByFields<MaintenanceSettings>(MAINTENANCE_FIELDS, value, fallback as Settings)
 }
 
 function coerceSettingValue(rule: NumericSettingRule, value: unknown, fallback: number): number {

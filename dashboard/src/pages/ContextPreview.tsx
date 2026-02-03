@@ -9,12 +9,12 @@ import { Input } from '@/components/ui/input'
 import MemoryDetail from '@/components/MemoryDetail'
 import NearMissesPanel from '@/components/NearMissesPanel'
 import {
-  RETRIEVAL_FIELDS,
   SettingsPanel,
   buildSettingsOverride,
   toFormState,
   type RetrievalSettingsFormState
 } from '@/components/SettingsPanel'
+import { RETRIEVAL_FIELDS } from '../../../src/lib/settings-schema.js'
 import {
   previewContext,
   updateSettings,
