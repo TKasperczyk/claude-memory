@@ -16,6 +16,7 @@ import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extracti
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
 import { getRecordSummary } from '../lib/record-summary.js'
+import { acquireFileLock } from '../lib/lock.js'
 import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
 
@@ -23,46 +24,21 @@ const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
 const DEBUG_LOG_FILE = `${homedir()}/.claude-memory/debug.log`
 const AUDIT_LOG_FILE = `${homedir()}/.claude-memory/extraction-audit.log`
 const LOCKS_DIR = `${homedir()}/.claude-memory/locks`
+const LOCK_STALE_MS = 5 * 60 * 1000
 const workerStartTime = Date.now()
 
-/** Try to acquire a lock for this session. Returns true if acquired, false if already locked. */
-function tryAcquireLock(sessionId: string): boolean {
+function acquireWorkerLock(sessionId: string): ReturnType<typeof acquireFileLock> {
   const lockFile = `${LOCKS_DIR}/${sessionId}.lock`
-  try {
-    fs.mkdirSync(LOCKS_DIR, { recursive: true })
-    // Use exclusive flag - fails if file exists
-    fs.writeFileSync(lockFile, `${process.pid}\n${Date.now()}`, { flag: 'wx' })
-    return true
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      // Lock already exists - check if it's stale (older than 5 minutes)
-      try {
-        const stat = fs.statSync(lockFile)
-        const ageMs = Date.now() - stat.mtimeMs
-        if (ageMs > 5 * 60 * 1000) {
-          // Stale lock, remove and retry
-          fs.unlinkSync(lockFile)
-          fs.writeFileSync(lockFile, `${process.pid}\n${Date.now()}`, { flag: 'wx' })
-          return true
-        }
-      } catch {
-        // ignore
-      }
-      return false
+  return acquireFileLock(lockFile, {
+    staleAfterMs: LOCK_STALE_MS,
+    staleStrategy: 'mtime',
+    ensureDir: true,
+    proceedOnError: true,
+    write: { data: () => `${process.pid}\n${Date.now()}` },
+    onLockError: error => {
+      console.error('[claude-memory] Lock acquisition error:', error)
     }
-    // Other error, log and proceed (don't block on lock issues)
-    console.error('[claude-memory] Lock acquisition error:', error)
-    return true
-  }
-}
-
-function releaseLock(sessionId: string): void {
-  const lockFile = `${LOCKS_DIR}/${sessionId}.lock`
-  try {
-    fs.unlinkSync(lockFile)
-  } catch {
-    // ignore
-  }
+  })
 }
 
 function debugLog(msg: string): void {
@@ -145,34 +121,33 @@ async function main(): Promise<void> {
   auditLog(`START event=${payload.hook_event_name} session=${payload.session_id} transcript=${payload.transcript_path}`)
 
   // Try to acquire lock - prevents duplicate extractions when hook fires multiple times
-  if (!tryAcquireLock(payload.session_id)) {
+  const lockHandle = acquireWorkerLock(payload.session_id)
+  if (!lockHandle) {
     debugLog('Skipping: lock already held by another process')
     auditLog(`SKIP reason=locked session=${payload.session_id}`)
     return
   }
 
-  // Skip extraction if session was cleared
-  if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
-    debugLog('Skipping: reason=clear')
-    auditLog(`SKIP reason=clear session=${payload.session_id}`)
-    console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
-    removeSessionTracking(payload.session_id)
-    releaseLock(payload.session_id)
-    return
-  }
-
-  if (!payload.transcript_path) {
-    debugLog('Skipping: no transcript_path')
-    auditLog(`SKIP reason=no_transcript session=${payload.session_id}`)
-    console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
-    if (payload.hook_event_name === 'SessionEnd') {
-      removeSessionTracking(payload.session_id)
-    }
-    releaseLock(payload.session_id)
-    return
-  }
-
   try {
+    // Skip extraction if session was cleared
+    if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
+      debugLog('Skipping: reason=clear')
+      auditLog(`SKIP reason=clear session=${payload.session_id}`)
+      console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
+      removeSessionTracking(payload.session_id)
+      return
+    }
+
+    if (!payload.transcript_path) {
+      debugLog('Skipping: no transcript_path')
+      auditLog(`SKIP reason=no_transcript session=${payload.session_id}`)
+      console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
+      if (payload.hook_event_name === 'SessionEnd') {
+        removeSessionTracking(payload.session_id)
+      }
+      return
+    }
+
     debugLog('Initializing Milvus...')
     const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
     const config = loadConfig(configRoot)
@@ -232,7 +207,7 @@ async function main(): Promise<void> {
     )
     debugLog('COMPLETE')
   } finally {
-    releaseLock(payload.session_id)
+    lockHandle.release()
   }
 }
 

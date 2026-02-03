@@ -3,6 +3,7 @@ import path from 'path'
 import { homedir } from 'os'
 import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, isPlainObject } from './parsing.js'
 import { readJsonFile, writeJsonFile } from './json.js'
+import { acquireFileLock } from './lock.js'
 import { sanitizeSessionId } from './shared.js'
 import {
   type InjectedMemoryEntry,
@@ -17,7 +18,6 @@ const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure|warning):/i
 const LOCK_RETRY_DELAY_MS = 25
 const LOCK_MAX_WAIT_MS = 1000
 const LOCK_STALE_MS = 30_000
-const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4))
 
 function getSessionTrackingPath(sessionId: string): string {
   const safeId = sanitizeSessionId(sessionId)
@@ -28,99 +28,31 @@ function getSessionLockPath(sessionId: string): string {
   return `${getSessionTrackingPath(sessionId)}.lock`
 }
 
-function sleep(ms: number): void {
-  Atomics.wait(LOCK_SLEEP, 0, 0, ms)
-}
-
-function readLockPid(lockPath: string): number | null {
-  try {
-    const content = fs.readFileSync(lockPath, 'utf-8').trim()
-    if (!content) return null
-    const pid = Number.parseInt(content, 10)
-    return Number.isNaN(pid) ? null : pid
-  } catch {
-    return null
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code === 'ESRCH') return false
-    return true
-  }
-}
-
-function isStaleLock(lockPath: string, now: number): boolean {
-  try {
-    const pid = readLockPid(lockPath)
-    if (pid !== null) {
-      return !isProcessAlive(pid)
-    }
-    const stats = fs.statSync(lockPath)
-    const ageMs = now - stats.mtimeMs
-    return ageMs >= LOCK_STALE_MS
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code === 'ENOENT') return false
-    return false
-  }
-}
-
 function withSessionLock<T>(sessionId: string, action: () => T): T {
   const lockPath = getSessionLockPath(sessionId)
-  const start = Date.now()
-  let fd: number | null = null
-
-  while (fd === null) {
-    try {
-      fd = fs.openSync(lockPath, 'wx')
-      try {
-        fs.writeFileSync(fd, `${process.pid}\n`)
-      } catch {
-        // Ignore lock metadata errors
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'EEXIST') {
-        throw error
-      }
-      const now = Date.now()
-      if (isStaleLock(lockPath, now)) {
-        let removed = false
-        try {
-          fs.unlinkSync(lockPath)
-          removed = true
-          console.warn('[claude-memory] Removed stale session lock:', lockPath)
-        } catch (unlinkError) {
-          console.warn('[claude-memory] Failed to remove stale session lock:', unlinkError)
-        }
-        if (removed) continue
-      }
-      if (now - start >= LOCK_MAX_WAIT_MS) {
-        console.warn('[claude-memory] Timed out waiting for session lock; proceeding without lock:', lockPath)
-        return action()
-      }
-      sleep(LOCK_RETRY_DELAY_MS)
+  const handle = acquireFileLock(lockPath, {
+    staleAfterMs: LOCK_STALE_MS,
+    staleStrategy: 'pid',
+    wait: { maxWaitMs: LOCK_MAX_WAIT_MS, retryDelayMs: LOCK_RETRY_DELAY_MS },
+    proceedOnTimeout: true,
+    write: { data: () => `${process.pid}\n`, ignoreErrors: true },
+    onTimeout: path => {
+      console.warn('[claude-memory] Timed out waiting for session lock; proceeding without lock:', path)
+    },
+    onStaleRemoved: path => {
+      console.warn('[claude-memory] Removed stale session lock:', path)
+    },
+    onStaleRemoveError: error => {
+      console.warn('[claude-memory] Failed to remove stale session lock:', error)
     }
-  }
+  })
+
+  if (!handle) return action()
 
   try {
     return action()
   } finally {
-    try {
-      fs.closeSync(fd)
-    } catch {
-      // Ignore close errors
-    }
-    try {
-      fs.unlinkSync(lockPath)
-    } catch {
-      // Ignore unlink errors
-    }
+    handle.release()
   }
 }
 
