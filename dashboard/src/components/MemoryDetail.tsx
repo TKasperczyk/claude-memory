@@ -332,6 +332,11 @@ export default function MemoryDetail({
               <div className="grid grid-cols-2 gap-4">
                 <Field label="Project">{record.project ?? '—'}</Field>
                 <Field label="Domain">{record.domain ?? '—'}</Field>
+                <Field label="Scope">
+                  <span className={record.scope === 'global' ? 'text-type-discovery font-medium' : ''}>
+                    {record.scope ?? 'project'}
+                  </span>
+                </Field>
                 <Field label="Created">{formatDateTime(record.timestamp)}</Field>
                 <Field label="Last used">
                   {formatRelativeTimeLong(record.lastUsed ?? record.timestamp)}

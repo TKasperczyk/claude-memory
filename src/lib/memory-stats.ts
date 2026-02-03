@@ -11,6 +11,7 @@ export async function buildMemoryStats(
     byType: {},
     byProject: {},
     byDomain: {},
+    byScope: {},
     avgRetrievalCount: 0,
     avgUsageCount: 0,
     avgUsageRatio: 0,
@@ -29,6 +30,9 @@ export async function buildMemoryStats(
 
     const domain = record.domain ?? 'unknown'
     stats.byDomain[domain] = (stats.byDomain[domain] ?? 0) + 1
+
+    const scope = record.scope ?? 'project'
+    stats.byScope[scope] = (stats.byScope[scope] ?? 0) + 1
 
     if (record.deprecated) stats.deprecated += 1
 

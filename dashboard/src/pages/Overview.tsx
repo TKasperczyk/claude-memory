@@ -125,6 +125,59 @@ function TopList({
   )
 }
 
+const SCOPE_CONFIG: Record<string, { label: string; color: string }> = {
+  project: { label: 'Project', color: 'hsl(var(--muted-foreground))' },
+  global: { label: 'Global', color: TYPE_COLORS.discovery },
+}
+
+function ScopeDistribution({ data }: { data: Record<string, number> }) {
+  const total = Object.values(data).reduce((sum, count) => sum + count, 0)
+  if (total === 0) return <p className="text-sm text-muted-foreground">No data yet</p>
+
+  const entries = Object.entries(data)
+    .map(([scope, count]) => ({ scope, count }))
+    .sort((a, b) => b.count - a.count)
+
+  return (
+    <div className="space-y-4">
+      {/* Bar */}
+      <div className="flex h-2.5 rounded-full overflow-hidden bg-secondary/60">
+        {entries.map(({ scope, count }) => {
+          const percent = (count / total) * 100
+          if (percent === 0) return null
+          const config = SCOPE_CONFIG[scope] ?? { label: scope, color: 'hsl(var(--muted-foreground))' }
+          return (
+            <div
+              key={scope}
+              className="transition-all duration-300"
+              style={{ width: `${percent}%`, backgroundColor: config.color }}
+            />
+          )
+        })}
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-x-8 gap-y-2">
+        {entries.map(({ scope, count }) => {
+          const config = SCOPE_CONFIG[scope] ?? { label: scope, color: 'hsl(var(--muted-foreground))' }
+          return (
+            <div key={scope} className="flex items-center gap-2.5">
+              <span
+                className="w-2.5 h-2.5 rounded-full ring-2 ring-background"
+                style={{ backgroundColor: config.color }}
+              />
+              <span className="text-sm text-muted-foreground">
+                {config.label}
+              </span>
+              <span className="text-sm font-semibold tabular-nums">{count}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function DistributionSkeleton() {
   return (
     <div className="space-y-4">
@@ -365,12 +418,20 @@ export default function Overview() {
       </Card>
 
       {/* Distribution */}
-      <Card>
-        <CardContent className="p-5">
-          <h2 className="section-header mb-4">Type distribution</h2>
-          {isInitialLoading ? <DistributionSkeleton /> : <DistributionBar data={typeData} />}
-        </CardContent>
-      </Card>
+      <div className="grid md:grid-cols-2 gap-5">
+        <Card>
+          <CardContent className="p-5">
+            <h2 className="section-header mb-4">Type distribution</h2>
+            {isInitialLoading ? <DistributionSkeleton /> : <DistributionBar data={typeData} />}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5">
+            <h2 className="section-header mb-4">Scope distribution</h2>
+            {isInitialLoading ? <DistributionSkeleton /> : <ScopeDistribution data={data?.byScope ?? {}} />}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Activity Charts */}
       <div className="grid md:grid-cols-2 gap-5">

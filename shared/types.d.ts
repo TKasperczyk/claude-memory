@@ -101,6 +101,7 @@ export interface MemoryStatsSummary {
   byType: Record<string, number>
   byProject: Record<string, number>
   byDomain: Record<string, number>
+  byScope: Record<string, number>
   avgRetrievalCount: number
   avgUsageCount: number
   avgUsageRatio: number

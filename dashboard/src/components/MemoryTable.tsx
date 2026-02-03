@@ -35,6 +35,7 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
             <TableHead className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground px-4">Summary</TableHead>
             <TableHead className="w-32 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground px-4">Project</TableHead>
             <TableHead className="w-28 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground px-4">Domain</TableHead>
+            <TableHead className="w-20 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground px-4">Scope</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -61,6 +62,9 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
                 </TableCell>
                 <TableCell className="px-4 py-3 text-muted-foreground/80 truncate text-[13px]">
                   {record.domain ?? '—'}
+                </TableCell>
+                <TableCell className={`px-4 py-3 truncate text-[13px] ${record.scope === 'global' ? 'text-type-discovery font-medium' : 'text-muted-foreground/80'}`}>
+                  {record.scope ?? 'project'}
                 </TableCell>
               </TableRow>
             )
