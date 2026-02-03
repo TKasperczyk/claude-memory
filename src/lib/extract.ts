@@ -91,6 +91,14 @@ Record consolidation:
 - A single "overhauled authentication system: added JWT tokens, refresh logic, and logout endpoint" is better than three separate discoveries.
 - Do NOT extract both a warning AND a discovery for the same issue/fix. If a discovery documents a fix, don't also extract a warning about the original problem - the discovery already captures the lesson.
 
+Iteration and refinement (CRITICAL for procedures):
+- Sessions often involve iteration: initial approach → user feedback → refinements.
+- ALWAYS extract the FINAL state, not intermediate attempts.
+- When you see patterns like "change X to Y", "reduce the timeout", "add a retry loop":
+  - The earlier value is obsolete - extract only the final value/step
+- If code was modified multiple times, look at the LAST edit to determine actual behavior.
+- If manual steps were later automated in the script, describe the automated behavior.
+
 External system bugs:
 - When the transcript reveals a bug or unexpected behavior in an external tool/system (not the project being worked on), extract it as a warning with scope: "global".
 - Example: "npm has race condition in postinstall scripts" or "Docker build cache invalidates unexpectedly".
@@ -300,6 +308,11 @@ Extraction guidance:
    Also include specific tool/config discoveries when genuinely useful.
    IMPORTANT: Extract BOTH problems found AND solutions implemented - don't just extract warnings about what's wrong.
 4) ProcedureRecord: step-by-step procedures with exact commands.
+   CRITICAL: Extract the FINAL working version after all refinements:
+   - If parameters changed during the session, use the final values
+   - If manual steps were automated, describe what the final code does
+   - Include ALL steps from the final implementation, even those added mid-session
+   - Trace through the final code/script to verify steps match actual behavior
    Also extract brief "how to" instructions that appear in assistant messages, e.g.:
    - "To enable dark mode, add class='dark' to the <html> element"
    - "To run in dev mode, use --watch flag"
