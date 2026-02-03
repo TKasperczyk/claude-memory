@@ -1,9 +1,8 @@
 import express from 'express'
 import { getExtractionRun, listExtractionRuns } from '../../../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
-import { escapeFilterValue, queryRecords } from '../../../src/lib/milvus.js'
+import { fetchRecordsByIds } from '../../../src/lib/milvus.js'
 import { getReview, saveReview } from '../../../src/lib/review-storage.js'
-import type { MemoryRecord } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
@@ -50,24 +49,9 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
       const config = await ensureConfigInitialized(req, baseConfig)
 
-      const records: MemoryRecord[] = []
-      const batchSize = 1000
+      const records = await fetchRecordsByIds(ids, config)
 
-      for (let i = 0; i < ids.length; i += batchSize) {
-        const batchIds = ids.slice(i, i + batchSize)
-        const idFilter = batchIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
-        const batch = await queryRecords({
-          filter: `id in [${idFilter}]`,
-          limit: batchIds.length,
-          orderBy: 'timestamp_desc'
-        }, config)
-        records.push(...batch)
-      }
-
-      const byId = new Map(records.map(record => [record.id, record]))
-      const ordered = ids.map(id => byId.get(id)).filter((record): record is typeof records[number] => Boolean(record))
-
-      res.json({ run, records: ordered })
+      res.json({ run, records })
     } catch (error) {
       logger.error('Failed to get extraction run', error)
       res.status(500).json({ error: 'Failed to get extraction run' })

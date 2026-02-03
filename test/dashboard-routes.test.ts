@@ -35,6 +35,7 @@ import {
   countRecords,
   deleteRecord,
   escapeFilterValue,
+  fetchRecordsByIds,
   getRecord,
   getRecordStats,
   hybridSearch,
@@ -98,6 +99,7 @@ vi.mock('../src/lib/milvus.js', () => ({
   countRecords: vi.fn(),
   deleteRecord: vi.fn(),
   escapeFilterValue: vi.fn(),
+  fetchRecordsByIds: vi.fn(),
   getRecord: vi.fn(),
   getRecordStats: vi.fn(),
   hybridSearch: vi.fn(),
@@ -180,6 +182,7 @@ const mockedUninstallAll = vi.mocked(uninstallAll)
 const mockedUninstallHooks = vi.mocked(uninstallHooks)
 const mockedCountRecords = vi.mocked(countRecords)
 const mockedQueryRecords = vi.mocked(queryRecords)
+const mockedFetchRecordsByIds = vi.mocked(fetchRecordsByIds)
 const mockedGetRecord = vi.mocked(getRecord)
 const mockedDeleteRecord = vi.mocked(deleteRecord)
 const mockedResetCollection = vi.mocked(resetCollection)
@@ -297,6 +300,7 @@ beforeEach(() => {
   mockedUninstallHooks.mockReturnValue({ prePrompt: false })
   mockedCountRecords.mockResolvedValue(0)
   mockedQueryRecords.mockResolvedValue([])
+  mockedFetchRecordsByIds.mockResolvedValue([])
   mockedGetRecord.mockResolvedValue(null)
   mockedDeleteRecord.mockResolvedValue(undefined)
   mockedResetCollection.mockResolvedValue(undefined)
@@ -938,7 +942,7 @@ describe('extractions routes', () => {
       runId: 'run-1',
       extractedRecordIds: ['rec-1']
     })
-    mockedQueryRecords.mockResolvedValueOnce([
+    mockedFetchRecordsByIds.mockResolvedValueOnce([
       { id: 'rec-1', type: 'command' }
     ])
 
@@ -959,9 +963,9 @@ describe('extractions routes', () => {
       runId: 'run-1',
       extractedRecordIds: ['b', 'a']
     })
-    mockedQueryRecords.mockResolvedValueOnce([
-      { id: 'a', type: 'command' },
-      { id: 'b', type: 'error' }
+    mockedFetchRecordsByIds.mockResolvedValueOnce([
+      { id: 'b', type: 'error' },
+      { id: 'a', type: 'command' }
     ])
 
     const { app } = buildApp()
