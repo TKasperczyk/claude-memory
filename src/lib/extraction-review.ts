@@ -6,8 +6,9 @@ import { getExtractionRun } from './extraction-log.js'
 import { escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
 import { asString, isPlainObject } from './parsing.js'
 import { getSchemaDescription } from './record-schema.js'
-import { clampScore, coerceReviewIssue, parseReviewRating } from './review-coercion.js'
+import { coerceReviewIssue, parseReviewRating } from './review-coercion.js'
 import { formatSimilarRecord } from './review-formatters.js'
+import { formatRecordForReview, parseReviewScore } from './review-helpers.js'
 import { executeReview, executeReviewStreaming, type ThinkingCallback } from './review-framework.js'
 import { truncateWithTail } from './shared.js'
 import { loadSettings } from './settings.js'
@@ -364,53 +365,7 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
     sourceExcerpt: record.sourceExcerpt  // Include so reviewer can verify it's verbatim
   }
 
-  switch (record.type) {
-    case 'command':
-      return {
-        ...base,
-        command: record.command,
-        exitCode: record.exitCode,
-        outcome: record.outcome,
-        truncatedOutput: record.truncatedOutput,
-        resolution: record.resolution,
-        context: record.context
-      }
-    case 'error':
-      return {
-        ...base,
-        errorText: record.errorText,
-        errorType: record.errorType,
-        cause: record.cause,
-        resolution: record.resolution,
-        context: record.context
-      }
-    case 'discovery':
-      return {
-        ...base,
-        what: record.what,
-        where: record.where,
-        evidence: record.evidence,
-        confidence: record.confidence
-      }
-    case 'procedure':
-      return {
-        ...base,
-        name: record.name,
-        steps: record.steps,
-        prerequisites: record.prerequisites,
-        verification: record.verification,
-        context: record.context
-      }
-    case 'warning':
-      return {
-        ...base,
-        avoid: record.avoid,
-        useInstead: record.useInstead,
-        reason: record.reason,
-        severity: record.severity,
-        sourceRecordIds: record.sourceRecordIds
-      }
-  }
+  return formatRecordForReview(record, base)
 }
 
 function coerceReviewPayload(input: unknown): ReviewPayload | null {
@@ -418,7 +373,7 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
   const record = input
 
   const overallRating = parseReviewRating(record.overallRating ?? record.overallAccuracy)
-  const accuracyScore = parseAccuracyScore(record.accuracyScore)
+  const accuracyScore = parseReviewScore(record.accuracyScore)
   const summary = asString(record.summary)?.trim() ?? ''
   const issues = Array.isArray(record.issues)
     ? record.issues.map(coerceReviewIssue).filter((issue): issue is ExtractionReviewIssue => Boolean(issue))
@@ -432,15 +387,4 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
     issues,
     summary
   }
-}
-
-function parseAccuracyScore(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return clampScore(value)
-  }
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value)
-    if (Number.isFinite(parsed)) return clampScore(parsed)
-  }
-  return null
 }

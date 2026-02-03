@@ -4,13 +4,13 @@ import { fetchRecordsByIds } from './milvus.js'
 import { loadSettings, type MaintenanceSettings } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import {
-  clampScore,
   coerceMaintenanceActionReviewItem,
   coerceSettingsRecommendation,
   parseReviewRating
 } from './review-coercion.js'
 import { asString, isPlainObject } from './parsing.js'
 import { executeReview, executeReviewStreaming, type ThinkingCallback } from './review-framework.js'
+import { formatRecordForReview, parseReviewScore } from './review-helpers.js'
 import { buildRecordSnippet, truncateSnippet, truncateWithTail } from './shared.js'
 import { safeStringify } from './json.js'
 import type { MaintenanceReview, OperationResult, MaintenanceAction, MaintenanceCandidateGroup } from '../../shared/types.js'
@@ -448,53 +448,7 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
     lastWarningSynthesisCheck: record.lastWarningSynthesisCheck
   }
 
-  switch (record.type) {
-    case 'command':
-      return {
-        ...base,
-        command: record.command,
-        exitCode: record.exitCode,
-        outcome: record.outcome,
-        truncatedOutput: record.truncatedOutput,
-        resolution: record.resolution,
-        context: record.context
-      }
-    case 'error':
-      return {
-        ...base,
-        errorText: record.errorText,
-        errorType: record.errorType,
-        cause: record.cause,
-        resolution: record.resolution,
-        context: record.context
-      }
-    case 'discovery':
-      return {
-        ...base,
-        what: record.what,
-        where: record.where,
-        evidence: record.evidence,
-        confidence: record.confidence
-      }
-    case 'procedure':
-      return {
-        ...base,
-        name: record.name,
-        steps: record.steps,
-        prerequisites: record.prerequisites,
-        verification: record.verification,
-        context: record.context
-      }
-    case 'warning':
-      return {
-        ...base,
-        avoid: record.avoid,
-        useInstead: record.useInstead,
-        reason: record.reason,
-        severity: record.severity,
-        sourceRecordIds: record.sourceRecordIds
-      }
-  }
+  return formatRecordForReview(record, base)
 }
 
 function coerceReviewPayload(input: unknown): ReviewPayload | null {
@@ -502,7 +456,7 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
   const record = input
 
   const overallRating = parseReviewRating(record.overallRating ?? record.overallAssessment)
-  const assessmentScore = parseAssessmentScore(record.assessmentScore)
+  const assessmentScore = parseReviewScore(record.assessmentScore, { allowEmbedded: true })
   const summary = coerceSummary(record.summary)
 
   const actionVerdicts = Array.isArray(record.actionVerdicts)
@@ -526,23 +480,6 @@ function coerceReviewPayload(input: unknown): ReviewPayload | null {
     settingsRecommendations,
     summary: summary || ''
   }
-}
-
-function parseAssessmentScore(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return clampScore(value)
-  }
-  if (typeof value === 'string' && value.trim() !== '') {
-    const trimmed = value.trim()
-    const parsed = Number(trimmed)
-    if (Number.isFinite(parsed)) return clampScore(parsed)
-    const match = trimmed.match(/-?\d+(\.\d+)?/)
-    if (match) {
-      const extracted = Number(match[0])
-      if (Number.isFinite(extracted)) return clampScore(extracted)
-    }
-  }
-  return null
 }
 
 function coerceSummary(value: unknown): string {
@@ -570,7 +507,7 @@ function describeReviewPayloadIssues(input: unknown): string[] {
   if (!parseReviewRating(overallRating)) {
     issues.push(`overallRating invalid: ${safeStringify(overallRating)}`)
   }
-  if (parseAssessmentScore(input.assessmentScore) === null) {
+  if (parseReviewScore(input.assessmentScore, { allowEmbedded: true }) === null) {
     issues.push(`assessmentScore invalid: ${safeStringify(input.assessmentScore)}`)
   }
   if (!coerceSummary(input.summary)) {
