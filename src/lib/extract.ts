@@ -113,9 +113,17 @@ Skip trivial commands:
 - A command is worth extracting if a future session would benefit from knowing "this specific invocation worked" or "this flag combination solved a problem".
 
 Scope guidance:
-If a discovery or procedure applies universally (not specific to this project),
-set scope: "global". Examples: general CLI flags, common error patterns,
-language features. Project-specific: architecture decisions, file locations.
+Set scope: "global" for knowledge that applies across projects:
+- General CLI flags, common error patterns, language features
+- Shared infrastructure: observability, CI/CD, deployment systems, monitoring
+- Corporate tooling and services used across multiple projects
+- External service endpoints, credentials, and configurations
+- Platform/environment knowledge (Kubernetes, cloud providers, internal tools)
+
+Keep scope: "project" (default) for:
+- Project-specific architecture decisions and file locations
+- Project-specific integrations or configurations
+- Knowledge that only makes sense in context of this codebase
 `
 
 const DOMAIN_INSTRUCTIONS = `
