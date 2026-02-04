@@ -2,6 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import MemoryDetail from '@/components/MemoryDetail'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import ExtractionDetail from '@/components/extractions/ExtractionDetail'
 import ExtractionFilters from '@/components/extractions/ExtractionFilters'
 import ExtractionList from '@/components/extractions/ExtractionList'
@@ -22,6 +31,7 @@ export default function Extractions() {
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('12h')
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteConfirmRun, setDeleteConfirmRun] = useState<ExtractionRun | null>(null)
   const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose } = useSelectedMemory()
   const { copy, isCopied } = useCopyToClipboard(2000)
   const queryClient = useQueryClient()
@@ -79,24 +89,14 @@ export default function Extractions() {
     return filteredRuns.find(run => run.runId === selectedRunId) ?? null
   }, [filteredRuns, selectedRunId])
 
-  const handleDeleteRun = async (run: ExtractionRun) => {
+  const handleDeleteRun = (run: ExtractionRun) => {
     if (deletingRunId) return
-    const insertedCount = run.extractedRecordIds?.length ?? 0
-    const updatedCount = run.updatedRecordIds?.length ?? 0
-    const totalCount = insertedCount + updatedCount
-    let message = ''
-    if (totalCount === 0) {
-      message = 'Delete this extraction run? Note: No associated memories will be deleted.'
-    } else if (updatedCount > 0) {
-      message = `Delete this extraction run and ${totalCount} ${totalCount === 1 ? 'memory' : 'memories'}?`
-        + ` Warning: ${updatedCount} pre-existing ${updatedCount === 1 ? 'memory' : 'memories'}`
-        + ' that were updated or deduplicated by this run will also be deleted.'
-    } else {
-      message = `Delete this extraction run and ${totalCount} ${totalCount === 1 ? 'memory' : 'memories'}?`
-    }
+    setDeleteConfirmRun(run)
+  }
 
-    const confirmed = window.confirm(message)
-    if (!confirmed) return
+  const confirmDelete = async () => {
+    if (!deleteConfirmRun || deletingRunId) return
+    const run = deleteConfirmRun
 
     setDeleteError(null)
     setDeletingRunId(run.runId)
@@ -109,12 +109,39 @@ export default function Extractions() {
       }
       skipAutoSelectRef.current = true
       setSelectedRunId(prev => (prev === run.runId ? null : prev))
+      setDeleteConfirmRun(null)
       queryClient.invalidateQueries({ queryKey: ['extractions'] })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete extraction run'
       setDeleteError(message)
     } finally {
       setDeletingRunId(null)
+    }
+  }
+
+  const getDeleteConfirmMessage = (run: ExtractionRun) => {
+    const insertedCount = run.extractedRecordIds?.length ?? 0
+    const updatedCount = run.updatedRecordIds?.length ?? 0
+    const totalCount = insertedCount + updatedCount
+
+    if (totalCount === 0) {
+      return {
+        title: 'Delete extraction run',
+        description: 'This will delete the extraction run metadata only. No memories will be deleted.'
+      }
+    }
+
+    if (updatedCount > 0) {
+      return {
+        title: 'Delete extraction run',
+        description: `This will delete the extraction run and ${totalCount} ${totalCount === 1 ? 'memory' : 'memories'}.`,
+        warning: `${updatedCount} pre-existing ${updatedCount === 1 ? 'memory' : 'memories'} that were updated or deduplicated by this run will also be deleted.`
+      }
+    }
+
+    return {
+      title: 'Delete extraction run',
+      description: `This will delete the extraction run and ${totalCount} ${totalCount === 1 ? 'memory' : 'memories'}.`
     }
   }
 
@@ -241,6 +268,30 @@ export default function Extractions() {
         error={detailError}
         onClose={handleClose}
       />
+
+      <Dialog open={Boolean(deleteConfirmRun)} onOpenChange={(open) => !open && setDeleteConfirmRun(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{deleteConfirmRun ? getDeleteConfirmMessage(deleteConfirmRun).title : ''}</DialogTitle>
+            <DialogDescription>
+              {deleteConfirmRun && getDeleteConfirmMessage(deleteConfirmRun).description}
+            </DialogDescription>
+          </DialogHeader>
+          {deleteConfirmRun && getDeleteConfirmMessage(deleteConfirmRun).warning && (
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2 text-sm text-destructive">
+              {getDeleteConfirmMessage(deleteConfirmRun).warning}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteConfirmRun(null)} disabled={deletingRunId !== null}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDelete} disabled={deletingRunId !== null}>
+              {deletingRunId ? 'Deleting...' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
