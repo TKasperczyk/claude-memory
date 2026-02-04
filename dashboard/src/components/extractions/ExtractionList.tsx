@@ -1,9 +1,17 @@
 import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import ListItem from '@/components/ListItem'
-import { formatDuration, formatRelativeTimeShort } from '@/lib/format'
+import { formatDuration, formatRelativeTimeShort, truncateText } from '@/lib/format'
 import type { ExtractionReview, ExtractionRun } from '@/lib/api'
 import { getAccuracyBadge } from './utils'
+
+function getFirstSentence(text: string | undefined, maxLength = 60): string | undefined {
+  if (!text) return undefined
+  const trimmed = text.trim().replace(/\s+/g, ' ')
+  const endMatch = trimmed.match(/[.!?](\s|$)/)
+  const sentence = endMatch ? trimmed.slice(0, endMatch.index! + 1) : trimmed
+  return truncateText(sentence, maxLength, { ellipsis: '…' })
+}
 
 function ExtractionRunCard({
   run,
@@ -19,6 +27,7 @@ function ExtractionRunCard({
   const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
   const hasErrors = run.parseErrorCount > 0
   const dotClass = hasErrors ? 'bg-destructive' : 'bg-success'
+  const promptPreview = getFirstSentence(run.firstPrompt)
 
   return (
     <ListItem onClick={() => onSelect(run.runId)} selected={selected}>
@@ -51,6 +60,12 @@ function ExtractionRunCard({
           {selected && <ChevronRight className="w-3.5 h-3.5 text-foreground" />}
         </div>
       </div>
+      {/* Row 2: First prompt preview */}
+      {promptPreview && (
+        <div className="text-[11px] text-muted-foreground/70 truncate mt-1" title={run.firstPrompt}>
+          {promptPreview}
+        </div>
+      )}
     </ListItem>
   )
 }

@@ -9,7 +9,7 @@ import { homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { flushCollection, initMilvus, incrementRecordCounters } from '../lib/milvus.js'
 import { rateInjectedMemories } from '../lib/extract.js'
-import { parseTranscript, type Transcript, type TranscriptEvent } from '../lib/transcript.js'
+import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
 import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
@@ -228,6 +228,7 @@ function saveRunLog(
   const extractedRecords = result.records
     .map(record => buildRecordSummary(record))
     .filter((record): record is ExtractionRecordSummary => Boolean(record))
+  const firstPrompt = result.transcript ? getFirstUserPrompt(result.transcript) : undefined
 
   saveExtractionRun({
     runId,
@@ -238,7 +239,8 @@ function saveRunLog(
     parseErrorCount: result.transcript?.parseErrors ?? 0,
     extractedRecordIds: uniqueIds,
     extractedRecords,
-    duration
+    duration,
+    firstPrompt
   })
 
   auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms`)

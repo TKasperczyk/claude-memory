@@ -672,3 +672,12 @@ function fileEndsWithNewline(path: string): boolean {
     return true
   }
 }
+
+export function getFirstUserPrompt(transcript: Transcript): string | undefined {
+  for (const event of transcript.events) {
+    if (event.type === 'user' && event.text?.trim()) {
+      return event.text.trim()
+    }
+  }
+  return undefined
+}

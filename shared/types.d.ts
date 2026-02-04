@@ -265,6 +265,7 @@ export interface ExtractionRun {
   extractedRecordIds: string[]
   extractedRecords?: ExtractionRecordSummary[]
   duration: number
+  firstPrompt?: string
 }
 
 export interface ExtractionReviewIssue {

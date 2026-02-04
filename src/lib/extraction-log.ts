@@ -94,6 +94,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const extractedRecordIds = asStringArray(record.extractedRecordIds)
   const extractedRecords = coerceRecordSummaries(record.extractedRecords)
   const duration = asInteger(record.duration) ?? 0
+  const firstPrompt = asTrimmedString(record.firstPrompt)
 
   return {
     runId: asString(record.runId) ?? runId,
@@ -104,7 +105,8 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     parseErrorCount,
     extractedRecordIds,
     extractedRecords,
-    duration
+    duration,
+    firstPrompt
   }
 }
 
