@@ -1,8 +1,8 @@
 import express from 'express'
-import { getExtractionRun, listExtractionRuns } from '../../../src/lib/extraction-log.js'
+import { deleteExtractionRun, getExtractionRun, listExtractionRuns } from '../../../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
-import { fetchRecordsByIds } from '../../../src/lib/milvus.js'
-import { getReview, saveReview } from '../../../src/lib/review-storage.js'
+import { deleteRecord, fetchRecordsByIds } from '../../../src/lib/milvus.js'
+import { deleteReview, getReview, saveReview } from '../../../src/lib/review-storage.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
@@ -42,7 +42,9 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         return res.status(404).json({ error: 'Extraction run not found' })
       }
 
-      const ids = run.extractedRecordIds ?? []
+      const insertedIds = run.extractedRecordIds ?? []
+      const updatedIds = run.updatedRecordIds ?? []
+      const ids = Array.from(new Set([...insertedIds, ...updatedIds]))
       if (ids.length === 0) {
         return res.json({ run, records: [] })
       }
@@ -55,6 +57,32 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
     } catch (error) {
       logger.error('Failed to get extraction run', error)
       res.status(500).json({ error: 'Failed to get extraction run' })
+    }
+  })
+
+  router.delete('/api/extractions/:runId', async (req, res) => {
+    try {
+      const runId = req.params.runId
+      const run = getExtractionRun(runId)
+      if (!run) {
+        return res.status(404).json({ error: 'Extraction run not found' })
+      }
+
+      const config = await ensureConfigInitialized(req, baseConfig)
+      const insertedIds = run.extractedRecordIds ?? []
+      const updatedIds = run.updatedRecordIds ?? []
+      const ids = Array.from(new Set([...insertedIds, ...updatedIds]))
+
+      for (const id of ids) {
+        await deleteRecord(id, config)
+      }
+
+      deleteExtractionRun(runId)
+      deleteReview(runId)
+      res.json({ success: true })
+    } catch (error) {
+      logger.error('Failed to delete extraction run', error)
+      res.status(500).json({ error: 'Failed to delete extraction run' })
     }
   })
 

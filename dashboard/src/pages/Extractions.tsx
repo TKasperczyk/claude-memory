@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import MemoryDetail from '@/components/MemoryDetail'
 import ExtractionDetail from '@/components/extractions/ExtractionDetail'
 import ExtractionFilters from '@/components/extractions/ExtractionFilters'
@@ -11,6 +12,7 @@ import { useExtractions } from '@/hooks/queries'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import { useExtractionRunData } from '@/hooks/useExtractionRunData'
+import { deleteExtractionRun, type ExtractionRun } from '@/lib/api'
 
 const PAGE_SIZE = 25
 
@@ -18,8 +20,12 @@ export default function Extractions() {
   const [page, setPage] = useState(0)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('12h')
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose } = useSelectedMemory()
   const { copy, isCopied } = useCopyToClipboard(2000)
+  const queryClient = useQueryClient()
+  const skipAutoSelectRef = useRef(false)
 
   const {
     recordsByRun,
@@ -52,6 +58,10 @@ export default function Extractions() {
   }
 
   useEffect(() => {
+    if (skipAutoSelectRef.current) {
+      skipAutoSelectRef.current = false
+      return
+    }
     if (filteredRuns.length === 0) {
       setSelectedRunId(null)
       return
@@ -60,10 +70,53 @@ export default function Extractions() {
     setSelectedRunId(filteredRuns[0].runId)
   }, [filteredRuns, selectedRunId])
 
+  useEffect(() => {
+    setDeleteError(null)
+  }, [selectedRunId])
+
   const selectedRun = useMemo(() => {
     if (!selectedRunId) return null
     return filteredRuns.find(run => run.runId === selectedRunId) ?? null
   }, [filteredRuns, selectedRunId])
+
+  const handleDeleteRun = async (run: ExtractionRun) => {
+    if (deletingRunId) return
+    const insertedCount = run.extractedRecordIds?.length ?? 0
+    const updatedCount = run.updatedRecordIds?.length ?? 0
+    const totalCount = insertedCount + updatedCount
+    let message = ''
+    if (totalCount === 0) {
+      message = 'Delete this extraction run? Note: No associated memories will be deleted.'
+    } else if (updatedCount > 0) {
+      message = `Delete this extraction run and ${totalCount} ${totalCount === 1 ? 'memory' : 'memories'}?`
+        + ` Warning: ${updatedCount} pre-existing ${updatedCount === 1 ? 'memory' : 'memories'}`
+        + ' that were updated or deduplicated by this run will also be deleted.'
+    } else {
+      message = `Delete this extraction run and ${totalCount} ${totalCount === 1 ? 'memory' : 'memories'}?`
+    }
+
+    const confirmed = window.confirm(message)
+    if (!confirmed) return
+
+    setDeleteError(null)
+    setDeletingRunId(run.runId)
+
+    try {
+      await deleteExtractionRun(run.runId)
+      const deletedIds = new Set([...(run.extractedRecordIds ?? []), ...(run.updatedRecordIds ?? [])])
+      if (selectedId && deletedIds.has(selectedId)) {
+        handleClose()
+      }
+      skipAutoSelectRef.current = true
+      setSelectedRunId(prev => (prev === run.runId ? null : prev))
+      queryClient.invalidateQueries({ queryKey: ['extractions'] })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete extraction run'
+      setDeleteError(message)
+    } finally {
+      setDeletingRunId(null)
+    }
+  }
 
   const summary = useMemo(() => {
     let totalRecords = 0
@@ -171,6 +224,9 @@ export default function Extractions() {
               onReviewError={handleReviewError}
               onLoadRunDetails={loadRunDetails}
               onLoadReview={loadReview}
+              onDeleteRun={handleDeleteRun}
+              deleteError={deleteError}
+              isDeleting={deletingRunId === selectedRun?.runId}
               copy={copy}
               isCopied={isCopied}
             />

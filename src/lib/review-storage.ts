@@ -50,6 +50,17 @@ export function getReview(runId: string): ExtractionReview | null {
   return loadReviewFile(filePath, (data) => coerceExtractionReview(data, runId))
 }
 
+export function deleteReview(runId: string): void {
+  const filePath = getReviewPath(runId)
+  if (!fs.existsSync(filePath)) return
+
+  try {
+    fs.unlinkSync(filePath)
+  } catch (error) {
+    console.error('[claude-memory] Failed to delete extraction review:', error)
+  }
+}
+
 export function getInjectionReviewPath(sessionId: string): string {
   const safeId = sanitizeSessionId(sessionId)
   return path.join(REVIEWS_DIR, `injection-${safeId}.json`)

@@ -263,6 +263,7 @@ export interface ExtractionRun {
   recordCount: number
   parseErrorCount: number
   extractedRecordIds: string[]
+  updatedRecordIds?: string[]
   extractedRecords?: ExtractionRecordSummary[]
   duration: number
   firstPrompt?: string

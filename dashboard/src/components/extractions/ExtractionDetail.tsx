@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
+import { Trash2 } from 'lucide-react'
 import MetricTile from '@/components/MetricTile'
 import ListItem from '@/components/ListItem'
+import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration, formatRelativeTimeShort, truncateText } from '@/lib/format'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 import type { ExtractionReview, ExtractionRun, MemoryRecord } from '@/lib/api'
@@ -21,6 +23,9 @@ export default function ExtractionDetail({
   onReviewError,
   onLoadRunDetails,
   onLoadReview,
+  onDeleteRun,
+  deleteError,
+  isDeleting,
   copy,
   isCopied
 }: {
@@ -36,6 +41,9 @@ export default function ExtractionDetail({
   onReviewError: (runId: string, message: string) => void
   onLoadRunDetails: (run: ExtractionRun) => void
   onLoadReview: (run: ExtractionRun) => void
+  onDeleteRun: (run: ExtractionRun) => void
+  deleteError: string | null
+  isDeleting: boolean
   copy: (id: string, value: string) => void
   isCopied: (id: string) => boolean
 }) {
@@ -66,6 +74,11 @@ export default function ExtractionDetail({
   const transcriptPath = run.transcriptPath || '—'
   const projectName = extractProjectFromPath(run.transcriptPath)
 
+  const handleDelete = () => {
+    if (isDeleting) return
+    onDeleteRun(run)
+  }
+
   return (
     <section className="rounded-xl border border-border bg-card p-4 flex flex-col min-h-0">
       <div className="flex flex-col flex-1 min-h-0 gap-3">
@@ -83,20 +96,31 @@ export default function ExtractionDetail({
                 Session {truncateSessionId(run.sessionId)}
               </div>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              {accuracyBadge && (
-                <span
-                  className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${accuracyBadge.badge}`}
-                  title={accuracyBadge.title}
-                >
-                  Acc {accuracyBadge.label}
-                </span>
-              )}
-              {run.parseErrorCount > 0 && (
-                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
-                  {run.parseErrorCount} parse {run.parseErrorCount === 1 ? 'error' : 'errors'}
-                </span>
-              )}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1.5">
+                {accuracyBadge && (
+                  <span
+                    className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${accuracyBadge.badge}`}
+                    title={accuracyBadge.title}
+                  >
+                    Acc {accuracyBadge.label}
+                  </span>
+                )}
+                {run.parseErrorCount > 0 && (
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
+                    {run.parseErrorCount} parse {run.parseErrorCount === 1 ? 'error' : 'errors'}
+                  </span>
+                )}
+              </div>
+              <Button
+                variant="destructive"
+                size="xs"
+                onClick={handleDelete}
+                disabled={isDeleting}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {isDeleting ? 'Deleting...' : 'Delete'}
+              </Button>
             </div>
           </div>
 
@@ -117,6 +141,9 @@ export default function ExtractionDetail({
           <div className="text-[11px] text-muted-foreground">
             Run {formatDateTime(run.timestamp)}
           </div>
+          {deleteError && (
+            <div className="mt-2 text-xs text-destructive">{deleteError}</div>
+          )}
         </div>
 
         <div className="shrink-0">

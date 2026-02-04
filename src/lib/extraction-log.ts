@@ -82,6 +82,19 @@ export function getExtractionRun(runId: string): ExtractionRun | null {
   })
 }
 
+export function deleteExtractionRun(runId: string): boolean {
+  const filePath = getExtractionRunPath(runId)
+  if (!fs.existsSync(filePath)) return false
+
+  try {
+    fs.unlinkSync(filePath)
+    return true
+  } catch (error) {
+    console.error('[claude-memory] Failed to delete extraction run log:', error)
+    throw error
+  }
+}
+
 function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | null {
   if (!isPlainObject(value)) return null
   const record = value
@@ -92,6 +105,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const recordCount = asInteger(record.recordCount) ?? 0
   const parseErrorCount = asInteger(record.parseErrorCount) ?? 0
   const extractedRecordIds = asStringArray(record.extractedRecordIds)
+  const updatedRecordIds = asStringArray(record.updatedRecordIds)
   const extractedRecords = coerceRecordSummaries(record.extractedRecords)
   const duration = asInteger(record.duration) ?? 0
   const firstPrompt = asTrimmedString(record.firstPrompt)
@@ -104,6 +118,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     recordCount,
     parseErrorCount,
     extractedRecordIds,
+    updatedRecordIds: updatedRecordIds.length > 0 ? updatedRecordIds : undefined,
     extractedRecords,
     duration,
     firstPrompt

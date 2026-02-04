@@ -184,7 +184,9 @@ async function buildExtractionReviewInput(
     throw new Error('Extraction run not found.')
   }
 
-  const extractedIds = run.extractedRecordIds ?? []
+  const insertedIds = run.extractedRecordIds ?? []
+  const updatedIds = run.updatedRecordIds ?? []
+  const extractedIds = Array.from(new Set([...insertedIds, ...updatedIds]))
   if (extractedIds.length === 0) {
     throw new Error('No extracted record IDs in this run. This may be an older extraction log or a run with only duplicates.')
   }

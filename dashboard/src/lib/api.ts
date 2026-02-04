@@ -404,6 +404,10 @@ export function fetchExtractionRun(runId: string): Promise<ExtractionRunResponse
   return request(`/extractions/${runId}`)
 }
 
+export function deleteExtractionRun(runId: string): Promise<ActionResponse> {
+  return request(`/extractions/${runId}`, { method: 'DELETE' })
+}
+
 export async function fetchExtractionReview(runId: string): Promise<ExtractionReview | null> {
   const response = await fetch(`/api/extractions/${runId}/review`)
   if (response.status === 404) return null

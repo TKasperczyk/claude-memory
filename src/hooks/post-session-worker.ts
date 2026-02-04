@@ -222,8 +222,9 @@ function saveRunLog(
     return
   }
 
-  const extractedIds = [...(result.insertedIds ?? []), ...(result.updatedIds ?? [])]
-  const uniqueIds = Array.from(new Set(extractedIds))
+  const insertedIds = Array.from(new Set(result.insertedIds ?? []))
+  const updatedIds = Array.from(new Set(result.updatedIds ?? []))
+  const uniqueIds = Array.from(new Set([...insertedIds, ...updatedIds]))
   const runId = randomUUID()
   const extractedRecords = result.records
     .map(record => buildRecordSummary(record))
@@ -237,7 +238,8 @@ function saveRunLog(
     timestamp: Date.now(),
     recordCount: uniqueIds.length,
     parseErrorCount: result.transcript?.parseErrors ?? 0,
-    extractedRecordIds: uniqueIds,
+    extractedRecordIds: insertedIds,
+    updatedRecordIds: updatedIds.length > 0 ? updatedIds : undefined,
     extractedRecords,
     duration,
     firstPrompt
