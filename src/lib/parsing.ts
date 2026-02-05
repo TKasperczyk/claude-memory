@@ -52,9 +52,35 @@ export function asBoolean(value: unknown): boolean | null {
   return null
 }
 
-export function asStringArray(value: unknown): string[] {
+export type StringArrayOptions = {
+  trim?: boolean
+  filterEmpty?: boolean
+  unique?: boolean
+}
+
+export function asStringArray(value: unknown, options: StringArrayOptions = {}): string[] {
   if (!Array.isArray(value)) return []
-  return value.filter((entry): entry is string => typeof entry === 'string')
+  const { trim = false, filterEmpty = false, unique = false } = options
+  let entries = value.filter((entry): entry is string => typeof entry === 'string')
+
+  if (trim) {
+    entries = entries.map(entry => entry.trim())
+  }
+
+  if (filterEmpty) {
+    entries = entries.filter(entry => entry.length > 0)
+  }
+
+  if (unique) {
+    const seen = new Set<string>()
+    entries = entries.filter(entry => {
+      if (seen.has(entry)) return false
+      seen.add(entry)
+      return true
+    })
+  }
+
+  return entries
 }
 
 export function asRecordType(value: unknown): RecordType | undefined {

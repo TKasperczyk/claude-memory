@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from './anthropic-stream.js'
 import { isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { type Config } from './types.js'
 
@@ -83,25 +84,6 @@ export async function executeReview<TInput, TPayload>(
   }
 }
 
-type ToolUseAccumulator = {
-  id: string
-  name: string
-  index: number
-  input: unknown
-  inputJson: string
-  hasInputDeltas: boolean
-}
-
-function parseToolInputJson(value: string): unknown | undefined {
-  const trimmed = value.trim()
-  if (!trimmed) return undefined
-  try {
-    return JSON.parse(trimmed) as unknown
-  } catch {
-    return undefined
-  }
-}
-
 export async function executeReviewStreaming<TInput, TPayload>(
   input: TInput,
   frameworkConfig: ReviewFrameworkConfig<TInput, TPayload>,
@@ -152,46 +134,18 @@ IMPORTANT: You MUST call the ${frameworkConfig.toolName} tool to submit your rev
   const toolInputs = new Map<number, ToolUseAccumulator>()
 
   for await (const event of stream) {
-    if (event.type === 'content_block_start') {
-      const block = event.content_block
-      if (block.type === 'tool_use') {
-        toolInputs.set(event.index, {
-          id: block.id,
-          name: block.name,
-          index: event.index,
-          input: block.input,
-          inputJson: '',
-          hasInputDeltas: false
-        })
-      }
-      continue
-    }
-
-    if (event.type === 'content_block_delta') {
-      if (event.delta.type === 'thinking_delta') {
-        if (event.delta.thinking) onThinking(event.delta.thinking)
-        continue
-      }
-      if (event.delta.type === 'input_json_delta') {
-        const accumulator = toolInputs.get(event.index)
-        if (accumulator) {
-          accumulator.inputJson += event.delta.partial_json
-          accumulator.hasInputDeltas = true
-        }
-      }
+    applyToolUseDelta(toolInputs, event as { type?: string; index?: number; content_block?: any; delta?: any })
+    if (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta') {
+      if (event.delta.thinking) onThinking(event.delta.thinking)
     }
   }
 
-  const toolUseBlocks: ToolUseBlock[] = Array.from(toolInputs.values())
-    .sort((a, b) => a.index - b.index)
-    .map(entry => ({
-      type: 'tool_use',
-      id: entry.id,
-      name: entry.name,
-      input: entry.hasInputDeltas
-        ? parseToolInputJson(entry.inputJson) ?? entry.inputJson
-        : entry.input
-    }))
+  const toolUseBlocks: ToolUseBlock[] = finalizeToolUses(toolInputs).map(entry => ({
+    type: 'tool_use',
+    id: entry.id,
+    name: entry.name,
+    input: entry.input
+  }))
 
   const toolInput = toolUseBlocks.find(block => block.name === frameworkConfig.toolName)?.input
 

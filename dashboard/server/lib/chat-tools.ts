@@ -13,10 +13,12 @@ import {
   asRecordType,
   asScope,
   asSeverity,
+  asStringArray,
   asTrimmedString
 } from '../../../src/lib/parsing.js'
 import type { Config, MemoryRecord, RecordType } from '../../../src/lib/types.js'
 import type { HybridSearchResult } from '../../../shared/types.js'
+import { parseNonNegativeInt } from '../utils/params.js'
 
 export type ChatToolName = 'search_memories' | 'update_memory' | 'delete_memories'
 
@@ -169,9 +171,8 @@ function clampNumber(value: number, min: number, max: number): number {
 }
 
 function parseLimit(value: unknown): number {
-  const parsed = asNumber(value)
-  if (parsed === null) return DEFAULT_SEARCH_LIMIT
-  return clampNumber(Math.trunc(parsed), 1, MAX_SEARCH_LIMIT)
+  const parsed = parseNonNegativeInt(value, DEFAULT_SEARCH_LIMIT)
+  return Math.min(Math.max(parsed, 1), MAX_SEARCH_LIMIT)
 }
 
 function parseMinSimilarity(value: unknown): number {
@@ -181,31 +182,20 @@ function parseMinSimilarity(value: unknown): number {
 }
 
 function parseOffset(value: unknown): number {
-  const parsed = asNumber(value)
-  if (parsed === null) return 0
-  return Math.max(0, Math.trunc(parsed))
+  return parseNonNegativeInt(value, 0)
 }
 
 function parseDomain(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : undefined
+  return asTrimmedString(value)
 }
 
 function parseSteps(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null
-  const steps = value
-    .map(entry => (typeof entry === 'string' ? entry.trim() : ''))
-    .filter(entry => entry.length > 0)
+  const steps = asStringArray(value, { trim: true, filterEmpty: true })
   return steps.length > 0 ? steps : null
 }
 
 function parseIds(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  const ids = value
-    .map(entry => (typeof entry === 'string' ? entry.trim() : ''))
-    .filter(entry => entry.length > 0)
-  return Array.from(new Set(ids))
+  return asStringArray(value, { trim: true, filterEmpty: true, unique: true })
 }
 
 export async function executeChatTool(

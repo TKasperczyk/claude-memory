@@ -23,6 +23,7 @@ import type {
   Settings,
   StatsSnapshot
 } from '../../../shared/types.js'
+import { readSseStream } from './sse'
 
 export type {
   BaseRecord,
@@ -557,18 +558,8 @@ export async function streamChat(
     throw new Error('Streaming response body missing')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let eventName: string | null = null
-  let dataLines: string[] = []
-
-  const flushEvent = () => {
-    const payloadText = dataLines.join('\n')
-    dataLines = []
-    const name = eventName
-    eventName = null
-
+  await readSseStream(response.body, message => {
+    const payloadText = message.data
     if (!payloadText) return
     if (payloadText === '[DONE]') {
       options.onEvent({ type: 'done' })
@@ -582,6 +573,7 @@ export async function streamChat(
       throw new Error('Failed to parse stream payload')
     }
 
+    const name = message.event
     if (!name) return
 
     if (name === 'text') {
@@ -621,49 +613,5 @@ export async function streamChat(
       const error = (parsed as { error?: string })?.error ?? 'Chat error'
       options.onEvent({ type: 'error', error })
     }
-  }
-
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) {
-      buffer += decoder.decode()
-      break
-    }
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split(/\r?\n/)
-    buffer = lines.pop() ?? ''
-
-    for (const line of lines) {
-      if (line.startsWith('event:')) {
-        eventName = line.slice(6).trim()
-        continue
-      }
-      if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart())
-        continue
-      }
-      if (line === '') {
-        flushEvent()
-      }
-    }
-  }
-
-  if (buffer) {
-    const lines = buffer.split(/\r?\n/)
-    buffer = ''
-    for (const line of lines) {
-      if (line.startsWith('event:')) {
-        eventName = line.slice(6).trim()
-      } else if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart())
-      } else if (line === '') {
-        flushEvent()
-      }
-    }
-  }
-
-  if (dataLines.length > 0) {
-    flushEvent()
-  }
+  })
 }

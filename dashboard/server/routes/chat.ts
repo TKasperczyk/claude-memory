@@ -5,6 +5,7 @@ import { createSseStream } from '../lib/sse.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
 import { isPlainObject } from '../utils/params.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from '../../../src/lib/anthropic.js'
+import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from '../../../src/lib/anthropic-stream.js'
 import { CHAT_TOOLS, executeChatTool, type ChatToolName } from '../lib/chat-tools.js'
 
 const logger = createLogger('chat')
@@ -27,31 +28,12 @@ type ChatMessage = {
   content: string
 }
 
-type ToolUseAccumulator = {
-  id: string
-  name: string
-  index: number
-  input: unknown
-  inputJson: string
-  hasInputDeltas: boolean
-}
-
 function isChatMessage(value: unknown): value is ChatMessage {
   if (!isPlainObject(value)) return false
   const role = value.role
   const content = value.content
   if (role !== 'user' && role !== 'assistant') return false
   return typeof content === 'string'
-}
-
-function parseToolInputJson(value: string): unknown | undefined {
-  const trimmed = value.trim()
-  if (!trimmed) return undefined
-  try {
-    return JSON.parse(trimmed) as unknown
-  } catch {
-    return undefined
-  }
 }
 
 function buildSystemPrompt(project?: string): string {
@@ -204,6 +186,7 @@ async function consumeChatStream(
   for await (const rawEvent of responseStream) {
     const event = rawEvent as { type?: string; index?: number; content_block?: any; delta?: any }
     if (stream.signal.aborted) break
+    applyToolUseDelta(toolInputs, event)
 
     if (event.type === 'content_block_start') {
       const block = event.content_block
@@ -219,14 +202,6 @@ async function consumeChatStream(
           id: block.id,
           name: block.name,
           input: block.input
-        })
-        toolInputs.set(event.index, {
-          id: block.id,
-          name: block.name,
-          index: event.index,
-          input: block.input,
-          inputJson: '',
-          hasInputDeltas: false
         })
       }
       continue
@@ -245,33 +220,20 @@ async function consumeChatStream(
         stream.send('text', { text: textChunk })
         continue
       }
-
-      if (event.delta.type === 'input_json_delta') {
-        const accumulator = toolInputs.get(event.index)
-        if (accumulator) {
-          accumulator.inputJson += event.delta.partial_json
-          accumulator.hasInputDeltas = true
-        }
-      }
     }
   }
 
-  const toolUses = Array.from(toolInputs.values())
-    .sort((a, b) => a.index - b.index)
-    .map(entry => {
-      const parsedInput = entry.hasInputDeltas
-        ? parseToolInputJson(entry.inputJson) ?? entry.inputJson
-        : entry.input
-      const existingBlock = contentByIndex.get(entry.index)
-      if (existingBlock && existingBlock.type === 'tool_use') {
-        existingBlock.input = parsedInput
-      }
-      return {
-        id: entry.id,
-        name: entry.name,
-        input: parsedInput
-      }
-    })
+  const toolUses = finalizeToolUses(toolInputs).map(entry => {
+    const existingBlock = contentByIndex.get(entry.index)
+    if (existingBlock && existingBlock.type === 'tool_use') {
+      existingBlock.input = entry.input
+    }
+    return {
+      id: entry.id,
+      name: entry.name,
+      input: entry.input
+    }
+  })
 
   const orderedBlocks = Array.from(contentByIndex.entries())
     .sort((a, b) => a[0] - b[0])

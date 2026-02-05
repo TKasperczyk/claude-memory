@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { readSseStream } from '../lib/sse'
 
 export interface UseStreamingReviewOptions<TResult> {
   endpoint: string
@@ -137,85 +138,43 @@ export function useStreamingReview<TResult>(
           throw new Error('Streaming response body missing')
         }
 
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        let dataLines: string[] = []
-        let done = false
+        await readSseStream(
+          response.body,
+          message => {
+            const payload = message.data
+            if (!payload) return
+            receivedStreamEvent = true
 
-        const flushEvent = () => {
-          const payload = dataLines.join('\n')
-          dataLines = []
-          if (!payload) return
-          receivedStreamEvent = true
-
-          if (payload === '[DONE]') {
-            done = true
-            return
-          }
-
-          let parsed: StreamPayload<TResult>
-          try {
-            parsed = JSON.parse(payload) as StreamPayload<TResult>
-          } catch (err) {
-            handleError(err instanceof Error ? err : new Error('Failed to parse stream payload'))
-            done = true
-            return
-          }
-
-          if (parsed.thinking) {
-            const chunk = parsed.thinking
-            setThinking(prev => {
-              if (!isActive()) return prev
-              return prev + chunk
-            })
-          }
-
-          if (parsed.result) {
-            handleResult(parsed.result)
-          }
-
-          if (parsed.error) {
-            handleError(new Error(parsed.error))
-          }
-        }
-
-        while (!done) {
-          const { value, done: streamDone } = await reader.read()
-          if (streamDone) {
-            buffer += decoder.decode()
-            break
-          }
-
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split(/\r?\n/)
-          buffer = lines.pop() ?? ''
-
-          for (const line of lines) {
-            if (line.startsWith('data:')) {
-              dataLines.push(line.slice(5).trimStart())
-            } else if (line === '') {
-              flushEvent()
-              if (done) break
+            if (payload === '[DONE]') {
+              return false
             }
-          }
-        }
 
-        if (!done && buffer) {
-          const lines = buffer.split(/\r?\n/)
-          buffer = ''
-          for (const line of lines) {
-            if (line.startsWith('data:')) {
-              dataLines.push(line.slice(5).trimStart())
-            } else if (line === '') {
-              flushEvent()
+            let parsed: StreamPayload<TResult>
+            try {
+              parsed = JSON.parse(payload) as StreamPayload<TResult>
+            } catch (err) {
+              handleError(err instanceof Error ? err : new Error('Failed to parse stream payload'))
+              return false
             }
-          }
-        }
 
-        if (!done && dataLines.length > 0) {
-          flushEvent()
-        }
+            if (parsed.thinking) {
+              const chunk = parsed.thinking
+              setThinking(prev => {
+                if (!isActive()) return prev
+                return prev + chunk
+              })
+            }
+
+            if (parsed.result) {
+              handleResult(parsed.result)
+            }
+
+            if (parsed.error) {
+              handleError(new Error(parsed.error))
+            }
+          },
+          { signal: controller.signal }
+        )
 
         if (!isActive()) return
 
