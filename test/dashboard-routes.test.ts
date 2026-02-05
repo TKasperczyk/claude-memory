@@ -264,13 +264,16 @@ const buildNewFileDiff = (target: string, lines: string[]): string => {
   ].join('\n')
 }
 
-const buildEditDiff = (target: string, lines: string[]): string => {
+const buildEditDiff = (target: string, contextLines: string[], addedLines: string[]): string => {
+  const oldCount = contextLines.length
+  const newCount = contextLines.length + addedLines.length
   return [
     `diff --git a/${target} b/${target}`,
     `--- a/${target}`,
     `+++ b/${target}`,
-    '@@ -1,0 +1,0 @@',
-    ...lines.map(line => `+${line}`)
+    `@@ -1,${oldCount} +1,${newCount} @@`,
+    ...contextLines.map(line => ` ${line}`),
+    ...addedLines.map(line => `+${line}`)
   ].join('\n')
 }
 
@@ -1155,7 +1158,7 @@ describe('maintenance routes', () => {
 
       const existingTarget = 'existing.txt'
       await fs.writeFile(path.join(tempRoot, existingTarget), 'base\n', 'utf-8')
-      const editDiff = buildEditDiff(existingTarget, ['appended'])
+      const editDiff = buildEditDiff(existingTarget, ['base'], ['appended'])
       const editRes = await request(app).post('/api/maintenance/suggestions/apply').send({
         recordId: 'rec-2',
         action: 'edit',
@@ -1209,8 +1212,7 @@ describe('maintenance routes', () => {
         '--- a/file.txt',
         '+++ b/file.txt',
         '@@ -1,1 +1,1 @@',
-        '-old line',
-        '+new line'
+        ' unchanged line'
       ].join('\n')
 
       const res = await request(app).post('/api/maintenance/suggestions/apply').send({
@@ -1222,6 +1224,41 @@ describe('maintenance routes', () => {
 
       expect(res.status).toBe(400)
       expect(res.body).toEqual({ error: 'Invalid diff format' })
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects stale edit diffs when hunk context mismatches', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-test-'))
+    try {
+      const { app } = buildApp({
+        configRoot: tempRoot,
+        suggestionAllowedRoots: [tempRoot]
+      })
+
+      const target = 'stale.txt'
+      await fs.writeFile(path.join(tempRoot, target), 'current line\n', 'utf-8')
+      const staleDiff = [
+        `diff --git a/${target} b/${target}`,
+        `--- a/${target}`,
+        `+++ b/${target}`,
+        '@@ -1,1 +1,2 @@',
+        ' expected line',
+        '+appended line'
+      ].join('\n')
+
+      const res = await request(app).post('/api/maintenance/suggestions/apply').send({
+        recordId: 'rec-1',
+        action: 'edit',
+        targetFile: target,
+        diff: staleDiff
+      })
+
+      expect(res.status).toBe(409)
+      expect(res.body.error).toContain('context mismatch')
+      const content = await fs.readFile(path.join(tempRoot, target), 'utf-8')
+      expect(content).toBe('current line\n')
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true })
     }

@@ -29,6 +29,13 @@ class SuggestionTargetError extends Error {
   }
 }
 
+class DiffApplyError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DiffApplyError'
+  }
+}
+
 export function createMaintenanceRouter(context: ServerContext): express.Router {
   const router = express.Router()
   const { config: baseConfig, configRoot, suggestionAllowedRoots } = context
@@ -143,7 +150,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       if (!normalizedDiffTarget || normalizedDiffTarget !== normalizedTarget) {
         return res.status(400).json({ error: 'Diff target does not match targetFile' })
       }
-      if (!parsedDiff.hasHunk || parsedDiff.addedLines.length === 0 || parsedDiff.hasDeletion) {
+      if (!parsedDiff.hasHunk || !parsedDiff.hasChanges) {
         return res.status(400).json({ error: 'Invalid diff format' })
       }
       const normalizedOldTarget = normalizeDiffPathValue(parsedDiff.oldPath)
@@ -153,9 +160,8 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       if (action === 'edit' && normalizedOldTarget === '/dev/null') {
         return res.status(400).json({ error: 'Diff does not represent an edit' })
       }
-
-      const content = buildDiffContent(parsedDiff.addedLines)
-      if (!content) {
+      const content = action === 'new' ? buildDiffContent(parsedDiff.addedLines) : null
+      if (action === 'new' && !content) {
         return res.status(400).json({ error: 'Invalid diff format' })
       }
 
@@ -167,12 +173,22 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
           return res.status(409).json({ error: 'Target file already exists' })
         }
         await fs.mkdir(path.dirname(resolvedTarget), { recursive: true })
-        await fs.writeFile(resolvedTarget, content, { encoding: 'utf-8', flag: allowOverwrite ? 'w' : 'wx' })
+        await fs.writeFile(resolvedTarget, content!, { encoding: 'utf-8', flag: allowOverwrite ? 'w' : 'wx' })
       } else {
         if (!(await pathExists(resolvedTarget))) {
           return res.status(404).json({ error: 'Target file not found' })
         }
-        await appendToExistingFile(resolvedTarget, content)
+        const currentContent = await fs.readFile(resolvedTarget, 'utf-8')
+        let updatedContent: string
+        try {
+          updatedContent = applyUnifiedDiffToContent(currentContent, parsedDiff)
+        } catch (error) {
+          if (error instanceof DiffApplyError) {
+            return res.status(409).json({ error: error.message })
+          }
+          throw error
+        }
+        await fs.writeFile(resolvedTarget, updatedContent, { encoding: 'utf-8' })
       }
 
       res.json({
@@ -180,7 +196,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         recordId,
         action: action as SuggestionApplyAction,
         targetFile: resolvedTarget,
-        addedLines: parsedDiff.addedLines.length
+        addedLines: parsedDiff.addedLineCount
       })
     } catch (error) {
       if (error instanceof SuggestionTargetError) {
@@ -406,64 +422,128 @@ function normalizeDiffPathValue(targetFile: string): string {
   return withoutPrefix.replace(/\\/g, '/')
 }
 
-function parseUnifiedDiff(
-  diff: string
-): {
+type UnifiedDiffLine = {
+  type: 'context' | 'add' | 'delete'
+  value: string
+}
+
+type UnifiedDiffHunk = {
+  oldStart: number
+  oldCount: number
+  newStart: number
+  newCount: number
+  lines: UnifiedDiffLine[]
+}
+
+type ParsedUnifiedDiff = {
   oldPath: string
   newPath: string
+  hunks: UnifiedDiffHunk[]
   addedLines: string[]
+  addedLineCount: number
+  deletedLineCount: number
   hasHunk: boolean
-  hasDeletion: boolean
+  hasChanges: boolean
   isSingleFile: boolean
-} {
+}
+
+function parseUnifiedDiff(
+  diff: string
+): ParsedUnifiedDiff {
   const lines = diff.replace(/\r\n/g, '\n').split('\n')
+  const hunks: UnifiedDiffHunk[] = []
   const addedLines: string[] = []
   const oldPaths: string[] = []
   const newPaths: string[] = []
+  let currentHunk: UnifiedDiffHunk | null = null
   let inHunk = false
   let hasHunk = false
-  let hasDeletion = false
+  let addedLineCount = 0
+  let deletedLineCount = 0
+
+  const flushCurrentHunk = () => {
+    if (!currentHunk) return
+    hunks.push(currentHunk)
+    currentHunk = null
+  }
 
   for (const line of lines) {
     if (line.startsWith('diff --git ')) {
-      inHunk = false
-      continue
-    }
-    if (!inHunk && line.startsWith('--- ')) {
-      oldPaths.push(line.slice(4))
-      inHunk = false
-      continue
-    }
-    if (!inHunk && line.startsWith('+++ ')) {
-      newPaths.push(line.slice(4))
+      flushCurrentHunk()
       inHunk = false
       continue
     }
     if (line.startsWith('@@')) {
+      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/)
+      if (!match) {
+        flushCurrentHunk()
+        inHunk = false
+        continue
+      }
+      flushCurrentHunk()
+      currentHunk = {
+        oldStart: Number.parseInt(match[1] ?? '0', 10),
+        oldCount: Number.parseInt(match[2] ?? '1', 10),
+        newStart: Number.parseInt(match[3] ?? '0', 10),
+        newCount: Number.parseInt(match[4] ?? '1', 10),
+        lines: []
+      }
       inHunk = true
       hasHunk = true
       continue
     }
+    if (!inHunk && line.startsWith('--- ')) {
+      oldPaths.push(extractDiffPath(line.slice(4)))
+      continue
+    }
+    if (!inHunk && line.startsWith('+++ ')) {
+      newPaths.push(extractDiffPath(line.slice(4)))
+      continue
+    }
     if (!inHunk) continue
     if (line.startsWith('\\ No newline at end of file')) continue
-    if (line.startsWith('+')) {
+    if (!currentHunk || line.length === 0) continue
+
+    const marker = line[0]
+    if (marker === '+') {
+      currentHunk.lines.push({ type: 'add', value: line.slice(1) })
       addedLines.push(line.slice(1))
+      addedLineCount += 1
       continue
     }
-    if (line.startsWith('-')) {
-      hasDeletion = true
+    if (marker === '-') {
+      currentHunk.lines.push({ type: 'delete', value: line.slice(1) })
+      deletedLineCount += 1
       continue
     }
+    if (marker === ' ') {
+      currentHunk.lines.push({ type: 'context', value: line.slice(1) })
+      continue
+    }
+
+    flushCurrentHunk()
+    inHunk = false
   }
+  flushCurrentHunk()
 
   return {
     oldPath: oldPaths[0] ?? '',
     newPath: newPaths[0] ?? '',
+    hunks,
     addedLines,
+    addedLineCount,
+    deletedLineCount,
     hasHunk,
-    hasDeletion,
+    hasChanges: addedLineCount > 0 || deletedLineCount > 0,
     isSingleFile: oldPaths.length === 1 && newPaths.length === 1
   }
+}
+
+function extractDiffPath(rawPath: string): string {
+  const trimmed = rawPath.trim()
+  if (!trimmed) return ''
+  const tabIndex = trimmed.indexOf('\t')
+  return tabIndex === -1 ? trimmed : trimmed.slice(0, tabIndex)
 }
 
 function buildDiffContent(addedLines: string[]): string {
@@ -472,12 +552,68 @@ function buildDiffContent(addedLines: string[]): string {
   return addedLines[addedLines.length - 1] === '' ? content : `${content}\n`
 }
 
-async function appendToExistingFile(targetPath: string, content: string): Promise<void> {
-  const handle = await fs.open(targetPath, 'r+')
-  try {
-    const { size } = await handle.stat()
-    await handle.write(content, size, 'utf-8')
-  } finally {
-    await handle.close()
+function applyUnifiedDiffToContent(content: string, parsedDiff: ParsedUnifiedDiff): string {
+  const { lines, hadTrailingNewline } = splitContentLines(content)
+  const output = [...lines]
+  let lineOffset = 0
+
+  for (let hunkIndex = 0; hunkIndex < parsedDiff.hunks.length; hunkIndex += 1) {
+    const hunk = parsedDiff.hunks[hunkIndex]
+    const insertionPoint = Math.max(0, hunk.oldStart - 1 + lineOffset)
+    if (insertionPoint > output.length) {
+      throw new DiffApplyError(
+        `Diff hunk ${hunkIndex + 1} cannot be applied: target line is outside file bounds`
+      )
+    }
+
+    let cursor = insertionPoint
+    for (const line of hunk.lines) {
+      if (line.type === 'context') {
+        if (output[cursor] !== line.value) {
+          throw new DiffApplyError(
+            `Diff hunk ${hunkIndex + 1} cannot be applied: context mismatch at line ${cursor + 1}`
+          )
+        }
+        cursor += 1
+        continue
+      }
+
+      if (line.type === 'delete') {
+        if (output[cursor] !== line.value) {
+          throw new DiffApplyError(
+            `Diff hunk ${hunkIndex + 1} cannot be applied: deletion mismatch at line ${cursor + 1}`
+          )
+        }
+        output.splice(cursor, 1)
+        lineOffset -= 1
+        continue
+      }
+
+      output.splice(cursor, 0, line.value)
+      cursor += 1
+      lineOffset += 1
+    }
   }
+
+  return joinContentLines(output, hadTrailingNewline)
+}
+
+function splitContentLines(content: string): { lines: string[]; hadTrailingNewline: boolean } {
+  if (!content) {
+    return { lines: [], hadTrailingNewline: false }
+  }
+
+  const normalized = content.replace(/\r\n/g, '\n')
+  const hadTrailingNewline = normalized.endsWith('\n')
+  const lines = normalized.split('\n')
+  if (hadTrailingNewline) {
+    lines.pop()
+  }
+  return { lines, hadTrailingNewline }
+}
+
+function joinContentLines(lines: string[], hadTrailingNewline: boolean): string {
+  if (lines.length === 0) return ''
+  const body = lines.join('\n')
+  return hadTrailingNewline ? `${body}\n` : body
 }

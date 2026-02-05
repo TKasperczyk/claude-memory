@@ -128,6 +128,10 @@ async function markConsolidationChecked(
   }
 }
 
+// TODO(maintenance-refactor): deprecation-style and cluster-style operations in this file
+// duplicate control flow (candidate discovery, dry-run/apply branching, counters, and
+// envelope shaping). Extract shared runners after behavior is stabilized by tests.
+
 export async function runStaleCheck(
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG,

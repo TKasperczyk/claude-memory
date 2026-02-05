@@ -280,12 +280,12 @@ function getSuggestionPayload(action: MaintenanceAction): {
   }
 }
 
-function getDiffStats(diff: string): { addedLines: number; hasDeletion: boolean; hasHunk: boolean } {
+function getDiffStats(diff: string): { addedLines: number; deletedLines: number; hasHunk: boolean } {
   const lines = diff.replace(/\r\n/g, '\n').split('\n')
   let inHunk = false
   let hasHunk = false
-  let hasDeletion = false
   let addedLines = 0
+  let deletedLines = 0
 
   for (const line of lines) {
     if (line.startsWith('@@')) {
@@ -300,11 +300,11 @@ function getDiffStats(diff: string): { addedLines: number; hasDeletion: boolean;
       continue
     }
     if (line.startsWith('-')) {
-      hasDeletion = true
+      deletedLines += 1
     }
   }
 
-  return { addedLines, hasDeletion, hasHunk }
+  return { addedLines, deletedLines, hasHunk }
 }
 
 function RecordLink({
@@ -1206,7 +1206,6 @@ export default function Maintenance() {
   const applyLoading = activeApplyKey ? applyStatuses[activeApplyKey]?.state === 'loading' : false
   const applyPayload = activeApply ? getSuggestionPayload(activeApply.action) : null
   const applyStats = applyPayload ? getDiffStats(applyPayload.diff) : null
-  const applyBlocked = Boolean(applyStats?.hasDeletion)
   const activeSettingsApply = settingsApplyConfirm
   const activeSettingsApplyKey = activeSettingsApply?.key ?? ''
   const settingsApplyLoading = activeSettingsApplyKey
@@ -1803,10 +1802,17 @@ export default function Maintenance() {
                 </div>
               )
             }
-            const stats = applyStats ?? { addedLines: 0, hasDeletion: false, hasHunk: false }
+            const stats = applyStats ?? { addedLines: 0, deletedLines: 0, hasHunk: false }
             const actionLabel = applyPayload.action === 'new' ? 'Create new file' : 'Edit existing file'
-            const summary = stats.hasHunk && stats.addedLines > 0
-              ? `Will add ${stats.addedLines} line${stats.addedLines === 1 ? '' : 's'}.`
+            const summaryParts: string[] = []
+            if (stats.addedLines > 0) {
+              summaryParts.push(`add ${stats.addedLines} line${stats.addedLines === 1 ? '' : 's'}`)
+            }
+            if (stats.deletedLines > 0) {
+              summaryParts.push(`remove ${stats.deletedLines} line${stats.deletedLines === 1 ? '' : 's'}`)
+            }
+            const summary = stats.hasHunk && summaryParts.length > 0
+              ? `Will ${summaryParts.join(' and ')}.`
               : 'Diff summary unavailable.'
             return (
               <div className="space-y-3 text-sm">
@@ -1825,12 +1831,7 @@ export default function Maintenance() {
                   </div>
                 ) : (
                   <div className="text-xs text-warning">
-                    This will append content to the existing file.
-                  </div>
-                )}
-                {stats.hasDeletion && (
-                  <div className="text-xs text-warning">
-                    Diff contains deletions and cannot be applied.
+                    This will apply the diff to the existing file.
                   </div>
                 )}
               </div>
@@ -1856,7 +1857,7 @@ export default function Maintenance() {
                 variant="secondary"
                 className="bg-warning hover:bg-warning/90 text-background"
                 onClick={() => handleApplySuggestion(true)}
-                disabled={applyLoading || applyBlocked}
+                disabled={applyLoading}
               >
                 {applyLoading ? (
                   <>
@@ -1870,7 +1871,7 @@ export default function Maintenance() {
             )}
             <Button
               onClick={() => handleApplySuggestion(false)}
-              disabled={applyConflict || applyLoading || applyBlocked}
+              disabled={applyConflict || applyLoading}
             >
               {applyLoading ? (
                 <>
