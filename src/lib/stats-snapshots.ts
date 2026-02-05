@@ -3,8 +3,7 @@ import path from 'path'
 import { homedir } from 'os'
 import { asInteger, asNumber, isPlainObject } from './parsing.js'
 import { readJsonFileSafe, writeJsonFile } from './json.js'
-import { sanitizeRunId } from './shared.js'
-import { DEFAULT_CONFIG } from './types.js'
+import { getCollectionKey } from './retrieval-events.js'
 import {
   buildTimeBuckets,
   parseDateKeyUtc,
@@ -31,12 +30,6 @@ type StatsHistoryBucket = {
 export type StatsHistory = {
   period: TimeBucketPeriod
   buckets: StatsHistoryBucket[]
-}
-
-function getCollectionKey(collection?: string): string {
-  const fallback = DEFAULT_CONFIG.milvus.collection
-  const raw = (collection ?? fallback).trim()
-  return sanitizeRunId(raw || fallback)
 }
 
 function getSnapshotsDir(collection?: string): string {

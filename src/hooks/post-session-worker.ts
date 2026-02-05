@@ -120,6 +120,9 @@ async function main(): Promise<void> {
   const payload = basePayload as ExtractionHookInput
   debugLog(`Parsed payload: event=${payload.hook_event_name}, session=${payload.session_id}`)
   auditLog(`START event=${payload.hook_event_name} session=${payload.session_id} transcript=${payload.transcript_path}`)
+  const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
+  const config = loadConfig(configRoot)
+  const collection = config.milvus.collection
 
   // Try to acquire lock - prevents duplicate extractions when hook fires multiple times
   const lockHandle = acquireWorkerLock(payload.session_id)
@@ -135,7 +138,7 @@ async function main(): Promise<void> {
       debugLog('Skipping: reason=clear')
       auditLog(`SKIP reason=clear session=${payload.session_id}`)
       console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
-      removeSessionTracking(payload.session_id)
+      removeSessionTracking(payload.session_id, collection)
       return
     }
 
@@ -144,19 +147,17 @@ async function main(): Promise<void> {
       auditLog(`SKIP reason=no_transcript session=${payload.session_id}`)
       console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
       if (payload.hook_event_name === 'SessionEnd') {
-        removeSessionTracking(payload.session_id)
+        removeSessionTracking(payload.session_id, collection)
       }
       return
     }
 
     debugLog('Initializing Milvus...')
-    const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
-    const config = loadConfig(configRoot)
     await initMilvus(config)
     debugLog('Milvus initialized')
 
     // Load session tracking to get injected memories for change detection
-    const session = loadSessionTracking(payload.session_id)
+    const session = loadSessionTracking(payload.session_id, collection)
     const injectedMemories = session ? dedupeInjectedMemories(session.memories) : []
     debugLog(`Loaded ${injectedMemories.length} injected memories for change detection`)
 
@@ -179,7 +180,7 @@ async function main(): Promise<void> {
       debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
       shouldFlush = (result.inserted + result.updated) > 0
       extractionDuration = Date.now() - extractionStart
-      saveRunLog(payload, result, extractionDuration)
+      saveRunLog(payload, result, extractionDuration, collection)
     } finally {
       debugLog('Running usefulness rating...')
       shouldFlush = (await processUsefulnessRating(payload, config, result?.transcript)) || shouldFlush
@@ -215,7 +216,8 @@ async function main(): Promise<void> {
 function saveRunLog(
   payload: ExtractionHookInput,
   result: Awaited<ReturnType<typeof handlePostSession>>,
-  duration: number
+  duration: number,
+  collection?: string
 ): void {
   if (result.reason === 'no_transcript' || result.reason === 'clear' || result.reason === 'wrong_event') {
     auditLog(`DONE session=${payload.session_id} reason=${result.reason} (no run saved)`)
@@ -243,7 +245,7 @@ function saveRunLog(
     extractedRecords,
     duration,
     firstPrompt
-  })
+  }, collection)
 
   auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms`)
 }
@@ -266,15 +268,16 @@ async function processUsefulnessRating(
 ): Promise<boolean> {
   if (payload.hook_event_name !== 'SessionEnd') return false
 
-  const session = loadSessionTracking(payload.session_id)
+  const collection = config.milvus.collection
+  const session = loadSessionTracking(payload.session_id, collection)
   if (!session || session.memories.length === 0) {
-    removeSessionTracking(payload.session_id)
+    removeSessionTracking(payload.session_id, collection)
     return false
   }
 
   const memories = session.memories
   if (memories.length === 0) {
-    removeSessionTracking(payload.session_id)
+    removeSessionTracking(payload.session_id, collection)
     return false
   }
 
@@ -295,7 +298,7 @@ async function processUsefulnessRating(
 
   const deduped = dedupeInjectedMemories(memories)
   if (deduped.length === 0) {
-    removeSessionTracking(payload.session_id)
+    removeSessionTracking(payload.session_id, collection)
     return updated
   }
 
@@ -326,7 +329,7 @@ async function processUsefulnessRating(
     console.error('[claude-memory] Usefulness rating failed:', error)
   } finally {
     if (shouldRemove) {
-      removeSessionTracking(payload.session_id)
+      removeSessionTracking(payload.session_id, collection)
     }
   }
 

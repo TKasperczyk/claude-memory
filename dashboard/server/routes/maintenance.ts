@@ -14,6 +14,7 @@ import { getMaintenanceReview, saveMaintenanceReview } from '../../../src/lib/re
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
+import { getRequestConfig } from '../utils/config.js'
 import { isPlainObject } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
 
@@ -35,7 +36,8 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
   router.get('/api/maintenance/:operation/review/:resultId', (req, res) => {
     try {
       const { operation, resultId } = req.params
-      const review = getMaintenanceReview(resultId, operation)
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const review = getMaintenanceReview(resultId, operation, requestConfig.milvus.collection)
       if (!review) {
         return res.status(404).json({ error: 'Review not found' })
       }
@@ -84,7 +86,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         try {
           const config = await ensureConfigInitialized(req, baseConfig)
           const review = await reviewMaintenanceResultStreaming(normalizedResult, config, stream.onThinking, stream.signal)
-          saveMaintenanceReview(review)
+          saveMaintenanceReview(review, config.milvus.collection)
           stream.sendData({ result: review })
           stream.done()
         } catch (error) {
@@ -99,7 +101,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
       const config = await ensureConfigInitialized(req, baseConfig)
       const review = await reviewMaintenanceResult(normalizedResult, config)
-      saveMaintenanceReview(review)
+      saveMaintenanceReview(review, config.milvus.collection)
       res.json(review)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

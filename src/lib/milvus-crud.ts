@@ -6,6 +6,7 @@ import { escapeFilterValue } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import { OUTPUT_FIELDS, createCollection } from './milvus-schema.js'
 import { ensureClient } from './milvus-client.js'
+import { getCollectionKey } from './retrieval-events.js'
 import {
   buildMilvusRow,
   mergeRecords,
@@ -187,24 +188,25 @@ export async function resetCollection(
     })
 
     // Clear filesystem storage
-    clearFilesystemStorage()
+    clearFilesystemStorage(collectionName)
   } catch (error) {
     console.error('[claude-memory] resetCollection failed:', error)
     throw error
   }
 }
 
-function clearFilesystemStorage(): void {
+function clearFilesystemStorage(collection?: string): void {
   const baseDir = path.join(homedir(), '.claude-memory')
+  const collectionKey = getCollectionKey(collection)
   const dirsToClean = ['sessions', 'extractions', 'reviews', 'retrieval-events', 'stats-snapshots']
 
   for (const dir of dirsToClean) {
-    const dirPath = path.join(baseDir, dir)
+    const dirPath = path.join(baseDir, dir, collectionKey)
     try {
       if (fs.existsSync(dirPath)) {
         fs.rmSync(dirPath, { recursive: true })
-        fs.mkdirSync(dirPath, { recursive: true })
       }
+      fs.mkdirSync(dirPath, { recursive: true })
     } catch (error) {
       console.error(`[claude-memory] Failed to clear ${dir}:`, error)
     }

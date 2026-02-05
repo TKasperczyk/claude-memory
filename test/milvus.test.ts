@@ -191,6 +191,50 @@ describe('milvus-client', () => {
     expect(third).toBe(clientB)
     expect(mockedMilvusClient).toHaveBeenCalledTimes(2)
   })
+
+  it('closeMilvus waits for in-flight init and avoids stale client reuse', async () => {
+    const clientA = makeMockClient()
+    const clientB = makeMockClient()
+    let resolveHasCollection: ((value: { value: boolean }) => void) | undefined
+
+    clientA.hasCollection.mockImplementation(() => new Promise<{ value: boolean }>(resolve => {
+      resolveHasCollection = resolve
+    }))
+
+    mockedMilvusClient
+      .mockImplementationOnce(function () {
+        return clientA as any
+      })
+      .mockImplementationOnce(function () {
+        return clientB as any
+      })
+
+    vi.spyOn(milvusSchema, 'ensureSchemaFields').mockResolvedValue(undefined)
+
+    const initPromise = milvusClient.ensureClient(DEFAULT_CONFIG)
+    const closePromise = milvusClient.closeMilvus()
+
+    let closeFinished = false
+    void closePromise.then(() => {
+      closeFinished = true
+    })
+
+    await Promise.resolve()
+    expect(closeFinished).toBe(false)
+
+    if (!resolveHasCollection) {
+      throw new Error('Missing hasCollection resolver')
+    }
+    resolveHasCollection({ value: true })
+
+    await expect(initPromise).rejects.toThrow('closeMilvus() is in progress')
+    await closePromise
+
+    const nextClient = await milvusClient.ensureClient(DEFAULT_CONFIG)
+    expect(nextClient).toBe(clientB)
+    expect(clientA.closeConnection).toHaveBeenCalledTimes(1)
+    expect(mockedMilvusClient).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('milvus-schema', () => {
@@ -407,6 +451,24 @@ describe('milvus-crud', () => {
     expect(existsSpy).toHaveBeenCalled()
     expect(rmSpy).toHaveBeenCalled()
     expect(mkdirSpy).toHaveBeenCalled()
+  })
+
+  it('resetCollection does not delete legacy root json files', async () => {
+    const client = makeMockClient()
+    client.hasCollection.mockResolvedValue({ value: true })
+    vi.spyOn(milvusClient, 'ensureClient').mockResolvedValue(client as any)
+    vi.spyOn(milvusSchema, 'createCollection').mockResolvedValue(undefined)
+
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true)
+    vi.spyOn(fs, 'rmSync').mockImplementation(() => undefined)
+    vi.spyOn(fs, 'mkdirSync').mockImplementation(() => undefined)
+    const readdirSpy = vi.spyOn(fs, 'readdirSync').mockImplementation(() => [] as string[])
+    const unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation(() => undefined)
+
+    await milvusCrud.resetCollection(DEFAULT_CONFIG)
+
+    expect(readdirSpy).not.toHaveBeenCalled()
+    expect(unlinkSpy).not.toHaveBeenCalled()
   })
 
   it('getRecordStats returns stats map', async () => {

@@ -171,7 +171,7 @@ async function buildInjectionReviewInput(
   sessionId: string,
   config: Config
 ): Promise<{ input: InjectionReviewInput; injectedEntries: InjectedMemoryEntry[] }> {
-  const session = loadSessionTracking(sessionId)
+  const session = loadSessionTracking(sessionId, config.milvus.collection)
   if (!session) {
     throw new Error('Session not found.')
   }

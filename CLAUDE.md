@@ -95,3 +95,16 @@ Records have scope (project/global), domain categorization, and usage counters f
 - Settings are user-editable with Zod schema validation
 - Hybrid search combines keyword matching and vector similarity
 - MMR (Maximal Marginal Relevance) ensures diverse results
+
+## Design Decisions
+
+### Extraction Run Deletion Includes Updated Records
+
+When deleting an extraction run via the dashboard, **both** newly inserted records AND pre-existing records that were "updated" (dedup-matched) during that extraction are deleted. This is intentional:
+
+- During extraction, if a new memory dedup-matches an existing one, the existing record gets updated (merged content, refreshed timestamp, linked to the extraction run via `extractionRunId`)
+- This makes the "updated" record part of that extraction run's output
+- Deleting the run removes all its output, including these updates
+- Without this, deleting a bad extraction run would leave behind modified records in an inconsistent state
+
+If you need to preserve pre-existing records while removing only new ones, manually review the extraction before deletion.

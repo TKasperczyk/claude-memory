@@ -163,7 +163,7 @@ function trackSession(
         score: searchResult?.score
       }
     })
-    appendSessionTracking(sessionId, entries, cwd, cleanPrompt, status)
+    appendSessionTracking(sessionId, entries, cwd, cleanPrompt, status, collection)
     if (status === 'injected' && entries.length > 0) {
       recordRetrievalEvents(entries.map(entry => ({
         id: entry.id,

@@ -5,6 +5,8 @@ import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asStri
 import { readJsonFileSafe, writeJsonFile } from './json.js'
 import { acquireFileLock } from './lock.js'
 import { sanitizeSessionId } from './shared.js'
+import { getCollectionKey } from './retrieval-events.js'
+import { isDefaultCollection } from './storage-paths.js'
 import {
   type InjectedMemoryEntry,
   type InjectionPromptEntry,
@@ -13,23 +15,32 @@ import {
   type RecordType
 } from './types.js'
 
-const SESSIONS_DIR = path.join(homedir(), '.claude-memory', 'sessions')
+const SESSIONS_ROOT = path.join(homedir(), '.claude-memory', 'sessions')
 const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure|warning):/i
 const LOCK_RETRY_DELAY_MS = 25
 const LOCK_MAX_WAIT_MS = 1000
 const LOCK_STALE_MS = 30_000
 
-function getSessionTrackingPath(sessionId: string): string {
+function getSessionsDir(collection?: string): string {
+  return path.join(SESSIONS_ROOT, getCollectionKey(collection))
+}
+
+function getLegacySessionTrackingPath(sessionId: string): string {
   const safeId = sanitizeSessionId(sessionId)
-  return path.join(SESSIONS_DIR, `${safeId}.json`)
+  return path.join(SESSIONS_ROOT, `${safeId}.json`)
 }
 
-function getSessionLockPath(sessionId: string): string {
-  return `${getSessionTrackingPath(sessionId)}.lock`
+function getSessionTrackingPath(sessionId: string, collection?: string): string {
+  const safeId = sanitizeSessionId(sessionId)
+  return path.join(getSessionsDir(collection), `${safeId}.json`)
 }
 
-function withSessionLock<T>(sessionId: string, action: () => T): T {
-  const lockPath = getSessionLockPath(sessionId)
+function getSessionLockPath(sessionId: string, collection?: string): string {
+  return `${getSessionTrackingPath(sessionId, collection)}.lock`
+}
+
+function withSessionLock<T>(sessionId: string, action: () => T, collection?: string): T {
+  const lockPath = getSessionLockPath(sessionId, collection)
   const handle = acquireFileLock(lockPath, {
     staleAfterMs: LOCK_STALE_MS,
     staleStrategy: 'pid',
@@ -56,17 +67,23 @@ function withSessionLock<T>(sessionId: string, action: () => T): T {
   }
 }
 
-export function loadSessionTracking(sessionId: string): InjectionSessionRecord | null {
-  const filePath = getSessionTrackingPath(sessionId)
+function readSessionTrackingFile(filePath: string, sessionId: string): InjectionSessionRecord | null {
   return readJsonFileSafe(filePath, {
     errorMessage: '[claude-memory] Failed to read session tracking file:',
     coerce: data => coerceSessionRecord(data, sessionId)
   })
 }
 
-export function saveSessionTracking(record: InjectionSessionRecord): void {
+export function loadSessionTracking(sessionId: string, collection?: string): InjectionSessionRecord | null {
+  const primary = readSessionTrackingFile(getSessionTrackingPath(sessionId, collection), sessionId)
+  if (primary) return primary
+  if (!isDefaultCollection(collection)) return null
+  return readSessionTrackingFile(getLegacySessionTrackingPath(sessionId), sessionId)
+}
+
+export function saveSessionTracking(record: InjectionSessionRecord, collection?: string): void {
   try {
-    const filePath = getSessionTrackingPath(record.sessionId)
+    const filePath = getSessionTrackingPath(record.sessionId, collection)
     writeJsonFile(filePath, record, { ensureDir: true, pretty: 2 })
   } catch (error) {
     console.error('[claude-memory] Failed to write session tracking file:', error)
@@ -78,14 +95,15 @@ export function appendSessionTracking(
   entries: InjectedMemoryEntry[],
   cwd?: string,
   prompt?: string,
-  status: InjectionStatus = 'injected'
+  status: InjectionStatus = 'injected',
+  collection?: string
 ): InjectionSessionRecord {
   // Add prompt to all entries if provided
   if (typeof prompt === 'string') {
     entries = entries.map(e => ({ ...e, prompt }))
   }
   return withSessionLock(sessionId, () => {
-    const existing = loadSessionTracking(sessionId)
+    const existing = loadSessionTracking(sessionId, collection)
     const now = Date.now()
 
     const prevPromptCount = existing?.promptCount ?? existing?.prompts?.length ?? 0
@@ -110,21 +128,35 @@ export function appendSessionTracking(
       lastStatus: status,
       hasReview: existing?.hasReview
     }
-    saveSessionTracking(record)
+    saveSessionTracking(record, collection)
     return record
-  })
+  }, collection)
 }
 
-export function listAllSessions(): InjectionSessionRecord[] {
-  if (!fs.existsSync(SESSIONS_DIR)) return []
+function listSessionIds(dir: string): string[] {
+  if (!fs.existsSync(dir)) return []
+  try {
+    return fs.readdirSync(dir)
+      .filter(f => f.endsWith('.json'))
+      .map(file => file.replace(/\.json$/, ''))
+  } catch (error) {
+    console.error('[claude-memory] Failed to list sessions:', error)
+    return []
+  }
+}
+
+export function listAllSessions(collection?: string): InjectionSessionRecord[] {
+  const ids = new Set<string>(listSessionIds(getSessionsDir(collection)))
+  if (isDefaultCollection(collection)) {
+    for (const id of listSessionIds(SESSIONS_ROOT)) {
+      ids.add(id)
+    }
+  }
 
   try {
-    const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.json'))
     const sessions: InjectionSessionRecord[] = []
-
-    for (const file of files) {
-      const sessionId = file.replace(/\.json$/, '')
-      const record = loadSessionTracking(sessionId)
+    for (const sessionId of ids) {
+      const record = loadSessionTracking(sessionId, collection)
       if (record) sessions.push(record)
     }
 
@@ -151,14 +183,24 @@ export function dedupeInjectedMemories(memories: InjectedMemoryEntry[]): Injecte
   return Array.from(byId.values())
 }
 
-export function removeSessionTracking(sessionId: string): void {
-  const filePath = getSessionTrackingPath(sessionId)
-  if (!fs.existsSync(filePath)) return
+export function removeSessionTracking(sessionId: string, collection?: string): void {
+  const paths = [getSessionTrackingPath(sessionId, collection)]
+  const lockPaths = [getSessionLockPath(sessionId, collection)]
 
-  try {
-    fs.unlinkSync(filePath)
-  } catch (error) {
-    console.error('[claude-memory] Failed to remove session tracking file:', error)
+  if (isDefaultCollection(collection)) {
+    const legacyPath = getLegacySessionTrackingPath(sessionId)
+    paths.push(legacyPath)
+    lockPaths.push(`${legacyPath}.lock`)
+  }
+
+  for (const filePath of [...paths, ...lockPaths]) {
+    if (!fs.existsSync(filePath)) continue
+
+    try {
+      fs.unlinkSync(filePath)
+    } catch (error) {
+      console.error('[claude-memory] Failed to remove session tracking file:', error)
+    }
   }
 }
 

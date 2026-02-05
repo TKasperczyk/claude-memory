@@ -21,7 +21,7 @@ const EVENTS_ROOT = path.join(homedir(), '.claude-memory', 'retrieval-events')
 const EVENT_SUFFIX = '.jsonl'
 const RETRIEVAL_RETENTION_DAYS = 90
 
-function getCollectionKey(collection?: string): string {
+export function getCollectionKey(collection?: string): string {
   const fallback = DEFAULT_CONFIG.milvus.collection
   const raw = (collection ?? fallback).trim()
   return sanitizeRunId(raw || fallback)

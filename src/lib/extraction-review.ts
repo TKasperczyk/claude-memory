@@ -179,7 +179,7 @@ async function buildExtractionReviewInput(
   runId: string,
   config: Config
 ): Promise<ExtractionReviewInput> {
-  const run = getExtractionRun(runId)
+  const run = getExtractionRun(runId, config.milvus.collection)
   if (!run) {
     throw new Error('Extraction run not found.')
   }

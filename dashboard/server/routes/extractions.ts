@@ -7,6 +7,7 @@ import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
 import { parseNonNegativeInt } from '../utils/params.js'
+import { getRequestConfig } from '../utils/config.js'
 import { ensureConfigInitialized } from '../utils/milvus.js'
 
 const logger = createLogger('extractions')
@@ -17,7 +18,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
   router.get('/api/extractions', (req, res) => {
     try {
-      const runs = listExtractionRuns()
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const runs = listExtractionRuns(requestConfig.milvus.collection)
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 50), 500)
       const offset = parseNonNegativeInt(req.query.offset, 0)
       const page = runs.slice(offset, offset + limit)
@@ -37,7 +39,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
   router.get('/api/extractions/:runId', async (req, res) => {
     try {
-      const run = getExtractionRun(req.params.runId)
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const run = getExtractionRun(req.params.runId, requestConfig.milvus.collection)
       if (!run) {
         return res.status(404).json({ error: 'Extraction run not found' })
       }
@@ -63,7 +66,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
   router.delete('/api/extractions/:runId', async (req, res) => {
     try {
       const runId = req.params.runId
-      const run = getExtractionRun(runId)
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const run = getExtractionRun(runId, requestConfig.milvus.collection)
       if (!run) {
         return res.status(404).json({ error: 'Extraction run not found' })
       }
@@ -77,8 +81,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         await deleteRecord(id, config)
       }
 
-      deleteExtractionRun(runId)
-      deleteReview(runId)
+      deleteExtractionRun(runId, requestConfig.milvus.collection)
+      deleteReview(runId, requestConfig.milvus.collection)
       res.json({ success: true })
     } catch (error) {
       logger.error('Failed to delete extraction run', error)
@@ -88,7 +92,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
   router.get('/api/extractions/:runId/review', (req, res) => {
     try {
-      const review = getReview(req.params.runId)
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const review = getReview(req.params.runId, requestConfig.milvus.collection)
       if (!review) {
         return res.status(404).json({ error: 'Review not found' })
       }
@@ -102,7 +107,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
   router.post('/api/extractions/:runId/review', async (req, res) => {
     try {
       const runId = req.params.runId
-      const run = getExtractionRun(runId)
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const run = getExtractionRun(runId, requestConfig.milvus.collection)
       if (!run) {
         return res.status(404).json({ error: 'Extraction run not found' })
       }
@@ -114,7 +120,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         try {
           const config = await ensureConfigInitialized(req, baseConfig)
           const review = await reviewExtractionStreaming(runId, config, stream.onThinking, stream.signal)
-          saveReview(review)
+          saveReview(review, config.milvus.collection)
           stream.sendData({ result: review })
           stream.done()
         } catch (error) {
@@ -129,7 +135,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
       const config = await ensureConfigInitialized(req, baseConfig)
       const review = await reviewExtraction(runId, config)
-      saveReview(review)
+      saveReview(review, config.milvus.collection)
       res.json(review)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
