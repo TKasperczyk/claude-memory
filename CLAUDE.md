@@ -1,78 +1,97 @@
-# Claude Memory
+## Development guidelines
 
-Technical knowledge persistence for Claude Code. Extracts memories from session transcripts and injects relevant context into new sessions.
+Use claude-context semantic search for exploring the codebase and avoiding code duplication when implementing features and making changes
 
-## Purpose
+## Project Overview
 
-Claude Code sessions are stateless - each conversation starts fresh. This project adds persistent memory by:
-1. **Extracting** learnings from completed sessions (commands, errors, discoveries, procedures, warnings)
-2. **Storing** them in a vector database (Milvus) with embeddings for semantic search
-3. **Injecting** relevant memories into new sessions via Claude Code hooks
+claude-memory is a technical knowledge persistence system for Claude Code. It automatically extracts durable knowledge from conversations (commands, errors, discoveries, procedures, warnings) and injects relevant memories into future sessions via Claude Code hooks.
 
-The goal is to help Claude avoid repeating mistakes, remember project-specific knowledge, and build on past successes.
+## Development Commands
+
+```bash
+# Core commands
+pnpm build              # TypeScript compilation
+pnpm test               # Run vitest tests
+pnpm test:watch         # Watch mode
+pnpm maintenance        # Run memory maintenance operations
+pnpm maintenance --dry-run  # Preview maintenance without changes
+
+# Dashboard (separate package in ./dashboard)
+cd dashboard
+pnpm start              # Run API server (port 3001) + Vite dev server (port 5173)
+pnpm server             # API server only
+pnpm dev                # Vite frontend only
+```
 
 ## Architecture
 
-**Hooks** (in `src/hooks/`):
-- `UserPromptSubmit` → Search Milvus, inject relevant memories as `<prior-knowledge>`
-- `SessionEnd`/`PreCompact` → Extract memories from transcript, dedupe, store
+### Hook System (src/hooks/)
+Claude Code hooks that run automatically during sessions:
+- **pre-prompt.ts**: Injects relevant memories before each user prompt. Runs hybrid search (keyword + semantic), applies MMR for diversity, and formats context for injection.
+- **post-session.ts**: Launcher that spawns detached worker process for fast exit.
+- **post-session-worker.ts**: Extracts records from session transcripts using Claude (Sonnet by default), deduplicates against existing memories, stores in Milvus.
 
-The SessionEnd hook uses a launcher+worker pattern because Claude Code cancels slow hooks. The launcher spawns a detached worker and exits immediately (<10ms), while the worker does the actual extraction in the background.
+### Core Library (src/lib/)
+- **types.ts / shared/types.d.ts**: Record types (command, error, discovery, procedure, warning), hook inputs, config interfaces. Types are defined in shared/types.d.ts and re-exported.
+- **milvus*.ts**: Vector database operations split across files - milvus-client.ts (connection), milvus-crud.ts (insert/update/delete), milvus-search.ts (hybrid search), milvus-records.ts (row building).
+- **extract.ts**: LLM-based transcript extraction. System prompt instructs Claude to extract durable knowledge while avoiding duplicates.
+- **retrieval.ts**: Core search logic with MMR reranking, timeout handling, and diagnostic modes.
+- **maintenance.ts**: Memory lifecycle operations - stale checks, consolidation, global promotion, conflict resolution, warning synthesis.
+- **settings.ts / settings-schema.ts**: User settings with Zod validation, loaded from ~/.claude-memory/settings.json.
+- **config.ts**: Config hierarchy - defaults → global config (~/.claude-memory/config.json) → project config.
 
-**Core tech:**
-- Milvus for vector storage + hybrid search (semantic + keyword)
-- Local embedding model (Qwen3) via OpenAI-compatible API
-- Anthropic API for extraction (Haiku) and reviews (Opus)
-- React + Vite dashboard for visualization and maintenance
+### Dashboard (dashboard/)
+React 19 + TanStack Query + Tailwind + shadcn/ui. Express API server with routes in dashboard/server/routes/. Provides UI for browsing memories, reviewing extractions, running maintenance, and testing retrieval.
 
-**Key patterns:**
-- MMR (Maximal Marginal Relevance) for diverse result selection
-- Usage tracking to boost memories that prove helpful
-- Configurable thresholds in `~/.claude-memory/settings.json`
-- OAuth support with auto-refresh for Anthropic API access
+### Maintenance (src/maintenance.ts)
+CLI tool and library for memory quality operations:
+- Stale record deprecation
+- Low usage detection
+- Semantic consolidation (merge similar memories)
+- Global promotion (project → global scope)
+- Conflict resolution
+- Warning synthesis from failed patterns
 
-## Memory Types
+## Environment & Dependencies
 
-| Type | Purpose |
-|------|---------|
-| `command` | Shell commands with outcomes and resolutions |
-| `error` | Error patterns with causes and fixes |
-| `discovery` | Codebase/system facts learned during sessions |
-| `procedure` | Multi-step workflows that worked |
-| `warning` | Anti-patterns synthesized from repeated failures |
+**Required Services:**
+- Milvus vector database (default: localhost:19530)
+- LMStudio or compatible embedding API (default: http://127.0.0.1:1234/v1)
+- Anthropic API access for extraction (ANTHROPIC_API_KEY or OAuth credentials)
 
-Each memory has scope (global/project), usage metrics, and a `sourceExcerpt` citing the transcript.
+**Key Environment Variables:**
+- `CC_MEMORIES_ADDRESS`: Milvus address
+- `CC_MEMORIES_COLLECTION`: Collection name
+- `CC_EMBEDDINGS_URL`: Embedding API endpoint
+- `CC_EMBEDDINGS_MODEL`: Embedding model name
+- `CC_EXTRACTION_MODEL`: Model for extraction (default: claude-sonnet-4-5-20250929)
 
-## Dashboard
+## Testing
 
-Web UI for inspecting and maintaining the memory pool:
-- **Simulator**: Test what memories would inject for a prompt
-- **Extractions/Sessions**: Review extraction quality with Opus
-- **Maintenance**: Run deprecation, consolidation, and promotion operations
-- **Settings**: Tune retrieval and maintenance thresholds
-
-## Development Notes
-
-- Hooks must be fast - avoid blocking I/O in the launcher path
-- Embeddings are 4096-dimensional (Qwen3); dimension is enforced at insert time
-- Record schemas are centralized in `src/lib/record-schema.ts` for consistency between extraction and review
-- Auth falls back through: env vars → Claude Code credentials → kira credentials
-
-## Claude-Context Indexing
-
-When using claude-context MCP to index this codebase:
-
-```
-mcp__claude-context__index_codebase({
-  path: "/home/luthriel/Programming/claude-memory",
-  force: true,
-  customExtensions: [".svelte"],
-  ignorePatterns: ["**/.pnpm-store/**", "**/pnpm-lock.yaml", "**/*.lock"]
-})
+Tests require Milvus and optionally embeddings/Anthropic:
+```bash
+pnpm test                    # Runs all tests (some skip if services unavailable)
+pnpm test test/extraction    # Run specific test file
 ```
 
-**Important:**
-- Don't add `.json` as a custom extension - it picks up pnpm's content-addressable store (hundreds of package metadata files in `dashboard/.pnpm-store/`)
-- The AST splitter handles `.ts`, `.tsx` by default - only add `.svelte` for this project
-- Always ignore `.pnpm-store/**` and lock files
-- Expected result: ~85 files, ~1600 chunks (not 400+ files)
+E2E tests check embedding availability and Anthropic auth at runtime, skipping gracefully if missing.
+
+## Record Types
+
+Each extracted memory has a type determining its structure:
+- **command**: Shell commands with exit codes and outcomes
+- **error**: Error messages with resolutions
+- **discovery**: Factual knowledge about codebases
+- **procedure**: Step-by-step instructions
+- **warning**: Anti-patterns with alternatives
+
+Records have scope (project/global), domain categorization, and usage counters for relevance scoring.
+
+## Key Patterns
+
+- Hooks write to stderr for logging, stdout for injected context
+- Post-session uses detached subprocess pattern for fast exit
+- Config merges: env vars → global config → project config
+- Settings are user-editable with Zod schema validation
+- Hybrid search combines keyword matching and vector similarity
+- MMR (Maximal Marginal Relevance) ensures diverse results
