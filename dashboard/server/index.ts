@@ -14,6 +14,7 @@ import { createMemoryRouter } from './routes/memory.js'
 import { createPreviewRouter } from './routes/preview.js'
 import { createSessionsRouter } from './routes/sessions.js'
 import { createSettingsRouter } from './routes/settings.js'
+import { createChatRouter } from './routes/chat.js'
 import { startStatsSnapshotScheduler } from './lib/stats-snapshot-scheduler.js'
 
 const logger = createLogger('server')
@@ -44,6 +45,7 @@ app.use(createPreviewRouter(context))
 app.use(createSessionsRouter(context))
 app.use(createExtractionsRouter(context))
 app.use(createMaintenanceRouter(context))
+app.use(createChatRouter(context))
 
 app.listen(PORT, () => {
   logger.info(`Dashboard API server running on http://localhost:${PORT}`)

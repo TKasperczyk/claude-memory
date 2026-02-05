@@ -1,7 +1,8 @@
 import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
-import { LayoutGrid, Database, FlaskConical, Activity, Wrench, FileText, Settings as SettingsIcon } from 'lucide-react'
+import { LayoutGrid, Database, FlaskConical, Activity, Wrench, FileText, Settings as SettingsIcon, MessageSquare } from 'lucide-react'
 import ContextPreview from '@/pages/ContextPreview'
 import Extractions from '@/pages/Extractions'
+import Chat from '@/pages/Chat'
 import MemoryPool from '@/pages/MemoryPool'
 import Maintenance from '@/pages/Maintenance'
 import Overview from '@/pages/Overview'
@@ -10,6 +11,7 @@ import Settings from '@/pages/Settings'
 
 const navigation = [
   { name: 'Overview', href: '/', icon: LayoutGrid },
+  { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'Memories', href: '/memories', icon: Database },
   { name: 'Simulator', href: '/preview', icon: FlaskConical },
   { name: 'Sessions', href: '/sessions', icon: Activity },
@@ -74,6 +76,7 @@ export default function App() {
           <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 lg:px-8 py-6 w-full">
             <Routes>
               <Route path="/" element={<Overview />} />
+              <Route path="/chat" element={<Chat />} />
               <Route path="/memories" element={<MemoryPool />} />
               <Route path="/preview" element={<ContextPreview />} />
               <Route path="/sessions" element={<Sessions />} />

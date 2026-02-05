@@ -187,6 +187,54 @@ export interface ApplySuggestionResponse {
   addedLines: number
 }
 
+export type ChatRole = 'user' | 'assistant'
+
+export interface ChatMessage {
+  role: ChatRole
+  content: string
+}
+
+export interface ChatRequest {
+  messages: ChatMessage[]
+  project?: string
+}
+
+export type ChatToolName = 'search_memories' | 'update_memory' | 'delete_memories'
+
+export interface ChatSearchResult {
+  query: string
+  count: number
+  results: SearchResult[]
+}
+
+export interface ChatUpdateResult {
+  id: string
+  success: boolean
+  updates: Partial<MemoryRecord>
+  record?: MemoryRecord | null
+  error?: string
+}
+
+export interface ChatDeleteResult {
+  ids: string[]
+  deleted: number
+  missing: string[]
+  error?: string
+}
+
+export type ChatToolResult =
+  | ChatSearchResult
+  | ChatUpdateResult
+  | ChatDeleteResult
+  | { error: string }
+
+export type ChatStreamEvent =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: ChatToolName; input: unknown }
+  | { type: 'tool_result'; tool_use_id: string; name: ChatToolName; result: ChatToolResult; is_error?: boolean }
+  | { type: 'done' }
+  | { type: 'error'; error: string }
+
 export class ApiError extends Error {
   status: number
 
@@ -481,4 +529,141 @@ export function applyMaintenanceSuggestion(payload: ApplySuggestionPayload): Pro
     method: 'POST',
     body: JSON.stringify(payload)
   })
+}
+
+export async function streamChat(
+  payload: ChatRequest,
+  options: { onEvent: (event: ChatStreamEvent) => void; signal?: AbortSignal }
+): Promise<void> {
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: options.signal
+  })
+
+  if (!response.ok) {
+    const message = await response.text()
+    throw new Error(message || `Request failed (${response.status})`)
+  }
+
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!contentType.includes('text/event-stream')) {
+    const message = await response.text()
+    throw new Error(message || 'Expected streaming response')
+  }
+
+  if (!response.body) {
+    throw new Error('Streaming response body missing')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let eventName: string | null = null
+  let dataLines: string[] = []
+
+  const flushEvent = () => {
+    const payloadText = dataLines.join('\n')
+    dataLines = []
+    const name = eventName
+    eventName = null
+
+    if (!payloadText) return
+    if (payloadText === '[DONE]') {
+      options.onEvent({ type: 'done' })
+      return
+    }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(payloadText)
+    } catch {
+      throw new Error('Failed to parse stream payload')
+    }
+
+    if (!name) return
+
+    if (name === 'text') {
+      const text = (parsed as { text?: string })?.text ?? ''
+      if (text) options.onEvent({ type: 'text', text })
+      return
+    }
+
+    if (name === 'tool_use') {
+      const data = parsed as { id?: string; name?: ChatToolName; input?: unknown }
+      if (data.id && data.name) {
+        options.onEvent({ type: 'tool_use', id: data.id, name: data.name, input: data.input })
+      }
+      return
+    }
+
+    if (name === 'tool_result') {
+      const data = parsed as { tool_use_id?: string; name?: ChatToolName; result?: ChatToolResult; is_error?: boolean }
+      if (data.tool_use_id && data.name) {
+        options.onEvent({
+          type: 'tool_result',
+          tool_use_id: data.tool_use_id,
+          name: data.name,
+          result: data.result ?? { error: 'Empty tool result' },
+          is_error: data.is_error
+        })
+      }
+      return
+    }
+
+    if (name === 'done') {
+      options.onEvent({ type: 'done' })
+      return
+    }
+
+    if (name === 'error') {
+      const error = (parsed as { error?: string })?.error ?? 'Chat error'
+      options.onEvent({ type: 'error', error })
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) {
+      buffer += decoder.decode()
+      break
+    }
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim()
+        continue
+      }
+      if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trimStart())
+        continue
+      }
+      if (line === '') {
+        flushEvent()
+      }
+    }
+  }
+
+  if (buffer) {
+    const lines = buffer.split(/\r?\n/)
+    buffer = ''
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim()
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trimStart())
+      } else if (line === '') {
+        flushEvent()
+      }
+    }
+  }
+
+  if (dataLines.length > 0) {
+    flushEvent()
+  }
 }
