@@ -10,6 +10,7 @@ import { spawn } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
+import { randomUUID } from 'crypto'
 import { extractRecords } from '../lib/extract.js'
 import { findGitRoot, inferDomain } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
@@ -333,14 +334,23 @@ function launcherMain(): void {
   }
 
   // Write to temp file
-  const tempFile = join(homedir(), '.claude-memory', `hook-input-${process.pid}.json`)
+  const tempFile = join(homedir(), '.claude-memory', `hook-input-${process.pid}-${Date.now()}-${randomUUID()}.json`)
   try {
     fs.mkdirSync(dirname(tempFile), { recursive: true })
-    fs.writeFileSync(tempFile, input)
+    fs.writeFileSync(tempFile, input, { flag: 'wx' })
     debugLog(`Wrote temp file: ${tempFile}`)
   } catch (e) {
     debugLog(`Failed to write temp file: ${e}`)
     return
+  }
+
+  const cleanupTempFile = (): void => {
+    try {
+      fs.unlinkSync(tempFile)
+      debugLog(`Cleaned up temp file after spawn failure: ${tempFile}`)
+    } catch {
+      // ignore
+    }
   }
 
   // Determine worker path
@@ -358,6 +368,13 @@ function launcherMain(): void {
   const child = spawn(command, args, {
     detached: true,
     stdio: ['ignore', 'ignore', 'ignore']
+  })
+
+  child.on('error', error => {
+    debugLog(`Worker spawn failed: ${error}`)
+    console.error('[claude-memory] Failed to spawn post-session worker:', error)
+    cleanupTempFile()
+    process.exitCode = 2
   })
 
   debugLog(`Worker spawned pid=${child.pid}, took ${Date.now() - startTime}ms`)

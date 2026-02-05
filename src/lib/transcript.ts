@@ -120,7 +120,6 @@ export async function parseTranscript(path: string): Promise<Transcript> {
   const toolCallsById = new Map<string, ToolCall>()
   let parseErrors = 0
   let parseWarned = 0
-  const hasTrailingNewline = fileEndsWithNewline(path)
   let pendingParseError: { line: number; message: string } | null = null
 
   const commitParseError = (pending: { line: number; message: string }): void => {
@@ -268,7 +267,7 @@ export async function parseTranscript(path: string): Promise<Transcript> {
     input.destroy()
   }
 
-  if (pendingParseError && hasTrailingNewline) {
+  if (pendingParseError) {
     commitParseError(pendingParseError)
   }
 
@@ -654,23 +653,6 @@ function formatToolInput(input: unknown): string | undefined {
 function truncateToolText(value: string): string {
   if (value.length <= TOOL_SNIPPET_MAX_CHARS) return value
   return value.slice(0, TOOL_SNIPPET_MAX_CHARS - 3) + '...'
-}
-
-function fileEndsWithNewline(path: string): boolean {
-  try {
-    const stats = fs.statSync(path)
-    if (!stats.isFile() || stats.size === 0) return false
-    const fd = fs.openSync(path, 'r')
-    try {
-      const buffer = Buffer.alloc(1)
-      fs.readSync(fd, buffer, 0, 1, stats.size - 1)
-      return buffer[0] === 10
-    } finally {
-      fs.closeSync(fd)
-    }
-  } catch {
-    return true
-  }
 }
 
 export function getFirstUserPrompt(transcript: Transcript): string | undefined {
