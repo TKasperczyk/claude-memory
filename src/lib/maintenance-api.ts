@@ -3,7 +3,7 @@ import { findGitRoot } from './context.js'
 import { buildPromotionDiffs } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from './settings.js'
-import type { MaintenanceOperationInfo, MaintenanceProgress, OperationResult } from '../../shared/types.js'
+import { runConflictResolution } from './maintenance.js'
 import {
   runStaleCheck,
   runStaleUnusedDeprecation,
@@ -11,12 +11,16 @@ import {
   runLowUsageCheck,
   runConsolidation,
   runCrossTypeConsolidation,
-  runConflictResolution,
   runGlobalPromotion,
   runWarningSynthesis,
-  type MaintenanceAction,
   type MaintenanceRunResult
-} from '../maintenance.js'
+} from './maintenance/runners/index.js'
+import type {
+  MaintenanceAction,
+  MaintenanceOperationInfo,
+  MaintenanceProgress,
+  OperationResult
+} from '../../shared/types.js'
 
 export const MAINTENANCE_OPERATION_DEFINITIONS = [
   {
