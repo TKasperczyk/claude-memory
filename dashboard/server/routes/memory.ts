@@ -8,8 +8,7 @@ import {
   hybridSearch,
   insertRecord,
   queryRecords,
-  resetCollection,
-  buildKeywordFilter
+  resetCollection
 } from '../../../src/lib/milvus.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
 import { getRetrievalActivity } from '../../../src/lib/retrieval-events.js'
@@ -444,27 +443,23 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const project = req.query.project as string | undefined
       const deprecated = req.query.deprecated === 'true'
 
-      const baseFilter = buildSearchFilter({ type, project, deprecated })
-      const keywordFilter = buildKeywordFilter(query, baseFilter)
-      const windowLimit = offset + limit
+      const windowLimit = offset + limit + 1
 
-      const [total, results] = await Promise.all([
-        countRecords({ filter: keywordFilter }, config),
-        hybridSearch({
-          query,
-          limit: windowLimit,
-          type,
-          project,
-          excludeDeprecated: !deprecated
-        }, config)
-      ])
+      const results = await hybridSearch({
+        query,
+        limit: windowLimit,
+        type,
+        project,
+        excludeDeprecated: !deprecated
+      }, config)
 
       const page = results.slice(offset, offset + limit)
-      const hasMore = results.length > offset + limit || total > offset + limit
+      const hasMore = results.length > offset + limit
+      const total = offset + page.length + (hasMore ? 1 : 0)
 
       res.json({
         query,
-        total: Math.max(total, results.length),
+        total,
         offset,
         hasMore,
         results: page.map(r => ({
@@ -492,14 +487,6 @@ function parsePeriod(value: unknown, fallback: TimeBucketPeriod): TimeBucketPeri
     }
   }
   return fallback
-}
-
-function buildSearchFilter(filters: { type?: RecordType; project?: string; deprecated?: boolean }): string | undefined {
-  const parts: string[] = []
-  if (filters.type) parts.push(`type == "${escapeFilterValue(filters.type)}"`)
-  if (filters.project) parts.push(`project == "${escapeFilterValue(filters.project)}"`)
-  if (!filters.deprecated) parts.push('deprecated == false')
-  return parts.length > 0 ? parts.join(' && ') : undefined
 }
 
 function asNumberArray(value: unknown): number[] | undefined {

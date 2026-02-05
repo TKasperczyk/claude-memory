@@ -194,6 +194,36 @@ function buildSettingsRecommendationKey(
   return `${operation}:${recommendation.setting}:${suggestedValue}:${index}`
 }
 
+function parseSsePayload(event: Event, eventName: string): Record<string, unknown> | null {
+  if (!(event instanceof MessageEvent) || typeof event.data !== 'string') {
+    return null
+  }
+
+  try {
+    const payload = JSON.parse(event.data) as unknown
+    if (payload && typeof payload === 'object') {
+      return payload as Record<string, unknown>
+    }
+    console.error(`[maintenance] Ignoring malformed SSE payload for "${eventName}" event`)
+    return null
+  } catch (error) {
+    console.error(`[maintenance] Failed to parse SSE payload for "${eventName}" event`, error)
+    return null
+  }
+}
+
+function isOperationResult(value: unknown): value is OperationResult {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<OperationResult>
+  return typeof candidate.operation === 'string'
+    && typeof candidate.dryRun === 'boolean'
+    && Array.isArray(candidate.actions)
+    && typeof candidate.summary === 'object'
+    && candidate.summary !== null
+    && Array.isArray(candidate.candidates)
+    && typeof candidate.duration === 'number'
+}
+
 // Fallback hash for non-secure contexts where crypto.subtle is unavailable (HTTP, non-localhost)
 function simpleHash(str: string): string {
   let hash = 0
@@ -1219,18 +1249,34 @@ export default function Maintenance() {
       eventSourceRef.current = eventSource
 
       eventSource.addEventListener('detailed-progress', (event) => {
-        const data = JSON.parse(event.data)
-        if (data.operation && data.current !== undefined && data.total !== undefined) {
-          const op = data.operation as MaintenanceOperation
-          setDetailedProgress(prev => ({
-            ...(prev || {}),
-            [op]: { current: data.current, total: data.total, message: data.message }
-          }))
+        const data = parseSsePayload(event, 'detailed-progress')
+        if (!data || typeof data.operation !== 'string') return
+        const current = data.current
+        const total = data.total
+        if (
+          typeof current !== 'number' ||
+          !Number.isFinite(current) ||
+          typeof total !== 'number' ||
+          !Number.isFinite(total)
+        ) {
+          return
         }
+
+        const op = data.operation as MaintenanceOperation
+        setDetailedProgress(prev => ({
+          ...(prev || {}),
+          [op]: {
+            current,
+            total,
+            message: typeof data.message === 'string' ? data.message : undefined
+          }
+        }))
       })
 
       eventSource.addEventListener('result', (event) => {
-        const result = JSON.parse(event.data) as OperationResult
+        const data = parseSsePayload(event, 'result')
+        if (!data || !isOperationResult(data)) return
+        const result = data
         if (result.operation === operation) {
           setDetailedProgress(prev => {
             if (!prev) return null
@@ -1242,9 +1288,11 @@ export default function Maintenance() {
       })
 
       eventSource.addEventListener('error', (event) => {
-        if (event instanceof MessageEvent) {
-          const data = JSON.parse(event.data)
-          const message = data.error || 'Failed to run maintenance operation'
+        const data = parseSsePayload(event, 'error')
+        if (data) {
+          const message = typeof data.error === 'string'
+            ? data.error
+            : 'Failed to run maintenance operation'
           setResults(prev => ({
             ...prev,
             [operation]: {
@@ -1324,26 +1372,42 @@ export default function Maintenance() {
     eventSourceRef.current = eventSource
 
     eventSource.addEventListener('progress', (event) => {
-      const data = JSON.parse(event.data)
-      if (data.operation) {
+      const data = parseSsePayload(event, 'progress')
+      if (data && typeof data.operation === 'string') {
         const op = data.operation as MaintenanceOperation
         setBulkProgress(prev => prev ? { ...prev, [op]: 'running' } : null)
       }
     })
 
     eventSource.addEventListener('detailed-progress', (event) => {
-      const data = JSON.parse(event.data)
-      if (data.operation && data.current !== undefined && data.total !== undefined) {
-        const op = data.operation as MaintenanceOperation
-        setDetailedProgress(prev => ({
-          ...(prev || {}),
-          [op]: { current: data.current, total: data.total, message: data.message }
-        }))
+      const data = parseSsePayload(event, 'detailed-progress')
+      if (!data || typeof data.operation !== 'string') return
+      const current = data.current
+      const total = data.total
+      if (
+        typeof current !== 'number' ||
+        !Number.isFinite(current) ||
+        typeof total !== 'number' ||
+        !Number.isFinite(total)
+      ) {
+        return
       }
+
+      const op = data.operation as MaintenanceOperation
+      setDetailedProgress(prev => ({
+        ...(prev || {}),
+        [op]: {
+          current,
+          total,
+          message: typeof data.message === 'string' ? data.message : undefined
+        }
+      }))
     })
 
     eventSource.addEventListener('result', (event) => {
-      const result = JSON.parse(event.data) as OperationResult
+      const data = parseSsePayload(event, 'result')
+      if (!data || !isOperationResult(data)) return
+      const result = data
       if (result.operation) {
         const op = result.operation as MaintenanceOperation
         setBulkProgress(prev => prev ? { ...prev, [op]: 'completed' } : null)
@@ -1360,9 +1424,9 @@ export default function Maintenance() {
     })
 
     eventSource.addEventListener('error', (event) => {
-      if (event instanceof MessageEvent) {
-        const data = JSON.parse(event.data)
-        setBulkError(data.error || 'Unknown error')
+      const data = parseSsePayload(event, 'error')
+      if (data) {
+        setBulkError(typeof data.error === 'string' ? data.error : 'Unknown error')
       }
     })
 

@@ -9,32 +9,33 @@ import {
 
 export function useExtractionRunData() {
   const [recordsByRun, setRecordsByRun] = useState<Record<string, MemoryRecord[]>>({})
-  const [loadingRunId, setLoadingRunId] = useState<string | null>(null)
+  const [loadingRunIds, setLoadingRunIds] = useState<Record<string, boolean>>({})
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
   const [reviewsByRun, setReviewsByRun] = useState<Record<string, ExtractionReview | null>>({})
   const [reviewLoading, setReviewLoading] = useState<Record<string, boolean>>({})
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
-  const loadSeqRef = useRef(0)
+  const loadSeqRef = useRef<Record<string, number>>({})
 
   const loadRunDetails = useCallback(async (run: ExtractionRun) => {
-    if (recordsByRun[run.runId]) return
+    const runId = run.runId
+    if (recordsByRun[runId]) return
 
-    const loadSeq = loadSeqRef.current + 1
-    loadSeqRef.current = loadSeq
-    setLoadingRunId(run.runId)
-    setRunErrors(prev => ({ ...prev, [run.runId]: '' }))
+    const loadSeq = (loadSeqRef.current[runId] ?? 0) + 1
+    loadSeqRef.current[runId] = loadSeq
+    setLoadingRunIds(prev => ({ ...prev, [runId]: true }))
+    setRunErrors(prev => ({ ...prev, [runId]: '' }))
 
     try {
-      const response = await fetchExtractionRun(run.runId)
-      if (loadSeqRef.current !== loadSeq) return
-      setRecordsByRun(prev => ({ ...prev, [run.runId]: response.records }))
+      const response = await fetchExtractionRun(runId)
+      if (loadSeqRef.current[runId] !== loadSeq) return
+      setRecordsByRun(prev => ({ ...prev, [runId]: response.records }))
     } catch (err) {
-      if (loadSeqRef.current !== loadSeq) return
+      if (loadSeqRef.current[runId] !== loadSeq) return
       const message = err instanceof Error ? err.message : 'Failed to load extraction'
-      setRunErrors(prev => ({ ...prev, [run.runId]: message }))
+      setRunErrors(prev => ({ ...prev, [runId]: message }))
     } finally {
-      if (loadSeqRef.current === loadSeq) {
-        setLoadingRunId(null)
+      if (loadSeqRef.current[runId] === loadSeq) {
+        setLoadingRunIds(prev => ({ ...prev, [runId]: false }))
       }
     }
   }, [recordsByRun])
@@ -66,7 +67,7 @@ export function useExtractionRunData() {
 
   return {
     recordsByRun,
-    loadingRunId,
+    loadingRunIds,
     runErrors,
     reviewsByRun,
     reviewLoading,

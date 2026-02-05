@@ -39,7 +39,7 @@ export default function Extractions() {
 
   const {
     recordsByRun,
-    loadingRunId,
+    loadingRunIds,
     runErrors,
     reviewsByRun,
     reviewLoading,
@@ -241,7 +241,7 @@ export default function Extractions() {
             <ExtractionDetail
               run={selectedRun}
               recordsByRun={recordsByRun}
-              loadingRunId={loadingRunId}
+              loadingRunIds={loadingRunIds}
               runErrors={runErrors}
               reviewsByRun={reviewsByRun}
               reviewLoading={reviewLoading}

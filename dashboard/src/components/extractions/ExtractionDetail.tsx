@@ -13,7 +13,7 @@ import { extractProjectFromPath, getAccuracyBadge, truncateSessionId } from './u
 export default function ExtractionDetail({
   run,
   recordsByRun,
-  loadingRunId,
+  loadingRunIds,
   runErrors,
   reviewsByRun,
   reviewLoading,
@@ -31,7 +31,7 @@ export default function ExtractionDetail({
 }: {
   run: ExtractionRun | null
   recordsByRun: Record<string, MemoryRecord[]>
-  loadingRunId: string | null
+  loadingRunIds: Record<string, boolean>
   runErrors: Record<string, string>
   reviewsByRun: Record<string, ExtractionReview | null>
   reviewLoading: Record<string, boolean>
@@ -64,7 +64,7 @@ export default function ExtractionDetail({
   }
 
   const runRecords = recordsByRun[run.runId] ?? []
-  const isLoadingRecords = loadingRunId === run.runId
+  const isLoadingRecords = loadingRunIds[run.runId] === true
   const runError = runErrors[run.runId]
   const review = reviewsByRun[run.runId] ?? null
   const reviewLoadingState = reviewLoading[run.runId] ?? false

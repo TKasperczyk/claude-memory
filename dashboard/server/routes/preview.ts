@@ -16,14 +16,18 @@ export function createPreviewRouter(context: ServerContext): express.Router {
 
   router.post('/api/preview', async (req, res) => {
     try {
-      const { prompt, cwd = '/tmp', settings: rawSettingsOverride } = req.body
-      if (!prompt) {
+      const body = isPlainObject(req.body) ? req.body as Record<string, unknown> : {}
+      const rawPrompt = body.prompt
+      if (typeof rawPrompt !== 'string' || rawPrompt.trim().length === 0) {
         return res.status(400).json({ error: 'Prompt required' })
       }
+      const prompt = rawPrompt.trim()
+      const cwd = typeof body.cwd === 'string' && body.cwd.trim().length > 0 ? body.cwd : '/tmp'
+      const rawSettingsOverride = body.settings
 
       const config = await ensureConfigInitialized(req, baseConfig)
 
-      const diagnostic = parseOptionalBoolean(req.query.diagnostic ?? req.body?.diagnostic)
+      const diagnostic = parseOptionalBoolean(req.query.diagnostic ?? body.diagnostic)
       const settingsOverride = isPlainObject(rawSettingsOverride)
         ? coerceRetrievalSettings(rawSettingsOverride as Record<string, unknown>, loadSettings())
         : undefined
