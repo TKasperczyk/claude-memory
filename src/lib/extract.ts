@@ -106,6 +106,13 @@ External system bugs:
 - Example: "npm has race condition in postinstall scripts" or "Docker build cache invalidates unexpectedly".
 - These are valuable because they help future sessions avoid the same debugging journey.
 
+Information retrieval patterns (IMPORTANT):
+- When Claude doesn't know where to find something and the user shows how to retrieve it, extract this as a discovery.
+- The pattern: "user asks for X" → "Claude doesn't know where X is" → "user/skill reveals X is in Y" → EXTRACT "X can be found by querying Y"
+- These should be scope: "global" since they apply across projects.
+- The discovery should capture the RETRIEVAL METHOD, not just the content. If the content changes, the retrieval method stays valid.
+- This is especially valuable for credentials, tokens, configs, and any information the user expects Claude to "just know".
+
 Skip trivial commands:
 - Do NOT extract routine/trivial commands: ls, cd, cat, pwd, echo, mkdir, rm, cp, mv, touch, head, tail, wc, grep (basic usage), find (basic usage), git status, git log, git diff, git branch, git checkout, npm/pnpm/yarn install/build/test (without special flags or unless they fail interestingly), tsc, basic file reads.
 - Do NOT extract verification builds (pnpm build, npm run build, tsc) that just confirm code compiles - these are routine.
@@ -315,6 +322,8 @@ Extraction guidance:
    - Bug fixes and solutions implemented ("added lock file mechanism to prevent duplicate extractions")
    - Design decisions and their rationale ("reviewer loads actual transcript for validation")
    - Configuration changes (model versions, thresholds, limits, environment settings)
+   - Information retrieval patterns: WHERE to find credentials, tokens, configs, or other information
+     (HIGH PRIORITY - capture the retrieval method, not just the content)
    Also include specific tool/config discoveries when genuinely useful.
    IMPORTANT: Extract BOTH problems found AND solutions implemented - don't just extract warnings about what's wrong.
 4) ProcedureRecord: step-by-step procedures with exact commands.
