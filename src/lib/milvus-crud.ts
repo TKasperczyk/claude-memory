@@ -99,6 +99,7 @@ export async function incrementRecordCounters(
   try {
     const client = await ensureClient(config)
 
+    // NOTE: Read-modify-write can drop increments under concurrency; acceptable for ranking hints.
     const existing = await getRecordById(client, id, config, { includeEmbedding: true })
     if (!existing) return false
 

@@ -39,16 +39,15 @@ function getSessionLockPath(sessionId: string, collection?: string): string {
   return `${getSessionTrackingPath(sessionId, collection)}.lock`
 }
 
-function withSessionLock<T>(sessionId: string, action: () => T, collection?: string): T {
+function withSessionLock<T>(sessionId: string, action: () => T, collection?: string): T | null {
   const lockPath = getSessionLockPath(sessionId, collection)
   const handle = acquireFileLock(lockPath, {
     staleAfterMs: LOCK_STALE_MS,
     staleStrategy: 'pid',
     wait: { maxWaitMs: LOCK_MAX_WAIT_MS, retryDelayMs: LOCK_RETRY_DELAY_MS },
-    proceedOnTimeout: true,
     write: { data: () => `${process.pid}\n`, ignoreErrors: true },
     onTimeout: path => {
-      console.warn('[claude-memory] Timed out waiting for session lock; proceeding without lock:', path)
+      console.warn('[claude-memory] Timed out waiting for session lock; skipping session tracking write:', path)
     },
     onStaleRemoved: path => {
       console.warn('[claude-memory] Removed stale session lock:', path)
@@ -58,7 +57,7 @@ function withSessionLock<T>(sessionId: string, action: () => T, collection?: str
     }
   })
 
-  if (!handle) return action()
+  if (!handle || !handle.locked) return null
 
   try {
     return action()
@@ -97,7 +96,7 @@ export function appendSessionTracking(
   prompt?: string,
   status: InjectionStatus = 'injected',
   collection?: string
-): InjectionSessionRecord {
+): InjectionSessionRecord | null {
   // Add prompt to all entries if provided
   if (typeof prompt === 'string') {
     entries = entries.map(e => ({ ...e, prompt }))
