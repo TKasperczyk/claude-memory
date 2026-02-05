@@ -1,14 +1,9 @@
-import fs from 'fs'
-import path from 'path'
-import { homedir } from 'os'
 import { type ExtractionReview, type ExtractionReviewIssue } from './extraction-review.js'
 import { type InjectedMemoryVerdict, type InjectionReview, type MissedMemory } from './injection-review.js'
 import { asBoolean, asInteger, asNumber, asString, isPlainObject } from './parsing.js'
-import { readJsonFileSafe, writeJsonFile } from './json.js'
+import { JsonStore } from './file-store.js'
 import { sanitizeRunId, sanitizeSessionId } from './shared.js'
-import { getCollectionKey } from './retrieval-events.js'
 import { loadSessionTracking, saveSessionTracking } from './session-tracking.js'
-import { isDefaultCollection } from './storage-paths.js'
 import {
   clampScore,
   coerceInjectedVerdict,
@@ -20,100 +15,78 @@ import {
 } from './review-coercion.js'
 import { type MaintenanceReview } from '../../shared/types.js'
 
-const REVIEWS_ROOT = path.join(homedir(), '.claude-memory', 'reviews')
+const reviewStore = new JsonStore('reviews')
 
-function getReviewsDir(collection?: string): string {
-  return path.join(REVIEWS_ROOT, getCollectionKey(collection))
+function getReviewKey(runId: string): string {
+  return sanitizeRunId(runId)
 }
 
-function saveReviewFile<T>(filePath: string, review: T): void {
-  writeJsonFile(filePath, review, {
+function getInjectionReviewKey(sessionId: string): string {
+  return `injection-${sanitizeSessionId(sessionId)}`
+}
+
+function getMaintenanceReviewKey(resultId: string, operation: string): string {
+  const safeOperation = sanitizeRunId(operation)
+  const safeId = sanitizeRunId(resultId)
+  return `maintenance-${safeOperation}-${safeId}`
+}
+
+function saveReviewFile<T>(key: string, review: T, collection?: string): void {
+  reviewStore.write(key, review, {
+    collection,
     ensureDir: true,
     pretty: 2,
     onError: error => console.error('[claude-memory] Failed to write review:', error)
   })
 }
 
-function loadReviewFile<T>(filePath: string, coerce: (data: unknown) => T | null): T | null {
-  return readJsonFileSafe(filePath, {
+function loadReviewFile<T>(
+  key: string,
+  coerce: (data: unknown) => T | null,
+  collection?: string,
+  includeLegacyForDefault: boolean = false
+): T | null {
+  return reviewStore.read(key, {
+    collection,
+    includeLegacyForDefault,
     errorMessage: '[claude-memory] Failed to read review:',
-    coerce
+    coerce,
+    fallback: null
   })
 }
 
 export function getReviewPath(runId: string): string {
-  const safeId = sanitizeRunId(runId)
-  return path.join(REVIEWS_ROOT, `${safeId}.json`)
-}
-
-function getScopedReviewPath(runId: string, collection?: string): string {
-  const safeId = sanitizeRunId(runId)
-  return path.join(getReviewsDir(collection), `${safeId}.json`)
-}
-
-function loadReviewFileWithFallback<T>(
-  primaryPath: string,
-  legacyPath: string,
-  coerce: (data: unknown) => T | null,
-  collection?: string
-): T | null {
-  const primary = loadReviewFile(primaryPath, coerce)
-  if (primary) return primary
-  if (!isDefaultCollection(collection)) return null
-  return loadReviewFile(legacyPath, coerce)
-}
-
-function deleteReviewFileWithFallback(primaryPath: string, legacyPath: string, collection?: string): void {
-  const paths = [primaryPath]
-  if (isDefaultCollection(collection)) {
-    paths.push(legacyPath)
-  }
-
-  for (const filePath of paths) {
-    if (!fs.existsSync(filePath)) continue
-    try {
-      fs.unlinkSync(filePath)
-    } catch (error) {
-      console.error('[claude-memory] Failed to delete extraction review:', error)
-    }
-  }
+  return reviewStore.buildPath(getReviewKey(runId), { legacy: true, sanitize: false })
 }
 
 export function saveReview(review: ExtractionReview, collection?: string): void {
-  const filePath = getScopedReviewPath(review.runId, collection)
-  saveReviewFile(filePath, review)
+  saveReviewFile(getReviewKey(review.runId), review, collection)
 }
 
 export function getReview(runId: string, collection?: string): ExtractionReview | null {
-  return loadReviewFileWithFallback(
-    getScopedReviewPath(runId, collection),
-    getReviewPath(runId),
+  return loadReviewFile(
+    getReviewKey(runId),
     data => coerceExtractionReview(data, runId),
-    collection
+    collection,
+    true
   )
 }
 
 export function deleteReview(runId: string, collection?: string): void {
-  deleteReviewFileWithFallback(
-    getScopedReviewPath(runId, collection),
-    getReviewPath(runId),
-    collection
-  )
-}
-
-function getLegacyInjectionReviewPath(sessionId: string): string {
-  const safeId = sanitizeSessionId(sessionId)
-  return path.join(REVIEWS_ROOT, `injection-${safeId}.json`)
+  reviewStore.delete(getReviewKey(runId), {
+    collection,
+    includeLegacyForDefault: true,
+    continueOnError: true,
+    onError: error => console.error('[claude-memory] Failed to delete extraction review:', error)
+  })
 }
 
 export function getInjectionReviewPath(sessionId: string, collection?: string): string {
-  const safeId = sanitizeSessionId(sessionId)
-  return path.join(getReviewsDir(collection), `injection-${safeId}.json`)
+  return reviewStore.buildPath(getInjectionReviewKey(sessionId), { collection, sanitize: false })
 }
 
 export function saveInjectionReview(review: InjectionReview, collection?: string): void {
-  const filePath = getInjectionReviewPath(review.sessionId, collection)
-  saveReviewFile(filePath, review)
+  saveReviewFile(getInjectionReviewKey(review.sessionId), review, collection)
   try {
     const session = loadSessionTracking(review.sessionId, collection)
     if (!session || session.hasReview) return
@@ -124,52 +97,35 @@ export function saveInjectionReview(review: InjectionReview, collection?: string
 }
 
 export function getInjectionReview(sessionId: string, collection?: string): InjectionReview | null {
-  return loadReviewFileWithFallback(
-    getInjectionReviewPath(sessionId, collection),
-    getLegacyInjectionReviewPath(sessionId),
+  return loadReviewFile(
+    getInjectionReviewKey(sessionId),
     data => coerceInjectionReview(data, sessionId),
-    collection
+    collection,
+    true
   )
 }
 
 export async function hasInjectionReview(sessionId: string, collection?: string): Promise<boolean> {
-  try {
-    await fs.promises.access(getInjectionReviewPath(sessionId, collection))
-    return true
-  } catch {
-    if (!isDefaultCollection(collection)) return false
-    try {
-      await fs.promises.access(getLegacyInjectionReviewPath(sessionId))
-      return true
-    } catch {
-      return false
-    }
-  }
-}
-
-function getLegacyMaintenanceReviewPath(resultId: string, operation: string): string {
-  const safeOperation = sanitizeRunId(operation)
-  const safeId = sanitizeRunId(resultId)
-  return path.join(REVIEWS_ROOT, `maintenance-${safeOperation}-${safeId}.json`)
+  return reviewStore.exists(getInjectionReviewKey(sessionId), {
+    collection,
+    includeLegacyForDefault: true
+  })
 }
 
 export function getMaintenanceReviewPath(resultId: string, operation: string, collection?: string): string {
-  const safeOperation = sanitizeRunId(operation)
-  const safeId = sanitizeRunId(resultId)
-  return path.join(getReviewsDir(collection), `maintenance-${safeOperation}-${safeId}.json`)
+  return reviewStore.buildPath(getMaintenanceReviewKey(resultId, operation), { collection, sanitize: false })
 }
 
 export function saveMaintenanceReview(review: MaintenanceReview, collection?: string): void {
-  const filePath = getMaintenanceReviewPath(review.resultId, review.operation, collection)
-  saveReviewFile(filePath, review)
+  saveReviewFile(getMaintenanceReviewKey(review.resultId, review.operation), review, collection)
 }
 
 export function getMaintenanceReview(resultId: string, operation: string, collection?: string): MaintenanceReview | null {
-  return loadReviewFileWithFallback(
-    getMaintenanceReviewPath(resultId, operation, collection),
-    getLegacyMaintenanceReviewPath(resultId, operation),
+  return loadReviewFile(
+    getMaintenanceReviewKey(resultId, operation),
     data => coerceMaintenanceReview(data, resultId, operation),
-    collection
+    collection,
+    true
   )
 }
 

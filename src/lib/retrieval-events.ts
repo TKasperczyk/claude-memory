@@ -1,8 +1,5 @@
 import fs from 'fs'
-import path from 'path'
-import { homedir } from 'os'
-import { sanitizeRunId } from './shared.js'
-import { DEFAULT_CONFIG } from './types.js'
+import { JsonLinesStore } from './file-store.js'
 import {
   buildTimeBuckets,
   parseDateKeyUtc,
@@ -17,41 +14,26 @@ import type {
   RetrievalEvent
 } from '../../shared/types.js'
 
-const EVENTS_ROOT = path.join(homedir(), '.claude-memory', 'retrieval-events')
 const EVENT_SUFFIX = '.jsonl'
 const RETRIEVAL_RETENTION_DAYS = 90
 
-export function getCollectionKey(collection?: string): string {
-  const fallback = DEFAULT_CONFIG.milvus.collection
-  const raw = (collection ?? fallback).trim()
-  return sanitizeRunId(raw || fallback)
-}
+const eventsStore = new JsonLinesStore('retrieval-events', { suffix: EVENT_SUFFIX })
 
-function getCollectionDir(collection?: string): string {
-  return path.join(EVENTS_ROOT, getCollectionKey(collection))
-}
+export { getCollectionKey } from './file-store.js'
 
 function getEventPath(dateKey: string, collection?: string): string {
-  return path.join(getCollectionDir(collection), `${dateKey}${EVENT_SUFFIX}`)
+  return eventsStore.buildPath(dateKey, { collection, sanitize: false })
 }
 
 function cleanupOldEvents(collection?: string): void {
-  const dir = getCollectionDir(collection)
-  if (!fs.existsSync(dir)) return
-
   const cutoff = Date.now() - RETRIEVAL_RETENTION_DAYS * DAY_MS
 
   try {
-    const files = fs.readdirSync(dir).filter(file => file.endsWith(EVENT_SUFFIX))
-    for (const file of files) {
-      const dateKey = file.slice(0, -EVENT_SUFFIX.length)
-      const dayStart = parseDateKeyUtc(dateKey)
-      const filePath = path.join(dir, file)
-      const reference = dayStart ?? fs.statSync(filePath).mtimeMs
-      if (reference < cutoff) {
-        fs.unlinkSync(filePath)
-      }
-    }
+    eventsStore.cleanupByAge({
+      collection,
+      cutoffMs: cutoff,
+      keyToTimestamp: dateKey => parseDateKeyUtc(dateKey)
+    })
   } catch (error) {
     console.error('[claude-memory] Failed to clean up retrieval events:', error)
   }
@@ -68,14 +50,10 @@ function countEvents(filePath: string): number {
 }
 
 function readDailyCounts(collection?: string): Map<string, number> {
-  const dir = getCollectionDir(collection)
-  if (!fs.existsSync(dir)) return new Map()
-
   const counts = new Map<string, number>()
-  const files = fs.readdirSync(dir).filter(file => file.endsWith(EVENT_SUFFIX))
-  for (const file of files) {
-    const dateKey = file.slice(0, -EVENT_SUFFIX.length)
-    const filePath = path.join(dir, file)
+  const dateKeys = eventsStore.list({ collection })
+  for (const dateKey of dateKeys) {
+    const filePath = getEventPath(dateKey, collection)
     counts.set(dateKey, countEvents(filePath))
   }
   return counts
@@ -114,12 +92,8 @@ export function recordRetrievalEvents(
 
     if (byDate.size === 0) return
 
-    const dir = getCollectionDir(options.collection)
-    fs.mkdirSync(dir, { recursive: true })
-
     for (const [dateKey, entries] of byDate) {
-      const payload = entries.map(entry => JSON.stringify(entry)).join('\n') + '\n'
-      fs.appendFileSync(getEventPath(dateKey, options.collection), payload, 'utf-8')
+      eventsStore.append(dateKey, entries, { collection: options.collection })
     }
   } catch (error) {
     console.error('[claude-memory] Failed to record retrieval events:', error)

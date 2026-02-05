@@ -1,49 +1,12 @@
-import fs from 'fs'
-import path from 'path'
-import { homedir } from 'os'
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
-import { readJsonFileSafe, writeJsonFile } from './json.js'
-import { sanitizeRunId } from './shared.js'
+import { JsonStore, isDefaultCollection } from './file-store.js'
 import { getRecordSummary } from './record-summary.js'
-import { getCollectionKey } from './retrieval-events.js'
-import { isDefaultCollection } from './storage-paths.js'
 import { loadSettings } from './settings.js'
 import type { ExtractionRecordSummary, ExtractionRun, RecordType } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
 
-const EXTRACTIONS_ROOT = path.join(homedir(), '.claude-memory', 'extractions')
-
-function getExtractionsDir(collection?: string): string {
-  return path.join(EXTRACTIONS_ROOT, getCollectionKey(collection))
-}
-
-function getLegacyExtractionRunPath(runId: string): string {
-  const safeId = sanitizeRunId(runId)
-  return path.join(EXTRACTIONS_ROOT, `${safeId}.json`)
-}
-
-function getExtractionRunPath(runId: string, collection?: string): string {
-  const safeId = sanitizeRunId(runId)
-  return path.join(getExtractionsDir(collection), `${safeId}.json`)
-}
-
-function cleanupDir(dir: string, cutoff: number): void {
-  if (!fs.existsSync(dir)) return
-
-  const files = fs.readdirSync(dir).filter(file => file.endsWith('.json'))
-  for (const file of files) {
-    const filePath = path.join(dir, file)
-    try {
-      const stats = fs.statSync(filePath)
-      if (stats.mtimeMs < cutoff) {
-        fs.unlinkSync(filePath)
-      }
-    } catch {
-      // ignore
-    }
-  }
-}
+const extractionStore = new JsonStore('extractions')
 
 function cleanupOldExtractionLogs(collection?: string): void {
   const settings = loadSettings()
@@ -51,40 +14,35 @@ function cleanupOldExtractionLogs(collection?: string): void {
   const cutoff = Date.now() - Math.max(daysToKeep, 1) * 24 * 60 * 60 * 1000
 
   try {
-    cleanupDir(getExtractionsDir(collection), cutoff)
-    if (isDefaultCollection(collection)) {
-      cleanupDir(EXTRACTIONS_ROOT, cutoff)
-    }
+    extractionStore.cleanupByAge({
+      collection,
+      cutoffMs: cutoff,
+      includeLegacyForDefault: isDefaultCollection(collection)
+    })
   } catch (error) {
     console.error('[claude-memory] Failed to clean up extraction logs:', error)
   }
 }
 
-function readExtractionRun(filePath: string, runId: string): ExtractionRun | null {
-  return readJsonFileSafe(filePath, {
+function readExtractionRun(runId: string, collection?: string): ExtractionRun | null {
+  return extractionStore.read(runId, {
+    collection,
+    includeLegacyForDefault: isDefaultCollection(collection),
     errorMessage: '[claude-memory] Failed to read extraction run log:',
-    coerce: data => coerceExtractionRun(data, runId)
+    coerce: data => coerceExtractionRun(data, runId),
+    fallback: null
   })
-}
-
-function listRunIds(dir: string): string[] {
-  if (!fs.existsSync(dir)) return []
-  try {
-    return fs.readdirSync(dir)
-      .filter(file => file.endsWith('.json'))
-      .map(file => file.replace(/\.json$/, ''))
-  } catch (error) {
-    console.error('[claude-memory] Failed to list extraction runs:', error)
-    return []
-  }
 }
 
 export function saveExtractionRun(run: ExtractionRun, collection?: string): void {
   try {
     // Cleanup happens on save to avoid extra I/O when no extractions run.
     cleanupOldExtractionLogs(collection)
-    const filePath = getExtractionRunPath(run.runId, collection)
-    writeJsonFile(filePath, run, { ensureDir: true, pretty: 2 })
+    extractionStore.write(run.runId, run, {
+      collection,
+      ensureDir: true,
+      pretty: 2
+    })
   } catch (error) {
     console.error('[claude-memory] Failed to write extraction run log:', error)
   }
@@ -92,12 +50,10 @@ export function saveExtractionRun(run: ExtractionRun, collection?: string): void
 
 export function listExtractionRuns(collection?: string): ExtractionRun[] {
   try {
-    const ids = new Set<string>(listRunIds(getExtractionsDir(collection)))
-    if (isDefaultCollection(collection)) {
-      for (const runId of listRunIds(EXTRACTIONS_ROOT)) {
-        ids.add(runId)
-      }
-    }
+    const ids = extractionStore.list({
+      collection,
+      includeLegacyForDefault: isDefaultCollection(collection)
+    })
     const runs: ExtractionRun[] = []
 
     for (const runId of ids) {
@@ -114,30 +70,15 @@ export function listExtractionRuns(collection?: string): ExtractionRun[] {
 }
 
 export function getExtractionRun(runId: string, collection?: string): ExtractionRun | null {
-  const primaryPath = getExtractionRunPath(runId, collection)
-  const primary = readExtractionRun(primaryPath, runId)
-  if (primary) return primary
-
-  if (isDefaultCollection(collection)) {
-    return readExtractionRun(getLegacyExtractionRunPath(runId), runId)
-  }
-
-  return null
+  return readExtractionRun(runId, collection)
 }
 
 export function deleteExtractionRun(runId: string, collection?: string): boolean {
-  let deleted = false
-  const paths = [getExtractionRunPath(runId, collection)]
-  if (isDefaultCollection(collection)) {
-    paths.push(getLegacyExtractionRunPath(runId))
-  }
   try {
-    for (const filePath of paths) {
-      if (!fs.existsSync(filePath)) continue
-      fs.unlinkSync(filePath)
-      deleted = true
-    }
-    return deleted
+    return extractionStore.delete(runId, {
+      collection,
+      includeLegacyForDefault: isDefaultCollection(collection)
+    })
   } catch (error) {
     console.error('[claude-memory] Failed to delete extraction run log:', error)
     throw error

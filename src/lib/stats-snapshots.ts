@@ -1,9 +1,5 @@
-import fs from 'fs'
-import path from 'path'
-import { homedir } from 'os'
 import { asInteger, asNumber, isPlainObject } from './parsing.js'
-import { readJsonFileSafe, writeJsonFile } from './json.js'
-import { getCollectionKey } from './retrieval-events.js'
+import { JsonStore } from './file-store.js'
 import {
   buildTimeBuckets,
   parseDateKeyUtc,
@@ -17,9 +13,9 @@ import type {
   StatsSnapshot
 } from '../../shared/types.js'
 
-const SNAPSHOTS_ROOT = path.join(homedir(), '.claude-memory', 'stats-snapshots')
 const SNAPSHOT_SUFFIX = '.json'
 const SNAPSHOT_RETENTION_DAYS = 180
+const snapshotsStore = new JsonStore('stats-snapshots', { suffix: SNAPSHOT_SUFFIX })
 
 type StatsHistoryBucket = {
   start: number
@@ -32,31 +28,15 @@ export type StatsHistory = {
   buckets: StatsHistoryBucket[]
 }
 
-function getSnapshotsDir(collection?: string): string {
-  return path.join(SNAPSHOTS_ROOT, getCollectionKey(collection))
-}
-
-function getSnapshotPath(dateKey: string, collection?: string): string {
-  return path.join(getSnapshotsDir(collection), `${dateKey}${SNAPSHOT_SUFFIX}`)
-}
-
 function cleanupOldSnapshots(collection?: string): void {
-  const dir = getSnapshotsDir(collection)
-  if (!fs.existsSync(dir)) return
-
   const cutoff = Date.now() - SNAPSHOT_RETENTION_DAYS * DAY_MS
 
   try {
-    const files = fs.readdirSync(dir).filter(file => file.endsWith(SNAPSHOT_SUFFIX))
-    for (const file of files) {
-      const dateKey = file.slice(0, -SNAPSHOT_SUFFIX.length)
-      const dayStart = parseDateKeyUtc(dateKey)
-      const filePath = path.join(dir, file)
-      const reference = dayStart ?? fs.statSync(filePath).mtimeMs
-      if (reference < cutoff) {
-        fs.unlinkSync(filePath)
-      }
-    }
+    snapshotsStore.cleanupByAge({
+      collection,
+      cutoffMs: cutoff,
+      keyToTimestamp: dateKey => parseDateKeyUtc(dateKey)
+    })
   } catch (error) {
     console.error('[claude-memory] Failed to clean up stats snapshots:', error)
   }
@@ -97,8 +77,11 @@ export function saveStatsSnapshot(snapshot: StatsSnapshot, options: { collection
   try {
     cleanupOldSnapshots(options.collection)
     const dateKey = toDateKeyUtc(snapshot.timestamp)
-    const filePath = getSnapshotPath(dateKey, options.collection)
-    writeJsonFile(filePath, snapshot, { ensureDir: true, pretty: 2 })
+    snapshotsStore.write(dateKey, snapshot, {
+      collection: options.collection,
+      ensureDir: true,
+      pretty: 2
+    })
   } catch (error) {
     console.error('[claude-memory] Failed to write stats snapshot:', error)
   }
@@ -106,7 +89,7 @@ export function saveStatsSnapshot(snapshot: StatsSnapshot, options: { collection
 
 export function hasStatsSnapshot(timestamp: number, collection?: string): boolean {
   const dateKey = toDateKeyUtc(timestamp)
-  return fs.existsSync(getSnapshotPath(dateKey, collection))
+  return snapshotsStore.exists(dateKey, { collection })
 }
 
 export function saveStatsSnapshotIfNeeded(
@@ -125,22 +108,18 @@ export function saveStatsSnapshotIfNeeded(
 }
 
 export function getStatsSnapshot(dateKey: string, collection?: string): StatsSnapshot | null {
-  const filePath = getSnapshotPath(dateKey, collection)
-  return readJsonFileSafe(filePath, {
+  return snapshotsStore.read(dateKey, {
+    collection,
     errorMessage: '[claude-memory] Failed to read stats snapshot:',
-    coerce: data => coerceStatsSnapshot(data, dateKey)
+    coerce: data => coerceStatsSnapshot(data, dateKey),
+    fallback: null
   })
 }
 
 export function listStatsSnapshots(collection?: string): StatsSnapshot[] {
-  const dir = getSnapshotsDir(collection)
-  if (!fs.existsSync(dir)) return []
-
   try {
-    const files = fs.readdirSync(dir).filter(file => file.endsWith(SNAPSHOT_SUFFIX))
     const snapshots: StatsSnapshot[] = []
-    for (const file of files) {
-      const dateKey = file.slice(0, -SNAPSHOT_SUFFIX.length)
+    for (const dateKey of snapshotsStore.list({ collection })) {
       const snapshot = getStatsSnapshot(dateKey, collection)
       if (snapshot) snapshots.push(snapshot)
     }

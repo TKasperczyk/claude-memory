@@ -6,7 +6,7 @@ import { escapeFilterValue } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import { OUTPUT_FIELDS, createCollection } from './milvus-schema.js'
 import { ensureClient } from './milvus-client.js'
-import { getCollectionKey } from './retrieval-events.js'
+import { getCollectionKey } from './file-store.js'
 import {
   buildMilvusRow,
   mergeRecords,

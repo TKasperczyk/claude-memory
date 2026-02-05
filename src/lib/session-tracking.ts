@@ -1,12 +1,8 @@
 import fs from 'fs'
-import path from 'path'
-import { homedir } from 'os'
 import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, isPlainObject } from './parsing.js'
-import { readJsonFileSafe, writeJsonFile } from './json.js'
+import { JsonStore, isDefaultCollection } from './file-store.js'
 import { acquireFileLock } from './lock.js'
 import { sanitizeSessionId } from './shared.js'
-import { getCollectionKey } from './retrieval-events.js'
-import { isDefaultCollection } from './storage-paths.js'
 import {
   type InjectedMemoryEntry,
   type InjectionPromptEntry,
@@ -15,24 +11,18 @@ import {
   type RecordType
 } from './types.js'
 
-const SESSIONS_ROOT = path.join(homedir(), '.claude-memory', 'sessions')
+const sessionStore = new JsonStore('sessions', { sanitizeKey: sanitizeSessionId })
 const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure|warning):/i
 const LOCK_RETRY_DELAY_MS = 25
 const LOCK_MAX_WAIT_MS = 1000
 const LOCK_STALE_MS = 30_000
 
-function getSessionsDir(collection?: string): string {
-  return path.join(SESSIONS_ROOT, getCollectionKey(collection))
-}
-
 function getLegacySessionTrackingPath(sessionId: string): string {
-  const safeId = sanitizeSessionId(sessionId)
-  return path.join(SESSIONS_ROOT, `${safeId}.json`)
+  return sessionStore.buildPath(sessionId, { legacy: true })
 }
 
 function getSessionTrackingPath(sessionId: string, collection?: string): string {
-  const safeId = sanitizeSessionId(sessionId)
-  return path.join(getSessionsDir(collection), `${safeId}.json`)
+  return sessionStore.buildPath(sessionId, { collection })
 }
 
 function getSessionLockPath(sessionId: string, collection?: string): string {
@@ -66,24 +56,27 @@ function withSessionLock<T>(sessionId: string, action: () => T, collection?: str
   }
 }
 
-function readSessionTrackingFile(filePath: string, sessionId: string): InjectionSessionRecord | null {
-  return readJsonFileSafe(filePath, {
+function readSessionTrackingFile(sessionId: string, collection?: string): InjectionSessionRecord | null {
+  return sessionStore.read(sessionId, {
+    collection,
+    includeLegacyForDefault: isDefaultCollection(collection),
     errorMessage: '[claude-memory] Failed to read session tracking file:',
-    coerce: data => coerceSessionRecord(data, sessionId)
+    coerce: data => coerceSessionRecord(data, sessionId),
+    fallback: null
   })
 }
 
 export function loadSessionTracking(sessionId: string, collection?: string): InjectionSessionRecord | null {
-  const primary = readSessionTrackingFile(getSessionTrackingPath(sessionId, collection), sessionId)
-  if (primary) return primary
-  if (!isDefaultCollection(collection)) return null
-  return readSessionTrackingFile(getLegacySessionTrackingPath(sessionId), sessionId)
+  return readSessionTrackingFile(sessionId, collection)
 }
 
 export function saveSessionTracking(record: InjectionSessionRecord, collection?: string): void {
   try {
-    const filePath = getSessionTrackingPath(record.sessionId, collection)
-    writeJsonFile(filePath, record, { ensureDir: true, pretty: 2 })
+    sessionStore.write(record.sessionId, record, {
+      collection,
+      ensureDir: true,
+      pretty: 2
+    })
   } catch (error) {
     console.error('[claude-memory] Failed to write session tracking file:', error)
   }
@@ -132,27 +125,12 @@ export function appendSessionTracking(
   }, collection)
 }
 
-function listSessionIds(dir: string): string[] {
-  if (!fs.existsSync(dir)) return []
-  try {
-    return fs.readdirSync(dir)
-      .filter(f => f.endsWith('.json'))
-      .map(file => file.replace(/\.json$/, ''))
-  } catch (error) {
-    console.error('[claude-memory] Failed to list sessions:', error)
-    return []
-  }
-}
-
 export function listAllSessions(collection?: string): InjectionSessionRecord[] {
-  const ids = new Set<string>(listSessionIds(getSessionsDir(collection)))
-  if (isDefaultCollection(collection)) {
-    for (const id of listSessionIds(SESSIONS_ROOT)) {
-      ids.add(id)
-    }
-  }
-
   try {
+    const ids = sessionStore.list({
+      collection,
+      includeLegacyForDefault: isDefaultCollection(collection)
+    })
     const sessions: InjectionSessionRecord[] = []
     for (const sessionId of ids) {
       const record = loadSessionTracking(sessionId, collection)
@@ -183,16 +161,21 @@ export function dedupeInjectedMemories(memories: InjectedMemoryEntry[]): Injecte
 }
 
 export function removeSessionTracking(sessionId: string, collection?: string): void {
-  const paths = [getSessionTrackingPath(sessionId, collection)]
+  sessionStore.delete(sessionId, {
+    collection,
+    includeLegacyForDefault: isDefaultCollection(collection),
+    continueOnError: true,
+    onError: error => console.error('[claude-memory] Failed to remove session tracking file:', error)
+  })
+
   const lockPaths = [getSessionLockPath(sessionId, collection)]
 
   if (isDefaultCollection(collection)) {
     const legacyPath = getLegacySessionTrackingPath(sessionId)
-    paths.push(legacyPath)
     lockPaths.push(`${legacyPath}.lock`)
   }
 
-  for (const filePath of [...paths, ...lockPaths]) {
+  for (const filePath of lockPaths) {
     if (!fs.existsSync(filePath)) continue
 
     try {
