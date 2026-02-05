@@ -24,11 +24,11 @@ function Sidebar() {
   const location = useLocation()
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-50 w-52 border-r border-sidebar-border bg-sidebar backdrop-blur-sm flex flex-col">
+    <aside className="fixed inset-y-0 left-0 z-50 w-56 border-r border-sidebar-border bg-sidebar flex flex-col">
       {/* Logo */}
       <div className="h-14 flex items-center px-4 border-b border-sidebar-border">
         <div className="flex items-center gap-2.5">
-          <div className="w-2.5 h-2.5 rounded-full bg-type-discovery shadow-[0_0_8px_rgba(96,165,250,0.4)]" />
+          <div className="w-2.5 h-2.5 rounded-full bg-type-discovery" />
           <span className="font-semibold text-[15px] tracking-tight">Memory</span>
         </div>
       </div>
@@ -42,10 +42,10 @@ function Sidebar() {
               <li key={item.name}>
                 <NavLink
                   to={item.href}
-                  className={`flex items-center gap-3 px-3 py-2 text-[13px] rounded-lg transition-all duration-150 ${
+                  className={`flex items-center gap-3 px-3 py-2 text-[13px] rounded-lg transition-colors duration-150 ${
                     isActive
-                      ? 'bg-secondary/80 text-foreground font-medium shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-secondary/40'
+                      ? 'bg-secondary text-foreground font-medium'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
                   }`}
                 >
                   <item.icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
@@ -59,7 +59,7 @@ function Sidebar() {
 
       {/* Footer */}
       <div className="px-4 py-3 border-t border-sidebar-border">
-        <div className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 font-medium">
+        <div className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/60 font-medium">
           Claude Memory
         </div>
       </div>
@@ -72,7 +72,7 @@ export default function App() {
     <BrowserRouter>
       <div className="min-h-screen bg-background">
         <Sidebar />
-        <main className="pl-52 min-h-screen">
+        <main className="pl-56 min-h-screen">
           <div className="max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 lg:px-8 py-6 w-full">
             <Routes>
               <Route path="/" element={<Overview />} />

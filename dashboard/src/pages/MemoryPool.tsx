@@ -159,7 +159,7 @@ export default function MemoryPool() {
           <select
             value={typeFilter}
             onChange={e => setTypeFilter(e.target.value as RecordType | 'all')}
-            className="w-full h-9 px-3 rounded-lg border border-input bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors"
+            className="w-full h-9 px-3 rounded-lg border border-input bg-secondary text-sm focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer transition-colors"
           >
             {typeOptions.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -173,7 +173,7 @@ export default function MemoryPool() {
           <select
             value={projectFilter}
             onChange={e => setProjectFilter(e.target.value)}
-            className="w-full h-9 px-3 rounded-lg border border-input bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors"
+            className="w-full h-9 px-3 rounded-lg border border-input bg-secondary text-sm focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer transition-colors"
           >
             <option value="all">All projects</option>
             {projectOptions.map(p => (

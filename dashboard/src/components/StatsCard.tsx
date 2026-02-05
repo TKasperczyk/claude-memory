@@ -22,7 +22,7 @@ export default function StatsCard({ label, value, subtext, sparklineData, sparkl
   })() : null
 
   return (
-    <div className="relative p-4 rounded-lg bg-muted/30 border border-border/40 overflow-hidden">
+    <div className="relative p-4 rounded-lg bg-secondary border border-border overflow-hidden">
       <div className="relative z-10">
         <div className="text-xs font-medium text-muted-foreground mb-1">
           {label}

@@ -49,7 +49,7 @@ function DistributionBar({ data }: { data: { type: RecordType; count: number }[]
   return (
     <div className="space-y-4">
       {/* Bar */}
-      <div className="flex h-2.5 rounded-full overflow-hidden bg-secondary/60">
+      <div className="flex h-2.5 rounded-full overflow-hidden bg-secondary">
         {data.map(({ type, count }) => {
           const percent = (count / total) * 100
           if (percent === 0) return null
@@ -64,11 +64,11 @@ function DistributionBar({ data }: { data: { type: RecordType; count: number }[]
       </div>
 
       {/* Legend */}
-      <div className="flex flex-wrap gap-x-8 gap-y-2">
+      <div className="flex flex-wrap gap-x-6 gap-y-2">
         {data.map(({ type, count }) => (
-          <div key={type} className="flex items-center gap-2.5">
+          <div key={type} className="flex items-center gap-2">
             <span
-              className="w-2.5 h-2.5 rounded-full ring-2 ring-background"
+              className="w-2.5 h-2.5 rounded-full"
               style={{ backgroundColor: TYPE_CONFIG[type].color }}
             />
             <span className="text-sm text-muted-foreground">
@@ -112,9 +112,9 @@ function TopList({
                 {value}
               </span>
             </div>
-            <div className="h-1.5 rounded-full bg-secondary/50 overflow-hidden">
+            <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-foreground/30 to-foreground/20 rounded-full transition-all duration-300"
+                className="h-full bg-foreground/20 rounded-full transition-all duration-300"
                 style={{ width: `${(value / maxValue) * 100}%` }}
               />
             </div>
@@ -141,7 +141,7 @@ function ScopeDistribution({ data }: { data: Record<string, number> }) {
   return (
     <div className="space-y-4">
       {/* Bar */}
-      <div className="flex h-2.5 rounded-full overflow-hidden bg-secondary/60">
+      <div className="flex h-2.5 rounded-full overflow-hidden bg-secondary">
         {entries.map(({ scope, count }) => {
           const percent = (count / total) * 100
           if (percent === 0) return null
@@ -157,13 +157,13 @@ function ScopeDistribution({ data }: { data: Record<string, number> }) {
       </div>
 
       {/* Legend */}
-      <div className="flex flex-wrap gap-x-8 gap-y-2">
+      <div className="flex flex-wrap gap-x-6 gap-y-2">
         {entries.map(({ scope, count }) => {
           const config = SCOPE_CONFIG[scope] ?? { label: scope, color: 'hsl(var(--muted-foreground))' }
           return (
-            <div key={scope} className="flex items-center gap-2.5">
+            <div key={scope} className="flex items-center gap-2">
               <span
-                className="w-2.5 h-2.5 rounded-full ring-2 ring-background"
+                className="w-2.5 h-2.5 rounded-full"
                 style={{ backgroundColor: config.color }}
               />
               <span className="text-sm text-muted-foreground">

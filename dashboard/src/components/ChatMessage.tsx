@@ -11,10 +11,10 @@ export default function ChatMessage({ role, content }: ChatMessageProps) {
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm leading-relaxed whitespace-pre-wrap shadow-sm border ${
+        className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm leading-relaxed whitespace-pre-wrap border ${
           isUser
             ? 'bg-primary text-primary-foreground border-primary/30'
-            : 'bg-secondary text-foreground border-border/60'
+            : 'bg-secondary text-foreground border-border'
         }`}
       >
         {content}

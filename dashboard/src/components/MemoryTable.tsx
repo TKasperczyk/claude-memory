@@ -20,7 +20,7 @@ interface MemoryTableProps {
 export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryTableProps) {
   if (records.length === 0) {
     return (
-      <Card className="py-16 text-center text-sm text-muted-foreground/70">
+      <Card className="py-16 text-center text-sm text-muted-foreground">
         {emptyMessage ?? 'No memories found'}
       </Card>
     )
@@ -49,21 +49,21 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
               >
                 <TableCell className="px-4 py-3">
                   <span
-                    className="block w-2.5 h-2.5 rounded-full shadow-sm"
+                    className="block w-2.5 h-2.5 rounded-full"
                     style={{ backgroundColor: TYPE_COLORS[record.type] }}
                     title={record.type}
                   />
                 </TableCell>
                 <TableCell className="px-4 py-3">
-                  <div className="font-medium text-foreground/95 truncate">{summary}</div>
+                  <div className="font-medium text-foreground truncate">{summary}</div>
                 </TableCell>
-                <TableCell className="px-4 py-3 text-muted-foreground/80 truncate text-[13px]">
+                <TableCell className="px-4 py-3 text-muted-foreground truncate text-[13px]">
                   {record.project ?? '—'}
                 </TableCell>
-                <TableCell className="px-4 py-3 text-muted-foreground/80 truncate text-[13px]">
+                <TableCell className="px-4 py-3 text-muted-foreground truncate text-[13px]">
                   {record.domain ?? '—'}
                 </TableCell>
-                <TableCell className={`px-4 py-3 truncate text-[13px] ${record.scope === 'global' ? 'text-type-discovery font-medium' : 'text-muted-foreground/80'}`}>
+                <TableCell className={`px-4 py-3 truncate text-[13px] ${record.scope === 'global' ? 'text-type-discovery font-medium' : 'text-muted-foreground'}`}>
                   {record.scope ?? 'project'}
                 </TableCell>
               </TableRow>

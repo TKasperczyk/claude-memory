@@ -254,7 +254,7 @@ export default function Chat() {
           ))}
           <div ref={bottomRef} />
         </CardContent>
-        <div className="border-t border-border/60 p-3 space-y-2">
+        <div className="border-t border-border p-3 space-y-2">
           {error && (
             <div className="text-sm text-destructive">{error}</div>
           )}
@@ -263,7 +263,7 @@ export default function Chat() {
               value={input}
               onChange={e => setInput(e.target.value)}
               placeholder="Ask the memory assistant..."
-              className="flex-1 min-h-[44px] max-h-32 rounded-lg border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex-1 min-h-[44px] max-h-32 rounded-lg border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
