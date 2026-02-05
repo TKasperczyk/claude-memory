@@ -18,10 +18,10 @@ Guidelines:
 - Be concise but informative about what you find
 - If search returns nothing, suggest lowering min_similarity or broadening the query`
 
-const CHAT_MODEL = 'claude-sonnet-4-20250514'
-const CHAT_MAX_TOKENS = 1024
+const CHAT_MODEL = 'claude-opus-4-5-20251101'
+const CHAT_MAX_TOKENS = 10000
 const CHAT_TEMPERATURE = 0.2
-const MAX_TOOL_ROUNDS = 6
+const MAX_TOOL_ROUNDS = 50
 
 type ChatMessage = {
   role: 'user' | 'assistant'

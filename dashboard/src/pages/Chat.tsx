@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Loader2, ChevronDown } from 'lucide-react'
+import { Loader2, ChevronDown, Send, Sparkles, MessageSquare } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -53,33 +53,39 @@ function formatToolSummary(tool: ChatToolName, input: unknown): string {
 function ToolCallEntry({ entry }: { entry: ChatEntryTool }) {
   const [open, setOpen] = useState(false)
   const summary = formatToolSummary(entry.name, entry.input)
+  const isPending = entry.status === 'pending'
 
   return (
-    <div className="flex justify-start">
-      <Collapsible open={open} onOpenChange={setOpen} className="w-full">
-        <div className="w-full rounded-xl border border-border/60 bg-secondary/40 p-3">
+    <div className="flex justify-start animate-in fade-in-0 slide-in-from-bottom-2 duration-200">
+      <Collapsible open={open} onOpenChange={setOpen} className="w-full max-w-[90%]">
+        <div className="rounded-xl border border-dashed border-border/80 bg-background p-3">
           <div className="flex items-center justify-between gap-3">
             <CollapsibleTrigger asChild>
-              <button type="button" className="flex items-center gap-2 text-left">
-                <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
-                <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium">{summary}</div>
+              <button type="button" className="flex items-center gap-2 text-left group">
+                <div className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors ${isPending ? 'bg-info/20' : entry.status === 'error' ? 'bg-destructive/20' : 'bg-success/20'}`}>
+                  <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isPending ? 'text-info' : entry.status === 'error' ? 'text-destructive' : 'text-success'} ${open ? 'rotate-180' : ''}`} />
+                </div>
+                <code className="text-xs text-muted-foreground font-mono group-hover:text-foreground transition-colors">{summary}</code>
               </button>
             </CollapsibleTrigger>
-            <Badge
-              variant={entry.status === 'error' ? 'destructive' : 'secondary'}
-              className="text-[10px] uppercase"
-            >
-              {entry.status === 'pending' ? 'running' : entry.status}
-            </Badge>
+            <div className="flex items-center gap-2">
+              {isPending && <Loader2 className="w-3 h-3 animate-spin text-info" />}
+              <Badge
+                variant={entry.status === 'error' ? 'destructive' : 'secondary'}
+                className="text-[10px] uppercase font-mono"
+              >
+                {isPending ? 'running' : entry.status}
+              </Badge>
+            </div>
           </div>
           <CollapsibleContent className="mt-3 space-y-3">
-            <pre className="rounded-lg border border-border/60 bg-background/80 p-3 text-xs text-muted-foreground overflow-x-auto">
+            <pre className="rounded-lg border border-border bg-secondary/50 p-3 text-xs text-muted-foreground overflow-x-auto font-mono">
               {JSON.stringify(entry.input, null, 2)}
             </pre>
             {entry.result ? (
               <ToolResultCard tool={entry.name} result={entry.result} />
             ) : (
-              <div className="text-xs text-muted-foreground">Waiting for tool result...</div>
+              <div className="text-xs text-muted-foreground/60 italic">Awaiting response...</div>
             )}
           </CollapsibleContent>
         </div>
@@ -95,8 +101,8 @@ export default function Chat() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const activeAssistantIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -108,24 +114,22 @@ export default function Chat() {
     }
   }, [])
 
+  // Focus input on mount and after streaming completes
+  useEffect(() => {
+    if (!isStreaming) {
+      inputRef.current?.focus()
+    }
+  }, [isStreaming])
+
   const appendAssistantText = (text: string) => {
     setEntries(prev => {
-      const next = [...prev]
-      const activeId = activeAssistantIdRef.current
-      const last = next[next.length - 1]
-      if (last && last.type === 'message' && last.role === 'assistant' && last.id === activeId) {
-        next[next.length - 1] = { ...last, content: last.content + text }
-        return next
+      const last = prev[prev.length - 1]
+      // Append to existing assistant message if that's the last entry
+      if (last?.type === 'message' && last.role === 'assistant') {
+        return [...prev.slice(0, -1), { ...last, content: last.content + text }]
       }
-      const id = crypto.randomUUID()
-      activeAssistantIdRef.current = id
-      next.push({
-        type: 'message',
-        id,
-        role: 'assistant',
-        content: text
-      })
-      return next
+      // Otherwise create a new assistant message
+      return [...prev, { type: 'message', id: crypto.randomUUID(), role: 'assistant', content: text }]
     })
   }
 
@@ -145,7 +149,6 @@ export default function Chat() {
     setInput('')
     setError(null)
     setIsStreaming(true)
-    activeAssistantIdRef.current = null
 
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -171,7 +174,6 @@ export default function Chat() {
             }
 
             if (event.type === 'tool_use') {
-              activeAssistantIdRef.current = null
               setEntries(prev => [
                 ...prev,
                 {
@@ -222,29 +224,59 @@ export default function Chat() {
   }
 
   return (
-    <div className="flex flex-col gap-5 h-[calc(100vh-7rem)]">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">Memory Chat</h1>
-          <p className="text-sm text-muted-foreground">
-            Ask questions, search, or manage memories conversationally.
-          </p>
+    <div className="flex flex-col h-[calc(100vh-7rem)]">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-foreground/10 to-foreground/5 border border-border flex items-center justify-center">
+            <MessageSquare className="w-4 h-4 text-foreground/70" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold tracking-tight">Memory Chat</h1>
+            <p className="text-xs text-muted-foreground">
+              Search and manage memories conversationally
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <Input
-            value={project}
-            onChange={e => setProject(e.target.value)}
-            placeholder="Project (optional)"
-            className="w-60"
-          />
+          <div className="relative">
+            <Input
+              value={project}
+              onChange={e => setProject(e.target.value)}
+              placeholder="Project scope"
+              className="w-48 h-8 text-xs pl-3 pr-8 bg-secondary/50"
+            />
+            {project && (
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-success" />
+            )}
+          </div>
         </div>
       </div>
 
-      <Card className="flex-1 flex flex-col overflow-hidden">
-        <CardContent className="flex-1 overflow-y-auto p-4 space-y-3">
+      {/* Chat area */}
+      <Card className="flex-1 flex flex-col overflow-hidden border-border/60">
+        <CardContent className="flex-1 overflow-y-auto p-5 space-y-6">
           {entries.length === 0 && (
-            <div className="text-sm text-muted-foreground">
-              Start by asking about recent commands, errors, or procedures.
+            <div className="flex flex-col items-center justify-center h-full text-center py-12">
+              <div className="w-14 h-14 rounded-2xl bg-secondary/80 border border-border flex items-center justify-center mb-4">
+                <Sparkles className="w-6 h-6 text-muted-foreground/60" />
+              </div>
+              <h2 className="text-sm font-medium text-foreground/80 mb-1">Start a conversation</h2>
+              <p className="text-xs text-muted-foreground max-w-xs">
+                Ask about commands, errors, or procedures. The assistant can search, update, and delete memories.
+              </p>
+              <div className="flex flex-wrap justify-center gap-2 mt-4">
+                {['What errors occurred recently?', 'Show me npm commands', 'Find git procedures'].map(suggestion => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    onClick={() => setInput(suggestion)}
+                    className="px-3 py-1.5 text-xs rounded-full border border-border bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
           {entries.map(entry => (
@@ -254,33 +286,55 @@ export default function Chat() {
           ))}
           <div ref={bottomRef} />
         </CardContent>
-        <div className="border-t border-border p-3 space-y-2">
+
+        {/* Input area */}
+        <div className="border-t border-border/60 bg-secondary/30 p-4">
           {error && (
-            <div className="text-sm text-destructive">{error}</div>
+            <div className="mb-3 px-3 py-2 rounded-lg bg-destructive/10 border border-destructive/20 text-sm text-destructive">
+              {error}
+            </div>
           )}
-          <form onSubmit={handleSubmit} className="flex items-end gap-2">
-            <textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              placeholder="Ask the memory assistant..."
-              className="flex-1 min-h-[44px] max-h-32 rounded-lg border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-              onKeyDown={event => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault()
-                  void handleSend()
-                }
-              }}
-              disabled={isStreaming}
-            />
-            <Button type="submit" disabled={!input.trim() || isStreaming}>
-              {isStreaming && <Loader2 className="animate-spin" />}
-              {isStreaming ? 'Sending' : 'Send'}
+          <form onSubmit={handleSubmit} className="flex items-end gap-3">
+            <div className="flex-1 relative">
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                placeholder="Ask about your memories..."
+                rows={1}
+                className="w-full min-h-[48px] max-h-36 rounded-xl border border-border bg-background px-4 py-3 pr-12 text-sm resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background placeholder:text-muted-foreground/50"
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    void handleSend()
+                  }
+                }}
+                disabled={isStreaming}
+              />
+              <div className="absolute right-3 bottom-3 text-[10px] text-muted-foreground/40 font-mono">
+                {isStreaming ? '' : 'enter'}
+              </div>
+            </div>
+            <Button
+              type="submit"
+              disabled={!input.trim() || isStreaming}
+              className="h-12 w-12 rounded-xl p-0"
+            >
+              {isStreaming ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
             </Button>
           </form>
           {isStreaming && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Assistant is responding...
+            <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground">
+              <span className="inline-flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/60 animate-pulse" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/60 animate-pulse" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/60 animate-pulse" style={{ animationDelay: '300ms' }} />
+              </span>
+              <span>Thinking...</span>
             </div>
           )}
         </div>
