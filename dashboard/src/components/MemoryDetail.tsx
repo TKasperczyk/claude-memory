@@ -43,7 +43,7 @@ interface MemoryDetailProps {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">{label}</div>
+      <div className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground/70 mb-1.5 font-medium">{label}</div>
       <div className="text-sm text-foreground/90">{children}</div>
     </div>
   )
@@ -51,7 +51,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function CodeBlock({ children, wrap }: { children: string; wrap?: boolean }) {
   return (
-    <pre className={`p-3 rounded-lg bg-secondary/60 border border-border/40 text-sm font-mono text-foreground/85 ${wrap ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'}`}>
+    <pre className={`p-3 rounded-lg bg-[hsl(var(--background))] text-sm font-mono text-foreground/85 ${wrap ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'}`}>
       {children}
     </pre>
   )
@@ -265,7 +265,7 @@ export default function MemoryDetail({
       <Sheet open={isActive} onOpenChange={handleOpenChange}>
         <SheetContent className="w-full max-w-2xl sm:max-w-2xl p-0 flex flex-col">
           {/* Header */}
-          <SheetHeader className="px-6 py-4 border-b border-border bg-secondary shrink-0">
+          <SheetHeader className="px-6 py-4 border-b border-border/30 bg-surface-2 shrink-0">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2.5 mb-2">
@@ -275,7 +275,7 @@ export default function MemoryDetail({
                         className="w-2.5 h-2.5 rounded-full shadow-sm"
                         style={{ backgroundColor: TYPE_COLORS[record.type] }}
                       />
-                      <span className="text-[11px] uppercase tracking-wide text-muted-foreground/70 font-medium">{record.type}</span>
+                      <span className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground/70 font-medium">{record.type}</span>
                       {record.deprecated && (
                         <Badge variant="destructive" className="text-[10px] px-1.5 py-0">Deprecated</Badge>
                       )}
@@ -344,24 +344,24 @@ export default function MemoryDetail({
               </div>
 
               {/* Usage stats */}
-              <Card className="bg-secondary">
+              <Card className="bg-surface-1">
                 <CardContent className="p-4">
-                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-3 font-medium">Usage metrics</div>
+                  <div className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground/70 mb-3 font-medium">Usage metrics</div>
                   <div className="grid grid-cols-4 gap-3 text-center">
                     <div className="py-2">
-                      <div className="text-2xl font-semibold tabular-nums text-foreground/90">{record.retrievalCount ?? 0}</div>
+                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{record.retrievalCount ?? 0}</div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">Retrievals</div>
                     </div>
                     <div className="py-2">
-                      <div className="text-2xl font-semibold tabular-nums text-foreground/90">{record.usageCount ?? 0}</div>
+                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{record.usageCount ?? 0}</div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">Usage</div>
                     </div>
                     <div className="py-2">
-                      <div className="text-2xl font-semibold tabular-nums text-foreground/90">{record.successCount ?? 0}</div>
+                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{record.successCount ?? 0}</div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">Success</div>
                     </div>
                     <div className="py-2">
-                      <div className="text-2xl font-semibold tabular-nums text-foreground/90">
+                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">
                         {record.retrievalCount
                           ? Math.round(((record.usageCount ?? 0) / record.retrievalCount) * 100)
                           : 0}
@@ -387,7 +387,7 @@ export default function MemoryDetail({
                       {retrievalContext.prompt && (
                         <div>
                           <div className="text-xs text-muted-foreground mb-1">Triggered by prompt</div>
-                          <div className="text-sm p-2 rounded bg-secondary/50 font-mono text-foreground/80">
+                          <div className="text-sm p-2 rounded bg-[hsl(var(--background))] font-mono text-foreground/80">
                             "{retrievalContext.prompt}"
                           </div>
                         </div>

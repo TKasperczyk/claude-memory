@@ -6,78 +6,39 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 4%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 4%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 4%;
-    --primary: 240 6% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 5% 96%;
-    --secondary-foreground: 240 6% 10%;
-    --muted: 240 5% 96%;
-    --muted-foreground: 240 4% 46%;
-    --accent: 240 5% 96%;
-    --accent-foreground: 240 6% 10%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 6% 90%;
-    --input: 240 6% 90%;
-    --ring: 240 6% 10%;
-    --radius: 0.5rem;
-    --chart-1: 220 70% 50%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 30 80% 55%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 340 75% 55%;
-
-    /* Semantic status colors */
-    --success: 142 71% 45%;
-    --success-foreground: 144 60% 10%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 40 80% 10%;
-    --info: 217 91% 60%;
-    --info-foreground: 220 80% 10%;
-
-    /* Memory type colors */
-    --type-command: 142 71% 45%;
-    --type-error: 0 84% 60%;
-    --type-discovery: 217 91% 60%;
-    --type-procedure: 262 83% 58%;
-    --type-warning: 38 92% 50%;
-
-    /* Sidebar */
-    --sidebar-background: 0 0% 98%;
-    --sidebar-foreground: 240 10% 4%;
-    --sidebar-primary: 240 6% 10%;
-    --sidebar-primary-foreground: 0 0% 98%;
-    --sidebar-accent: 240 5% 96%;
-    --sidebar-accent-foreground: 240 6% 10%;
-    --sidebar-border: 240 6% 90%;
-    --sidebar-ring: 240 6% 10%;
-  }
-
-  .dark {
-    --background: 240 10% 4%;
+    /* Surface hierarchy — depth through luminance */
+    --background: 240 10% 3.5%;
     --foreground: 0 0% 98%;
     --card: 240 10% 10%;
     --card-foreground: 0 0% 98%;
-    --popover: 240 10% 10%;
+    --popover: 240 8% 14%;
     --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 6% 10%;
+
+    /* Surface levels */
+    --surface-1: 240 10% 10%;
+    --surface-2: 240 8% 14%;
+    --surface-3: 240 6% 18%;
+
+    /* Accent — monochromatic */
+    --primary: 0 0% 93%;
+    --primary-foreground: 240 10% 4%;
+    --accent: 0 0% 93%;
+    --accent-foreground: 240 10% 4%;
+
     --secondary: 240 4% 16%;
     --secondary-foreground: 0 0% 98%;
     --muted: 240 4% 16%;
     --muted-foreground: 240 5% 65%;
-    --accent: 240 4% 16%;
-    --accent-foreground: 0 0% 98%;
+
     --destructive: 0 62% 55%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 4% 22%;
-    --input: 240 4% 22%;
-    --ring: 240 5% 65%;
+
+    /* Borders — visible but not dominant */
+    --border: 240 4% 20%;
+    --input: 240 4% 20%;
+    --ring: 0 0% 60%;
+    --radius: 0.5rem;
+
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
@@ -99,15 +60,15 @@
     --type-procedure: 262 83% 58%;
     --type-warning: 38 92% 50%;
 
-    /* Sidebar */
-    --sidebar-background: 240 10% 6%;
+    /* Sidebar — darker than background */
+    --sidebar-background: 240 10% 3%;
     --sidebar-foreground: 0 0% 98%;
-    --sidebar-primary: 0 0% 98%;
-    --sidebar-primary-foreground: 240 6% 10%;
-    --sidebar-accent: 240 4% 16%;
-    --sidebar-accent-foreground: 0 0% 98%;
-    --sidebar-border: 240 4% 22%;
-    --sidebar-ring: 240 5% 65%;
+    --sidebar-primary: 0 0% 93%;
+    --sidebar-primary-foreground: 240 10% 4%;
+    --sidebar-accent: 0 0% 93%;
+    --sidebar-accent-foreground: 240 10% 4%;
+    --sidebar-border: 240 4% 20%;
+    --sidebar-ring: 0 0% 60%;
   }
 
   * {
@@ -119,10 +80,10 @@
   }
 
   body {
-    @apply bg-background text-foreground antialiased dark;
+    @apply bg-background text-foreground antialiased;
     font-family: 'Inter', system-ui, sans-serif;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
-    letter-spacing: -0.011em;
+    letter-spacing: -0.015em;
   }
 
   code, pre, .font-mono {
@@ -130,10 +91,10 @@
   }
 }
 
-/* Scrollbar */
+/* Scrollbar — thinner, lower opacity */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -141,17 +102,17 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.3);
-  border-radius: 4px;
+  background: hsl(var(--muted-foreground) / 0.2);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground) / 0.5);
+  background: hsl(var(--muted-foreground) / 0.35);
 }
 
-/* Focus styles */
+/* Focus styles — subtler */
 *:focus-visible {
-  @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  @apply outline-none ring-1 ring-ring/50 ring-offset-1 ring-offset-background;
 }
 
 /* Section styling */
@@ -160,7 +121,7 @@
 }
 
 .section-header {
-  @apply text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground;
+  @apply text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground;
 }
 
 /* Page header styling */
@@ -178,7 +139,26 @@
 }
 
 .card-interactive:hover {
-  @apply bg-accent;
+  @apply bg-accent/10;
+}
+
+/* Glow utilities */
+.glow-hover {
+  transition: box-shadow 150ms ease;
+}
+
+.glow-hover:hover {
+  box-shadow: 0 0 12px -2px hsl(0 0% 100% / 0.12);
+}
+
+.glow-active {
+  box-shadow: 0 0 16px -2px hsl(0 0% 100% / 0.16);
+}
+
+/* Tabular mono */
+.tabular-mono {
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 /* Range slider */
@@ -188,7 +168,7 @@
   width: 100%;
   height: 1.5rem;
   background: transparent;
-  accent-color: hsl(var(--foreground));
+  accent-color: hsl(var(--primary));
   cursor: pointer;
 }
 
@@ -207,7 +187,7 @@
   height: 14px;
   width: 14px;
   border-radius: 9999px;
-  background: hsl(var(--foreground));
+  background: hsl(var(--primary));
   border: 2px solid hsl(var(--background));
   box-shadow: 0 0 0 1px hsl(var(--border));
   margin-top: -4px;
@@ -228,7 +208,7 @@
   height: 14px;
   width: 14px;
   border-radius: 9999px;
-  background: hsl(var(--foreground));
+  background: hsl(var(--primary));
   border: 2px solid hsl(var(--background));
   box-shadow: 0 0 0 1px hsl(var(--border));
 }

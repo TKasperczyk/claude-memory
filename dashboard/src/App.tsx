@@ -24,31 +24,34 @@ function Sidebar() {
   const location = useLocation()
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-50 w-56 border-r border-sidebar-border bg-sidebar flex flex-col">
+    <aside className="fixed inset-y-0 left-0 z-50 w-56 bg-sidebar flex flex-col">
       {/* Logo */}
-      <div className="h-14 flex items-center px-4 border-b border-sidebar-border">
+      <div className="h-12 flex items-center px-4">
         <div className="flex items-center gap-2.5">
-          <div className="w-2.5 h-2.5 rounded-full bg-type-discovery" />
+          <div className="w-2 h-2 rounded-full bg-foreground" />
           <span className="font-semibold text-[15px] tracking-tight">Memory</span>
         </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-2.5 py-4">
-        <ul className="space-y-1">
+      <nav className="flex-1 px-2.5 py-2">
+        <ul className="space-y-0.5">
           {navigation.map((item) => {
             const isActive = location.pathname === item.href
             return (
               <li key={item.name}>
                 <NavLink
                   to={item.href}
-                  className={`flex items-center gap-3 px-3 py-2 text-[13px] rounded-lg transition-colors duration-150 ${
+                  className={`relative flex items-center gap-2.5 px-3 py-1.5 text-[13px] rounded-lg transition-colors duration-150 ${
                     isActive
-                      ? 'bg-secondary text-foreground font-medium'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
+                      ? 'bg-primary/10 text-foreground font-medium'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-primary/5'
                   }`}
                 >
-                  <item.icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
+                  {isActive && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full bg-primary" />
+                  )}
+                  <item.icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-primary' : ''}`} strokeWidth={1.5} />
                   {item.name}
                 </NavLink>
               </li>
@@ -58,8 +61,8 @@ function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-4 py-3 border-t border-sidebar-border">
-        <div className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/60 font-medium">
+      <div className="px-4 py-3">
+        <div className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/40 font-medium">
           Claude Memory
         </div>
       </div>

@@ -18,8 +18,8 @@ function MemoryTableSkeleton() {
   const rows = Array.from({ length: 8 })
 
   return (
-    <div className="border border-border rounded-xl overflow-hidden">
-      <div className="bg-secondary/30 border-b border-border px-4 py-3 grid grid-cols-[16px_1fr_7rem_7rem_4rem_4rem_3rem] gap-3 items-center">
+    <div className="rounded-xl overflow-hidden bg-card">
+      <div className="bg-surface-1 border-b border-border/50 px-4 py-3 grid grid-cols-[16px_1fr_7rem_7rem_4rem_4rem_3rem] gap-3 items-center">
         <Skeleton className="h-3 w-3 rounded-full" />
         <Skeleton className="h-3 w-24" />
         <Skeleton className="h-3 w-16" />
@@ -28,7 +28,7 @@ function MemoryTableSkeleton() {
         <Skeleton className="h-3 w-8 ml-auto" />
         <Skeleton className="h-3 w-6 ml-auto" />
       </div>
-      <div className="divide-y divide-border">
+      <div className="divide-y divide-border/50">
         {rows.map((_, index) => (
           <div
             key={index}
@@ -148,7 +148,7 @@ export default function MemoryPool() {
               value={searchInput}
               onChange={e => setSearchInput(e.target.value)}
               placeholder="Search memories…"
-              className="pl-9 bg-secondary"
+              className="pl-9"
             />
           </div>
         </div>
@@ -159,7 +159,7 @@ export default function MemoryPool() {
           <select
             value={typeFilter}
             onChange={e => setTypeFilter(e.target.value as RecordType | 'all')}
-            className="w-full h-9 px-3 rounded-lg border border-input bg-secondary text-sm focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer transition-colors"
+            className="w-full h-9 px-3 rounded-lg border-0 bg-surface-1 text-sm focus:outline-none focus:bg-surface-2 focus:ring-1 focus:ring-ring/50 cursor-pointer transition-colors"
           >
             {typeOptions.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -173,7 +173,7 @@ export default function MemoryPool() {
           <select
             value={projectFilter}
             onChange={e => setProjectFilter(e.target.value)}
-            className="w-full h-9 px-3 rounded-lg border border-input bg-secondary text-sm focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer transition-colors"
+            className="w-full h-9 px-3 rounded-lg border-0 bg-surface-1 text-sm focus:outline-none focus:bg-surface-2 focus:ring-1 focus:ring-ring/50 cursor-pointer transition-colors"
           >
             <option value="all">All projects</option>
             {projectOptions.map(p => (
@@ -183,7 +183,7 @@ export default function MemoryPool() {
         </div>
 
         {/* Deprecated toggle */}
-        <label className="flex items-center gap-2.5 h-9 px-3 rounded-lg border border-input bg-secondary cursor-pointer hover:bg-secondary/80 transition-colors">
+        <label className="flex items-center gap-2.5 h-9 px-3 rounded-lg border-0 bg-surface-1 cursor-pointer hover:bg-surface-2 transition-colors">
           <Checkbox
             checked={showDeprecated}
             onCheckedChange={(checked) => setShowDeprecated(checked === true)}

@@ -22,15 +22,17 @@ export default function StatsCard({ label, value, subtext, sparklineData, sparkl
   })() : null
 
   return (
-    <div className="relative p-4 rounded-lg bg-secondary border border-border overflow-hidden">
+    <div className="group relative p-4 rounded-lg bg-surface-1 overflow-hidden">
+      {/* Accent top line */}
+      <div className="absolute inset-x-0 top-0 h-px" style={{ backgroundColor: sparklineColor, opacity: 0.5 }} />
       <div className="relative z-10">
-        <div className="text-xs font-medium text-muted-foreground mb-1">
+        <div className="text-[10px] font-medium uppercase tracking-[0.06em] text-muted-foreground mb-1">
           {label}
         </div>
         <div className="flex items-end gap-2">
-          <div className="text-2xl font-semibold tabular-nums tracking-tight">{value}</div>
+          <div className="text-xl font-semibold tabular-mono tracking-tight">{value}</div>
           {trend !== null && (
-            <div className={`text-[11px] font-medium mb-1 ${trend >= 0 ? 'text-success' : 'text-destructive'}`}>
+            <div className={`text-[11px] font-medium mb-0.5 ${trend >= 0 ? 'text-success' : 'text-destructive'}`}>
               {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
             </div>
           )}
@@ -40,7 +42,7 @@ export default function StatsCard({ label, value, subtext, sparklineData, sparkl
         )}
       </div>
       {hasSparkline && (
-        <div className="absolute inset-x-0 bottom-0 h-12 opacity-30">
+        <div className="absolute inset-x-0 bottom-0 h-12 opacity-20 group-hover:opacity-30 transition-opacity">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={sparklineData.map((v, i) => ({ value: v, index: i }))}>
               <defs>
