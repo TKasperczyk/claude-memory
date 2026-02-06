@@ -1,4 +1,5 @@
 import MaintenanceSettingsSection from '@/components/settings/MaintenanceSettingsSection'
+import ModelSettingsSection from '@/components/settings/ModelSettingsSection'
 import RetrievalSettingsSection from '@/components/settings/RetrievalSettingsSection'
 import SettingsFooter from '@/components/settings/SettingsFooter'
 import { useSettingsForm } from '@/hooks/useSettingsForm'
@@ -25,6 +26,14 @@ export default function Settings() {
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto space-y-5" onFocusCapture={handleFocusCapture} onBlurCapture={handleBlurCapture}>
+      <ModelSettingsSection
+        values={form}
+        errors={formErrors}
+        onChange={handleFieldChange}
+        defaultSettings={defaultSettings}
+        disabled={isPending}
+      />
+
       <RetrievalSettingsSection
         values={retrievalForm}
         errors={formErrors}

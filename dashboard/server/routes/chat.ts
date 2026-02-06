@@ -7,6 +7,7 @@ import { isPlainObject } from '../utils/params.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from '../../../src/lib/anthropic.js'
 import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from '../../../src/lib/anthropic-stream.js'
 import { CHAT_TOOLS, executeChatTool, type ChatToolName } from '../lib/chat-tools.js'
+import { loadSettings } from '../../../src/lib/settings.js'
 
 const logger = createLogger('chat')
 
@@ -18,7 +19,6 @@ Guidelines:
 - Be concise but informative about what you find
 - If search returns nothing, suggest lowering min_similarity or broadening the query`
 
-const CHAT_MODEL = 'claude-opus-4-5-20251101'
 const CHAT_MAX_TOKENS = 10000
 const CHAT_TEMPERATURE = 0.2
 const MAX_TOOL_ROUNDS = 50
@@ -91,8 +91,10 @@ export function createChatRouter(context: ServerContext): express.Router {
       while (!stream.signal.aborted && rounds < MAX_TOOL_ROUNDS) {
         rounds += 1
 
+        const { chatModel } = loadSettings()
+        logger.info(`Using chat model: ${chatModel}`)
         const responseStream = await client.messages.create({
-          model: CHAT_MODEL,
+          model: chatModel,
           max_tokens: CHAT_MAX_TOKENS,
           temperature: CHAT_TEMPERATURE,
           system: [

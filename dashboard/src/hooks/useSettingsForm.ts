@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { validateFieldValue, type RetrievalSettingsFormState, type SettingsField } from '@/components/SettingsPanel'
-import { MAINTENANCE_GROUPS, RETRIEVAL_FIELDS } from '../../../src/lib/settings-schema.js'
+import { MAINTENANCE_GROUPS, MODEL_FIELDS, RETRIEVAL_FIELDS } from '../../../src/lib/settings-schema.js'
 import { useSettings, useSettingsDefaults } from '@/hooks/queries'
 import { resetSettings, updateSettings, type Settings } from '@/lib/api'
 
@@ -13,7 +13,8 @@ type Status = { type: 'saving' | 'success' | 'error'; text: string; context: Sta
 
 const ALL_FIELDS: SettingsField<SettingsKey>[] = [
   ...RETRIEVAL_FIELDS,
-  ...MAINTENANCE_GROUPS.flatMap(group => group.fields)
+  ...MAINTENANCE_GROUPS.flatMap(group => group.fields),
+  ...MODEL_FIELDS
 ]
 const AUTO_SAVE_DELAY_MS = 500
 const SUCCESS_FADE_DELAY_MS = 1400
@@ -50,6 +51,9 @@ function getSettingsKeyFromElement(target: EventTarget | null): SettingsKey | nu
 function isFieldSynced(rawInput: string, field: SettingsField<SettingsKey>, settings: Settings): boolean {
   const trimmed = rawInput.trim()
   if (trimmed === '') return false
+  if (field.kind === 'text') {
+    return trimmed === settings[field.key]
+  }
   const { value, error } = validateFieldValue(field, trimmed)
   if (error || value === undefined) return false
   const normalized = field.kind === 'int' && typeof value === 'number' ? Math.trunc(value) : value
@@ -59,7 +63,9 @@ function isFieldSynced(rawInput: string, field: SettingsField<SettingsKey>, sett
 function toFormState(settings: Partial<Settings> | null): FormState {
   return ALL_FIELDS.reduce((acc, field) => {
     const value = settings?.[field.key]
-    if (typeof value === 'number') {
+    if (typeof value === 'string') {
+      acc[field.key] = value
+    } else if (typeof value === 'number') {
       acc[field.key] = String(value)
     } else if (typeof value === 'boolean') {
       acc[field.key] = String(value)
@@ -93,7 +99,7 @@ function parseFormState(
       continue
     }
     if (value !== undefined) {
-      ;(values as Record<string, number | boolean>)[field.key] = field.kind === 'int' && typeof value === 'number' ? Math.trunc(value) : value
+      ;(values as Record<string, number | boolean | string>)[field.key] = field.kind === 'int' && typeof value === 'number' ? Math.trunc(value) : value
     }
   }
 
@@ -260,7 +266,7 @@ export function useSettingsForm() {
     abortControllerRef.current = abortController
     const payload: Partial<Settings> = {}
     for (const field of updates) {
-      ;(payload as Record<string, number | boolean>)[field.key] = parsed[field.key]
+      ;(payload as Record<string, number | boolean | string>)[field.key] = parsed[field.key]
     }
 
     try {
@@ -274,6 +280,17 @@ export function useSettingsForm() {
           for (const field of updates) {
             const key = field.key
             const rawInput = prev[key].trim()
+            // Handle text fields
+            if (field.kind === 'text') {
+              if (rawInput !== parsed[key]) continue
+              const formatted = String(nextSettings[key])
+              if (next[key] === formatted) continue
+              if (next === prev) {
+                next = { ...prev }
+              }
+              next[key] = formatted
+              continue
+            }
             // Handle boolean fields differently
             if (field.kind === 'bool') {
               const currentBool = rawInput === 'true'

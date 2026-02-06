@@ -18,7 +18,6 @@ import type { ExtractionReview, ExtractionReviewIssue } from '../../shared/types
 
 export type { ExtractionReview, ExtractionReviewIssue } from '../../shared/types.js'
 
-const REVIEW_MODEL = 'claude-opus-4-5-20251101'
 const REVIEW_TOOL_NAME = 'emit_review'
 const REVIEW_MAX_TOKENS = 4000
 const REVIEW_SIMILAR_LIMIT = 15
@@ -117,13 +116,14 @@ export async function reviewExtraction(
 ): Promise<ExtractionReview> {
   const startTime = Date.now()
   const input = await buildExtractionReviewInput(runId, config)
+  const settings = loadSettings()
   const { payload, reviewedAt, model, durationMs } = await executeReview(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
     maxTokens: REVIEW_MAX_TOKENS,
     systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: REVIEW_MODEL,
+    model: settings.reviewModel,
     buildPrompt: buildExtractionReviewPrompt,
     coercePayload: coerceReviewPayload,
     authErrorMessage: 'No authentication available for extraction review. Set ANTHROPIC_API_KEY or run kira login.',
@@ -150,13 +150,14 @@ export async function reviewExtractionStreaming(
 ): Promise<ExtractionReview> {
   const startTime = Date.now()
   const input = await buildExtractionReviewInput(runId, config)
+  const settings = loadSettings()
   const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
     maxTokens: REVIEW_MAX_TOKENS,
     systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: REVIEW_MODEL,
+    model: settings.reviewModel,
     buildPrompt: buildExtractionReviewPrompt,
     coercePayload: coerceReviewPayload,
     authErrorMessage: 'No authentication available for extraction review. Set ANTHROPIC_API_KEY or run kira login.',

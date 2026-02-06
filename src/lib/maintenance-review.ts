@@ -17,7 +17,6 @@ import type { MaintenanceReview, OperationResult, MaintenanceAction, Maintenance
 
 export type { MaintenanceReview } from '../../shared/types.js'
 
-const REVIEW_MODEL = 'claude-opus-4-5-20251101'
 const REVIEW_TOOL_NAME = 'emit_maintenance_review'
 const REVIEW_MAX_TOKENS = 6000
 const REVIEW_MAX_ACTIONS = 50
@@ -156,13 +155,14 @@ export async function reviewMaintenanceResult(
 ): Promise<MaintenanceReview> {
   const startTime = Date.now()
   const { input, resultId } = await buildMaintenanceReviewInput(result, config)
+  const settings = loadSettings()
   const { payload, reviewedAt, model, durationMs } = await executeReview(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
     maxTokens: REVIEW_MAX_TOKENS,
     systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: REVIEW_MODEL,
+    model: settings.reviewModel,
     buildPrompt: buildMaintenanceReviewPrompt,
     coercePayload: coerceReviewPayload,
     authErrorMessage: 'No authentication available for maintenance review. Set ANTHROPIC_API_KEY or run kira login.',
@@ -197,13 +197,14 @@ export async function reviewMaintenanceResultStreaming(
 ): Promise<MaintenanceReview> {
   const startTime = Date.now()
   const { input, resultId } = await buildMaintenanceReviewInput(result, config)
+  const settings = loadSettings()
   const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
     maxTokens: REVIEW_MAX_TOKENS,
     systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: REVIEW_MODEL,
+    model: settings.reviewModel,
     buildPrompt: buildMaintenanceReviewPrompt,
     coercePayload: coerceReviewPayload,
     authErrorMessage: 'No authentication available for maintenance review. Set ANTHROPIC_API_KEY or run kira login.',

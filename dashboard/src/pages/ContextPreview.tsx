@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import MemoryDetail from '@/components/MemoryDetail'
 import NearMissesPanel from '@/components/NearMissesPanel'
 import {
@@ -193,12 +194,12 @@ export default function ContextPreview() {
         <CardContent className="p-5 space-y-4">
           <div>
             <label className="block text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">Prompt</label>
-            <textarea
+            <Textarea
               value={prompt}
               onChange={e => setPrompt(e.target.value)}
               rows={5}
               placeholder="Enter a prompt to test memory injection…"
-              className="w-full px-3 py-2.5 rounded-lg border border-border bg-background text-sm placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+              className="resize-none"
             />
           </div>
 

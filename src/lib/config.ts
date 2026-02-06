@@ -2,6 +2,7 @@ import os from 'os'
 import path from 'path'
 import { DEFAULT_CONFIG, createConfig, type Config } from './types.js'
 import { readJsonFileSafe } from './json.js'
+import { loadSettings } from './settings.js'
 
 const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.claude-memory', 'config.json')
 
@@ -40,6 +41,14 @@ export function loadConfig(root: string): Config {
     if (projectConfig) {
       config = mergeConfig(config, projectConfig)
     }
+  }
+
+  // Apply extraction model from settings if no env var override
+  if (!process.env.CC_EXTRACTION_MODEL) {
+    const settings = loadSettings()
+    config = mergeConfig(config, {
+      extraction: { ...config.extraction, model: settings.extractionModel }
+    })
   }
 
   return createConfig(config)

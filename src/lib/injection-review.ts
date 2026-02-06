@@ -8,12 +8,12 @@ import { formatSimilarRecord } from './review-formatters.js'
 import { asString, isPlainObject } from './parsing.js'
 import { clampScore, coerceInjectedVerdict, coerceMissedMemory, parseReviewRating } from './review-coercion.js'
 import { executeReview, executeReviewStreaming, type ThinkingCallback } from './review-framework.js'
+import { loadSettings } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type InjectedMemoryEntry, type MemoryRecord } from './types.js'
 import type { InjectedMemoryVerdict, InjectionReview, MissedMemory } from '../../shared/types.js'
 
 export type { InjectedMemoryVerdict, InjectionReview, MissedMemory } from '../../shared/types.js'
 
-const REVIEW_MODEL = 'claude-opus-4-5-20251101'
 const REVIEW_TOOL_NAME = 'emit_injection_review'
 const REVIEW_MAX_TOKENS = 4000
 const REVIEW_SIMILARITY_THRESHOLD = 0.35
@@ -103,13 +103,14 @@ export async function reviewInjection(
 ): Promise<InjectionReview> {
   const startTime = Date.now()
   const { input, injectedEntries } = await buildInjectionReviewInput(sessionId, config)
+  const settings = loadSettings()
   const { payload, reviewedAt, model, durationMs } = await executeReview(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
     maxTokens: REVIEW_MAX_TOKENS,
     systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: REVIEW_MODEL,
+    model: settings.reviewModel,
     buildPrompt: buildInjectionReviewPrompt,
     coercePayload: coerceReviewPayload,
     authErrorMessage: 'No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.',
@@ -139,13 +140,14 @@ export async function reviewInjectionStreaming(
 ): Promise<InjectionReview> {
   const startTime = Date.now()
   const { input, injectedEntries } = await buildInjectionReviewInput(sessionId, config)
+  const settings = loadSettings()
   const { payload, reviewedAt, model, durationMs } = await executeReviewStreaming(input, {
     toolName: REVIEW_TOOL_NAME,
     toolDescription: REVIEW_TOOL_DESCRIPTION,
     toolSchema: REVIEW_TOOL_SCHEMA,
     maxTokens: REVIEW_MAX_TOKENS,
     systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: REVIEW_MODEL,
+    model: settings.reviewModel,
     buildPrompt: buildInjectionReviewPrompt,
     coercePayload: coerceReviewPayload,
     authErrorMessage: 'No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.',

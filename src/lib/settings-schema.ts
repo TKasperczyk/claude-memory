@@ -1,8 +1,8 @@
-import type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
+import type { MaintenanceSettings, ModelSettings, RetrievalSettings, Settings } from '../../shared/types.js'
 import { SIMILARITY_THRESHOLDS } from './constants.js'
 
-export type SettingKind = 'int' | 'float' | 'bool'
-export type SettingsSection = 'retrieval' | 'maintenance'
+export type SettingKind = 'int' | 'float' | 'bool' | 'text'
+export type SettingsSection = 'retrieval' | 'maintenance' | 'models'
 
 export type SettingsGroupMeta = {
   id: string
@@ -10,6 +10,8 @@ export type SettingsGroupMeta = {
   description?: string
   section: SettingsSection
 }
+
+export type TextOption = { value: string; label: string }
 
 export type SettingsFieldDefinition<K extends keyof Settings = keyof Settings> = {
   key: K
@@ -21,6 +23,7 @@ export type SettingsFieldDefinition<K extends keyof Settings = keyof Settings> =
   kind: SettingKind
   default: Settings[K]
   group: SettingsGroupMeta
+  options?: TextOption[]
 }
 
 export type SettingsGroupDefinition = SettingsGroupMeta & {
@@ -29,7 +32,8 @@ export type SettingsGroupDefinition = SettingsGroupMeta & {
 
 export type NumericSettingRule = { kind: 'int' | 'float'; min?: number; max?: number }
 export type BooleanSettingRule = { kind: 'bool' }
-export type SettingRule = NumericSettingRule | BooleanSettingRule
+export type TextSettingRule = { kind: 'text' }
+export type SettingRule = NumericSettingRule | BooleanSettingRule | TextSettingRule
 
 const RETRIEVAL_GROUPS = {
   similarity: {
@@ -620,7 +624,60 @@ export const MAINTENANCE_GROUPS: SettingsGroupDefinition[] = MAINTENANCE_GROUP_O
   fields: MAINTENANCE_FIELDS.filter(field => field.group === group)
 }))
 
-export const ALL_SETTINGS_FIELDS = [...RETRIEVAL_FIELDS, ...MAINTENANCE_FIELDS] as const
+const MODEL_GROUPS_META = {
+  models: {
+    id: 'models',
+    label: '',
+    section: 'models'
+  }
+} as const satisfies Record<string, SettingsGroupMeta>
+
+export const MODEL_OPTIONS: TextOption[] = [
+  { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5' },
+  { value: 'claude-opus-4-5-20251101', label: 'Opus 4.5' },
+  { value: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' }
+]
+
+export const MODEL_FIELDS: SettingsFieldDefinition<keyof ModelSettings>[] = [
+  {
+    key: 'extractionModel',
+    label: 'Extraction model',
+    description: 'Model used for extraction, query generation, and maintenance operations.',
+    kind: 'text',
+    default: 'claude-sonnet-4-5-20250929',
+    group: MODEL_GROUPS_META.models,
+    options: MODEL_OPTIONS
+  },
+  {
+    key: 'reviewModel',
+    label: 'Review model',
+    description: 'Model used for injection, extraction, and maintenance reviews.',
+    kind: 'text',
+    default: 'claude-opus-4-5-20251101',
+    group: MODEL_GROUPS_META.models,
+    options: MODEL_OPTIONS
+  },
+  {
+    key: 'chatModel',
+    label: 'Chat model',
+    description: 'Model used for the dashboard chat assistant.',
+    kind: 'text',
+    default: 'claude-opus-4-5-20251101',
+    group: MODEL_GROUPS_META.models,
+    options: MODEL_OPTIONS
+  }
+]
+
+export const DEFAULT_MODEL_SETTINGS = MODEL_FIELDS.reduce<Record<string, string>>(
+  (acc, field) => {
+    acc[field.key] = field.default
+    return acc
+  },
+  {}
+) as unknown as ModelSettings
+
+export const ALL_SETTINGS_FIELDS = [...RETRIEVAL_FIELDS, ...MAINTENANCE_FIELDS, ...MODEL_FIELDS] as const
 
 export const DEFAULT_RETRIEVAL_SETTINGS = RETRIEVAL_FIELDS.reduce<Record<string, number | boolean>>(
   (acc, field) => {
@@ -640,12 +697,17 @@ export const DEFAULT_MAINTENANCE_SETTINGS = MAINTENANCE_FIELDS.reduce<Record<str
 
 export const DEFAULT_SETTINGS: Settings = {
   ...DEFAULT_RETRIEVAL_SETTINGS,
-  ...DEFAULT_MAINTENANCE_SETTINGS
+  ...DEFAULT_MAINTENANCE_SETTINGS,
+  ...DEFAULT_MODEL_SETTINGS
 }
 
 export const SETTING_RULES = ALL_SETTINGS_FIELDS.reduce((acc, field) => {
-  acc[field.key] = field.kind === 'bool'
-    ? { kind: 'bool' }
-    : { kind: field.kind, min: field.min, max: field.max }
+  if (field.kind === 'bool') {
+    acc[field.key] = { kind: 'bool' }
+  } else if (field.kind === 'text') {
+    acc[field.key] = { kind: 'text' }
+  } else {
+    acc[field.key] = { kind: field.kind, min: field.min, max: field.max }
+  }
   return acc
 }, {} as Record<keyof Settings, SettingRule>)

@@ -246,7 +246,13 @@ export interface MaintenanceSettings {
   extractionLogRetentionDays: number
 }
 
-export type Settings = RetrievalSettings & MaintenanceSettings
+export interface ModelSettings {
+  extractionModel: string
+  reviewModel: string
+  chatModel: string
+}
+
+export type Settings = RetrievalSettings & MaintenanceSettings & ModelSettings
 
 export interface ExtractionRecordSummary {
   id: string

@@ -1,5 +1,6 @@
 import { Search } from 'lucide-react'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import FilterChip from '@/components/FilterChip'
 import { SORT_OPTIONS, TIME_FILTERS, type SortKey, type TimeFilterKey } from './utils'
 
@@ -52,25 +53,27 @@ export default function SessionFilters({
             className="h-8 pl-8 bg-secondary"
           />
         </div>
-        <select
-          value={projectFilter}
-          onChange={event => onProjectFilterChange(event.target.value)}
-          className="h-8 rounded-lg border border-border bg-secondary px-2 text-xs text-foreground cursor-pointer transition-colors"
-        >
-          <option value="all">All projects</option>
-          {projectOptions.map(option => (
-            <option key={option.key} value={option.key}>{option.label}</option>
-          ))}
-        </select>
-        <select
-          value={sortKey}
-          onChange={event => onSortChange(event.target.value as SortKey)}
-          className="h-8 rounded-lg border border-border bg-secondary px-2 text-xs text-foreground cursor-pointer transition-colors"
-        >
-          {SORT_OPTIONS.map(option => (
-            <option key={option.key} value={option.key}>{option.label}</option>
-          ))}
-        </select>
+        <Select value={projectFilter} onValueChange={onProjectFilterChange}>
+          <SelectTrigger className="h-8 w-auto min-w-[120px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All projects</SelectItem>
+            {projectOptions.map(option => (
+              <SelectItem key={option.key} value={option.key}>{option.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={sortKey} onValueChange={value => onSortChange(value as SortKey)}>
+          <SelectTrigger className="h-8 w-auto min-w-[120px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SORT_OPTIONS.map(option => (
+              <SelectItem key={option.key} value={option.key}>{option.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <div className="flex items-center gap-1">
           {TIME_FILTERS.map(filter => (
             <FilterChip

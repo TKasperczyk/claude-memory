@@ -3,6 +3,7 @@ import { Loader2, ChevronDown, Send, Sparkles, MessageSquare } from 'lucide-reac
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Badge } from '@/components/ui/badge'
 import ChatMessage from '@/components/ChatMessage'
@@ -296,13 +297,13 @@ export default function Chat() {
           )}
           <form onSubmit={handleSubmit} className="flex items-end gap-3">
             <div className="flex-1 relative">
-              <textarea
+              <Textarea
                 ref={inputRef}
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 placeholder="Ask about your memories..."
                 rows={1}
-                className="w-full min-h-[48px] max-h-36 rounded-xl border border-border bg-background px-4 py-3 pr-12 text-sm resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background placeholder:text-muted-foreground/50"
+                className="min-h-[48px] max-h-36 rounded-xl px-4 py-3 pr-12 resize-none"
                 onKeyDown={event => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault()

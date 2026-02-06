@@ -1,6 +1,8 @@
-import { useMemo, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { ChevronDown, ChevronRight, Loader2, RotateCcw, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { type RetrievalSettings } from '@/lib/api'
 import { RETRIEVAL_FIELDS, type SettingsGroupMeta } from '../../../src/lib/settings-schema.js'
@@ -13,8 +15,9 @@ export type SettingsField<K extends string = string> = {
   step?: number
   min?: number
   max?: number
-  kind: 'float' | 'int' | 'bool'
+  kind: 'float' | 'int' | 'bool' | 'text'
   group?: SettingsGroupMeta
+  options?: Array<{ value: string; label: string }>
 }
 
 export type SettingsFormState<K extends string = string> = Record<K, string>
@@ -42,7 +45,7 @@ export function isSettingsModified<K extends string>({
 }: {
   fields: SettingsField<K>[]
   values: SettingsFormState<K>
-  baselineValues?: Partial<Record<K, number | boolean>>
+  baselineValues?: Partial<Record<K, number | boolean | string>>
   errors?: SettingsErrors<K>
 }): boolean {
   if (!baselineValues) return false
@@ -53,7 +56,9 @@ export function isSettingsModified<K extends string>({
     const baselineValue = baselineValues[field.key]
     if (baselineValue === undefined) continue
     if (errors?.[field.key]) return true
-    if (field.kind === 'bool') {
+    if (field.kind === 'text') {
+      if (rawInput !== baselineValue) return true
+    } else if (field.kind === 'bool') {
       const boolValue = rawInput === 'true'
       if (boolValue !== baselineValue) return true
     } else {
@@ -66,9 +71,15 @@ export function isSettingsModified<K extends string>({
 }
 
 
-type FieldValidation = { value?: number | boolean; error?: string }
+type FieldValidation = { value?: number | boolean | string; error?: string }
 
 export function validateFieldValue(field: SettingsField, rawInput: string): FieldValidation {
+  if (field.kind === 'text') {
+    const trimmed = rawInput.trim()
+    if (!trimmed) return { error: 'Required.' }
+    return { value: trimmed }
+  }
+
   if (field.kind === 'bool') {
     return { value: rawInput === 'true' }
   }
@@ -137,7 +148,7 @@ export function parseFormState(
       continue
     }
     if (value !== undefined) {
-      ;(values as Record<string, number | boolean>)[field.key] = value
+      ;(values as Record<string, number | boolean | string>)[field.key] = value
     }
   }
 
@@ -189,8 +200,8 @@ export interface SettingsPanelProps<K extends string = string> {
   fields: SettingsField<K>[]
   values: SettingsFormState<K>
   onChange: (key: K, value: string) => void
-  savedValues?: Partial<Record<K, number | boolean>>
-  defaultValues?: Partial<Record<K, number | boolean>>
+  savedValues?: Partial<Record<K, number | boolean | string>>
+  defaultValues?: Partial<Record<K, number | boolean | string>>
   onSave?: () => void
   onReset?: () => void
   isSaving?: boolean
@@ -211,6 +222,138 @@ export interface SettingsPanelProps<K extends string = string> {
   containerClassName?: string
   disabled?: boolean
   status?: { type: 'success' | 'error'; text: string } | null
+}
+
+const CUSTOM_OPTION_VALUE = '__custom__'
+
+function TextSettingField<K extends string>({
+  field,
+  formValue,
+  savedValue,
+  defaultValue,
+  onChange,
+  disabled,
+  shouldShowFieldModified,
+  shouldShowDefaults,
+  fieldContainerClass,
+  fieldLabelClass,
+  fieldDescriptionClass,
+  resetButtonClass,
+  errorTextClass,
+  variant,
+  error
+}: {
+  field: SettingsField<K>
+  formValue: string
+  savedValue?: string
+  defaultValue?: string
+  onChange: (key: K, value: string) => void
+  disabled: boolean
+  shouldShowFieldModified: boolean
+  shouldShowDefaults: boolean
+  fieldContainerClass: string
+  fieldLabelClass: string
+  fieldDescriptionClass: string
+  resetButtonClass: string
+  errorTextClass: string
+  variant: 'full' | 'compact'
+  error?: string
+}) {
+  const options = field.options ?? []
+  const matchesOption = options.some(opt => opt.value === formValue)
+  const [showCustom, setShowCustom] = useState(!matchesOption && formValue !== '')
+  // Sync showCustom when formValue changes externally (reset, server sync)
+  useEffect(() => {
+    const matches = options.some(opt => opt.value === formValue)
+    if (matches && showCustom) setShowCustom(false)
+    else if (!matches && formValue !== '' && !showCustom) setShowCustom(true)
+  }, [formValue, options, showCustom])
+  const isModified = shouldShowFieldModified && savedValue !== undefined && formValue !== savedValue
+  const baseResetValue = defaultValue ?? savedValue
+  const isResetAvailable = baseResetValue !== undefined && formValue !== baseResetValue
+
+  const handleSelectChange = useCallback((selected: string) => {
+    if (selected === CUSTOM_OPTION_VALUE) {
+      setShowCustom(true)
+      onChange(field.key, '')
+    } else {
+      setShowCustom(false)
+      onChange(field.key, selected)
+    }
+  }, [field.key, onChange])
+
+  const handleCustomChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    onChange(field.key, e.target.value)
+  }, [field.key, onChange])
+
+  const handleReset = useCallback(() => {
+    if (!baseResetValue) return
+    const matchesOpt = options.some(opt => opt.value === baseResetValue)
+    setShowCustom(!matchesOpt)
+    onChange(field.key, baseResetValue)
+  }, [baseResetValue, field.key, onChange, options])
+
+  const selectValue = showCustom ? CUSTOM_OPTION_VALUE : formValue
+
+  const triggerClass = variant === 'compact' ? 'h-7 text-xs' : 'h-8 text-sm'
+  const fieldId = `settings-field-${field.key}`
+  const labelId = `${fieldId}-label`
+
+  return (
+    <div className={fieldContainerClass}>
+      <div>
+        <div className="flex items-center gap-2">
+          <label className={fieldLabelClass} id={labelId}>{field.label}</label>
+          {isModified && <ModifiedBadge variant="field" />}
+          {isResetAvailable && (
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={disabled}
+              className={resetButtonClass}
+              aria-label={`Reset ${field.label}`}
+              title="Reset to default"
+            >
+              <RotateCcw className={variant === 'compact' ? 'w-3 h-3' : 'w-3.5 h-3.5'} />
+            </button>
+          )}
+        </div>
+        <p className={fieldDescriptionClass}>{field.description}</p>
+        {shouldShowDefaults && defaultValue && (
+          <p className="text-xs text-muted-foreground">Default: {options.find(o => o.value === defaultValue)?.label ?? defaultValue}</p>
+        )}
+      </div>
+      <Select value={selectValue} onValueChange={handleSelectChange} disabled={disabled}>
+        <SelectTrigger id={fieldId} aria-labelledby={labelId} className={cn(triggerClass, error && 'ring-1 ring-destructive')}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map(opt => (
+            <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+          ))}
+          <SelectItem value={CUSTOM_OPTION_VALUE}>Custom...</SelectItem>
+        </SelectContent>
+      </Select>
+      {showCustom && (
+        <Input
+          type="text"
+          value={formValue}
+          onChange={handleCustomChange}
+          placeholder="Enter model ID..."
+          disabled={disabled}
+          aria-labelledby={labelId}
+          className={cn(
+            'mt-1.5 font-mono',
+            variant === 'compact' ? 'h-7 text-xs' : 'h-8 text-sm',
+            error && 'ring-1 ring-destructive'
+          )}
+        />
+      )}
+      {error && (
+        <div className={errorTextClass}>{error}</div>
+      )}
+    </div>
+  )
 }
 
 export function SettingsPanel<K extends string>({
@@ -309,6 +452,30 @@ export function SettingsPanel<K extends string>({
     const savedValue = savedValues?.[key]
     const defaultValue = defaultValues?.[key]
     const formValue = values[key] ?? ''
+
+    // Handle text fields with select/custom input
+    if (field.kind === 'text') {
+      return (
+        <TextSettingField
+          key={key}
+          field={field}
+          formValue={formValue}
+          savedValue={typeof savedValue === 'string' ? savedValue : undefined}
+          defaultValue={typeof defaultValue === 'string' ? defaultValue : undefined}
+          onChange={onChange}
+          disabled={disabled}
+          shouldShowFieldModified={shouldShowFieldModified}
+          shouldShowDefaults={shouldShowDefaults}
+          fieldContainerClass={fieldContainerClass}
+          fieldLabelClass={fieldLabelClass}
+          fieldDescriptionClass={fieldDescriptionClass}
+          resetButtonClass={resetButtonClass}
+          errorTextClass={errorTextClass}
+          variant={variant}
+          error={errors?.[key]}
+        />
+      )
+    }
 
     // Handle boolean fields with a toggle
     if (field.kind === 'bool') {
@@ -460,7 +627,7 @@ export function SettingsPanel<K extends string>({
             className={sliderClass}
           />
           {isEditing ? (
-            <input
+            <Input
               type="number"
               value={formValue}
               onChange={e => onChange(key, e.target.value)}

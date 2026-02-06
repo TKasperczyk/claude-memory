@@ -3,6 +3,7 @@ import { Search, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -65,6 +66,7 @@ export default function MemoryPool() {
   const projectOptions = useMemo(() => {
     if (!stats?.byProject) return []
     return Object.entries(stats.byProject)
+      .filter(([name]) => name !== '')
       .sort((a, b) => b[1] - a[1])
       .map(([name]) => name)
   }, [stats])
@@ -156,30 +158,32 @@ export default function MemoryPool() {
         {/* Type */}
         <div className="w-32">
           <label className="block text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">Type</label>
-          <select
-            value={typeFilter}
-            onChange={e => setTypeFilter(e.target.value as RecordType | 'all')}
-            className="w-full h-9 px-3 rounded-lg border-0 bg-surface-1 text-sm focus:outline-none focus:bg-surface-2 focus:ring-1 focus:ring-ring/50 cursor-pointer transition-colors"
-          >
-            {typeOptions.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
+          <Select value={typeFilter} onValueChange={value => setTypeFilter(value as RecordType | 'all')}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {typeOptions.map(opt => (
+                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Project */}
         <div className="w-40">
           <label className="block text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-1.5 font-medium">Project</label>
-          <select
-            value={projectFilter}
-            onChange={e => setProjectFilter(e.target.value)}
-            className="w-full h-9 px-3 rounded-lg border-0 bg-surface-1 text-sm focus:outline-none focus:bg-surface-2 focus:ring-1 focus:ring-ring/50 cursor-pointer transition-colors"
-          >
-            <option value="all">All projects</option>
-            {projectOptions.map(p => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
+          <Select value={projectFilter} onValueChange={setProjectFilter}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All projects</SelectItem>
+              {projectOptions.map(p => (
+                <SelectItem key={p} value={p}>{p}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Deprecated toggle */}

@@ -3,19 +3,21 @@ import path from 'path'
 import { homedir } from 'os'
 import { isPlainObject } from './parsing.js'
 import { readJsonFile, writeJsonFile } from './json.js'
-import type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
+import type { MaintenanceSettings, ModelSettings, RetrievalSettings, Settings } from '../../shared/types.js'
 import {
   DEFAULT_MAINTENANCE_SETTINGS,
+  DEFAULT_MODEL_SETTINGS,
   DEFAULT_RETRIEVAL_SETTINGS,
   DEFAULT_SETTINGS,
   MAINTENANCE_FIELDS,
+  MODEL_FIELDS,
   RETRIEVAL_FIELDS,
   SETTING_RULES,
   type NumericSettingRule,
   type SettingsFieldDefinition
 } from './settings-schema.js'
 
-export type { MaintenanceSettings, RetrievalSettings, Settings } from '../../shared/types.js'
+export type { MaintenanceSettings, ModelSettings, RetrievalSettings, Settings } from '../../shared/types.js'
 
 const SETTINGS_DIR = path.join(homedir(), '.claude-memory')
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json')
@@ -26,6 +28,10 @@ export function getDefaultRetrievalSettings(): RetrievalSettings {
 
 export function getDefaultMaintenanceSettings(): MaintenanceSettings {
   return { ...DEFAULT_MAINTENANCE_SETTINGS }
+}
+
+export function getDefaultModelSettings(): ModelSettings {
+  return { ...DEFAULT_MODEL_SETTINGS }
 }
 
 export function getDefaultSettings(): Settings {
@@ -65,14 +71,20 @@ function coerceSettings(value: unknown, fallback: Settings): Settings {
   const maintenanceSource = isPlainObject(raw.maintenance) ? raw.maintenance : raw
   return {
     ...coerceRetrievalSettings(retrievalSource, fallback),
-    ...coerceMaintenanceSettings(maintenanceSource, fallback)
+    ...coerceMaintenanceSettings(maintenanceSource, fallback),
+    ...coerceModelSettings(raw, fallback)
   }
 }
 
-type SettingValidationResult = { ok: true; normalized: number | boolean } | { ok: false; error: string }
+type SettingValidationResult = { ok: true; normalized: number | boolean | string } | { ok: false; error: string }
 
 export function validateSettingValue(setting: keyof Settings, value: unknown): SettingValidationResult {
   const rule = SETTING_RULES[setting]
+  if (rule.kind === 'text') {
+    const str = typeof value === 'string' ? value.trim() : ''
+    if (!str) return { ok: false, error: 'value must be a non-empty string' }
+    return { ok: true, normalized: str }
+  }
   if (rule.kind === 'bool') {
     if (typeof value === 'boolean') return { ok: true, normalized: value }
     if (value === 'true') return { ok: true, normalized: true }
@@ -87,10 +99,16 @@ function coerceSettingsByFields<T extends Partial<Settings>>(
   value: Record<string, unknown>,
   fallback: Settings
 ): T {
-  const output: Record<string, number | boolean> = {}
+  const output: Record<string, number | boolean | string> = {}
   for (const field of fields) {
     const fallbackValue = fallback[field.key]
     const rule = SETTING_RULES[field.key]
+    if (rule.kind === 'text') {
+      const raw = value[field.key]
+      const str = typeof raw === 'string' ? raw.trim() : ''
+      output[field.key] = str || (fallbackValue as string)
+      continue
+    }
     if (rule.kind === 'bool') {
       output[field.key] = coerceBooleanValue(value[field.key], fallbackValue as boolean)
       continue
@@ -106,6 +124,10 @@ export function coerceRetrievalSettings(value: Record<string, unknown>, fallback
 
 function coerceMaintenanceSettings(value: Record<string, unknown>, fallback: MaintenanceSettings): MaintenanceSettings {
   return coerceSettingsByFields<MaintenanceSettings>(MAINTENANCE_FIELDS, value, fallback as Settings)
+}
+
+function coerceModelSettings(value: Record<string, unknown>, fallback: ModelSettings): ModelSettings {
+  return coerceSettingsByFields<ModelSettings>(MODEL_FIELDS, value, fallback as Settings)
 }
 
 function coerceSettingValue(rule: NumericSettingRule, value: unknown, fallback: number): number {
