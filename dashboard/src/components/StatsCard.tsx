@@ -22,9 +22,7 @@ export default function StatsCard({ label, value, subtext, sparklineData, sparkl
   })() : null
 
   return (
-    <div className="group relative p-4 rounded-lg bg-surface-1 overflow-hidden">
-      {/* Accent top line */}
-      <div className="absolute inset-x-0 top-0 h-px" style={{ backgroundColor: sparklineColor, opacity: 0.5 }} />
+    <div className="group relative p-2 rounded-lg bg-surface-1 overflow-hidden">
       <div className="relative z-10">
         <div className="text-[10px] font-medium uppercase tracking-[0.06em] text-muted-foreground mb-1">
           {label}

@@ -381,7 +381,6 @@ export default function Overview() {
       {/* Key Metrics */}
       <Card>
         <CardContent className="p-5">
-          <h2 className="section-header mb-5">Metrics</h2>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <StatsCard
               label="Total memories"
