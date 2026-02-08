@@ -95,6 +95,27 @@ export async function handlePostSession(
     console.error(`[claude-memory] Transcript parse warnings: ${transcript.parseErrors}`)
   }
 
+  const settings = loadSettings()
+
+  // Skip extraction for very short conversations (~4 chars per token)
+  const minChars = settings.extractionMinTokens * 4
+  if (minChars > 0) {
+    const conversationChars = transcript.messages.reduce((sum, m) => sum + m.text.length, 0)
+    if (conversationChars < minChars) {
+      return {
+        inserted: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0,
+        records: [],
+        insertedIds: [],
+        updatedIds: [],
+        reason: 'no_records',
+        transcript
+      }
+    }
+  }
+
   const projectRoot = findGitRoot(input.cwd) ?? input.cwd
   const domain = inferDomain(projectRoot)
   const extracted = await extractRecords(transcript, {
@@ -125,8 +146,6 @@ export async function handlePostSession(
   }
 
   await precomputeEmbeddings(records, config)
-
-  const settings = loadSettings()
 
   let inserted = 0
   let updated = 0

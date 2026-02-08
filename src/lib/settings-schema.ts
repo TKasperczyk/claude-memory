@@ -111,6 +111,12 @@ const MAINTENANCE_GROUPS_META = {
     description: 'Generate warnings from repeated failure patterns.',
     section: 'maintenance'
   },
+  extraction: {
+    id: 'extraction',
+    label: 'Extraction',
+    description: 'Control when and how memories are extracted from sessions.',
+    section: 'maintenance'
+  },
   similarityThresholds: {
     id: 'similarity-thresholds',
     label: 'Similarity thresholds',
@@ -575,6 +581,17 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.warningSynthesis
   },
   {
+    key: 'extractionMinTokens',
+    label: 'Min conversation tokens',
+    description: 'Skip extraction for conversations shorter than this (estimated tokens).',
+    step: 10,
+    min: 0,
+    max: 1000,
+    kind: 'int',
+    default: 100,
+    group: MAINTENANCE_GROUPS_META.extraction
+  },
+  {
     key: 'extractionDedupThreshold',
     label: 'Extraction dedup threshold',
     description: 'Similarity for dedup during extraction.',
@@ -610,6 +627,7 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
 ]
 
 const MAINTENANCE_GROUP_ORDER = [
+  MAINTENANCE_GROUPS_META.extraction,
   MAINTENANCE_GROUPS_META.staleAge,
   MAINTENANCE_GROUPS_META.lowUsage,
   MAINTENANCE_GROUPS_META.consolidation,

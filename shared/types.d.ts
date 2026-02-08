@@ -240,6 +240,7 @@ export interface MaintenanceSettings {
   warningSynthesisBatchSize: number
   warningSynthesisRecheckDays: number
   procedureStepCheckCount: number
+  extractionMinTokens: number
   extractionDedupThreshold: number
   reviewSimilarThreshold: number
   reviewDuplicateWarningThreshold: number
