@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { SKIP_MARKER, getCommandFilePath } from './claude-commands.js'
+import { SKIP_MARKER, SKIP_EXTRACTION_MARKER, getCommandFilePath } from './claude-commands.js'
 import { readFileIfExists } from './shared.js'
 import { isPlainObject } from './parsing.js'
 import type { CommandStatus, HookEvent, HookStatus, InstallationStatus } from '../../shared/types.js'
@@ -47,10 +47,23 @@ ${SKIP_MARKER}
 Display the full contents of the <prior-knowledge> section that was injected at the start of this conversation. Show it exactly as it appears, formatted nicely, without summarizing or omitting anything.
 `
 
+const SKIP_EXTRACTION_COMMAND_CONTENT = `---
+description: Skip memory extraction when this session ends
+---
+
+${SKIP_EXTRACTION_MARKER}
+
+Acknowledge that memory extraction will be skipped when this session ends. Say exactly: "Memory extraction will be skipped for this session." and nothing else.
+`
+
 const COMMAND_DEFINITIONS: Record<string, CommandDefinition> = {
-  memory: {
-    filename: 'memory.md',
+  'prior-knowledge': {
+    filename: 'prior-knowledge.md',
     content: MEMORY_COMMAND_CONTENT
+  },
+  'skip-extraction': {
+    filename: 'skip-extraction.md',
+    content: SKIP_EXTRACTION_COMMAND_CONTENT
   }
 }
 

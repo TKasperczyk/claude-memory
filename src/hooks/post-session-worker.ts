@@ -20,6 +20,7 @@ import { getRecordSummary } from '../lib/record-summary.js'
 import { acquireFileLock } from '../lib/lock.js'
 import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
+import { SKIP_EXTRACTION_MARKER } from '../lib/claude-commands.js'
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
 const DEBUG_LOG_FILE = `${homedir()}/.claude-memory/debug.log`
@@ -150,6 +151,18 @@ async function main(): Promise<void> {
           removeSessionTracking(payload.session_id, collection)
         }
         return
+      }
+
+      // Check for skip-extraction marker in transcript
+      if (fs.existsSync(payload.transcript_path)) {
+        const transcriptRaw = fs.readFileSync(payload.transcript_path, 'utf-8')
+        if (transcriptRaw.includes(SKIP_EXTRACTION_MARKER)) {
+          debugLog('Skipping: skip-extraction marker found in transcript')
+          auditLog(`SKIP reason=skip_requested session=${payload.session_id}`)
+          console.error('[claude-memory] Skip-extraction marker found; skipping extraction.')
+          removeSessionTracking(payload.session_id, collection)
+          return
+        }
       }
 
       debugLog('Initializing Milvus...')

@@ -2,6 +2,7 @@ import { homedir } from 'os'
 import path from 'path'
 
 export const SKIP_MARKER = '<!-- claude-memory:skip-injection -->'
+export const SKIP_EXTRACTION_MARKER = '<!-- claude-memory:skip-extraction -->'
 
 function getCommandsDirectory(claudeSettingsPath?: string): string {
   if (claudeSettingsPath) {
