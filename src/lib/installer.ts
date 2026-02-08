@@ -51,6 +51,7 @@ const SKIP_EXTRACTION_COMMAND_CONTENT = `---
 description: Skip memory extraction when this session ends
 ---
 
+${SKIP_MARKER}
 ${SKIP_EXTRACTION_MARKER}
 
 Acknowledge that memory extraction will be skipped when this session ends. Say exactly: "Memory extraction will be skipped for this session." and nothing else.
