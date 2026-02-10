@@ -1,5 +1,5 @@
 import { Activity, Sparkles } from 'lucide-react'
-import { formatDuration, formatRelativeTimeShort } from '@/lib/format'
+import { formatDuration, formatRelativeTimeShort, formatTokenCount } from '@/lib/format'
 
 export default function ExtractionSummary({
   summary
@@ -8,6 +8,7 @@ export default function ExtractionSummary({
     totalRuns: number
     totalRecords: number
     totalErrors: number
+    totalTokens: number
     avgDuration: number
     latestTimestamp: number
   }
@@ -29,6 +30,11 @@ export default function ExtractionSummary({
           <span>
             <span className="text-foreground/90 font-medium tabular-nums">{summary.totalRecords}</span>
             <span className="text-muted-foreground/70 ml-1">records</span>
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span>
+            <span className="text-foreground/90 font-medium tabular-nums">{formatTokenCount(summary.totalTokens)}</span>
+            <span className="text-muted-foreground/70 ml-1">tokens</span>
           </span>
           <span className="text-muted-foreground/40">·</span>
           <span>

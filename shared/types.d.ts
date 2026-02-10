@@ -262,6 +262,13 @@ export interface ExtractionRecordSummary {
   timestamp?: number
 }
 
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheCreationInputTokens: number
+  cacheReadInputTokens: number
+}
+
 export interface ExtractionRun {
   runId: string
   sessionId: string
@@ -274,6 +281,7 @@ export interface ExtractionRun {
   extractedRecords?: ExtractionRecordSummary[]
   duration: number
   firstPrompt?: string
+  tokenUsage?: TokenUsage
 }
 
 export interface ExtractionReviewIssue {

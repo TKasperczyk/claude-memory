@@ -1,7 +1,7 @@
 import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import ListItem from '@/components/ListItem'
-import { formatDuration, formatRelativeTimeShort, truncateText } from '@/lib/format'
+import { formatDuration, formatRelativeTimeShort, formatTokenCount, truncateText } from '@/lib/format'
 import type { ExtractionReview, ExtractionRun } from '@/lib/api'
 import { getAccuracyBadge } from './utils'
 
@@ -28,6 +28,9 @@ function ExtractionRunCard({
   const hasErrors = run.parseErrorCount > 0
   const dotClass = hasErrors ? 'bg-destructive' : 'bg-success'
   const promptPreview = getFirstSentence(run.firstPrompt)
+  const tokenTotal = run.tokenUsage
+    ? run.tokenUsage.inputTokens + run.tokenUsage.outputTokens
+    : null
 
   return (
     <ListItem onClick={() => onSelect(run.runId)} selected={selected}>
@@ -41,6 +44,11 @@ function ExtractionRunCard({
           <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-foreground/10 text-foreground/70">
             {formatDuration(run.duration)}
           </span>
+          {tokenTotal !== null && (
+            <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-foreground/10 text-foreground/70">
+              {formatTokenCount(tokenTotal)} tok
+            </span>
+          )}
           {accuracyBadge && (
             <span
               className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${accuracyBadge.badge}`}

@@ -33,6 +33,7 @@ export type {
   ScoredRecord,
   SearchResult,
   StatsSnapshot,
+  TokenUsage,
   WarningRecord,
   WarningSeverity
 } from '../../shared/types.js'

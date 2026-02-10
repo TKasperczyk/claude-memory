@@ -108,3 +108,11 @@ When deleting an extraction run via the dashboard, **both** newly inserted recor
 - Without this, deleting a bad extraction run would leave behind modified records in an inconsistent state
 
 If you need to preserve pre-existing records while removing only new ones, manually review the extraction before deletion.
+
+### Token Usage Display Shows input + output Only
+
+Dashboard token metrics (`ExtractionDetail`, `ExtractionList`, `ExtractionSummary`) display `inputTokens + outputTokens` as the total. The `cacheCreationInputTokens` and `cacheReadInputTokens` fields are persisted but not added to the displayed total. This is correct — Anthropic's cache token fields are **subsets** of `input_tokens`, not additive. Including them would double-count.
+
+### Usefulness Rating Gracefully Handles Missing Tool Calls
+
+In `rateInjectedMemories()` (extract.ts), if the Anthropic response is missing the expected tool block, the function logs a warning and returns `{ helpfulIds: [], tokenUsage }` instead of throwing. This is intentional — throwing would discard the token usage from that API call, and the session tracking cleanup still proceeds normally. Malformed model responses are rare, and preserving token accounting is more valuable than retrying.

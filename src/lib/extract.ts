@@ -1,12 +1,24 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
-import { DEFAULT_CONFIG, type CommandRecord, type Config, type DiscoveryRecord, type ErrorRecord, type InjectedMemoryEntry, type MemoryRecord, type ProcedureRecord, type WarningRecord } from './types.js'
+import {
+  DEFAULT_CONFIG,
+  type CommandRecord,
+  type Config,
+  type DiscoveryRecord,
+  type ErrorRecord,
+  type InjectedMemoryEntry,
+  type MemoryRecord,
+  type ProcedureRecord,
+  type TokenUsage,
+  type WarningRecord
+} from './types.js'
 import type { Transcript, TranscriptEvent } from './transcript.js'
 import { getDomainExamples, type DomainExample } from './milvus.js'
 import { stripNoiseWords } from './context.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { getRecordSchemaOneOf } from './record-schema.js'
 import { asConfidence, asOutcome, asScope, asSeverity, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { emptyTokenUsage, extractTokenUsage } from './token-usage.js'
 
 export interface ExtractionContext {
   sessionId: string
@@ -203,7 +215,7 @@ export async function extractRecords(
   transcript: Transcript,
   context: ExtractionContext,
   config: Config = DEFAULT_CONFIG
-): Promise<MemoryRecord[]> {
+): Promise<{ records: MemoryRecord[]; tokenUsage: TokenUsage }> {
   const derivedIntent = context.intent ?? inferIntent(transcript) ?? 'unknown'
   const resolvedContext: ExtractionContext = {
     ...context,
@@ -214,7 +226,7 @@ export async function extractRecords(
     const client = await createAnthropicClient()
     if (!client) {
       console.error('[claude-memory] No authentication available for extraction. Set ANTHROPIC_API_KEY or run kira login.')
-      return []
+      return { records: [], tokenUsage: emptyTokenUsage() }
     }
 
     // Fetch existing domains to guide consistent domain assignment
@@ -236,12 +248,16 @@ export async function extractRecords(
       tool_choice: { type: 'tool', name: TOOL_NAME }
     })
 
+    const tokenUsage = extractTokenUsage(response)
     const toolInput = response.content.find((block): block is ToolUseBlock => isToolUseBlock(block) && block.name === TOOL_NAME)?.input
-    if (!toolInput) return []
-    return coerceExtractionResult(toolInput, resolvedContext)
+    if (!toolInput) return { records: [], tokenUsage }
+    return {
+      records: coerceExtractionResult(toolInput, resolvedContext),
+      tokenUsage
+    }
   } catch (error) {
     console.error('[claude-memory] extractRecords failed:', error)
-    return []
+    return { records: [], tokenUsage: emptyTokenUsage() }
   }
 }
 
@@ -263,8 +279,10 @@ export async function rateInjectedMemories(
   transcript: Transcript,
   injectedMemories: InjectedMemoryEntry[],
   config: Config = DEFAULT_CONFIG
-): Promise<string[]> {
-  if (injectedMemories.length === 0) return []
+): Promise<{ helpfulIds: string[]; tokenUsage: TokenUsage }> {
+  if (injectedMemories.length === 0) {
+    return { helpfulIds: [], tokenUsage: emptyTokenUsage() }
+  }
 
   const client = await createAnthropicClient()
   if (!client) {
@@ -286,15 +304,20 @@ export async function rateInjectedMemories(
     tool_choice: { type: 'tool', name: USEFULNESS_TOOL_NAME }
   })
 
+  const tokenUsage = extractTokenUsage(response)
   const toolInput = response.content.find((block): block is ToolUseBlock =>
     isToolUseBlock(block) && block.name === USEFULNESS_TOOL_NAME
   )?.input
   if (!toolInput) {
-    throw new Error('Usefulness tool call missing in response.')
+    console.warn('[claude-memory] Usefulness tool call missing in response; treating as no helpful memories.')
+    return { helpfulIds: [], tokenUsage }
   }
 
   const allowedIds = new Set(injectedMemories.map(entry => entry.id))
-  return coerceUsefulnessResult(toolInput, allowedIds)
+  return {
+    helpfulIds: coerceUsefulnessResult(toolInput, allowedIds),
+    tokenUsage
+  }
 }
 
 function buildUserPrompt(transcript: Transcript, context: ExtractionContext): string {

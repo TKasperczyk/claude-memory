@@ -3,7 +3,7 @@ import { Trash2 } from 'lucide-react'
 import MetricTile from '@/components/MetricTile'
 import ListItem from '@/components/ListItem'
 import { Button } from '@/components/ui/button'
-import { formatDateTime, formatDuration, formatRelativeTimeShort, truncateText } from '@/lib/format'
+import { formatDateTime, formatDuration, formatRelativeTimeShort, formatTokenCount, truncateText } from '@/lib/format'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
 import type { ExtractionReview, ExtractionRun, MemoryRecord } from '@/lib/api'
 import ExtractionReviewPanel from './ExtractionReviewPanel'
@@ -73,6 +73,9 @@ export default function ExtractionDetail({
   const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
   const transcriptPath = run.transcriptPath || '—'
   const projectName = extractProjectFromPath(run.transcriptPath)
+  const tokenTotal = run.tokenUsage
+    ? run.tokenUsage.inputTokens + run.tokenUsage.outputTokens
+    : null
 
   const handleDelete = () => {
     if (isDeleting) return
@@ -127,6 +130,9 @@ export default function ExtractionDetail({
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
             <MetricTile label="Records" value={run.recordCount} />
             <MetricTile label="Duration" value={formatDuration(run.duration)} />
+            {tokenTotal !== null && (
+              <MetricTile label="Tokens" value={formatTokenCount(tokenTotal)} />
+            )}
             <MetricTile
               label="Errors"
               value={run.parseErrorCount}

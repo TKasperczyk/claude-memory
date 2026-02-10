@@ -13,7 +13,7 @@ import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPro
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
 import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
-import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord } from '../lib/types.js'
+import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord, type TokenUsage } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
 import { getRecordSearchableTextParts } from '../lib/record-fields.js'
 import { getRecordSummary } from '../lib/record-summary.js'
@@ -21,6 +21,7 @@ import { acquireFileLock } from '../lib/lock.js'
 import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
 import { SKIP_EXTRACTION_MARKER } from '../lib/claude-commands.js'
+import { addTokenUsage, emptyTokenUsage, hasTokenUsage } from '../lib/token-usage.js'
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
 const DEBUG_LOG_FILE = `${homedir()}/.claude-memory/debug.log`
@@ -178,6 +179,7 @@ async function main(): Promise<void> {
       let shouldFlush = false
       const extractionStart = Date.now()
       let extractionDuration = 0
+      let runTokenUsage = emptyTokenUsage()
       try {
         debugLog('Running extraction...')
         result = await handlePostSession(payload, config, {
@@ -193,11 +195,19 @@ async function main(): Promise<void> {
         debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
         shouldFlush = (result.inserted + result.updated) > 0
         extractionDuration = Date.now() - extractionStart
-        saveRunLog(payload, result, extractionDuration, collection)
+        if (result.tokenUsage) {
+          runTokenUsage = addTokenUsage(runTokenUsage, result.tokenUsage)
+        }
       } finally {
         debugLog('Running usefulness rating...')
-        shouldFlush = (await processUsefulnessRating(payload, config, result?.transcript)) || shouldFlush
+        const usefulness = await processUsefulnessRating(payload, config, result?.transcript)
+        shouldFlush = usefulness.updated || shouldFlush
+        runTokenUsage = addTokenUsage(runTokenUsage, usefulness.tokenUsage)
         debugLog('Usefulness rating done')
+      }
+
+      if (result) {
+        saveRunLog(payload, result, extractionDuration, runTokenUsage, collection)
       }
 
       if (shouldFlush) {
@@ -237,6 +247,7 @@ function saveRunLog(
   payload: ExtractionHookInput,
   result: Awaited<ReturnType<typeof handlePostSession>>,
   duration: number,
+  tokenUsage: TokenUsage,
   collection?: string
 ): void {
   if (result.reason === 'no_transcript' || result.reason === 'clear' || result.reason === 'wrong_event') {
@@ -264,7 +275,8 @@ function saveRunLog(
     updatedRecordIds: updatedIds.length > 0 ? updatedIds : undefined,
     extractedRecords,
     duration,
-    firstPrompt
+    firstPrompt,
+    tokenUsage: hasTokenUsage(tokenUsage) ? tokenUsage : undefined
   }, collection)
 
   auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms`)
@@ -285,23 +297,26 @@ async function processUsefulnessRating(
   payload: ExtractionHookInput,
   config: Config,
   transcript?: Transcript
-): Promise<boolean> {
-  if (payload.hook_event_name !== 'SessionEnd') return false
+): Promise<{ updated: boolean; tokenUsage: TokenUsage }> {
+  if (payload.hook_event_name !== 'SessionEnd') {
+    return { updated: false, tokenUsage: emptyTokenUsage() }
+  }
 
   const collection = config.milvus.collection
   const session = loadSessionTracking(payload.session_id, collection)
   if (!session || session.memories.length === 0) {
     removeSessionTracking(payload.session_id, collection)
-    return false
+    return { updated: false, tokenUsage: emptyTokenUsage() }
   }
 
   const memories = session.memories
   if (memories.length === 0) {
     removeSessionTracking(payload.session_id, collection)
-    return false
+    return { updated: false, tokenUsage: emptyTokenUsage() }
   }
 
   let updated = false
+  let tokenUsage = emptyTokenUsage()
   try {
     const retrievalDeltas = countRetrievalDeltas(memories)
     if (retrievalDeltas.size > 0) {
@@ -319,7 +334,7 @@ async function processUsefulnessRating(
   const deduped = dedupeInjectedMemories(memories)
   if (deduped.length === 0) {
     removeSessionTracking(payload.session_id, collection)
-    return updated
+    return { updated, tokenUsage }
   }
 
   let shouldRemove = false
@@ -329,12 +344,14 @@ async function processUsefulnessRating(
     if (!resolvedTranscript) {
       if (!payload.transcript_path || !fs.existsSync(payload.transcript_path)) {
         console.error('[claude-memory] Transcript missing for usefulness rating; keeping session tracking file.')
-        return updated
+        return { updated, tokenUsage }
       }
       resolvedTranscript = await parseTranscript(payload.transcript_path)
     }
 
-    const helpfulIds = await rateInjectedMemories(resolvedTranscript, deduped, config)
+    const rating = await rateInjectedMemories(resolvedTranscript, deduped, config)
+    tokenUsage = addTokenUsage(tokenUsage, rating.tokenUsage)
+    const helpfulIds = rating.helpfulIds
 
     if (helpfulIds.length > 0) {
       // NOTE: Best-effort counters; concurrent sessions can drop increments.
@@ -353,7 +370,7 @@ async function processUsefulnessRating(
     }
   }
 
-  return updated
+  return { updated, tokenUsage }
 }
 
 function countRetrievalDeltas(memories: InjectedMemoryEntry[]): Map<string, number> {

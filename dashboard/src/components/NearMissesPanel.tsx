@@ -1,6 +1,7 @@
 import ListItem from '@/components/ListItem'
 import TypeBadge from '@/components/TypeBadge'
 import { type ExclusionReason, type MemoryRecord, type NearMissRecord } from '@/lib/api'
+import { formatTokenCount } from '@/lib/format'
 import { getMemorySummary } from '@/lib/memory-ui'
 
 const EXCLUSION_REASON_STYLES: Record<ExclusionReason['reason'], string> = {
@@ -14,10 +15,6 @@ const EXCLUSION_REASON_STYLES: Record<ExclusionReason['reason'], string> = {
 
 function formatDecimal(value: number, digits = 2): string {
   return value.toFixed(digits)
-}
-
-function formatTokenCount(value: number): string {
-  return Math.round(value).toLocaleString()
 }
 
 function formatShortId(value: string): string {

@@ -17,7 +17,14 @@ import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
 import { loadSettings } from '../lib/settings.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
-import { DEFAULT_CONFIG, type Config, type MemoryRecord, type ExtractionHookInput, type InjectedMemoryEntry } from '../lib/types.js'
+import {
+  DEFAULT_CONFIG,
+  type Config,
+  type MemoryRecord,
+  type ExtractionHookInput,
+  type InjectedMemoryEntry,
+  type TokenUsage
+} from '../lib/types.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -32,6 +39,7 @@ export interface PostSessionResult {
   updatedIds: string[]
   transcript?: Transcript
   reason?: 'clear' | 'no_transcript' | 'no_records' | 'wrong_event'
+  tokenUsage?: TokenUsage
 }
 
 /**
@@ -118,7 +126,7 @@ export async function handlePostSession(
 
   const projectRoot = findGitRoot(input.cwd) ?? input.cwd
   const domain = inferDomain(projectRoot)
-  const extracted = await extractRecords(transcript, {
+  const { records: extractedRecords, tokenUsage } = await extractRecords(transcript, {
     sessionId: input.session_id,
     cwd: input.cwd,
     project: projectRoot,
@@ -128,8 +136,8 @@ export async function handlePostSession(
   })
 
   const records = options.recordAugmenter
-    ? extracted.map(record => options.recordAugmenter!(record, transcript))
-    : extracted
+    ? extractedRecords.map(record => options.recordAugmenter!(record, transcript))
+    : extractedRecords
 
   if (records.length === 0) {
     return {
@@ -141,7 +149,8 @@ export async function handlePostSession(
       insertedIds: [],
       updatedIds: [],
       reason: 'no_records',
-      transcript
+      transcript,
+      tokenUsage
     }
   }
 
@@ -182,7 +191,7 @@ export async function handlePostSession(
     }
   }
 
-  return { inserted, updated, skipped, failed, records, insertedIds, updatedIds, transcript }
+  return { inserted, updated, skipped, failed, records, insertedIds, updatedIds, transcript, tokenUsage }
 }
 
 async function precomputeEmbeddings(records: MemoryRecord[], config: Config): Promise<void> {

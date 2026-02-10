@@ -37,8 +37,29 @@ export function formatRelativeTimeLong(timestamp?: number): string {
   return 'just now'
 }
 
+export function formatTokenCount(count: number): string {
+  if (!Number.isFinite(count)) return '0'
+  const rounded = Math.round(count)
+  const abs = Math.abs(rounded)
+
+  if (abs >= 1_000_000) {
+    return `${formatCompact(rounded / 1_000_000)}M`
+  }
+
+  if (abs >= 1_000) {
+    return `${formatCompact(rounded / 1_000)}k`
+  }
+
+  return rounded.toLocaleString()
+}
+
 export function truncateText(value: string, maxLength: number, options: { ellipsis?: string } = {}): string {
   const ellipsis = options.ellipsis ?? '...'
   if (value.length <= maxLength) return value
   return value.slice(0, maxLength - ellipsis.length) + ellipsis
+}
+
+function formatCompact(value: number): string {
+  const fixed = value.toFixed(1)
+  return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed
 }

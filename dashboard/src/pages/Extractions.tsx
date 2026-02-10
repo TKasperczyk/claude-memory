@@ -149,12 +149,16 @@ export default function Extractions() {
     let totalRecords = 0
     let totalErrors = 0
     let totalDuration = 0
+    let totalTokens = 0
     let latestTimestamp = 0
 
     for (const run of filteredRuns) {
       totalRecords += run.recordCount
       totalErrors += run.parseErrorCount
       totalDuration += run.duration
+      if (run.tokenUsage) {
+        totalTokens += run.tokenUsage.inputTokens + run.tokenUsage.outputTokens
+      }
       if (run.timestamp > latestTimestamp) {
         latestTimestamp = run.timestamp
       }
@@ -164,6 +168,7 @@ export default function Extractions() {
       totalRuns: filteredRuns.length,
       totalRecords,
       totalErrors,
+      totalTokens,
       avgDuration: filteredRuns.length ? totalDuration / filteredRuns.length : 0,
       latestTimestamp
     }

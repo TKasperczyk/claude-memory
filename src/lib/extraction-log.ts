@@ -2,7 +2,7 @@ import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPl
 import { JsonStore, isDefaultCollection } from './file-store.js'
 import { getRecordSummary } from './record-summary.js'
 import { loadSettings } from './settings.js'
-import type { ExtractionRecordSummary, ExtractionRun, RecordType } from '../../shared/types.js'
+import type { ExtractionRecordSummary, ExtractionRun, RecordType, TokenUsage } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
 
@@ -99,6 +99,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const extractedRecords = coerceRecordSummaries(record.extractedRecords)
   const duration = asInteger(record.duration) ?? 0
   const firstPrompt = asTrimmedString(record.firstPrompt)
+  const tokenUsage = coerceTokenUsage(record.tokenUsage)
 
   return {
     runId: asString(record.runId) ?? runId,
@@ -111,7 +112,19 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     updatedRecordIds: updatedRecordIds.length > 0 ? updatedRecordIds : undefined,
     extractedRecords,
     duration,
-    firstPrompt
+    firstPrompt,
+    tokenUsage
+  }
+}
+
+function coerceTokenUsage(value: unknown): TokenUsage | undefined {
+  if (!isPlainObject(value)) return undefined
+
+  return {
+    inputTokens: asInteger(value.inputTokens) ?? 0,
+    outputTokens: asInteger(value.outputTokens) ?? 0,
+    cacheCreationInputTokens: asInteger(value.cacheCreationInputTokens) ?? 0,
+    cacheReadInputTokens: asInteger(value.cacheReadInputTokens) ?? 0
   }
 }
 
