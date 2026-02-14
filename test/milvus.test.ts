@@ -41,6 +41,7 @@ const makeMockClient = () => ({
   search: vi.fn(),
   count: vi.fn(),
   flush: vi.fn().mockResolvedValue(undefined),
+  flushSync: vi.fn().mockResolvedValue(undefined),
   describeCollection: vi.fn().mockResolvedValue({ schema: { fields: [] } }),
   addCollectionFields: vi.fn().mockResolvedValue({ error_code: 'Success' }),
   createCollection: vi.fn().mockResolvedValue(undefined),
@@ -425,7 +426,7 @@ describe('milvus-crud', () => {
       collection_name: DEFAULT_CONFIG.milvus.collection,
       filter: 'id == "id \\"with\\" \\\\\\\\ slash"'
     })
-    expect(client.flush).toHaveBeenCalledWith({
+    expect(client.flushSync).toHaveBeenCalledWith({
       collection_names: [DEFAULT_CONFIG.milvus.collection]
     })
   })

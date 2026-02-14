@@ -21,7 +21,7 @@ export interface WriteOptions {
 }
 
 const QUERY_ITERATOR_BATCH_SIZE = 1000
-const POST_FLUSH_DELAY_MS = 500 // IVF_FLAT index needs time to update after flush
+const POST_FLUSH_DELAY_MS = parseInt(process.env.CC_MEMORIES_POST_FLUSH_DELAY_MS ?? '500', 10)
 
 export async function insertRecord(
   record: MemoryRecord,
@@ -595,7 +595,7 @@ async function getRecordById(
 }
 
 async function flushAndWait(client: MilvusClient, collectionName: string): Promise<void> {
-  await client.flush({
+  await client.flushSync({
     collection_names: [collectionName]
   })
   // IVF_FLAT index needs time to update after flush before search works reliably

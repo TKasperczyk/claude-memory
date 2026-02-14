@@ -40,7 +40,7 @@ export function getDefaultSettings(): Settings {
 
 export function loadSettings(): Settings {
   const defaults = getDefaultSettings()
-  return readJsonFile(SETTINGS_PATH, {
+  const settings = readJsonFile(SETTINGS_PATH, {
     fallback: defaults,
     onError: error => console.error('[claude-memory] Failed to load settings:', error),
     coerce: data => {
@@ -48,6 +48,44 @@ export function loadSettings(): Settings {
       return coerceSettings(data, defaults)
     }
   }) ?? defaults
+  return applyEnvOverrides(settings)
+}
+
+/**
+ * Apply environment variable overrides to settings.
+ * Env vars use the pattern CC_MEMORIES_SETTING_<KEY> where KEY is the
+ * camelCase setting name in SCREAMING_SNAKE_CASE.
+ * Example: CC_MEMORIES_SETTING_MIN_SEMANTIC_SIMILARITY=0.4
+ */
+function applyEnvOverrides(settings: Settings): Settings {
+  const result = { ...settings }
+  const ENV_PREFIX = 'CC_MEMORIES_SETTING_'
+  const envKeys = Object.keys(process.env).filter(key => key.startsWith(ENV_PREFIX))
+  if (envKeys.length === 0) return result
+
+  for (const envKey of envKeys) {
+    const rawValue = process.env[envKey]
+    if (rawValue === undefined || rawValue === '') continue
+
+    const snakeKey = envKey.slice(ENV_PREFIX.length).toLowerCase()
+    const camelKey = snakeToCamel(snakeKey) as keyof Settings
+
+    if (!(camelKey in result)) continue
+
+    const rule = SETTING_RULES[camelKey]
+    if (!rule) continue
+
+    const validation = validateSettingValue(camelKey, rawValue)
+    if (validation.ok) {
+      ;(result as Record<string, unknown>)[camelKey] = validation.normalized
+    }
+  }
+
+  return result
+}
+
+function snakeToCamel(snake: string): string {
+  return snake.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
 }
 
 export function resolveMaintenanceSettings(settings?: MaintenanceSettings): MaintenanceSettings {

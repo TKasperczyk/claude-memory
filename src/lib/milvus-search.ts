@@ -1,3 +1,4 @@
+import { ConsistencyLevelEnum } from '@zilliz/milvus2-sdk-node'
 import { embed, ensureEmbeddingDim } from './embed.js'
 import { buildExclusionReason } from './diagnostics.js'
 import { escapeFilterValue } from './shared.js'
@@ -113,7 +114,8 @@ export async function hybridSearch(
         collection_name: config.milvus.collection,
         filter: keywordFilter,
         output_fields: outputFields,
-        limit: keywordLimit
+        limit: keywordLimit,
+        consistency_level: ConsistencyLevelEnum.Strong
       })
 
       for (const row of keywordResults.data ?? []) {
@@ -136,7 +138,8 @@ export async function hybridSearch(
         limit: vectorLimit,
         filter: baseFilter,
         output_fields: outputFields,
-        params: { nprobe: SEARCH_NPROBE }
+        params: { nprobe: SEARCH_NPROBE },
+        consistency_level: ConsistencyLevelEnum.Strong
       })
 
       for (const row of searchResults.results ?? []) {
@@ -235,7 +238,8 @@ export async function findSimilar(
       limit,
       filter,
       output_fields: OUTPUT_FIELDS,
-      params: { nprobe: SEARCH_NPROBE }
+      params: { nprobe: SEARCH_NPROBE },
+      consistency_level: ConsistencyLevelEnum.Strong
     })
 
     const matches = (searchResults.results ?? [])
@@ -276,7 +280,8 @@ export async function vectorSearchSimilar(
       limit,
       filter: options.filter,
       output_fields: OUTPUT_FIELDS,
-      params: { nprobe: SEARCH_NPROBE }
+      params: { nprobe: SEARCH_NPROBE },
+      consistency_level: ConsistencyLevelEnum.Strong
     })
 
     const matches = (searchResults.results ?? [])

@@ -34,6 +34,7 @@ function withSessionLock<T>(sessionId: string, action: () => T, collection?: str
   const handle = acquireFileLock(lockPath, {
     staleAfterMs: LOCK_STALE_MS,
     staleStrategy: 'pid',
+    ensureDir: true,
     wait: { maxWaitMs: LOCK_MAX_WAIT_MS, retryDelayMs: LOCK_RETRY_DELAY_MS },
     write: { data: () => `${process.pid}\n`, ignoreErrors: true },
     onTimeout: path => {

@@ -631,6 +631,11 @@ function pickErrorLine(lines: string[]): string {
 // looksLikeCommand is imported from shared.ts
 
 export function inferDomain(root: string): string | undefined {
+  // Allow override via env var (e.g., for eval isolation where marker detection
+  // mismatches LLM-assigned domains). Empty string → undefined (skip domain filter).
+  const override = process.env.CC_MEMORIES_DOMAIN
+  if (override !== undefined) return override || undefined
+
   if (!root) return undefined
 
   const markers: Array<{ domain: string; files: string[] }> = [
