@@ -301,6 +301,50 @@ export default function ContextPreview() {
               </CardContent>
             </Card>
 
+            {/* Query Info (diagnostic only) */}
+            {diagnosticEnabled && result.queryInfo && (
+              <Card>
+                <CardContent className="p-6">
+                  <h3 className="section-header mb-4">
+                    Processed queries
+                    {result.queryInfo.haikuUsed && (
+                      <span className="ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                        Haiku
+                      </span>
+                    )}
+                  </h3>
+                  <div className="space-y-3 text-sm">
+                    <div>
+                      <span className="text-muted-foreground text-xs">Semantic query</span>
+                      <pre className="mt-1 p-2 rounded bg-secondary text-xs font-mono whitespace-pre-wrap break-words">
+                        {result.queryInfo.semanticQuery || '(none)'}
+                      </pre>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Keyword queries</span>
+                      {result.queryInfo.keywordQueries.length > 0 ? (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {result.queryInfo.keywordQueries.map((q, i) => (
+                            <span key={i} className="px-2 py-1 rounded text-xs bg-secondary font-mono break-all">
+                              {q}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-xs text-muted-foreground">(none)</div>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Effective prompt (after cleanup)</span>
+                      <pre className="mt-1 p-2 rounded bg-secondary text-xs font-mono whitespace-pre-wrap break-words max-h-[150px] overflow-y-auto">
+                        {result.queryInfo.effectivePrompt || '(none)'}
+                      </pre>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Matches */}
             <Card>
               <CardContent className="p-6">

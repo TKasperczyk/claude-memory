@@ -69,9 +69,17 @@ export type HybridSearchParams =
   | HybridSearchParamsWithDiagnostic
   | HybridSearchParamsWithoutDiagnostic
 
+export interface DiagnosticQueryInfo {
+  semanticQuery: string
+  keywordQueries: string[]
+  effectivePrompt: string
+  haikuUsed: boolean
+}
+
 export interface DiagnosticSearchResults {
   qualified: ScoredRecord[]
   nearMisses: NearMissRecord[]
+  queryInfo?: DiagnosticQueryInfo
 }
 
 export interface DiagnosticContextResult {

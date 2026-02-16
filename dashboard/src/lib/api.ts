@@ -130,6 +130,13 @@ export interface SearchResponse {
   results: SearchResult[]
 }
 
+export interface DiagnosticQueryInfo {
+  semanticQuery: string
+  keywordQueries: string[]
+  effectivePrompt: string
+  haikuUsed: boolean
+}
+
 export interface PreviewResponse {
   signals: {
     errors: string[]
@@ -144,6 +151,7 @@ export interface PreviewResponse {
   injectedRecords: MemoryRecord[]
   context: string | null
   timedOut?: boolean
+  queryInfo?: DiagnosticQueryInfo
 }
 
 export interface SessionsResponse {

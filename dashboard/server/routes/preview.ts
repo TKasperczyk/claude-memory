@@ -52,7 +52,8 @@ export function createPreviewRouter(context: ServerContext): express.Router {
             nearMisses: combineNearMisses(
               result.diagnostics.search.nearMisses,
               result.diagnostics.context.exclusions
-            )
+            ),
+            queryInfo: result.diagnostics.search.queryInfo
           }
         : undefined
 

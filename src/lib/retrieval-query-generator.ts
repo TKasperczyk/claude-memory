@@ -4,7 +4,6 @@ import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js
 import { asStringArray, asTrimmedString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { truncateText, withTimeout } from './shared.js'
 import { parseTranscriptTurns, type TranscriptTurn } from './transcript.js'
-import { DEFAULT_CONFIG, type Config } from './types.js'
 
 export interface RetrievalQueryPlan {
   resolvedQuery: string
@@ -14,6 +13,7 @@ export interface RetrievalQueryPlan {
 }
 
 const TOOL_NAME = 'emit_query_plan'
+const HAIKU_MODEL = 'claude-haiku-4-5-20251001'
 const QUERY_MAX_TOKENS = 1000
 const MAX_CONTEXT_TURNS = 8
 const MAX_TURN_CHARS = 4000
@@ -75,25 +75,24 @@ const QUERY_TOOL: Anthropic.Tool = {
 export async function generateRetrievalQueryPlan(
   prompt: string,
   transcriptPath: string | undefined,
-  config: Config = DEFAULT_CONFIG,
   options: { signal?: AbortSignal; timeoutMs?: number; maxTurns?: number } = {}
 ): Promise<RetrievalQueryPlan | null> {
   if (!prompt || !prompt.trim()) {
-    return null
-  }
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
     return null
   }
   if (options.signal?.aborted) return null
 
   try {
     const result = await withTimeout(async (signal) => {
-      const turns = await parseTranscriptTurns(
-        transcriptPath,
-        options.maxTurns ?? MAX_CONTEXT_TURNS,
-        signal
-      )
-      if (signal.aborted || turns.length === 0) return null
+      let turns: TranscriptTurn[] = []
+      if (transcriptPath && fs.existsSync(transcriptPath)) {
+        turns = await parseTranscriptTurns(
+          transcriptPath,
+          options.maxTurns ?? MAX_CONTEXT_TURNS,
+          signal
+        )
+      }
+      if (signal.aborted) return null
 
       const client = await createAnthropicClient()
       if (!client) {
@@ -104,8 +103,8 @@ export async function generateRetrievalQueryPlan(
       const userPrompt = buildUserPrompt(turns, prompt)
 
       const response = await client.messages.create({
-        model: config.extraction.model,
-        max_tokens: Math.min(QUERY_MAX_TOKENS, config.extraction.maxTokens),
+        model: HAIKU_MODEL,
+        max_tokens: QUERY_MAX_TOKENS,
         temperature: 0,
         system: [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
@@ -119,11 +118,23 @@ export async function generateRetrievalQueryPlan(
       const toolInput = response.content.find((block): block is ToolUseBlock =>
         isToolUseBlock(block) && block.name === TOOL_NAME
       )?.input
-      if (!toolInput) return null
-      return coerceRetrievalQueryPlan(toolInput)
+      if (!toolInput) {
+        console.warn('[claude-memory] Haiku query generation returned no tool output')
+        return null
+      }
+      const plan = coerceRetrievalQueryPlan(toolInput)
+      if (!plan) {
+        console.warn('[claude-memory] Haiku query plan failed validation:', JSON.stringify(toolInput))
+      }
+      return plan
     }, { timeoutMs: options.timeoutMs, signal: options.signal })
 
-    if (!result.completed) return null
+    if (!result.completed) {
+      if (result.timedOut) {
+        console.warn(`[claude-memory] Haiku query generation timed out after ${options.timeoutMs ?? '?'}ms`)
+      }
+      return null
+    }
     return result.value ?? null
   } catch (error) {
     console.error('[claude-memory] Retrieval query generation failed:', error)

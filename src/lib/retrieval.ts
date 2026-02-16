@@ -9,6 +9,7 @@ import {
   DEFAULT_CONFIG,
   type Config,
   type DiagnosticContextResult,
+  type DiagnosticQueryInfo,
   type DiagnosticSearchResults,
   type ExclusionReason,
   type HybridSearchResult,
@@ -194,10 +195,12 @@ async function searchMemories(
     ? await generateRetrievalQueryPlan(
         prompt,
         options.transcriptPath,
-        config,
         { signal, timeoutMs: settings.haikuQueryTimeoutMs }
       )
     : null
+  if (settings.enableHaikuRetrieval && !queryPlan) {
+    console.warn('[claude-memory] Haiku retrieval enabled but query plan generation failed; falling back to raw prompt')
+  }
   const resolvedPrompt = queryPlan?.resolvedQuery
     ? stripNoiseWords(queryPlan.resolvedQuery)
     : cleanPrompt
@@ -258,12 +261,22 @@ async function searchMemories(
     }
   }
 
+  const queryInfo: DiagnosticQueryInfo | undefined = diagnostic
+    ? {
+        semanticQuery: semanticQuery || '',
+        keywordQueries,
+        effectivePrompt,
+        haikuUsed: queryPlan !== null
+      }
+    : undefined
+
   const searchDiagnostics = diagnostic
     ? {
         qualified: results,
         // Sort near misses by similarity descending so most relevant appear first
         nearMisses: Array.from(searchNearMisses?.values() ?? [])
-          .sort((a, b) => b.record.similarity - a.record.similarity)
+          .sort((a, b) => b.record.similarity - a.record.similarity),
+        queryInfo
       }
     : undefined
 

@@ -48,7 +48,10 @@ function withSessionLock<T>(sessionId: string, action: () => T, collection?: str
     }
   })
 
-  if (!handle || !handle.locked) return null
+  if (!handle || !handle.locked) {
+    console.warn('[claude-memory] Failed to acquire session lock for:', sessionId)
+    return null
+  }
 
   try {
     return action()
