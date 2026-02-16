@@ -4,12 +4,20 @@ import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js
 import { asStringArray, asTrimmedString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { truncateText, withTimeout } from './shared.js'
 import { parseTranscriptTurns, type TranscriptTurn } from './transcript.js'
+import { extractTokenUsage } from './token-usage.js'
+import type { TokenUsage } from './types.js'
 
 export interface RetrievalQueryPlan {
   resolvedQuery: string
   keywordQueries: string[]
   semanticQuery: string
   domain?: string
+}
+
+export interface RetrievalQueryPlanGenerationResult {
+  plan: RetrievalQueryPlan | null
+  tokenUsage: TokenUsage
+  model: string
 }
 
 const TOOL_NAME = 'emit_query_plan'
@@ -76,7 +84,7 @@ export async function generateRetrievalQueryPlan(
   prompt: string,
   transcriptPath: string | undefined,
   options: { signal?: AbortSignal; timeoutMs?: number; maxTurns?: number } = {}
-): Promise<RetrievalQueryPlan | null> {
+): Promise<RetrievalQueryPlanGenerationResult | null> {
   if (!prompt || !prompt.trim()) {
     return null
   }
@@ -114,19 +122,28 @@ export async function generateRetrievalQueryPlan(
         tools: [QUERY_TOOL],
         tool_choice: { type: 'tool', name: TOOL_NAME }
       }, { signal })
+      const tokenUsage = extractTokenUsage(response)
 
       const toolInput = response.content.find((block): block is ToolUseBlock =>
         isToolUseBlock(block) && block.name === TOOL_NAME
       )?.input
       if (!toolInput) {
         console.warn('[claude-memory] Haiku query generation returned no tool output')
-        return null
+        return {
+          plan: null,
+          tokenUsage,
+          model: HAIKU_MODEL
+        }
       }
       const plan = coerceRetrievalQueryPlan(toolInput)
       if (!plan) {
         console.warn('[claude-memory] Haiku query plan failed validation:', JSON.stringify(toolInput))
       }
-      return plan
+      return {
+        plan,
+        tokenUsage,
+        model: HAIKU_MODEL
+      }
     }, { timeoutMs: options.timeoutMs, signal: options.signal })
 
     if (!result.completed) {

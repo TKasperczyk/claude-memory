@@ -12,6 +12,7 @@ import {
 } from '../../../src/lib/milvus.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
 import { getRetrievalActivity } from '../../../src/lib/retrieval-events.js'
+import { getTokenUsageActivity, backfillFromExtractionRuns } from '../../../src/lib/token-usage-events.js'
 import { getStatsHistory } from '../../../src/lib/stats-snapshots.js'
 import type { TimeBucketPeriod } from '../../../src/lib/time-buckets.js'
 import { EMBEDDING_DIM } from '../../../src/lib/types.js'
@@ -25,7 +26,7 @@ import {
   asStringArray,
   asTrimmedString
 } from '../../../src/lib/parsing.js'
-import type { MemoryRecord, RecordType } from '../../../shared/types.js'
+import type { MemoryRecord, RecordType, TokenUsageSource } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { getRequestConfig } from '../utils/config.js'
@@ -86,6 +87,37 @@ export function createMemoryRouter(context: ServerContext): express.Router {
     } catch (error) {
       logger.error('Failed to get stats history', error)
       res.status(500).json({ error: 'Failed to get stats history' })
+    }
+  })
+
+  router.get('/api/token-usage', (req, res) => {
+    try {
+      const period = parsePeriod(req.query.period, 'day')
+      const limit = parseNonNegativeInt(req.query.limit, period === 'week' ? 12 : 30)
+      const source = parseTokenUsageSource(req.query.source, 'all')
+      const config = getRequestConfig(req, baseConfig)
+
+      const activity = getTokenUsageActivity(period, {
+        limit,
+        source,
+        collection: config.milvus.collection
+      })
+
+      res.json(activity)
+    } catch (error) {
+      logger.error('Failed to get token usage activity', error)
+      res.status(500).json({ error: 'Failed to get token usage activity' })
+    }
+  })
+
+  router.post('/api/token-usage/backfill', (req, res) => {
+    try {
+      const config = getRequestConfig(req, baseConfig)
+      const count = backfillFromExtractionRuns(config.milvus.collection)
+      res.json({ backfilledEvents: count })
+    } catch (error) {
+      logger.error('Failed to backfill token usage', error)
+      res.status(500).json({ error: 'Failed to backfill token usage' })
     }
   })
 
@@ -483,6 +515,25 @@ function parsePeriod(value: unknown, fallback: TimeBucketPeriod): TimeBucketPeri
   if (typeof raw === 'string') {
     const normalized = raw.trim().toLowerCase()
     if (normalized === 'day' || normalized === 'week') {
+      return normalized
+    }
+  }
+  return fallback
+}
+
+function parseTokenUsageSource(
+  value: unknown,
+  fallback: TokenUsageSource | 'all'
+): TokenUsageSource | 'all' {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (typeof raw === 'string') {
+    const normalized = raw.trim().toLowerCase()
+    if (
+      normalized === 'all'
+      || normalized === 'extraction'
+      || normalized === 'haiku-query'
+      || normalized === 'usefulness-rating'
+    ) {
       return normalized
     }
   }

@@ -21,7 +21,9 @@ import type {
   ScoredRecord,
   SearchResult,
   Settings,
-  StatsSnapshot
+  StatsSnapshot,
+  TokenUsageActivity,
+  TokenUsageSource
 } from '../../../shared/types.js'
 import { readSseStream } from './sse'
 
@@ -67,6 +69,10 @@ export type {
   SearchResult,
   Settings,
   StatsSnapshot,
+  TokenUsageActivity,
+  TokenUsageBucket,
+  TokenUsageEvent,
+  TokenUsageSource,
   WarningRecord,
   WarningSeverity
 } from '../../../shared/types.js'
@@ -313,6 +319,19 @@ export function fetchRetrievalActivity(params: {
   if (typeof params.limit === 'number') search.set('limit', String(params.limit))
   const query = search.toString()
   return request(`/retrieval-activity${query ? `?${query}` : ''}`)
+}
+
+export function fetchTokenUsage(params: {
+  period?: RetrievalActivityPeriod
+  limit?: number
+  source?: TokenUsageSource | 'all'
+} = {}): Promise<TokenUsageActivity> {
+  const search = new URLSearchParams()
+  if (params.period) search.set('period', params.period)
+  if (typeof params.limit === 'number') search.set('limit', String(params.limit))
+  if (params.source) search.set('source', params.source)
+  const query = search.toString()
+  return request(`/token-usage${query ? `?${query}` : ''}`)
 }
 
 export function fetchStatsHistory(params: {

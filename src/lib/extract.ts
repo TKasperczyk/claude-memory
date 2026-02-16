@@ -10,6 +10,7 @@ import {
   type MemoryRecord,
   type ProcedureRecord,
   type TokenUsage,
+  type TokenUsageSource,
   type WarningRecord
 } from './types.js'
 import type { Transcript, TranscriptEvent } from './transcript.js'
@@ -19,6 +20,7 @@ import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js
 import { getRecordSchemaOneOf } from './record-schema.js'
 import { asConfidence, asOutcome, asScope, asSeverity, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { emptyTokenUsage, extractTokenUsage } from './token-usage.js'
+import { recordTokenUsageEventsAsync } from './token-usage-events.js'
 
 export interface ExtractionContext {
   sessionId: string
@@ -249,6 +251,7 @@ export async function extractRecords(
     })
 
     const tokenUsage = extractTokenUsage(response)
+    recordTokenUsageEvent('extraction', config.extraction.model, tokenUsage, config.milvus.collection)
     const toolInput = response.content.find((block): block is ToolUseBlock => isToolUseBlock(block) && block.name === TOOL_NAME)?.input
     if (!toolInput) return { records: [], tokenUsage }
     return {
@@ -305,6 +308,7 @@ export async function rateInjectedMemories(
   })
 
   const tokenUsage = extractTokenUsage(response)
+  recordTokenUsageEvent('usefulness-rating', config.extraction.model, tokenUsage, config.milvus.collection)
   const toolInput = response.content.find((block): block is ToolUseBlock =>
     isToolUseBlock(block) && block.name === USEFULNESS_TOOL_NAME
   )?.input
@@ -318,6 +322,23 @@ export async function rateInjectedMemories(
     helpfulIds: coerceUsefulnessResult(toolInput, allowedIds),
     tokenUsage
   }
+}
+
+function recordTokenUsageEvent(
+  source: TokenUsageSource,
+  model: string,
+  tokenUsage: TokenUsage,
+  collection?: string
+): void {
+  recordTokenUsageEventsAsync([{
+    timestamp: Date.now(),
+    source,
+    model,
+    inputTokens: tokenUsage.inputTokens,
+    outputTokens: tokenUsage.outputTokens,
+    cacheCreationInputTokens: tokenUsage.cacheCreationInputTokens,
+    cacheReadInputTokens: tokenUsage.cacheReadInputTokens
+  }], { collection })
 }
 
 function buildUserPrompt(transcript: Transcript, context: ExtractionContext): string {

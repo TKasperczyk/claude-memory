@@ -131,6 +131,34 @@ export interface RetrievalActivity {
   buckets: RetrievalActivityBucket[]
 }
 
+export type TokenUsageSource = 'extraction' | 'haiku-query' | 'usefulness-rating'
+
+export interface TokenUsageEvent {
+  timestamp: number
+  source: TokenUsageSource
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cacheCreationInputTokens: number
+  cacheReadInputTokens: number
+}
+
+export interface TokenUsageBucket {
+  start: number
+  end: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreationInputTokens: number
+  cacheReadInputTokens: number
+}
+
+export interface TokenUsageActivity {
+  period: RetrievalActivityPeriod
+  source: TokenUsageSource | 'all'
+  buckets: TokenUsageBucket[]
+}
+
 export interface InjectedMemoryEntry {
   id: string
   snippet: string

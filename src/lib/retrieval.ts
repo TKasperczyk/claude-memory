@@ -4,6 +4,7 @@ import { buildContext, extractSignals, stripNoiseWords, type ContextSignals } fr
 import { embed } from './embed.js'
 import { mergeNearMisses } from './diagnostics.js'
 import { generateRetrievalQueryPlan } from './retrieval-query-generator.js'
+import { recordTokenUsageEventsAsync } from './token-usage-events.js'
 import { loadSettings, type RetrievalSettings } from './settings.js'
 import {
   DEFAULT_CONFIG,
@@ -191,13 +192,26 @@ async function searchMemories(
   const cleanPrompt = stripNoiseWords(prompt)
   const diagnostic = options.diagnostic === true
 
-  const queryPlan = settings.enableHaikuRetrieval
+  const queryPlanResult = settings.enableHaikuRetrieval
     ? await generateRetrievalQueryPlan(
         prompt,
         options.transcriptPath,
         { signal, timeoutMs: settings.haikuQueryTimeoutMs }
       )
     : null
+  const queryPlanTokenUsage = queryPlanResult?.tokenUsage
+  if (queryPlanResult && queryPlanTokenUsage) {
+    recordTokenUsageEventsAsync([{
+      timestamp: Date.now(),
+      source: 'haiku-query',
+      model: queryPlanResult.model,
+      inputTokens: queryPlanTokenUsage.inputTokens,
+      outputTokens: queryPlanTokenUsage.outputTokens,
+      cacheCreationInputTokens: queryPlanTokenUsage.cacheCreationInputTokens,
+      cacheReadInputTokens: queryPlanTokenUsage.cacheReadInputTokens
+    }], { collection: config.milvus.collection })
+  }
+  const queryPlan = queryPlanResult?.plan ?? null
   if (settings.enableHaikuRetrieval && !queryPlan) {
     console.warn('[claude-memory] Haiku retrieval enabled but query plan generation failed; falling back to raw prompt')
   }

@@ -47,6 +47,7 @@ import {
 import { ensureClient } from '../src/lib/milvus-client.js'
 import { mergeNearMisses } from '../src/lib/diagnostics.js'
 import { retrieveContext } from '../src/lib/retrieval.js'
+import { getTokenUsageActivity } from '../src/lib/token-usage-events.js'
 import { reviewInjection, reviewInjectionStreaming } from '../src/lib/injection-review.js'
 import { getExtractionRun, listExtractionRuns } from '../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../src/lib/extraction-review.js'
@@ -119,6 +120,10 @@ vi.mock('../src/lib/diagnostics.js', () => ({
 
 vi.mock('../src/lib/retrieval.js', () => ({
   retrieveContext: vi.fn()
+}))
+
+vi.mock('../src/lib/token-usage-events.js', () => ({
+  getTokenUsageActivity: vi.fn()
 }))
 
 vi.mock('../src/lib/injection-review.js', () => ({
@@ -195,6 +200,7 @@ const mockedEscapeFilterValue = vi.mocked(escapeFilterValue)
 const mockedGetRecordStats = vi.mocked(getRecordStats)
 const mockedMergeNearMisses = vi.mocked(mergeNearMisses)
 const mockedRetrieveContext = vi.mocked(retrieveContext)
+const mockedGetTokenUsageActivity = vi.mocked(getTokenUsageActivity)
 const mockedReviewInjection = vi.mocked(reviewInjection)
 const mockedReviewInjectionStreaming = vi.mocked(reviewInjectionStreaming)
 const mockedListAllSessions = vi.mocked(listAllSessions)
@@ -331,6 +337,11 @@ beforeEach(() => {
     results: [],
     injectedRecords: [],
     timedOut: false
+  })
+  mockedGetTokenUsageActivity.mockReturnValue({
+    period: 'day',
+    source: 'all',
+    buckets: []
   })
   mockedReviewInjection.mockResolvedValue({ status: 'ok' })
   mockedReviewInjectionStreaming.mockResolvedValue({ status: 'ok' })
@@ -680,6 +691,49 @@ describe('memory routes', () => {
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
       milvus: { collection: 'test-collection' }
+    })
+  })
+
+  it('returns token usage activity with default query params', async () => {
+    const { app } = buildApp()
+    const res = await request(app).get('/api/token-usage')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ period: 'day', source: 'all', buckets: [] })
+    expect(mockedGetTokenUsageActivity).toHaveBeenCalledWith('day', {
+      limit: 30,
+      source: 'all',
+      collection: DEFAULT_CONFIG.milvus.collection
+    })
+  })
+
+  it('passes period, limit, and source query params to token usage activity', async () => {
+    mockedGetTokenUsageActivity.mockReturnValueOnce({
+      period: 'week',
+      source: 'haiku-query',
+      buckets: [{
+        start: 1707091200000,
+        end: 1707696000000,
+        totalTokens: 24,
+        inputTokens: 18,
+        outputTokens: 6,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      }]
+    })
+
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/token-usage?period=week&limit=5&source=haiku-query')
+      .set('X-Milvus-Collection', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(res.body.period).toBe('week')
+    expect(res.body.source).toBe('haiku-query')
+    expect(mockedGetTokenUsageActivity).toHaveBeenLastCalledWith('week', {
+      limit: 5,
+      source: 'haiku-query',
+      collection: 'test-collection'
     })
   })
 

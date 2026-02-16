@@ -6,6 +6,7 @@ import { loadSettings } from '../src/lib/settings.js'
 import { closeMilvus, hybridSearch, initMilvus } from '../src/lib/milvus.js'
 import { embed } from '../src/lib/embed.js'
 import { generateRetrievalQueryPlan } from '../src/lib/retrieval-query-generator.js'
+import { recordTokenUsageEventsAsync } from '../src/lib/token-usage-events.js'
 import { withTimeout } from '../src/lib/shared.js'
 
 type BuildContextOptions = { diagnostic?: boolean; mmrExclusions?: unknown[] }
@@ -45,6 +46,10 @@ vi.mock('../src/lib/retrieval-query-generator.js', () => ({
   generateRetrievalQueryPlan: vi.fn()
 }))
 
+vi.mock('../src/lib/token-usage-events.js', () => ({
+  recordTokenUsageEventsAsync: vi.fn()
+}))
+
 vi.mock('../src/lib/settings.js', () => ({
   loadSettings: vi.fn()
 }))
@@ -80,6 +85,7 @@ const mockedLoadSettings = vi.mocked(loadSettings)
 const mockedHybridSearch = vi.mocked(hybridSearch)
 const mockedEmbed = vi.mocked(embed)
 const mockedGenerateRetrievalQueryPlan = vi.mocked(generateRetrievalQueryPlan)
+const mockedRecordTokenUsageEventsAsync = vi.mocked(recordTokenUsageEventsAsync)
 const mockedInitMilvus = vi.mocked(initMilvus)
 const mockedCloseMilvus = vi.mocked(closeMilvus)
 const mockedWithTimeout = vi.mocked(withTimeout)
@@ -199,10 +205,19 @@ describe('MMR re-ranking', () => {
 describe('Haiku query planning', () => {
   it('uses Haiku query plan to shape keyword search and domain', async () => {
     mockedGenerateRetrievalQueryPlan.mockResolvedValue({
-      resolvedQuery: 'How do I build the Docker image?',
-      keywordQueries: ['docker build'],
-      semanticQuery: 'Build a Docker image for this project.',
-      domain: 'docker'
+      plan: {
+        resolvedQuery: 'How do I build the Docker image?',
+        keywordQueries: ['docker build'],
+        semanticQuery: 'Build a Docker image for this project.',
+        domain: 'docker'
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
     })
 
     mockedHybridSearch.mockResolvedValue([])
@@ -231,6 +246,28 @@ describe('Haiku query planning', () => {
 
     const keywordCall = mockedHybridSearch.mock.calls.find(([params]) => params.vectorWeight === 0)
     expect(keywordCall?.[0].query).toBe(prompt)
+  })
+
+  it('skips token usage recording when query plan omits token usage', async () => {
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'How do I deploy?',
+        keywordQueries: ['deploy'],
+        semanticQuery: 'Deployment workflow',
+        domain: 'ops'
+      },
+      model: 'claude-haiku-4-5-20251001'
+    } as any)
+
+    mockedHybridSearch.mockResolvedValue([])
+
+    await retrieveContext(
+      { prompt: 'How do I deploy?', cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl' },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
+    )
+
+    expect(mockedRecordTokenUsageEventsAsync).not.toHaveBeenCalled()
   })
 })
 

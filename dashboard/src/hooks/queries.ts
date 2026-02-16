@@ -6,6 +6,7 @@ import {
   fetchMemories,
   fetchMemoryTypes,
   fetchRetrievalActivity,
+  fetchTokenUsage,
   fetchSettings,
   fetchSettingsDefaults,
   fetchSessions,
@@ -23,7 +24,9 @@ import {
   type SettingsDefaultsResponse,
   type SessionsResponse,
   type StatsHistoryResponse,
-  type StatsResponse
+  type StatsResponse,
+  type TokenUsageActivity,
+  type TokenUsageSource
 } from '@/lib/api'
 
 type MemoriesQueryParams = {
@@ -161,6 +164,18 @@ export function useRetrievalActivity(params: {
   return useQuery<RetrievalActivity>({
     queryKey: ['retrievalActivity', params],
     queryFn: () => fetchRetrievalActivity(params),
+    refetchInterval: 60000
+  })
+}
+
+export function useTokenUsage(params: {
+  period?: RetrievalActivityPeriod
+  limit?: number
+  source?: TokenUsageSource | 'all'
+} = {}) {
+  return useQuery<TokenUsageActivity>({
+    queryKey: ['tokenUsage', params],
+    queryFn: () => fetchTokenUsage(params),
     refetchInterval: 60000
   })
 }

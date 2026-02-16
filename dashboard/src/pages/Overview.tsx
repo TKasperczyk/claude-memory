@@ -16,8 +16,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import StatsCard from '@/components/StatsCard'
-import { RetrievalActivityChart, MemoryGrowthChart } from '@/components/charts'
-import { useInstallationStatus, useRetrievalActivity, useStats, useStatsHistory } from '@/hooks/queries'
+import { RetrievalActivityChart, MemoryGrowthChart, TokenUsageChart } from '@/components/charts'
+import { useInstallationStatus, useRetrievalActivity, useStats, useStatsHistory, useTokenUsage } from '@/hooks/queries'
 import { installAll, resetCollection, uninstallAll, type HookEvent, type RecordType } from '@/lib/api'
 import { TYPE_COLORS } from '@/lib/memory-ui'
 
@@ -220,6 +220,7 @@ export default function Overview() {
   const { data: installationStatus, error: installationError, isPending: installationPending } = useInstallationStatus()
   const { data: retrievalActivity, isPending: retrievalActivityPending } = useRetrievalActivity({ period: 'day', limit: 30 })
   const { data: statsHistory, isPending: statsHistoryPending } = useStatsHistory({ period: 'day', limit: 30 })
+  const { data: tokenUsage, isPending: tokenUsagePending } = useTokenUsage({ period: 'day', limit: 30, source: 'all' })
   const [resetOpen, setResetOpen] = useState(false)
   const [resetInput, setResetInput] = useState('')
   const [resetError, setResetError] = useState<string | null>(null)
@@ -433,7 +434,7 @@ export default function Overview() {
       </div>
 
       {/* Activity Charts */}
-      <div className="grid md:grid-cols-2 gap-5">
+      <div className="grid md:grid-cols-3 gap-5">
         <Card>
           <CardContent className="p-5">
             <h2 className="section-header mb-4">Memory growth</h2>
@@ -444,6 +445,12 @@ export default function Overview() {
           <CardContent className="p-5">
             <h2 className="section-header mb-4">Retrieval activity</h2>
             <RetrievalActivityChart data={retrievalActivity} isLoading={retrievalActivityPending} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5">
+            <h2 className="section-header mb-4">Token usage</h2>
+            <TokenUsageChart data={tokenUsage} isLoading={tokenUsagePending} />
           </CardContent>
         </Card>
       </div>
