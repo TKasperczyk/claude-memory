@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+
+const uuid = () =>
+  typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
 import { Loader2, ChevronDown, Send, Sparkles, MessageSquare } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -130,7 +135,7 @@ export default function Chat() {
         return [...prev.slice(0, -1), { ...last, content: last.content + text }]
       }
       // Otherwise create a new assistant message
-      return [...prev, { type: 'message', id: crypto.randomUUID(), role: 'assistant', content: text }]
+      return [...prev, { type: 'message', id: uuid(), role: 'assistant', content: text }]
     })
   }
 
@@ -140,7 +145,7 @@ export default function Chat() {
 
     const userEntry: ChatEntryMessage = {
       type: 'message',
-      id: crypto.randomUUID(),
+      id: uuid(),
       role: 'user',
       content: trimmed
     }
