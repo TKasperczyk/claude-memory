@@ -219,10 +219,12 @@ async function searchMemories(
     ? stripNoiseWords(queryPlan.resolvedQuery)
     : cleanPrompt
   const effectivePrompt = resolvedPrompt || cleanPrompt
-  const effectiveDomain = queryPlan?.domain ?? signals.domain
-  const signalsForQuery = effectiveDomain === signals.domain
+  // Use Haiku's domain for semantic query enrichment but NOT for Milvus filtering,
+  // since Haiku may guess a domain that doesn't match stored values
+  const semanticDomain = queryPlan?.domain ?? signals.domain
+  const signalsForSemanticQuery = semanticDomain === signals.domain
     ? signals
-    : { ...signals, domain: effectiveDomain }
+    : { ...signals, domain: semanticDomain }
 
   const keywordQueries = queryPlan
     ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings)
@@ -230,11 +232,11 @@ async function searchMemories(
 
   const semanticBase = queryPlan?.semanticQuery?.trim()
   const semanticQuery = semanticBase
-    ? normalizeSemanticQuery(semanticBase, signalsForQuery, settings)
-    : buildSemanticQuery(cleanPrompt, signalsForQuery, settings)
+    ? normalizeSemanticQuery(semanticBase, signalsForSemanticQuery, settings)
+    : buildSemanticQuery(cleanPrompt, signalsForSemanticQuery, settings)
   const scope = {
     project: signals.projectRoot ?? cwd,
-    domain: signalsForQuery.domain
+    domain: signals.domain
   }
 
   // Pre-compute embedding once to avoid duplicate API calls on retry
@@ -416,7 +418,7 @@ async function searchWithScope(
   }
 
   const filteredResults = Array.from(resultsById.values())
-    .filter(result => result.keywordMatch || result.score >= settings.minScore)
+    .filter(result => result.score >= settings.minScore)
   const rankedResults = sortByScore(filteredResults).slice(0, candidateLimit)
   if (diagnostic && nearMisses) {
     for (const result of rankedResults) {
