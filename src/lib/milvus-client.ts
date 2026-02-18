@@ -33,24 +33,38 @@ async function createInitializedClient(config: Config): Promise<MilvusClient> {
     collection_name: config.milvus.collection
   })
 
+  let schemaChanged = false
   if (!hasCollection.value) {
     await createCollection(nextClient, config)
+    schemaChanged = true
   } else {
-    await ensureSchemaFields(nextClient, config)
+    schemaChanged = await ensureSchemaFields(nextClient, config)
   }
 
-  // Release first in case collection is in an inconsistent state
-  try {
-    await nextClient.releaseCollection({
+  if (schemaChanged) {
+    // Schema changed: release and reload to pick up new fields
+    try {
+      await nextClient.releaseCollection({
+        collection_name: config.milvus.collection
+      })
+    } catch {
+      // Ignore - collection might not be loaded
+    }
+    await nextClient.loadCollection({
       collection_name: config.milvus.collection
     })
-  } catch {
-    // Ignore - collection might not be loaded
+  } else {
+    // Ensure collection is loaded (may be unloaded after Milvus restart
+    // or if a previous process was killed mid-init)
+    const loadState = await nextClient.getLoadState({
+      collection_name: config.milvus.collection
+    })
+    if (loadState.state !== 'LoadStateLoaded') {
+      await nextClient.loadCollection({
+        collection_name: config.milvus.collection
+      })
+    }
   }
-
-  await nextClient.loadCollection({
-    collection_name: config.milvus.collection
-  })
 
   return nextClient
 }

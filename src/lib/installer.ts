@@ -30,7 +30,7 @@ export class ClaudeSettingsError extends Error {
   }
 }
 
-const CLAUDE_HOOK_TIMEOUT_SECONDS = 5
+const CLAUDE_HOOK_TIMEOUT_SECONDS = 15
 
 const HOOK_SCRIPTS: Record<HookEvent, string> = {
   UserPromptSubmit: 'pre-prompt.js',

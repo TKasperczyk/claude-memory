@@ -86,7 +86,7 @@ const MIGRATION_FIELDS = [
   { name: 'source_excerpt', data_type: DataType.VarChar, max_length: SOURCE_EXCERPT_MAX_LENGTH, nullable: true }
 ]
 
-export async function ensureSchemaFields(client: MilvusClient, config: Config): Promise<void> {
+export async function ensureSchemaFields(client: MilvusClient, config: Config): Promise<boolean> {
   try {
     const description = await client.describeCollection({
       collection_name: config.milvus.collection
@@ -96,7 +96,7 @@ export async function ensureSchemaFields(client: MilvusClient, config: Config): 
     const fieldNames = new Set(fields.map(field => field.name))
     const missing = MIGRATION_FIELDS.filter(field => !fieldNames.has(field.name))
 
-    if (missing.length === 0) return
+    if (missing.length === 0) return false
 
     const result = await client.addCollectionFields({
       collection_name: config.milvus.collection,
@@ -105,11 +105,13 @@ export async function ensureSchemaFields(client: MilvusClient, config: Config): 
 
     if (result.error_code !== 'Success') {
       console.error(`[claude-memory] Failed to add fields: ${result.reason}`)
-      return
+      return false
     }
 
     console.error(`[claude-memory] Added fields to ${config.milvus.collection}: ${missing.map(field => field.name).join(', ')}`)
+    return true
   } catch (error) {
     console.error('[claude-memory] Failed to ensure schema fields:', error)
+    return false
   }
 }
