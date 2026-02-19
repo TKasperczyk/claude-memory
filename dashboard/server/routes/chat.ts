@@ -23,6 +23,11 @@ const STATIC_PROMPT = readFileSync(
 const CHAT_MAX_TOKENS = 10000
 const CHAT_TEMPERATURE = 0.2
 const MAX_TOOL_ROUNDS = 50
+const EFFORT_MODELS = ['claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-6']
+
+function supportsEffort(model: string): boolean {
+  return EFFORT_MODELS.some(prefix => model.startsWith(prefix))
+}
 
 type ChatMessage = {
   role: 'user' | 'assistant'
@@ -151,7 +156,7 @@ export function createChatRouter(context: ServerContext): express.Router {
 
         const { chatModel } = loadSettings()
         logger.info(`Using chat model: ${chatModel}`)
-        const responseStream = await client.messages.create({
+        const createParams: Record<string, unknown> = {
           model: chatModel,
           max_tokens: CHAT_MAX_TOKENS,
           temperature: CHAT_TEMPERATURE,
@@ -163,7 +168,13 @@ export function createChatRouter(context: ServerContext): express.Router {
           tools: CHAT_TOOLS,
           tool_choice: { type: 'auto' },
           stream: true
-        }, stream.signal ? { signal: stream.signal } : undefined)
+        }
+        if (supportsEffort(chatModel)) {
+          createParams.output_config = { effort: 'high' }
+        }
+        const responseStream = await (client.messages.create as Function)(
+          createParams, stream.signal ? { signal: stream.signal } : undefined
+        )
 
         const { contentBlocks, toolUses } = await consumeChatStream(responseStream, stream)
 
