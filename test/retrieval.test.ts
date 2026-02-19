@@ -32,11 +32,15 @@ vi.mock('../src/lib/shared.js', async () => {
   }
 })
 
-vi.mock('../src/lib/milvus.js', () => ({
-  initMilvus: vi.fn(),
-  closeMilvus: vi.fn(),
-  hybridSearch: vi.fn()
-}))
+vi.mock('../src/lib/milvus.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/lib/milvus.js')>('../src/lib/milvus.js')
+  return {
+    initMilvus: vi.fn(),
+    closeMilvus: vi.fn(),
+    hybridSearch: vi.fn(),
+    computeUsageRatio: actual.computeUsageRatio
+  }
+})
 
 vi.mock('../src/lib/embed.js', () => ({
   embed: vi.fn()
@@ -70,6 +74,7 @@ const BASE_SETTINGS: RetrievalSettings = {
   maxTokens: 2000,
   mmrLambda: 0.7,
   usageRatioWeight: 0.2,
+  keywordBonus: 0.08,
   enableHaikuRetrieval: false,
   maxKeywordQueries: 4,
   maxKeywordErrors: 2,
@@ -99,7 +104,8 @@ const makeResult = (
   id: string,
   embedding: number[],
   score: number,
-  similarity: number = score
+  similarity: number = score,
+  keywordMatch: boolean = true
 ): HybridSearchResult => ({
   record: createMockCommandRecord({
     id,
@@ -108,14 +114,14 @@ const makeResult = (
   }),
   score,
   similarity,
-  keywordMatch: true
+  keywordMatch
 })
 
 beforeEach(async () => {
   vi.clearAllMocks()
   const actualShared = await vi.importActual<typeof import('../src/lib/shared.js')>('../src/lib/shared.js')
   mockedLoadSettings.mockReturnValue(makeSettings())
-  mockedEmbed.mockResolvedValue([0.1, 0.2])
+  mockedEmbed.mockResolvedValue([0.95, 0.05])
   mockedGenerateRetrievalQueryPlan.mockResolvedValue(null)
   mockedHybridSearch.mockResolvedValue([])
   mockedInitMilvus.mockResolvedValue(undefined)
@@ -143,7 +149,7 @@ describe('MMR re-ranking', () => {
     const result = await retrieveContext(
       { prompt: 'find relevant memories', cwd: PROJECT_ROOT },
       DEFAULT_CONFIG,
-      { projectRoot: PROJECT_ROOT, settingsOverride: { maxRecords: 2, mmrLambda: 0.2 } }
+      { projectRoot: PROJECT_ROOT, settingsOverride: { maxRecords: 2, mmrLambda: 0.2, minScore: 0.05 } }
     )
 
     expect(result.results.map(item => item.record.id)).toEqual(['a', 'c'])
@@ -164,7 +170,7 @@ describe('MMR re-ranking', () => {
     const result = await retrieveContext(
       { prompt: 'find relevant memories', cwd: PROJECT_ROOT },
       DEFAULT_CONFIG,
-      { projectRoot: PROJECT_ROOT, settingsOverride: { maxRecords: 2, mmrLambda: 1 } }
+      { projectRoot: PROJECT_ROOT, settingsOverride: { maxRecords: 2, mmrLambda: 1, minScore: 0.05 } }
     )
 
     expect(result.results.map(item => item.record.id)).toEqual(['a', 'b'])
@@ -230,7 +236,8 @@ describe('Haiku query planning', () => {
 
     const keywordCall = mockedHybridSearch.mock.calls.find(([params]) => params.vectorWeight === 0)
     expect(keywordCall?.[0].query).toBe('docker build')
-    expect(keywordCall?.[0].domain).toBe('docker')
+    // Keyword search uses signal-detected domain (from cwd), not Haiku's guess
+    expect(keywordCall?.[0].domain).toBe('node')
   })
 
   it('falls back to prompt-based queries when Haiku is unavailable', async () => {
@@ -389,5 +396,109 @@ describe('Timeout handling', () => {
     expect(result.timedOut).toBe(true)
     expect(result.context).toBeNull()
     expect(result.results).toEqual([])
+  })
+})
+
+describe('Unified scoring', () => {
+  it('re-scores keyword-only matches using cosine similarity', async () => {
+    // Keyword match close to query embedding should score well
+    const kwRelevant = makeResult('kw-relevant', [0.95, 0.05], 1.0, 0)
+    // Keyword match far from query embedding should score poorly
+    const kwIrrelevant = makeResult('kw-irrelevant', [0, 1], 1.0, 0)
+    // Semantic match with moderate similarity
+    const semantic = makeResult('semantic', [0.7, 0.3], 0.7, 0.7, false)
+
+    mockedHybridSearch.mockImplementation(async params => {
+      if (params.vectorWeight === 0) return [kwRelevant, kwIrrelevant]
+      return [semantic]
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'test unified scoring', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { minScore: 0.05 } }
+    )
+
+    // kw-relevant should rank highest (high similarity + keyword bonus)
+    expect(result.results[0].record.id).toBe('kw-relevant')
+    // Scores should be < 1.0 (no longer inflated)
+    expect(result.results[0].score).toBeLessThan(1.0)
+    expect(result.results[0].score).toBeGreaterThan(0.5)
+    // kw-irrelevant should rank lowest
+    const ids = result.results.map(r => r.record.id)
+    expect(ids.indexOf('kw-irrelevant')).toBeGreaterThan(ids.indexOf('kw-relevant'))
+  })
+
+  it('filters out keyword matches with low semantic relevance', async () => {
+    // Keyword match with very low similarity to query
+    const kwJunk = makeResult('junk', [0, 1], 1.0, 0)
+
+    mockedHybridSearch.mockImplementation(async params => {
+      if (params.vectorWeight === 0) return [kwJunk]
+      return []
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'test filtering', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT }
+    )
+
+    // With default minScore=0.45 and low similarity, keyword junk gets filtered
+    expect(result.results).toHaveLength(0)
+  })
+
+  it('falls back to original keyword scores when embedding generation fails', async () => {
+    mockedEmbed.mockRejectedValue(new Error('Embedding service down'))
+
+    const kwResult = makeResult('kw', [1, 0], 1.0, 0)
+
+    mockedHybridSearch.mockImplementation(async params => {
+      if (params.vectorWeight === 0) return [kwResult]
+      return []
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'keyword only fallback', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT }
+    )
+
+    // Should still return the keyword match with original scoring
+    expect(result.results).toHaveLength(1)
+    expect(result.results[0].record.id).toBe('kw')
+    expect(result.results[0].score).toBeGreaterThanOrEqual(1.0)
+  })
+})
+
+describe('Keyword query normalization', () => {
+  it('drops keyword queries that are substrings of longer queries', async () => {
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'p4 brain configuration',
+        keywordQueries: ['p4 brain', 'p4', 'brain'],
+        semanticQuery: 'p4 brain configuration',
+        domain: 'config'
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedHybridSearch.mockResolvedValue([])
+
+    await retrieveContext(
+      { prompt: 'p4 brain', cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl' },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
+    )
+
+    // 'p4' and 'brain' are substrings of 'p4 brain', so only 1 keyword call
+    const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
+    expect(keywordCalls).toHaveLength(1)
+    expect(keywordCalls[0][0].query).toBe('p4 brain')
   })
 })

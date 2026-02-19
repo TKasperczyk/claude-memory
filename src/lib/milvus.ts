@@ -30,7 +30,8 @@ export {
   vectorSearchSimilar,
   buildFilter,
   buildKeywordFilter,
-  escapeLikeValue
+  escapeLikeValue,
+  computeUsageRatio
 } from './milvus-search.js'
 
 export { buildMilvusRow, buildEmbeddingInput } from './milvus-records.js'

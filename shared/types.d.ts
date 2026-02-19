@@ -229,6 +229,7 @@ export interface RetrievalSettings {
   maxTokens: number
   mmrLambda: number
   usageRatioWeight: number
+  keywordBonus: number
   enableHaikuRetrieval: boolean
   maxKeywordQueries: number
   maxKeywordErrors: number

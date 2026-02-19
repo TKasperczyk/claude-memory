@@ -178,17 +178,17 @@ export async function hybridSearch(
 
     if (diagnostic && shouldApplyMinScore) {
       for (const result of results) {
-        if (result.score < minScore && !result.keywordMatch) {
+        if (result.score < minScore) {
           addNearMiss(
             result,
-            buildExclusionReason('semantic_only_score_below_threshold', minScore, result.score)
+            buildExclusionReason('score_below_threshold', minScore, result.score)
           )
         }
       }
     }
 
     const qualified = results
-      .filter(r => !shouldApplyMinScore || r.keywordMatch || r.score >= minScore)
+      .filter(r => !shouldApplyMinScore || r.score >= minScore)
       .slice(0, limit)
 
     if (diagnostic) {
@@ -360,7 +360,7 @@ export function buildKeywordFilter(query: string, baseFilter?: string): string {
   return `${baseFilter} && ${likeClause}`
 }
 
-function computeUsageRatio(record: MemoryRecord): number {
+export function computeUsageRatio(record: MemoryRecord): number {
   const retrievalCount = record.retrievalCount ?? 0
   const usageCount = record.usageCount ?? 0
   if (usageCount <= 0) return 0

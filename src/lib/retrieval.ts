@@ -1,8 +1,8 @@
 import { truncateText, withTimeout } from './shared.js'
-import { closeMilvus, initMilvus, hybridSearch } from './milvus.js'
+import { closeMilvus, initMilvus, hybridSearch, computeUsageRatio } from './milvus.js'
 import { buildContext, extractSignals, stripNoiseWords, type ContextSignals } from './context.js'
 import { embed } from './embed.js'
-import { mergeNearMisses } from './diagnostics.js'
+import { mergeNearMisses, buildExclusionReason } from './diagnostics.js'
 import { generateRetrievalQueryPlan } from './retrieval-query-generator.js'
 import { recordTokenUsageEventsAsync } from './token-usage-events.js'
 import { loadSettings, type RetrievalSettings } from './settings.js'
@@ -19,6 +19,13 @@ import {
   type NearMissRecord,
   type PrePromptInput
 } from './types.js'
+
+/**
+ * Fixed weight for semantic similarity in the unified scoring formula.
+ * Not user-configurable because changing it would shift the meaning of
+ * minScore and other thresholds that depend on this scale.
+ */
+const UNIFIED_SEMANTIC_WEIGHT = 0.7
 
 function applySettingsToConfig(config: Config, settings: RetrievalSettings): Config {
   return {
@@ -417,8 +424,49 @@ async function searchWithScope(
     }
   }
 
-  const filteredResults = Array.from(resultsById.values())
-    .filter(result => result.score >= settings.minScore)
+  // Unified re-scoring: compute actual semantic similarity for keyword-only
+  // matches and apply a single scoring formula across all candidates.
+  //
+  // Previously, keyword matches got score=1.0+ (from keywordWeight=1) with
+  // similarity=0, and bypassed minScore filtering. This caused broad substring
+  // matches (e.g., "p4" matching anything mentioning P4) to flood results and
+  // crowd out semantically relevant memories. Now all candidates are scored by:
+  //   score = similarity * SEMANTIC_WEIGHT + keywordBonus + usageRatio * usageWeight
+  // where keywordBonus is a small boost (~0.08) instead of the old effective 1.0.
+  const allCandidates = Array.from(resultsById.values())
+
+  if (precomputedEmbedding) {
+    for (const item of allCandidates) {
+      // Compute real cosine similarity for keyword-only matches that came in with similarity=0
+      if (item.similarity === 0 && item.keywordMatch) {
+        const candidateEmbedding = item.record.embedding
+        if (candidateEmbedding && candidateEmbedding.length > 0) {
+          item.similarity = cosineSimilarity(precomputedEmbedding, candidateEmbedding)
+        }
+      }
+      const usageRatio = computeUsageRatio(item.record)
+      const bonus = item.keywordMatch ? settings.keywordBonus : 0
+      item.score = item.similarity * UNIFIED_SEMANTIC_WEIGHT + bonus + usageRatio * settings.usageRatioWeight
+    }
+  }
+  // When precomputedEmbedding is undefined (embedding generation failed),
+  // candidates keep their original hybridSearch scores (keyword matches have
+  // score=1.0+, which passes minScore naturally). No special bypass needed.
+
+  if (diagnostic && nearMisses) {
+    for (const item of allCandidates) {
+      if (item.score < settings.minScore) {
+        nearMisses.set(item.record.id, {
+          record: item,
+          exclusionReasons: [buildExclusionReason('score_below_threshold', settings.minScore, item.score)]
+        })
+      }
+    }
+  }
+
+  const filteredResults = allCandidates.filter(result =>
+    result.score >= settings.minScore
+  )
   const rankedResults = sortByScore(filteredResults).slice(0, candidateLimit)
   if (diagnostic && nearMisses) {
     for (const result of rankedResults) {
@@ -648,12 +696,24 @@ function normalizeKeywordQueries(
     seen.add(entry)
   }
 
-  if (deduped.length === 0 && fallback.trim()) {
-    deduped.push(fallback.trim())
+  // Drop queries that are substrings of a strictly longer query.
+  // Keyword search uses LIKE '%query%', so 'p4 brain' already matches
+  // everything 'p4' would. Keeping the short form wastes a Milvus query
+  // and pulls in broader, less relevant results.
+  const filtered = deduped.filter(query => {
+    const lower = query.toLowerCase()
+    return !deduped.some(other =>
+      other.length > query.length && other.toLowerCase().includes(lower)
+    )
+  })
+  const result = filtered.length > 0 ? filtered : deduped
+
+  if (result.length === 0 && fallback.trim()) {
+    result.push(fallback.trim())
   }
 
-  if (deduped.length <= settings.maxKeywordQueries) return deduped
-  return deduped.slice(0, settings.maxKeywordQueries)
+  if (result.length <= settings.maxKeywordQueries) return result
+  return result.slice(0, settings.maxKeywordQueries)
 }
 
 function normalizeSemanticQuery(

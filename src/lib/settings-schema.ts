@@ -140,7 +140,7 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'minScore',
     label: 'Min hybrid score',
-    description: 'Threshold for non-keyword matches in hybrid retrieval.',
+    description: 'Score threshold for all matches in hybrid retrieval (keyword and semantic). Only bypassed for keyword matches when embedding generation fails.',
     step: 0.01,
     min: 0,
     max: 1,
@@ -201,6 +201,17 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     max: 1,
     kind: 'float',
     default: 0.2,
+    group: RETRIEVAL_GROUPS.ranking
+  },
+  {
+    key: 'keywordBonus',
+    label: 'Keyword match bonus',
+    description: 'Flat score boost for results that match a keyword query. Keyword matches are re-scored using semantic similarity; this bonus is added on top.',
+    step: 0.01,
+    min: 0,
+    max: 0.5,
+    kind: 'float',
+    default: 0.08,
     group: RETRIEVAL_GROUPS.ranking
   },
   {
