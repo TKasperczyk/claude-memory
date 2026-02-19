@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs'
 import express from 'express'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
@@ -8,16 +9,16 @@ import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from '../../../src/l
 import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from '../../../src/lib/anthropic-stream.js'
 import { CHAT_TOOLS, executeChatTool, type ChatToolName } from '../lib/chat-tools.js'
 import { loadSettings } from '../../../src/lib/settings.js'
+import type { Settings } from '../../../src/lib/settings.js'
+import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
+import type { Config } from '../../../src/lib/types.js'
+import type { MemoryStatsSummary } from '../../../shared/types.js'
 
 const logger = createLogger('chat')
 
-const CHAT_SYSTEM_PROMPT = `You are a memory assistant for Claude Code. You help users query, understand, and manage their memory database.
-
-Guidelines:
-- When asked to find/search, use search_memories with appropriate filters
-- When asked to remove/delete, first search to find matching IDs, show them, then delete
-- Be concise but informative about what you find
-- If search returns nothing, suggest lowering min_similarity or broadening the query`
+const STATIC_PROMPT = readFileSync(
+  new URL('../lib/chat-system-prompt.md', import.meta.url), 'utf-8'
+)
 
 const CHAT_MAX_TOKENS = 10000
 const CHAT_TEMPERATURE = 0.2
@@ -36,9 +37,66 @@ function isChatMessage(value: unknown): value is ChatMessage {
   return typeof content === 'string'
 }
 
-function buildSystemPrompt(project?: string): string {
-  if (!project) return CHAT_SYSTEM_PROMPT
-  return `${CHAT_SYSTEM_PROMPT}\n\nActive project: ${project}`
+function formatStatsForPrompt(stats: MemoryStatsSummary): string {
+  const typeCounts = Object.entries(stats.byType)
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, count]) => `${count} ${type}`)
+    .join(', ')
+
+  const scopeCounts = Object.entries(stats.byScope)
+    .sort((a, b) => b[1] - a[1])
+    .map(([scope, count]) => `${count} ${scope}`)
+    .join(', ')
+
+  const topDomains = Object.entries(stats.byDomain)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([domain, count]) => `${domain} (${count})`)
+    .join(', ')
+
+  const lines = [
+    `## Current Database Stats`,
+    `- Total memories: ${stats.total} (${stats.deprecated} deprecated)`,
+    `- By type: ${typeCounts || 'none'}`,
+    `- By scope: ${scopeCounts || 'none'}`,
+  ]
+  if (topDomains) lines.push(`- Top domains: ${topDomains}`)
+  lines.push(
+    `- Avg retrieval count: ${stats.avgRetrievalCount.toFixed(1)}, avg usage ratio: ${stats.avgUsageRatio.toFixed(2)}`
+  )
+  return lines.join('\n')
+}
+
+function formatSettingsForPrompt(settings: Settings): string {
+  const lines = [
+    `## Current Settings (Retrieval)`,
+    `- minScore: ${settings.minScore}, minSemanticSimilarity: ${settings.minSemanticSimilarity}`,
+    `- maxRecords: ${settings.maxRecords}, maxTokens: ${settings.maxTokens}`,
+    `- mmrLambda: ${settings.mmrLambda}, keywordBonus: ${settings.keywordBonus}, usageRatioWeight: ${settings.usageRatioWeight}`,
+    `- Haiku query planning: ${settings.enableHaikuRetrieval ? 'enabled' : 'disabled'}`,
+  ]
+  return lines.join('\n')
+}
+
+async function buildSystemPrompt(config: Config, project?: string): Promise<string> {
+  const settings = loadSettings()
+
+  let statsBlock = ''
+  try {
+    const stats = await buildMemoryStats(config)
+    statsBlock = formatStatsForPrompt(stats)
+  } catch (err) {
+    logger.warn('Failed to fetch memory stats for chat prompt', err)
+  }
+
+  const settingsBlock = formatSettingsForPrompt(settings)
+
+  const parts = [STATIC_PROMPT]
+  if (project) parts.push(`\n## Active Project\n${project}`)
+  if (settingsBlock) parts.push(settingsBlock)
+  if (statsBlock) parts.push(statsBlock)
+
+  return parts.join('\n')
 }
 
 export function createChatRouter(context: ServerContext): express.Router {
@@ -79,7 +137,7 @@ export function createChatRouter(context: ServerContext): express.Router {
       }
 
       const config = await ensureConfigInitialized(req, baseConfig)
-      const systemPrompt = buildSystemPrompt(typeof project === 'string' ? project.trim() : undefined)
+      const systemPrompt = await buildSystemPrompt(config, typeof project === 'string' ? project.trim() : undefined)
 
       const conversation: Array<{ role: 'user' | 'assistant'; content: unknown }> = normalizedMessages.map(message => ({
         role: message.role,
