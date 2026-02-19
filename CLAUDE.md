@@ -1,118 +1,86 @@
 ## Development guidelines
 
-Use claude-context semantic search for exploring the codebase and avoiding code duplication when implementing features and making changes
+Use claude-context semantic search for exploring the codebase and avoiding code duplication when implementing features and making changes.
 
 ## Project Overview
 
-claude-memory is a technical knowledge persistence system for Claude Code. It automatically extracts durable knowledge from conversations (commands, errors, discoveries, procedures, warnings) and injects relevant memories into future sessions via Claude Code hooks.
+claude-memory is a technical knowledge persistence system for Claude Code. It extracts durable knowledge from conversations (commands, errors, discoveries, procedures, warnings) and injects relevant memories into future sessions via Claude Code hooks.
 
-## Development Commands
+## Commands
 
 ```bash
-# Core commands
-pnpm build              # TypeScript compilation
-pnpm test               # Run vitest tests
-pnpm test:watch         # Watch mode
-pnpm maintenance        # Run memory maintenance operations
-pnpm maintenance --dry-run  # Preview maintenance without changes
+# Core
+pnpm build                  # TypeScript compilation
+pnpm test                   # Run vitest (some tests skip if services unavailable)
+pnpm test:watch             # Watch mode
+pnpm dev                    # Source watch mode (tsx watch)
+pnpm maintenance            # Run memory maintenance
+pnpm maintenance --dry-run  # Preview without changes
+pnpm audit                  # Gemini-powered full-corpus audit
+pnpm audit:auto             # Auto-mode (no prompts)
 
 # Dashboard (separate package in ./dashboard)
 cd dashboard
-pnpm start              # Run API server (port 3001) + Vite dev server (port 5173)
+pnpm start              # API server (port 3001) + Vite (port 5000)
 pnpm server             # API server only
 pnpm dev                # Vite frontend only
 ```
 
 ## Architecture
 
-### Hook System (src/hooks/)
-Claude Code hooks that run automatically during sessions:
-- **pre-prompt.ts**: Injects relevant memories before each user prompt. Runs hybrid search (keyword + semantic), applies MMR for diversity, and formats context for injection.
-- **post-session.ts**: Launcher that spawns detached worker process for fast exit.
-- **post-session-worker.ts**: Extracts records from session transcripts using Claude (Sonnet by default), deduplicates against existing memories, stores in Milvus.
+### Hooks (src/hooks/)
+- **pre-prompt.ts**: Retrieves and injects relevant memories before each prompt (hybrid search + MMR diversity)
+- **post-session.ts**: Launcher spawning a detached worker for fast exit
+- **post-session-worker.ts**: Extracts knowledge from transcripts via Claude, deduplicates, stores in Milvus
 
 ### Core Library (src/lib/)
-- **types.ts / shared/types.d.ts**: Record types (command, error, discovery, procedure, warning), hook inputs, config interfaces. Types are defined in shared/types.d.ts and re-exported.
-- **milvus*.ts**: Vector database operations split across files - milvus-client.ts (connection), milvus-crud.ts (insert/update/delete), milvus-search.ts (hybrid search), milvus-records.ts (row building).
-- **extract.ts**: LLM-based transcript extraction. System prompt instructs Claude to extract durable knowledge while avoiding duplicates.
-- **retrieval.ts**: Core search logic with MMR reranking, timeout handling, and diagnostic modes.
-- **maintenance.ts**: Memory lifecycle operations - stale checks, consolidation, global promotion, conflict resolution, warning synthesis.
-- **settings.ts / settings-schema.ts**: User settings with Zod validation, loaded from ~/.claude-memory/settings.json.
-- **config.ts**: Config hierarchy - defaults → global config (~/.claude-memory/config.json) → project config.
+- **Milvus layer** (milvus-*.ts): Connection, CRUD, hybrid search, schema with inline migrations via `ensureSchemaFields()`
+- **Extraction** (extract.ts): LLM-based transcript extraction + usefulness rating of injected memories
+- **Retrieval** (retrieval.ts, context.ts): Search, MMR reranking, signal extraction from prompts. Optional Haiku query planning (retrieval-query-generator.ts) enabled by `enableHaikuRetrieval` setting.
+- **Maintenance** (maintenance/): Stale deprecation, consolidation, global promotion, conflict resolution, warning synthesis. Has runners/ subdirectory for each operation.
+- **Auth** (anthropic.ts): Multi-path: API key → OAuth token → Claude/kira credentials, with auto-refresh
+- **File storage** (file-store.ts): `JsonStore`/`JsonLinesStore` under ~/.claude-memory/ — used for sessions, extractions, token-usage-events, stats-snapshots
+- **Settings** (settings.ts, settings-schema.ts): Custom validation (not Zod). Three sections: Retrieval, Maintenance, Model (extractionModel, reviewModel, chatModel).
+- **Config** (config.ts): Merge order: defaults (env vars as lowest-priority fallbacks) → global config → project config → settings overrides
 
 ### Dashboard (dashboard/)
-React 19 + TanStack Query + Tailwind + shadcn/ui. Express API server with routes in dashboard/server/routes/. Provides UI for browsing memories, reviewing extractions, running maintenance, and testing retrieval.
+React 19 + TanStack Query + Tailwind + shadcn/ui + recharts. Express API (dashboard/server/).
+Pages: Overview (metrics/charts/installation), Memory Pool, Extractions, Sessions (with injection review), Chat (LLM with search/update/delete tools), Simulator (retrieval debugger with diagnostics), Maintenance, Settings.
 
-### Maintenance (src/maintenance.ts)
-CLI tool and library for memory quality operations:
-- Stale record deprecation
-- Low usage detection
-- Semantic consolidation (merge similar memories)
-- Global promotion (project → global scope)
-- Conflict resolution
-- Warning synthesis from failed patterns
+### Scripts (scripts/)
+Gemini audit (gemini-audit.ts), embedding migration/refresh, collection reset, data queries.
 
-## Environment & Dependencies
+## Environment
 
-**Required Services:**
-- Milvus vector database (default: localhost:19530)
-- LMStudio or compatible embedding API (default: http://127.0.0.1:1234/v1)
-- Anthropic API access for extraction (ANTHROPIC_API_KEY or OAuth credentials)
+**Required services:** Milvus (localhost:19530), embedding API (http://127.0.0.1:1234/v1), Anthropic API
 
-**Key Environment Variables:**
-- `CC_MEMORIES_ADDRESS`: Milvus address
-- `CC_MEMORIES_COLLECTION`: Collection name
-- `CC_EMBEDDINGS_URL`: Embedding API endpoint
-- `CC_EMBEDDINGS_MODEL`: Embedding model name
-- `CC_EXTRACTION_MODEL`: Model for extraction (default: claude-sonnet-4-5-20250929)
-
-## Testing
-
-Tests require Milvus and optionally embeddings/Anthropic:
-```bash
-pnpm test                    # Runs all tests (some skip if services unavailable)
-pnpm test test/extraction    # Run specific test file
-```
-
-E2E tests check embedding availability and Anthropic auth at runtime, skipping gracefully if missing.
+**Key env vars:**
+- `CC_MEMORIES_ADDRESS`, `CC_MEMORIES_COLLECTION`, `CC_EMBEDDINGS_URL`, `CC_EMBEDDINGS_MODEL`
+- `CC_EXTRACTION_MODEL` (default: claude-sonnet-4-5-20250929)
+- `CC_MEMORIES_DOMAIN`: Override domain inference (empty string disables filtering)
+- `CC_MEMORIES_SETTING_*`: Override any setting (e.g., `CC_MEMORIES_SETTING_MIN_SEMANTIC_SIMILARITY=0.4`)
+- `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`
+- `CLAUDE_MEMORY_DEBUG=1`, `CLAUDE_MEMORY_LOG_LEVEL` (debug/info/warn/error)
 
 ## Record Types
 
-Each extracted memory has a type determining its structure:
-- **command**: Shell commands with exit codes and outcomes
-- **error**: Error messages with resolutions
-- **discovery**: Factual knowledge about codebases
-- **procedure**: Step-by-step instructions
-- **warning**: Anti-patterns with alternatives
-
-Records have scope (project/global), domain categorization, and usage counters for relevance scoring.
+Five types: **command**, **error**, **discovery**, **procedure**, **warning**. Each has scope (project/global), domain categorization, and usage counters for relevance scoring.
 
 ## Key Patterns
 
-- Hooks write to stderr for logging, stdout for injected context
-- Post-session uses detached subprocess pattern for fast exit
-- Config merges: env vars → global config → project config
-- Settings are user-editable with Zod schema validation
-- Hybrid search combines keyword matching and vector similarity
-- MMR (Maximal Marginal Relevance) ensures diverse results
+- Hooks: stderr for logging, stdout for injected context
+- Post-session: detached subprocess for fast exit
+- Config: defaults (env vars lowest) → global → project → settings
+- Search: hybrid keyword + semantic with MMR diversity reranking
+- Data: ~/.claude-memory/ stores sessions, extractions, token events, stats snapshots
 
 ## Design Decisions
 
 ### Extraction Run Deletion Includes Updated Records
+Deleting an extraction run removes BOTH newly inserted AND dedup-matched updated records. Updated records get linked to the run via `extractionRunId`; leaving them would create inconsistent state. To preserve pre-existing records, manually review before deletion.
 
-When deleting an extraction run via the dashboard, **both** newly inserted records AND pre-existing records that were "updated" (dedup-matched) during that extraction are deleted. This is intentional:
+### Token Display: input + output Only
+Dashboard totals are `inputTokens + outputTokens`. Cache token fields (`cacheCreationInputTokens`, `cacheReadInputTokens`) are **subsets** of `input_tokens`, not additive — including them would double-count.
 
-- During extraction, if a new memory dedup-matches an existing one, the existing record gets updated (merged content, refreshed timestamp, linked to the extraction run via `extractionRunId`)
-- This makes the "updated" record part of that extraction run's output
-- Deleting the run removes all its output, including these updates
-- Without this, deleting a bad extraction run would leave behind modified records in an inconsistent state
-
-If you need to preserve pre-existing records while removing only new ones, manually review the extraction before deletion.
-
-### Token Usage Display Shows input + output Only
-
-Dashboard token metrics (`ExtractionDetail`, `ExtractionList`, `ExtractionSummary`) display `inputTokens + outputTokens` as the total. The `cacheCreationInputTokens` and `cacheReadInputTokens` fields are persisted but not added to the displayed total. This is correct — Anthropic's cache token fields are **subsets** of `input_tokens`, not additive. Including them would double-count.
-
-### Usefulness Rating Gracefully Handles Missing Tool Calls
-
-In `rateInjectedMemories()` (extract.ts), if the Anthropic response is missing the expected tool block, the function logs a warning and returns `{ helpfulIds: [], tokenUsage }` instead of throwing. This is intentional — throwing would discard the token usage from that API call, and the session tracking cleanup still proceeds normally. Malformed model responses are rare, and preserving token accounting is more valuable than retrying.
+### Usefulness Rating Handles Missing Tool Calls
+`rateInjectedMemories()` in extract.ts returns `{ helpfulIds: [], tokenUsage }` instead of throwing when the tool block is missing. Preserving token accounting is more valuable than retrying rare malformed responses.
