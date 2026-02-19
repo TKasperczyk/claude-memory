@@ -559,6 +559,14 @@ export function applyMaintenanceSuggestion(payload: ApplySuggestionPayload): Pro
   })
 }
 
+export function fetchDeprecatedCount(): Promise<{ count: number }> {
+  return request('/maintenance/deprecated-count')
+}
+
+export function purgeDeprecated(): Promise<{ deleted: number }> {
+  return request('/maintenance/purge-deprecated', { method: 'POST' })
+}
+
 export async function streamChat(
   payload: ChatRequest,
   options: { onEvent: (event: ChatStreamEvent) => void; signal?: AbortSignal }

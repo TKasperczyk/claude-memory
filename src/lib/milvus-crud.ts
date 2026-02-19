@@ -158,6 +158,30 @@ export async function deleteRecord(
   }
 }
 
+export async function deleteByFilter(
+  filter: string,
+  config: Config = DEFAULT_CONFIG
+): Promise<number> {
+  try {
+    const client = await ensureClient(config)
+    const count = await client.count({
+      collection_name: config.milvus.collection,
+      expr: filter
+    })
+    if (!count.data) return 0
+
+    await client.delete({
+      collection_name: config.milvus.collection,
+      filter
+    })
+    await flushAndWait(client, config.milvus.collection)
+    return count.data
+  } catch (error) {
+    console.error('[claude-memory] deleteByFilter failed:', error)
+    throw error
+  }
+}
+
 export async function resetCollection(
   config: Config = DEFAULT_CONFIG
 ): Promise<void> {

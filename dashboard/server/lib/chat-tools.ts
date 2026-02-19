@@ -53,7 +53,7 @@ const SEARCH_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
     domain: { type: 'string', description: 'Domain filter.' },
     exclude_deprecated: {
       type: 'boolean',
-      description: 'Exclude deprecated records (default false).'
+      description: 'Exclude deprecated records (default true).'
     }
   }
 }
@@ -234,7 +234,7 @@ async function runSearchTool(
   const type = asRecordType(record.type) as RecordType | undefined
   const project = asTrimmedString(record.project) ?? context.project
   const domain = parseDomain(record.domain)
-  const excludeDeprecated = asBoolean(record.exclude_deprecated) ?? false
+  const excludeDeprecated = asBoolean(record.exclude_deprecated) ?? true
   const searchLimit = clampNumber(limit + offset, 1, MAX_SEARCH_LIMIT)
 
   const results = await hybridSearch({

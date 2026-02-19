@@ -10,6 +10,7 @@ import {
   runMaintenanceOperation,
   type MaintenanceOperation
 } from '../../../src/lib/maintenance-api.js'
+import { countRecords, deleteByFilter } from '../../../src/lib/milvus.js'
 import { getMaintenanceReview, saveMaintenanceReview } from '../../../src/lib/review-storage.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
@@ -255,6 +256,29 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
     } catch (error) {
       logger.error('Failed to run all maintenance operations', error)
       res.status(500).json({ error: 'Failed to run maintenance operations' })
+    }
+  })
+
+  router.post('/api/maintenance/purge-deprecated', async (req, res) => {
+    try {
+      const config = await ensureConfigInitialized(req, baseConfig)
+      const deleted = await deleteByFilter('deprecated == true', config)
+      logger.info(`Purged ${deleted} deprecated records`)
+      res.json({ deleted })
+    } catch (error) {
+      logger.error('Failed to purge deprecated records', error)
+      res.status(500).json({ error: 'Failed to purge deprecated records' })
+    }
+  })
+
+  router.get('/api/maintenance/deprecated-count', async (req, res) => {
+    try {
+      const config = await ensureConfigInitialized(req, baseConfig)
+      const count = await countRecords({ filter: 'deprecated == true' }, config)
+      res.json({ count })
+    } catch (error) {
+      logger.error('Failed to count deprecated records', error)
+      res.status(500).json({ error: 'Failed to count deprecated records' })
     }
   })
 

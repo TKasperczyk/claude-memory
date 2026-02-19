@@ -12,6 +12,7 @@ export {
   batchUpdateRecords,
   incrementRecordCounters,
   deleteRecord,
+  deleteByFilter,
   resetCollection,
   getRecord,
   getRecordStats,

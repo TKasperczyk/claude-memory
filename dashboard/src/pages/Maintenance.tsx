@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Check, Circle, Eye, Loader2, Play } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Check, Circle, Eye, Loader2, Play, Trash2 } from 'lucide-react'
 import MemoryDetail from '@/components/MemoryDetail'
 import ResultPanel from '@/components/maintenance/ResultPanel'
 import Skeleton from '@/components/Skeleton'
@@ -19,7 +19,9 @@ import { formatDuration } from '@/lib/format'
 import {
   ApiError,
   applyMaintenanceSuggestion,
+  fetchDeprecatedCount,
   fetchMaintenanceOperations,
+  purgeDeprecated,
   updateSetting,
   type MaintenanceAction,
   type Settings
@@ -74,6 +76,46 @@ export default function Maintenance() {
     handleSelect: selectMemory,
     handleClose: closeMemory
   } = useSelectedMemory()
+  const [deprecatedCount, setDeprecatedCount] = useState<number | null>(null)
+  const [purgeConfirm, setPurgeConfirm] = useState(false)
+  const [purging, setPurging] = useState(false)
+  const [purgeResult, setPurgeResult] = useState<string | null>(null)
+
+  const loadDeprecatedCount = useCallback(async () => {
+    try {
+      const { count } = await fetchDeprecatedCount()
+      setDeprecatedCount(count)
+    } catch (err) {
+      console.warn('Failed to fetch deprecated count', err)
+      setDeprecatedCount(null)
+    }
+  }, [])
+
+  useEffect(() => { loadDeprecatedCount() }, [loadDeprecatedCount])
+
+  // Refresh deprecated count when maintenance operations complete
+  const resultsCount = Object.keys(results).length
+  useEffect(() => {
+    if (resultsCount > 0) loadDeprecatedCount()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resultsCount])
+
+  const handlePurge = async () => {
+    setPurging(true)
+    setPurgeResult(null)
+    try {
+      const { deleted } = await purgeDeprecated()
+      setPurgeResult(`Deleted ${deleted} deprecated record${deleted === 1 ? '' : 's'}.`)
+      await loadDeprecatedCount()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to purge deprecated records'
+      setPurgeResult(message)
+    } finally {
+      setPurging(false)
+      setPurgeConfirm(false)
+    }
+  }
+
   const activeApply = applyConfirm
   const activeApplyKey = activeApply?.key ?? ''
   const applyLoading = activeApplyKey ? applyStatuses[activeApplyKey]?.state === 'loading' : false
@@ -309,6 +351,35 @@ export default function Maintenance() {
         )}
       </section>
 
+      <section className="p-5 rounded-xl border border-destructive/30 bg-card space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-foreground/95 mb-1">Purge deprecated memories</h2>
+            <p className="text-xs text-muted-foreground/70">
+              Permanently delete all deprecated records.
+              {deprecatedCount !== null && (
+                <span className="ml-1 font-medium text-foreground/70">{deprecatedCount} deprecated record{deprecatedCount === 1 ? '' : 's'} found.</span>
+              )}
+            </p>
+          </div>
+          <Button
+            variant="destructive"
+            onClick={() => setPurgeConfirm(true)}
+            disabled={purging || deprecatedCount === 0}
+          >
+            {purging ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Trash2 className="w-4 h-4" />
+            )}
+            {purging ? 'Purging...' : 'Purge'}
+          </Button>
+        </div>
+        {purgeResult && (
+          <div className="text-sm text-muted-foreground">{purgeResult}</div>
+        )}
+      </section>
+
       <div className="space-y-2">
         {operations.map((operation) => {
           const result = results[operation.key]
@@ -409,6 +480,35 @@ export default function Maintenance() {
             </Button>
             <Button onClick={confirmRun}>
               Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={purgeConfirm} onOpenChange={(open) => !purging && setPurgeConfirm(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Purge deprecated memories</DialogTitle>
+            <DialogDescription>
+              This will permanently delete {deprecatedCount ?? 'all'} deprecated record{deprecatedCount === 1 ? '' : 's'}. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2 text-sm text-destructive">
+            Deleted records cannot be recovered. If you need any of these memories, un-deprecate them first.
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPurgeConfirm(false)} disabled={purging}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handlePurge} disabled={purging}>
+              {purging ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Purging...
+                </>
+              ) : (
+                'Delete permanently'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
