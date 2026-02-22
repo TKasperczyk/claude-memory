@@ -412,10 +412,10 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     label: 'Cross-type consolidation threshold',
     description: 'Higher similarity threshold for cross-type merges (0-1).',
     step: 0.01,
-    min: 0.75,
+    min: 0.6,
     max: 1,
     kind: 'float',
-    default: 0.93,
+    default: 0.80,
     group: MAINTENANCE_GROUPS_META.consolidation
   },
   {
