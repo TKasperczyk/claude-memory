@@ -10,6 +10,7 @@
     "audit": "tsx scripts/gemini-audit.ts",
     "audit:auto": "tsx scripts/gemini-audit.ts --auto",
     "apply-audit": "tsx scripts/apply-audit.ts",
+    "debug": "tsx scripts/debug-cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui"
