@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk'
-import { extractSignals, stripNoiseWords, type ContextSignals } from './context.js'
+import { extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embedBatch } from './embed.js'
 import { buildFilter, escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
@@ -361,9 +361,11 @@ function truncateForEmbedding(value: string, maxLength: number): string {
 
 function buildSimilarFilter(signals: ContextSignals, excludeIds: string[], cwd: string | undefined): string {
   const project = signals.projectRoot ?? cwd
+  const ancestorProjects = project ? findAncestorProjects(project) : undefined
 
   const baseFilter = buildFilter({
     project: project ?? undefined,
+    ancestorProjects,
     includeGlobal: true,
     excludeDeprecated: true
   })

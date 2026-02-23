@@ -1,6 +1,6 @@
 import { truncateText, withTimeout } from './shared.js'
 import { closeMilvus, initMilvus, hybridSearch, computeUsageRatio } from './milvus.js'
-import { buildContext, extractSignals, stripNoiseWords, type ContextSignals } from './context.js'
+import { buildContext, extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embed } from './embed.js'
 import { mergeNearMisses, buildExclusionReason } from './diagnostics.js'
 import { generateRetrievalQueryPlan } from './retrieval-query-generator.js'
@@ -355,7 +355,8 @@ async function searchWithScope(
   const diagnostic = options.diagnostic === true
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
-  console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${project ?? 'none'}`)
+  const ancestorProjects = project ? findAncestorProjects(project) : []
+  console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${project ?? 'none'}${ancestorProjects.length ? `, ancestors=${ancestorProjects.join(',')}` : ''}`)
 
   const upsertResult = (item: HybridSearchResult): void => {
     const existing = resultsById.get(item.record.id)
@@ -373,6 +374,7 @@ async function searchWithScope(
       query,
       limit: candidateLimit,
       project,
+      ancestorProjects,
       excludeDeprecated: true,
       vectorWeight: 0,
       keywordWeight: 1,
@@ -395,6 +397,7 @@ async function searchWithScope(
       embedding: precomputedEmbedding,
       limit: candidateLimit,
       project,
+      ancestorProjects,
       excludeDeprecated: true,
       vectorWeight: 1,
       keywordWeight: 0,

@@ -46,6 +46,7 @@ export interface HybridSearchParamsBase {
   query: string
   limit?: number
   project?: string
+  ancestorProjects?: string[]
   type?: RecordType
   excludeDeprecated?: boolean
   embedding?: number[]

@@ -67,6 +67,7 @@ export async function hybridSearch(
 
     const baseFilter = buildFilter({
       project: params.project,
+      ancestorProjects: params.ancestorProjects,
       includeGlobal: Boolean(params.project),
       type: params.type,
       excludeDeprecated: params.excludeDeprecated
@@ -304,6 +305,7 @@ export function escapeLikeValue(value: string): string {
 
 export function buildFilter(filters: {
   project?: string
+  ancestorProjects?: string[]
   includeGlobal?: boolean
   type?: RecordType
   excludeId?: string
@@ -312,7 +314,10 @@ export function buildFilter(filters: {
   const parts: string[] = []
 
   if (filters.project) {
-    const projectClause = `project == "${escapeFilterValue(filters.project)}"`
+    const allProjects = [filters.project, ...(filters.ancestorProjects ?? [])]
+    const projectClause = allProjects.length === 1
+      ? `project == "${escapeFilterValue(allProjects[0])}"`
+      : `project in [${allProjects.map(p => `"${escapeFilterValue(p)}"`).join(', ')}]`
     if (filters.includeGlobal) {
       parts.push(`(${projectClause} || scope == "global")`)
     } else {

@@ -682,3 +682,22 @@ export function findGitRoot(cwd: string): string | undefined {
     return undefined
   }
 }
+
+/**
+ * Returns ancestor project paths for a given project root.
+ * Walks up the directory tree looking for parent git roots (e.g. when cwd is
+ * inside a git submodule). This allows retrieval to match records stored at
+ * parent project level.
+ */
+export function findAncestorProjects(projectRoot: string): string[] {
+  const ancestors: string[] = []
+  let dir = path.dirname(projectRoot)
+  const root = path.parse(projectRoot).root
+  while (dir !== root && dir !== projectRoot) {
+    if (hasGitMarker(dir)) {
+      ancestors.push(dir)
+    }
+    dir = path.dirname(dir)
+  }
+  return ancestors
+}
