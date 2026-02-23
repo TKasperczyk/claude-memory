@@ -9,7 +9,7 @@ export const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
 export const GLOBAL_PROMOTION_MAX_TOKENS = 800
 export const WARNING_SYNTHESIS_MAX_TOKENS = 1500
 export const WARNING_SYNTHESIS_TOOL_NAME = 'emit_warning'
-export const CONSOLIDATION_VERIFICATION_MAX_TOKENS = 1200
+export const CONSOLIDATION_VERIFICATION_MAX_TOKENS = 2500
 export const CONSOLIDATION_VERIFICATION_TOOL_NAME = 'emit_consolidation_verification'
 
 export const GENERALIZATION_PROMPT = `Evaluate this memory record for reusability across different contexts.
@@ -93,23 +93,41 @@ Return JSON:
 
 export const CONSOLIDATION_VERIFICATION_PROMPT = `Verify if a cluster of similar memory records should be consolidated, and if so, select the best representative.
 
-First, determine if these records are TRUE DUPLICATES (same information, different wording) vs RELATED BUT DISTINCT (different systems, APIs, environments, or complementary information).
+First, determine if these records are TRUE DUPLICATES vs RELATED BUT DISTINCT.
 
 MERGE if:
 - Records describe the same fact, error, or procedure with minor wording differences
-- Records are redundant - one subsumes the other completely
+- Records are redundant — one subsumes the other completely
 - Records describe the same system/API/environment with different levels of detail
+- Multiple records store the same credential, token, URL, or identifier — even if each adds minor surrounding context (e.g., one has curl examples, another has a file path). Keep the most comprehensive record.
+- Multiple records describe the same procedure or workflow with different levels of completeness
 
 DO NOT MERGE if:
 - Records describe DIFFERENT systems (e.g., Anthropic API vs Gemini API)
 - Records describe DIFFERENT environments (e.g., local vs remote, dev vs prod)
-- Records contain COMPLEMENTARY information (both are useful together)
-- Records describe different aspects of the same topic that aren't redundant
+- Records cover genuinely different topics that happen to mention the same system
+- Records describe different procedures that use the same tool (e.g., "how to query X" vs "how to configure X")
 
-If merging, select the best representative considering:
+NOTE: "Complementary details" (e.g., one record has a token + curl example, another has the same token + project IDs) is NOT a reason to keep both. That is redundancy with minor variation. Merge and keep the most complete record.
+
+You can merge a SUBSET of the cluster — you don't have to merge all or nothing.
+Return one or more merge groups, where each group has a keptId (best representative) and mergedIds (redundant records to deprecate into it). Records not in any group are left as-is.
+
+Examples:
+- Cluster has 5 tokens + 1 procedure → merge the 5 tokens, leave the procedure alone
+- Cluster has 2 duplicate pairs {A,B} and {C,D} + unique E → two merge groups
+- All records are distinct → empty mergeGroups array
+
+When selecting the best representative for each group:
 - For cross-type clusters: procedure > warning > error > discovery > command
 - Usage stats (usageCount, retrievalCount, successCount), and recency
 - Prefer records that provide concrete steps or actionable fixes
+
+CONTENT SYNTHESIS: When merged records contain unique details not in the keeper, provide synthesizedFields to combine them into the keeper. This preserves all useful information in one record.
+- Only include fields that need updating (e.g., for discoveries: what, where, evidence; for procedures: name, steps, prerequisites, verification, context)
+- Only use information explicitly present in the cluster records — do not invent details
+- Keep the keeper's tone and structure, just incorporate missing details from the merged records
+- Omit synthesizedFields entirely when the keeper already contains everything (true duplicates)
 
 Return ONLY via the tool call "${CONSOLIDATION_VERIFICATION_TOOL_NAME}" exactly once.`
 
@@ -160,23 +178,44 @@ export const WARNING_SYNTHESIS_TOOL: Anthropic.Tool = {
 
 export const CONSOLIDATION_VERIFICATION_TOOL: Anthropic.Tool = {
   name: CONSOLIDATION_VERIFICATION_TOOL_NAME,
-  description: 'Verify consolidation and select the representative record.',
+  description: 'Verify consolidation and select representative records. Supports partial merges within a cluster.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['shouldMerge', 'reason'],
+    required: ['mergeGroups', 'reason'],
     properties: {
-      shouldMerge: {
-        type: 'boolean',
-        description: 'True if records are true duplicates and should be merged. False if they are related but distinct.'
-      },
-      keptId: {
-        type: 'string',
-        description: 'ID of the record to keep. Required if shouldMerge is true.'
+      mergeGroups: {
+        type: 'array',
+        description: 'Groups of records to merge. Each group merges redundant records into a keeper. Empty array = no merges.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['keptId', 'mergedIds', 'reason'],
+          properties: {
+            keptId: {
+              type: 'string',
+              description: 'ID of the best representative record to keep.'
+            },
+            mergedIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'IDs of redundant records to deprecate into the keeper.'
+            },
+            reason: {
+              type: 'string',
+              description: 'Why these specific records should be merged.'
+            },
+            synthesizedFields: {
+              type: 'object',
+              description: 'Optional: updated content fields for the keeper, combining unique details from merged records. Only include fields that need changes. Omit if keeper already has everything.',
+              additionalProperties: { type: 'string' }
+            }
+          }
+        }
       },
       reason: {
         type: 'string',
-        description: 'Explanation of why records should or should not be merged.'
+        description: 'Overall explanation of the merge decision for the cluster.'
       }
     }
   }

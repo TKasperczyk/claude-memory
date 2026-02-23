@@ -25,6 +25,7 @@ export {
   findSimilarClusters,
   findCrossTypeClusters,
   consolidateCluster,
+  resolveMergeGroups,
   pickConsolidationFallback,
   pickCrossTypeFallback,
   llmVerifyConsolidation,

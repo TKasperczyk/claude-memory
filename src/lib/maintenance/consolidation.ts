@@ -30,10 +30,18 @@ interface ConsolidationResult {
   lastUsed: number
 }
 
+interface ConsolidationMergeGroup {
+  keptId: string
+  mergedIds: string[]
+  reason: string
+  synthesizedFields?: Record<string, string>
+}
+
 interface ConsolidationVerificationResult {
   shouldMerge: boolean
   keptId?: string
   reason: string
+  mergeGroups?: ConsolidationMergeGroup[]
 }
 
 interface ConsolidationClusterMember {
@@ -54,6 +62,119 @@ const CROSS_TYPE_PRIORITY: Record<RecordType, number> = {
   command: 0
 }
 
+class UnionFind {
+  private parent = new Map<string, string>()
+  private rank = new Map<string, number>()
+
+  find(x: string): string {
+    if (!this.parent.has(x)) {
+      this.parent.set(x, x)
+      this.rank.set(x, 0)
+    }
+    let root = x
+    while (this.parent.get(root) !== root) root = this.parent.get(root)!
+    // Path compression
+    let current = x
+    while (current !== root) {
+      const next = this.parent.get(current)!
+      this.parent.set(current, root)
+      current = next
+    }
+    return root
+  }
+
+  union(a: string, b: string): void {
+    const rootA = this.find(a)
+    const rootB = this.find(b)
+    if (rootA === rootB) return
+    const rankA = this.rank.get(rootA) ?? 0
+    const rankB = this.rank.get(rootB) ?? 0
+    if (rankA < rankB) {
+      this.parent.set(rootA, rootB)
+    } else if (rankA > rankB) {
+      this.parent.set(rootB, rootA)
+    } else {
+      this.parent.set(rootB, rootA)
+      this.rank.set(rootA, rankA + 1)
+    }
+  }
+
+  components(): Map<string, string[]> {
+    const result = new Map<string, string[]>()
+    for (const id of this.parent.keys()) {
+      const root = this.find(id)
+      if (!result.has(root)) result.set(root, [])
+      result.get(root)!.push(id)
+    }
+    return result
+  }
+}
+
+function buildClustersFromComponents(
+  uf: UnionFind,
+  recordById: Map<string, MemoryRecord>,
+  bestSimilarity: Map<string, number>,
+  maxClusterSize: number,
+  requireMultipleTypes: boolean
+): ConsolidationCluster[] {
+  const clusters: ConsolidationCluster[] = []
+
+  for (const memberIds of uf.components().values()) {
+    if (memberIds.length < 2) continue
+
+    const allMembers = memberIds
+      .map(id => ({ record: recordById.get(id)!, similarity: bestSimilarity.get(id) ?? 0 }))
+      .filter(m => m.record)
+
+    if (allMembers.length < 2) continue
+
+    if (requireMultipleTypes) {
+      const types = new Set(allMembers.map(m => m.record.type))
+      if (types.size < 2) continue
+    }
+
+    // Sort: seeds (similarity 1) first, then by similarity desc, stable by id
+    const sorted = allMembers.sort((a, b) => {
+      const simDiff = b.similarity - a.similarity
+      if (simDiff !== 0) return simDiff
+      return a.record.id < b.record.id ? -1 : 1
+    })
+
+    let capped: typeof sorted
+    if (requireMultipleTypes && sorted.length > maxClusterSize) {
+      // Prefer highest-similarity members, then try to inject type diversity.
+      capped = sorted.slice(0, maxClusterSize)
+      const initialTypes = new Set(capped.map(m => m.record.type))
+      if (initialTypes.size < 2 && capped.length > 0) {
+        const replacement = sorted
+          .slice(maxClusterSize)
+          .find(m => !initialTypes.has(m.record.type))
+        if (replacement) capped[capped.length - 1] = replacement
+      }
+    } else {
+      capped = sorted.slice(0, maxClusterSize)
+    }
+    if (capped.length < 2) continue
+
+    if (requireMultipleTypes) {
+      const typesIncluded = new Set(capped.map(m => m.record.type))
+      if (typesIncluded.size < 2) continue
+    }
+
+    const members: ConsolidationClusterMember[] = capped.map(m => ({
+      record: m.record,
+      similarity: m.similarity
+    }))
+
+    const cluster = capped.map(m => m.record) as ConsolidationCluster
+    cluster.seedId = capped[0].record.id
+    cluster.members = members
+    clusters.push(cluster)
+  }
+
+  return clusters
+}
+
 export async function findSimilarClusters(
   similarityThreshold: number | undefined = undefined,
   config: Config = DEFAULT_CONFIG,
@@ -65,8 +186,13 @@ export async function findSimilarClusters(
     : maintenance.consolidationThreshold
   const recheckCutoff = Date.now() - maintenance.consolidationRecheckDays * 24 * 60 * 60 * 1000
   const recheckCutoffValue = Math.trunc(recheckCutoff)
-  const clusters: ConsolidationCluster[] = []
-  const clusteredIds = new Set<string>()
+
+  // Transitive clustering via union-find: collect all edges first, then merge
+  // overlapping groups. This prevents greedy fragmentation where 5 related records
+  // get split into disjoint pairs that the LLM evaluates (and rejects) individually.
+  const uf = new UnionFind()
+  const recordById = new Map<string, MemoryRecord>()
+  const bestSimilarity = new Map<string, number>()
   let offset = 0
 
   while (true) {
@@ -83,9 +209,12 @@ export async function findSimilarClusters(
     if (batch.length === 0) break
 
     for (const record of batch) {
-      if (clusteredIds.has(record.id)) continue
+      // Only seeds are gated by recheck cadence
       if (wasRecentlyConsolidationChecked(record, recheckCutoffValue)) continue
       if (!isValidEmbedding(record.embedding)) continue
+
+      recordById.set(record.id, record)
+      bestSimilarity.set(record.id, Math.max(bestSimilarity.get(record.id) ?? 0, 1))
 
       const matches = await vectorSearchSimilar(
         record.embedding,
@@ -97,29 +226,14 @@ export async function findSimilarClusters(
         config
       )
 
-      const members: ConsolidationClusterMember[] = [{ record, similarity: 1 }]
-      // Keep clusters array-like for older callers while exposing metadata for new consumers.
-      const cluster = [record] as ConsolidationCluster
-      cluster.seedId = record.id
-      cluster.members = members
       for (const match of matches) {
-        const candidate = match.record
-        if (clusteredIds.has(candidate.id)) continue
-        if (candidate.deprecated) continue
-        if (wasRecentlyConsolidationChecked(candidate, recheckCutoffValue)) continue
-
-        // Rely purely on vector similarity - text similarity check was too strict
-        // and missed semantic duplicates with different wording
-        cluster.push(candidate)
-        members.push({ record: candidate, similarity: match.similarity })
-        if (cluster.length >= maintenance.consolidationMaxClusterSize) break
-      }
-
-      if (cluster.length > 1) {
-        clusters.push(cluster)
-        for (const member of cluster) {
-          clusteredIds.add(member.id)
-        }
+        if (match.record.deprecated) continue
+        recordById.set(match.record.id, match.record)
+        bestSimilarity.set(match.record.id, Math.max(
+          bestSimilarity.get(match.record.id) ?? 0,
+          match.similarity
+        ))
+        uf.union(record.id, match.record.id)
       }
     }
 
@@ -127,7 +241,10 @@ export async function findSimilarClusters(
     offset += batch.length
   }
 
-  return clusters
+  return buildClustersFromComponents(
+    uf, recordById, bestSimilarity,
+    maintenance.consolidationMaxClusterSize, false
+  )
 }
 
 export async function findCrossTypeClusters(
@@ -141,8 +258,10 @@ export async function findCrossTypeClusters(
     : maintenance.crossTypeConsolidationThreshold
   const recheckCutoff = Date.now() - maintenance.consolidationRecheckDays * 24 * 60 * 60 * 1000
   const recheckCutoffValue = Math.trunc(recheckCutoff)
-  const clusters: ConsolidationCluster[] = []
-  const clusteredIds = new Set<string>()
+
+  const uf = new UnionFind()
+  const recordById = new Map<string, MemoryRecord>()
+  const bestSimilarity = new Map<string, number>()
   let offset = 0
 
   while (true) {
@@ -159,9 +278,11 @@ export async function findCrossTypeClusters(
     if (batch.length === 0) break
 
     for (const record of batch) {
-      if (clusteredIds.has(record.id)) continue
       if (wasRecentlyConsolidationChecked(record, recheckCutoffValue)) continue
       if (!isValidEmbedding(record.embedding)) continue
+
+      recordById.set(record.id, record)
+      bestSimilarity.set(record.id, Math.max(bestSimilarity.get(record.id) ?? 0, 1))
 
       const matches = await vectorSearchSimilar(
         record.embedding,
@@ -173,32 +294,15 @@ export async function findCrossTypeClusters(
         config
       )
 
-      if (matches.length === 0) continue
-
-      const members: ConsolidationClusterMember[] = [{ record, similarity: 1 }]
-      const cluster = [record] as ConsolidationCluster
-      cluster.seedId = record.id
-      cluster.members = members
-      const types = new Set<RecordType>([record.type])
-
       for (const match of matches) {
-        const candidate = match.record
-        if (clusteredIds.has(candidate.id)) continue
-        if (candidate.deprecated) continue
-        if (candidate.type === record.type) continue
-        if (wasRecentlyConsolidationChecked(candidate, recheckCutoffValue)) continue
-
-        cluster.push(candidate)
-        members.push({ record: candidate, similarity: match.similarity })
-        types.add(candidate.type)
-        if (cluster.length >= maintenance.consolidationMaxClusterSize) break
-      }
-
-      if (cluster.length > 1 && types.size > 1) {
-        clusters.push(cluster)
-        for (const member of cluster) {
-          clusteredIds.add(member.id)
-        }
+        if (match.record.deprecated) continue
+        if (match.record.type === record.type) continue
+        recordById.set(match.record.id, match.record)
+        bestSimilarity.set(match.record.id, Math.max(
+          bestSimilarity.get(match.record.id) ?? 0,
+          match.similarity
+        ))
+        uf.union(record.id, match.record.id)
       }
     }
 
@@ -206,7 +310,10 @@ export async function findCrossTypeClusters(
     offset += batch.length
   }
 
-  return clusters
+  return buildClustersFromComponents(
+    uf, recordById, bestSimilarity,
+    maintenance.consolidationMaxClusterSize, true
+  )
 }
 
 export async function consolidateCluster(
@@ -324,16 +431,87 @@ function buildConsolidationVerificationInput(cluster: MemoryRecord[], crossType:
 
 function coerceConsolidationVerification(value: unknown): ConsolidationVerificationResult | null {
   if (!isPlainObject(value)) return null
+  const reason = typeof value.reason === 'string' ? value.reason.trim() : ''
+  if (!reason) return null
+
+  // New format: mergeGroups array
+  if (Array.isArray(value.mergeGroups)) {
+    const mergeGroups: ConsolidationMergeGroup[] = []
+    for (const group of value.mergeGroups) {
+      if (!isPlainObject(group)) continue
+      const keptId = typeof group.keptId === 'string' ? group.keptId.trim() : ''
+      const mergedIds = Array.isArray(group.mergedIds)
+        ? (group.mergedIds as unknown[])
+          .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+          .map(id => id.trim())
+        : []
+      const groupReason = typeof group.reason === 'string' ? group.reason.trim() : reason
+
+      // Parse optional synthesized fields
+      let synthesizedFields: Record<string, string> | undefined
+      if (isPlainObject(group.synthesizedFields)) {
+        const fields: Record<string, string> = {}
+        for (const [key, val] of Object.entries(group.synthesizedFields as Record<string, unknown>)) {
+          if (typeof val === 'string' && val.trim().length > 0) {
+            fields[key] = val.trim()
+          }
+        }
+        if (Object.keys(fields).length > 0) synthesizedFields = fields
+      }
+
+      // Remove self-merges and dedupe
+      const cleanMergedIds = [...new Set(mergedIds.filter(id => id !== keptId))]
+      if (keptId && cleanMergedIds.length > 0) {
+        mergeGroups.push({ keptId, mergedIds: cleanMergedIds, reason: groupReason, synthesizedFields })
+      }
+    }
+
+    // Enforce disjointness: a record can only appear in one group
+    const claimed = new Set<string>()
+    const validGroups = mergeGroups.filter(group => {
+      const ids = [group.keptId, ...group.mergedIds]
+      if (ids.some(id => claimed.has(id))) return false
+      for (const id of ids) claimed.add(id)
+      return true
+    })
+
+    const shouldMerge = validGroups.length > 0
+    return {
+      shouldMerge,
+      keptId: validGroups[0]?.keptId,
+      reason,
+      mergeGroups: shouldMerge ? validGroups : undefined
+    }
+  }
+
+  // Legacy format: shouldMerge + keptId
   const shouldMerge = typeof value.shouldMerge === 'boolean' ? value.shouldMerge : null
   const keptId = typeof value.keptId === 'string' ? value.keptId.trim() : ''
-  const reason = typeof value.reason === 'string' ? value.reason.trim() : ''
-
-  if (shouldMerge === null || !reason) return null
-
-  // If shouldMerge is true, keptId is required
+  if (shouldMerge === null) return null
   if (shouldMerge && !keptId) return null
-
   return { shouldMerge, keptId: keptId || undefined, reason }
+}
+
+/**
+ * Normalize a verification result into merge groups.
+ * Handles both new (mergeGroups) and legacy (keptId) formats.
+ */
+export function resolveMergeGroups(
+  verification: ConsolidationVerificationResult,
+  clusterRecords: MemoryRecord[]
+): ConsolidationMergeGroup[] {
+  if (verification.mergeGroups && verification.mergeGroups.length > 0) {
+    return verification.mergeGroups
+  }
+  // Legacy: merge all into keptId
+  if (verification.keptId) {
+    return [{
+      keptId: verification.keptId,
+      mergedIds: clusterRecords.filter(r => r.id !== verification.keptId).map(r => r.id),
+      reason: verification.reason
+    }]
+  }
+  return []
 }
 
 /**
@@ -379,10 +557,15 @@ export async function llmVerifyConsolidation(
     throw new Error('Consolidation verification response invalid or incomplete.')
   }
 
-  if (parsed.shouldMerge && parsed.keptId) {
+  if (parsed.shouldMerge) {
     const validIds = new Set(cluster.map(record => record.id))
-    if (!validIds.has(parsed.keptId)) {
-      throw new Error('Consolidation verification response referenced an unknown record.')
+    const allReferencedIds = parsed.mergeGroups
+      ? parsed.mergeGroups.flatMap(g => [g.keptId, ...g.mergedIds])
+      : parsed.keptId ? [parsed.keptId] : []
+    for (const id of allReferencedIds) {
+      if (!validIds.has(id)) {
+        throw new Error(`Consolidation verification response referenced an unknown record: ${id}`)
+      }
     }
   }
 
