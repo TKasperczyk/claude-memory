@@ -24,7 +24,6 @@ const COMMON_OPTIONAL_PROPERTIES = {
     description: 'Full absolute path to the project root (e.g., /home/user/projects/myapp). Infer from file paths and commands in the transcript if different from the context project.'
   },
   scope: { type: 'string', enum: ['global', 'project'] },
-  domain: { type: 'string' },
   supersedes: {
     type: 'string',
     description: 'Full UUID of a prior knowledge memory that this record supersedes/invalidates. Only set when this extraction corrects outdated information from an injected memory.'
@@ -134,10 +133,8 @@ export const RECORD_TYPE_DEFINITIONS: Record<string, RecordTypeDefinition> = {
         context: {
           type: 'object',
           additionalProperties: false,
-          required: ['domain'],
           properties: {
-            project: { type: 'string', description: 'Full absolute path to project root' },
-            domain: { type: 'string' }
+            project: { type: 'string', description: 'Full absolute path to project root' }
           }
         }
       }

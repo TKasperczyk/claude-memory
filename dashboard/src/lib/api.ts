@@ -149,7 +149,6 @@ export interface PreviewResponse {
     commands: string[]
     projectRoot?: string
     projectName?: string
-    domain?: string
   }
   results: SearchResult[]
   nearMisses?: NearMissRecord[]

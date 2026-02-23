@@ -77,22 +77,7 @@ async function main() {
     console.log(`  ${type}: ${count}`)
   }
 
-  // 6. Check domain distribution for domain filter issue
-  console.log('\n=== Domain Distribution (top 10) ===')
-  const allRecords = await queryRecords({ limit: 5000 }, config)
-  const domainCounts: Record<string, number> = {}
-  for (const r of allRecords) {
-    const domain = r.domain || 'empty'
-    domainCounts[domain] = (domainCounts[domain] || 0) + 1
-  }
-  const sortedDomains = Object.entries(domainCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-  for (const [domain, count] of sortedDomains) {
-    console.log(`  ${domain}: ${count}`)
-  }
-
-  // 7. Usage stats - check if failure tracking is working
+  // 6. Usage stats - check if failure tracking is working
   console.log('\n=== High Failure Records ===')
   const allWithFailures = await queryRecords({
     filter: 'failure_count > 0',

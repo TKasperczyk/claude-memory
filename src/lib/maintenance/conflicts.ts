@@ -518,7 +518,6 @@ function buildContradictionFilter(record: MemoryRecord): string {
   // Don't include global scope bypass (includeGlobal: false).
   return buildFilter({
     project: record.project,
-    domain: record.domain,
     type: record.type,
     excludeId: record.id,
     excludeDeprecated: true

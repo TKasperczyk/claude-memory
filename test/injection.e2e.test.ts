@@ -75,13 +75,6 @@ And it failed. What should I do?`
       expect(signals.commands.some(c => c.includes('npm run build'))).toBe(true)
     })
 
-    it('should detect project domain from files', () => {
-      const fixtureRoot = createTempProjectFixture()
-      const signals = extractSignals('build the project', fixtureRoot)
-
-      expect(signals.domain).toBe('node')
-    })
-
     it('should handle prompts with no extractable signals', () => {
       const prompt = 'Hello, how are you today?'
       const signals = extractSignals(prompt, TEST_PROJECT)

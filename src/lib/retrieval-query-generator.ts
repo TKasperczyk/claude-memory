@@ -11,7 +11,6 @@ export interface RetrievalQueryPlan {
   resolvedQuery: string
   keywordQueries: string[]
   semanticQuery: string
-  domain?: string
 }
 
 export interface RetrievalQueryPlanGenerationResult {
@@ -38,8 +37,6 @@ Definitions:
 - resolvedQuery: rewrite FOCUS with pronouns/ellipses resolved. Keep the user's intent.
 - keywordQueries: short, literal search terms (commands, error strings, file names, tool names, flags). 1-5 items, no full sentences.
 - semanticQuery: 1-3 sentences capturing intent and constraints; good for embeddings.
-- domain: optional broad area (e.g. git, docker, node, python, cli, database) if obvious.
-
 Examples:
 CONTEXT:
 User: "We store embeddings in Milvus under collection cc_memories."
@@ -74,8 +71,7 @@ const QUERY_TOOL: Anthropic.Tool = {
         type: 'array',
         items: { type: 'string' }
       },
-      semanticQuery: { type: 'string' },
-      domain: { type: 'string' }
+      semanticQuery: { type: 'string' }
     }
   }
 }
@@ -166,15 +162,12 @@ function coerceRetrievalQueryPlan(value: unknown): RetrievalQueryPlan | null {
   const keywordQueries = asStringArray(value.keywordQueries)
     .map(entry => entry.trim())
     .filter(entry => entry.length > 0)
-  const domain = asTrimmedString(value.domain)
-
   if (!resolvedQuery || !semanticQuery) return null
 
   return {
     resolvedQuery,
     keywordQueries,
-    semanticQuery,
-    domain: domain ?? undefined
+    semanticQuery
   }
 }
 

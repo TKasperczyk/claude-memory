@@ -421,7 +421,6 @@ function formatReviewRecordSnippet(record: MemoryRecord): Record<string, unknown
     summary: truncateSnippet(buildRecordSnippet(record), 160),
     scope: record.scope,
     project: record.project,
-    domain: record.domain,
     truncated: true
   }
 }
@@ -433,7 +432,6 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
     summary: truncateSnippet(buildRecordSnippet(record), 160),
     scope: record.scope,
     project: record.project,
-    domain: record.domain,
     timestamp: record.timestamp,
     lastUsed: record.lastUsed,
     retrievalCount: record.retrievalCount,

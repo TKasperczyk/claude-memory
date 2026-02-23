@@ -50,7 +50,6 @@ const SEARCH_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
     },
     type: { type: 'string', enum: ['command', 'error', 'discovery', 'procedure', 'warning'] },
     project: { type: 'string', description: 'Project root to filter results.' },
-    domain: { type: 'string', description: 'Domain filter.' },
     exclude_deprecated: {
       type: 'boolean',
       description: 'Exclude deprecated records (default true).'
@@ -66,10 +65,6 @@ const UPDATE_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
     id: { type: 'string', description: 'Memory record ID to update.' },
     deprecated: { type: 'boolean', description: 'Mark record as deprecated.' },
     scope: { type: 'string', enum: ['global', 'project'], description: 'Set memory scope.' },
-    domain: {
-      type: 'string',
-      description: 'Set domain (use empty string to clear).'
-    },
     command: { type: 'string', description: 'Command text (command records only).' },
     exitCode: { type: 'number', description: 'Command exit code (command records only).' },
     outcome: { type: 'string', enum: ['success', 'failure', 'partial'], description: 'Command outcome.' },
@@ -185,10 +180,6 @@ function parseOffset(value: unknown): number {
   return parseNonNegativeInt(value, 0)
 }
 
-function parseDomain(value: unknown): string | undefined {
-  return asTrimmedString(value)
-}
-
 function parseSteps(value: unknown): string[] | null {
   const steps = asStringArray(value, { trim: true, filterEmpty: true })
   return steps.length > 0 ? steps : null
@@ -233,7 +224,6 @@ async function runSearchTool(
   const minSimilarity = parseMinSimilarity(record.min_similarity)
   const type = asRecordType(record.type) as RecordType | undefined
   const project = asTrimmedString(record.project) ?? context.project
-  const domain = parseDomain(record.domain)
   const excludeDeprecated = asBoolean(record.exclude_deprecated) ?? true
   const searchLimit = clampNumber(limit + offset, 1, MAX_SEARCH_LIMIT)
 
@@ -247,7 +237,6 @@ async function runSearchTool(
     usageRatioWeight: 0,
     type,
     project,
-    domain,
     excludeDeprecated
   }, context.config)
 
@@ -281,14 +270,6 @@ async function runUpdateTool(
 
   const scope = asScope(record.scope)
   if (scope) updates.scope = scope
-
-  if (Object.prototype.hasOwnProperty.call(record, 'domain')) {
-    if (typeof record.domain === 'string') {
-      updates.domain = record.domain.trim()
-    } else if (record.domain === null) {
-      updates.domain = ''
-    }
-  }
 
   const command = asTrimmedString(record.command)
   if (command) updates.command = command

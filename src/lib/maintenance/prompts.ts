@@ -250,8 +250,7 @@ export function buildGeneralizationInput(record: MemoryRecord): Record<string, u
   const base = {
     type: record.type,
     scope: record.scope,
-    project: record.project,
-    domain: record.domain
+    project: record.project
   }
 
   switch (record.type) {

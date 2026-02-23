@@ -209,13 +209,12 @@ describe('MMR re-ranking', () => {
 })
 
 describe('Haiku query planning', () => {
-  it('uses Haiku query plan to shape keyword search and domain', async () => {
+  it('uses Haiku query plan to shape keyword search', async () => {
     mockedGenerateRetrievalQueryPlan.mockResolvedValue({
       plan: {
         resolvedQuery: 'How do I build the Docker image?',
         keywordQueries: ['docker build'],
-        semanticQuery: 'Build a Docker image for this project.',
-        domain: 'docker'
+        semanticQuery: 'Build a Docker image for this project.'
       },
       tokenUsage: {
         inputTokens: 10,
@@ -236,8 +235,6 @@ describe('Haiku query planning', () => {
 
     const keywordCall = mockedHybridSearch.mock.calls.find(([params]) => params.vectorWeight === 0)
     expect(keywordCall?.[0].query).toBe('docker build')
-    // Keyword search uses signal-detected domain (from cwd), not Haiku's guess
-    expect(keywordCall?.[0].domain).toBe('node')
   })
 
   it('falls back to prompt-based queries when Haiku is unavailable', async () => {
@@ -260,8 +257,7 @@ describe('Haiku query planning', () => {
       plan: {
         resolvedQuery: 'How do I deploy?',
         keywordQueries: ['deploy'],
-        semanticQuery: 'Deployment workflow',
-        domain: 'ops'
+        semanticQuery: 'Deployment workflow'
       },
       model: 'claude-haiku-4-5-20251001'
     } as any)
@@ -275,45 +271,6 @@ describe('Haiku query planning', () => {
     )
 
     expect(mockedRecordTokenUsageEventsAsync).not.toHaveBeenCalled()
-  })
-})
-
-describe('Project to domain fallback', () => {
-  it('detects domain from project root', async () => {
-    mockedHybridSearch.mockResolvedValue([])
-
-    const result = await retrieveContext(
-      { prompt: 'check domain', cwd: PROJECT_ROOT },
-      DEFAULT_CONFIG,
-      { projectRoot: PROJECT_ROOT }
-    )
-
-    expect(result.signals.domain).toBe('node')
-  })
-
-  it('does not retry with domain-only scope when project match is empty', async () => {
-    const fallbackResult = makeResult('fallback', [0, 1], 0.6)
-
-    mockedHybridSearch.mockImplementation(async params => {
-      if (params.project) {
-        return []
-      }
-      if (params.vectorWeight === 0) {
-        return [fallbackResult]
-      }
-      return []
-    })
-
-    const result = await retrieveContext(
-      { prompt: 'look up memory', cwd: PROJECT_ROOT },
-      DEFAULT_CONFIG,
-      { projectRoot: PROJECT_ROOT }
-    )
-
-    expect(result.results).toHaveLength(0)
-
-    const fallbackCall = mockedHybridSearch.mock.calls.find(([params]) => !params.project)
-    expect(fallbackCall).toBeUndefined()
   })
 })
 
@@ -477,8 +434,7 @@ describe('Keyword query normalization', () => {
       plan: {
         resolvedQuery: 'p4 brain configuration',
         keywordQueries: ['p4 brain', 'p4', 'brain'],
-        semanticQuery: 'p4 brain configuration',
-        domain: 'config'
+        semanticQuery: 'p4 brain configuration'
       },
       tokenUsage: {
         inputTokens: 10,

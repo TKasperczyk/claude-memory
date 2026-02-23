@@ -95,8 +95,7 @@ const createProcedureRecord = (overrides: Partial<MemoryRecord> = {}): MemoryRec
   name: 'Deploy',
   steps: ['build', 'deploy'],
   context: {
-    project: 'project-x',
-    domain: 'deploy'
+    project: 'project-x'
   },
   timestamp: 1700000000000,
   ...overrides
@@ -503,25 +502,6 @@ describe('milvus-crud', () => {
     })
   })
 
-  it('getDomainExamples groups and limits examples', async () => {
-    const client = makeMockClient()
-    client.query.mockResolvedValue({
-      data: [
-        { domain: 'node', content: JSON.stringify({ type: 'command', command: 'npm test' }) },
-        { domain: 'node', content: JSON.stringify({ type: 'command', command: 'npm run build' }) },
-        { domain: 'db', content: JSON.stringify({ type: 'error', errorText: 'connection lost' }) },
-        { domain: '', content: JSON.stringify({ type: 'command', command: 'skip me' }) }
-      ]
-    })
-    vi.spyOn(milvusClient, 'ensureClient').mockResolvedValue(client as any)
-
-    const examples = await milvusCrud.getDomainExamples(1, DEFAULT_CONFIG)
-
-    expect(examples).toEqual([
-      { domain: 'db', examples: ['connection lost'] },
-      { domain: 'node', examples: ['npm test'] }
-    ])
-  })
 })
 
 describe('milvus-records', () => {
@@ -529,7 +509,6 @@ describe('milvus-records', () => {
     const record = createCommandRecord({
       project: undefined,
       scope: undefined,
-      domain: undefined,
       successCount: undefined,
       retrievalCount: undefined,
       usageCount: undefined,
@@ -541,7 +520,6 @@ describe('milvus-records', () => {
 
     expect(row.project).toBe('project-x')
     expect(row.scope).toBe('project')
-    expect(row.domain).toBe('')
     expect(row.success_count).toBe(0)
     expect(row.retrieval_count).toBe(0)
     expect(row.usage_count).toBe(0)
@@ -549,17 +527,15 @@ describe('milvus-records', () => {
     expect(mockedEmbed).not.toHaveBeenCalled()
   })
 
-  it('buildMilvusRow resolves procedure domain and project', async () => {
+  it('buildMilvusRow resolves procedure project', async () => {
     const record = createProcedureRecord({
       project: undefined,
-      domain: undefined,
       embedding: [0.3, 0.4]
     })
 
     const row = await milvusRecords.buildMilvusRow(record, DEFAULT_CONFIG)
 
     expect(row.project).toBe('project-x')
-    expect(row.domain).toBe('deploy')
     expect(row.scope).toBe('project')
   })
 

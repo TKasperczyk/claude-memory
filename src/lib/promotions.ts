@@ -151,7 +151,6 @@ export function generateSkillSuggestion(record: ProcedureRecord): string {
   const displayName = cleanInline(record.name) || 'Procedure'
   const skillName = normalizeSkillName(displayName, record.id)
   const description = buildSkillDescription(record, displayName)
-  const domain = cleanInline(record.context.domain ?? record.domain ?? '')
   const project = cleanInline(record.context.project ?? record.project ?? '')
 
   const lines: string[] = []
@@ -187,11 +186,10 @@ export function generateSkillSuggestion(record: ProcedureRecord): string {
     }
   }
 
-  if (domain || project) {
+  if (project) {
     lines.push('')
     lines.push('## Context')
-    if (domain) lines.push(`- Domain: ${domain}`)
-    if (project) lines.push(`- Project: ${project}`)
+    lines.push(`- Project: ${project}`)
   }
 
   lines.push('')
@@ -723,7 +721,6 @@ function buildProcedureCandidatePayload(records: ProcedureRecord[]): Array<Recor
       .map(entry => cleanInline(entry))
       .filter(Boolean)
     const verification = cleanInline(record.verification ?? '')
-    const domain = cleanInline(record.context.domain ?? record.domain ?? '')
     const project = cleanInline(record.context.project ?? record.project ?? '')
 
     return {
@@ -733,7 +730,6 @@ function buildProcedureCandidatePayload(records: ProcedureRecord[]): Array<Recor
       ...(prerequisites.length > 0 ? { prerequisites } : {}),
       ...(verification ? { verification } : {}),
       ...(project ? { project } : {}),
-      ...(domain ? { domain } : {}),
       defaultTargetFile: suggestSkillTargetPath(record),
       usageCount: record.usageCount ?? 0,
       successCount: record.successCount ?? 0,
@@ -747,7 +743,6 @@ function buildDiscoveryCandidatePayload(records: DiscoveryRecord[]): Array<Recor
   return records.map(record => {
     const where = cleanInline(record.where ?? '')
     const evidence = cleanInline(record.evidence ?? '')
-    const domain = cleanInline(record.domain ?? '')
     const project = cleanInline(record.project ?? '')
 
     return {
@@ -756,7 +751,6 @@ function buildDiscoveryCandidatePayload(records: DiscoveryRecord[]): Array<Recor
       ...(where ? { where } : {}),
       ...(evidence ? { evidence } : {}),
       ...(project ? { project } : {}),
-      ...(domain ? { domain } : {}),
       defaultTargetFile: suggestClaudeMdTargetPath(project),
       confidence: record.confidence,
       usageCount: record.usageCount ?? 0,
@@ -1109,13 +1103,11 @@ function buildDefaultClaudeDecision(record: DiscoveryRecord, root: string): Prom
 }
 
 function buildSkillDescription(record: ProcedureRecord, displayName: string): string {
-  const domain = cleanInline(record.context.domain ?? record.domain ?? '')
   const project = cleanInline(record.context.project ?? record.project ?? '')
   const base = displayName
     ? `Step-by-step procedure for ${displayName}.`
     : 'Step-by-step procedure.'
   const parts = [base]
-  if (domain) parts.push(`Use for ${domain} tasks.`)
   if (project) parts.push(`Project: ${project}.`)
   return cleanInline(parts.join(' '))
 }
@@ -1168,8 +1160,6 @@ function groupDiscoveries(
 function resolveDiscoveryGroup(record: DiscoveryRecord): string {
   const where = cleanInline(record.where ?? '')
   if (where) return where
-  const domain = cleanInline(record.domain ?? '')
-  if (domain) return `Domain: ${domain}`
   return 'General'
 }
 

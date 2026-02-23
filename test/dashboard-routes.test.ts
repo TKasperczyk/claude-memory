@@ -500,7 +500,7 @@ describe('memory routes', () => {
         type: 'procedure',
         name: 'Run checks',
         steps: ['npm test', 'npm run build'],
-        context: { domain: 'ci', project: 'proj' }
+        context: { project: 'proj' }
       }),
       expected: {
         id: 'proc-1',

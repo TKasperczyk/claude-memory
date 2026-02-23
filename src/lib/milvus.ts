@@ -17,13 +17,12 @@ export {
   getRecord,
   getRecordStats,
   flushCollection,
-  getDomainExamples,
   queryRecords,
   fetchRecordsByIds,
   iterateRecords,
   countRecords
 } from './milvus-crud.js'
-export type { FlushMode, WriteOptions, DomainExample } from './milvus-crud.js'
+export type { FlushMode, WriteOptions } from './milvus-crud.js'
 
 export {
   hybridSearch,

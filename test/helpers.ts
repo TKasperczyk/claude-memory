@@ -103,7 +103,6 @@ export function createMockCommandRecord(overrides: Partial<CommandRecord> = {}):
       intent: 'build the project'
     },
     project: TEST_PROJECT,
-    domain: 'node',
     timestamp: Date.now(),
     successCount: 1,
     failureCount: 0,
@@ -129,7 +128,6 @@ export function createMockErrorRecord(overrides: Partial<ErrorRecord> = {}): Err
       tool: 'node'
     },
     project: TEST_PROJECT,
-    domain: 'node',
     timestamp: Date.now(),
     successCount: 0,
     failureCount: 1,
@@ -151,7 +149,6 @@ export function createMockDiscoveryRecord(overrides: Partial<DiscoveryRecord> = 
     evidence: 'Found "type": "module" in package.json',
     confidence: 'verified',
     project: TEST_PROJECT,
-    domain: 'node',
     timestamp: Date.now(),
     successCount: 1,
     failureCount: 0,
@@ -176,12 +173,10 @@ export function createMockProcedureRecord(overrides: Partial<ProcedureRecord> = 
       'ssh server "systemctl restart app"'
     ],
     context: {
-      project: TEST_PROJECT,
-      domain: 'deploy'
+      project: TEST_PROJECT
     },
     verification: 'curl -s https://app.example.com/health returns 200',
     project: TEST_PROJECT,
-    domain: 'deploy',
     timestamp: Date.now(),
     successCount: 3,
     failureCount: 0,
@@ -204,7 +199,7 @@ export function createMockTranscript(entries: object[]): string {
 }
 
 /**
- * Create a temp project fixture with marker files for domain detection.
+ * Create a temp project fixture with marker files.
  */
 export function createTempProjectFixture(files: Record<string, string> = {}): string {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-memory-fixture-'))

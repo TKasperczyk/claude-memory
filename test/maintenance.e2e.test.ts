@@ -121,8 +121,7 @@ describe('Maintenance E2E', () => {
           'cat output.txt'
         ],
         context: {
-          project: TEST_PROJECT,
-          domain: 'shell'
+          project: TEST_PROJECT
         }
       })
 
@@ -140,8 +139,7 @@ describe('Maintenance E2E', () => {
           'cat output.txt'
         ],
         context: {
-          project: TEST_PROJECT,
-          domain: 'shell'
+          project: TEST_PROJECT
         }
       })
 
@@ -207,8 +205,7 @@ describe('Maintenance E2E', () => {
           command: 'npm run build',
           exitCode: 0,
           outcome: 'success',
-          project: TEST_PROJECT,
-          domain: 'node'
+          project: TEST_PROJECT
         }), TEST_CONFIG)
       }
 
@@ -217,8 +214,7 @@ describe('Maintenance E2E', () => {
         command: 'docker compose up',
         exitCode: 0,
         outcome: 'success',
-        project: TEST_PROJECT,
-        domain: 'docker'
+        project: TEST_PROJECT
       }), TEST_CONFIG)
 
       const clusters = await findSimilarClusters(SIMILARITY_THRESHOLDS.CONSOLIDATION, TEST_CONFIG)

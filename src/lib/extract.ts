@@ -14,7 +14,6 @@ import {
   type WarningRecord
 } from './types.js'
 import type { Transcript, TranscriptEvent } from './transcript.js'
-import { getDomainExamples, type DomainExample } from './milvus.js'
 import { stripNoiseWords } from './context.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { getRecordSchemaOneOf } from './record-schema.js'
@@ -28,7 +27,6 @@ export interface ExtractionContext {
   project?: string
   transcriptPath?: string
   intent?: string
-  domain?: string
   /** Memories that were injected during this session - used to detect outdated information */
   injectedMemories?: InjectedMemoryEntry[]
 }
@@ -41,15 +39,7 @@ const MAX_INTENT_CHARS = 400
 const MAX_TRUNCATED_OUTPUT_CHARS = 20000
 const MAX_TOOL_INPUT_CHARS = 12000
 const USEFULNESS_MAX_TOKENS = 800
-const DOMAIN_EXAMPLES_TTL_MS = 5 * 60 * 1000
-
-let cachedDomainExamples: {
-  fetchedAt: number
-  cacheKey: string
-  examples: DomainExample[]
-} | null = null
-
-const SYSTEM_PROMPT_BASE = `You extract durable technical knowledge from Claude Code transcripts.
+const SYSTEM_PROMPT = `You extract durable technical knowledge from Claude Code transcripts.
 
 Rules:
 - Output ONLY via the tool call "${TOOL_NAME}" exactly once.
@@ -147,14 +137,6 @@ Keep scope: "project" (default) for:
 - Knowledge that only makes sense in context of this codebase
 `
 
-const DOMAIN_INSTRUCTIONS = `
-Domain assignment:
-- Use an existing domain when the record fits its category.
-- Only create a new domain if no existing domain is appropriate.
-- Domain names should be lowercase, hyphenated (e.g., "cloud-infra", "web-dev").
-- Keep domains broad enough to group related tools (e.g., "docker" not "docker-compose").
-`
-
 const USEFULNESS_SYSTEM_PROMPT = `You evaluate which injected memories were actually used or helpful.
 
 Rules:
@@ -163,21 +145,6 @@ Rules:
 - If unsure, omit it.
 - Output ONLY via the tool call "${USEFULNESS_TOOL_NAME}" exactly once.
 `
-
-function buildSystemPrompt(domainExamples: DomainExample[]): string {
-  if (domainExamples.length === 0) {
-    return SYSTEM_PROMPT_BASE
-  }
-
-  const domainList = domainExamples
-    .map(d => `- ${d.domain}: ${d.examples.map(e => `"${e}"`).join(', ')}`)
-    .join('\n')
-
-  return SYSTEM_PROMPT_BASE + DOMAIN_INSTRUCTIONS + `
-Existing domains:
-${domainList}
-`
-}
 
 const EMIT_RECORDS_TOOL: Anthropic.Tool = {
   name: TOOL_NAME,
@@ -231,10 +198,6 @@ export async function extractRecords(
       return { records: [], tokenUsage: emptyTokenUsage() }
     }
 
-    // Fetch existing domains to guide consistent domain assignment
-    const domainExamples = await getCachedDomainExamples(2, config)
-    const systemPrompt = buildSystemPrompt(domainExamples)
-
     const userPrompt = buildUserPrompt(transcript, resolvedContext)
 
     const response = await client.messages.create({
@@ -243,7 +206,7 @@ export async function extractRecords(
       temperature: 0,
       system: [
         { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-        { type: 'text', text: systemPrompt }
+        { type: 'text', text: SYSTEM_PROMPT }
       ],
       messages: [{ role: 'user', content: userPrompt }],
       tools: [EMIT_RECORDS_TOOL],
@@ -262,20 +225,6 @@ export async function extractRecords(
     console.error('[claude-memory] extractRecords failed:', error)
     return { records: [], tokenUsage: emptyTokenUsage() }
   }
-}
-
-async function getCachedDomainExamples(limit: number, config: Config): Promise<DomainExample[]> {
-  const now = Date.now()
-  const cacheKey = `${config.milvus.address}|${config.milvus.collection}|${limit}`
-  if (cachedDomainExamples
-    && cachedDomainExamples.cacheKey === cacheKey
-    && now - cachedDomainExamples.fetchedAt < DOMAIN_EXAMPLES_TTL_MS) {
-    return cachedDomainExamples.examples
-  }
-
-  const examples = await getDomainExamples(limit, config)
-  cachedDomainExamples = { fetchedAt: now, cacheKey, examples }
-  return examples
 }
 
 export async function rateInjectedMemories(
@@ -607,8 +556,6 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
 
   const projectOverride = asString(input.project)
   if (projectOverride) record.project = projectOverride
-  const domainOverride = asString(input.domain)
-  if (domainOverride) record.domain = domainOverride
 
   return record
 }
@@ -649,8 +596,6 @@ function coerceErrorRecord(input: Record<string, unknown>, context: ExtractionCo
 
   const projectOverride = asString(input.project)
   if (projectOverride) record.project = projectOverride
-  const domainOverride = asString(input.domain)
-  if (domainOverride) record.domain = domainOverride
 
   return record
 }
@@ -679,8 +624,6 @@ function coerceDiscoveryRecord(input: Record<string, unknown>, context: Extracti
 
   const project = asString(input.project) ?? context.project ?? context.cwd
   if (project) record.project = project
-  const domain = asString(input.domain) ?? context.domain
-  if (domain) record.domain = domain
 
   return record
 }
@@ -693,7 +636,6 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
   if (!name || steps.length === 0 || !sourceExcerpt) return null
 
   const contextInput = isPlainObject(input.context) ? input.context : {}
-  const domain = asString((contextInput as Record<string, unknown>).domain) ?? context.domain ?? 'general'
 
   const record: ProcedureRecord = {
     id: randomUUID(),
@@ -701,9 +643,7 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
     name,
     steps,
     sourceExcerpt,
-    context: {
-      domain
-    }
+    context: {}
   }
 
   const scope = asScope(input.scope)
@@ -720,8 +660,6 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
 
   const projectOverride = asString(input.project)
   if (projectOverride) record.project = projectOverride
-  const domainOverride = asString(input.domain)
-  if (domainOverride) record.domain = domainOverride
 
   return record
 }
@@ -751,8 +689,6 @@ function coerceWarningRecord(input: Record<string, unknown>, context: Extraction
 
   const project = asString(input.project) ?? context.project ?? context.cwd
   if (project) record.project = project
-  const domain = asString(input.domain) ?? context.domain
-  if (domain) record.domain = domain
 
   return record
 }

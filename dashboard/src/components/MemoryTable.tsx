@@ -42,7 +42,6 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
             <TableHead className="w-16 px-4">Type</TableHead>
             <TableHead className="px-4">Summary</TableHead>
             <TableHead className="w-32 px-4">Project</TableHead>
-            <TableHead className="w-28 px-4">Domain</TableHead>
             <TableHead className="w-20 px-4">Scope</TableHead>
           </TableRow>
         </TableHeader>
@@ -72,9 +71,6 @@ export default function MemoryTable({ records, onSelect, emptyMessage }: MemoryT
                 </TableCell>
                 <TableCell className="px-4 py-2.5 text-muted-foreground truncate text-[13px]">
                   {record.project ?? '—'}
-                </TableCell>
-                <TableCell className="px-4 py-2.5 text-muted-foreground truncate text-[13px]">
-                  {record.domain ?? '—'}
                 </TableCell>
                 <TableCell className={`px-4 py-2.5 truncate text-[13px] ${record.scope === 'global' ? 'text-type-discovery font-medium' : 'text-muted-foreground'}`}>
                   {record.scope ?? 'project'}

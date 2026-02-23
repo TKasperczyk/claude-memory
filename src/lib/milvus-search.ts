@@ -21,7 +21,6 @@ import { ensureClient } from './milvus-client.js'
 import {
   buildEmbeddingInput,
   parseRecordFromRow,
-  resolveDomain,
   resolveProject
 } from './milvus-records.js'
 
@@ -69,7 +68,6 @@ export async function hybridSearch(
     const baseFilter = buildFilter({
       project: params.project,
       includeGlobal: Boolean(params.project),
-      domain: params.domain,
       type: params.type,
       excludeDeprecated: params.excludeDeprecated
     })
@@ -223,7 +221,6 @@ export async function findSimilar(
 
     const baseFilter = buildFilter({
       project: resolveProject(record),
-      domain: resolveDomain(record),
       type: record.type,
       excludeId: record.id,
       excludeDeprecated: true
@@ -308,32 +305,18 @@ export function escapeLikeValue(value: string): string {
 export function buildFilter(filters: {
   project?: string
   includeGlobal?: boolean
-  domain?: string
   type?: RecordType
   excludeId?: string
   excludeDeprecated?: boolean
 }): string | undefined {
   const parts: string[] = []
 
-  // Build scope-sensitive filters (project + domain) that global scope bypasses
-  const scopeParts: string[] = []
-
   if (filters.project) {
-    scopeParts.push(`project == "${escapeFilterValue(filters.project)}"`)
-  }
-
-  if (filters.domain) {
-    const domainValue = escapeFilterValue(filters.domain)
-    scopeParts.push(`(domain == "${domainValue}" || domain == "")`)
-  }
-
-  if (scopeParts.length > 0) {
-    const scopeClause = scopeParts.join(' && ')
+    const projectClause = `project == "${escapeFilterValue(filters.project)}"`
     if (filters.includeGlobal) {
-      // Global scope bypasses both project AND domain filters
-      parts.push(`(${scopeClause} || scope == "global")`)
+      parts.push(`(${projectClause} || scope == "global")`)
     } else {
-      parts.push(scopeClause)
+      parts.push(projectClause)
     }
   }
 

@@ -9,7 +9,6 @@ export interface BaseRecord {
   sourceSessionId?: string
   sourceExcerpt?: string
   project?: string
-  domain?: string
   successCount?: number
   failureCount?: number
   retrievalCount?: number
@@ -68,7 +67,6 @@ export interface ProcedureRecord extends BaseRecord {
   steps: string[]
   context: {
     project?: string
-    domain: string
   }
   prerequisites?: string[]
   verification?: string
@@ -100,7 +98,6 @@ export interface MemoryStatsSummary {
   total: number
   byType: Record<string, number>
   byProject: Record<string, number>
-  byDomain: Record<string, number>
   byScope: Record<string, number>
   avgRetrievalCount: number
   avgUsageCount: number

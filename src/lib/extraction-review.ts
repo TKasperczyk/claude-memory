@@ -363,7 +363,6 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
     id: record.id,
     type: record.type,
     project: record.project,
-    domain: record.domain,
     scope: record.scope,
     sourceExcerpt: record.sourceExcerpt  // Include so reviewer can verify it's verbatim
   }

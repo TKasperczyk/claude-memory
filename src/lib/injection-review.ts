@@ -262,8 +262,7 @@ function buildReviewSignals(prompt: string, projectRoot: string | undefined): Co
   return {
     ...signals,
     projectRoot: undefined,
-    projectName: undefined,
-    domain: undefined
+    projectName: undefined
   }
 }
 
@@ -280,7 +279,6 @@ function buildInjectedPayload(
       snippet: entry.snippet,
       type: entry.type ?? record?.type,
       project: record?.project,
-      domain: record?.domain,
       scope: record?.scope,
       similarity: entry.similarity,
       keywordMatch: entry.keywordMatch,
@@ -346,7 +344,6 @@ function buildPromptEmbeddingInputs(prompt: string, signals: ContextSignals): st
   const contextParts: string[] = []
   if (cleanedPrompt) contextParts.push(cleanedPrompt)
   if (signals.projectName) contextParts.push(`project: ${signals.projectName}`)
-  if (signals.domain) contextParts.push(`domain: ${signals.domain}`)
 
   const combined = truncateForEmbedding(contextParts.join('\n'), REVIEW_SIMILAR_COMBINED_MAX_CHARS)
   if (combined) inputs.push(combined)
@@ -368,7 +365,6 @@ function buildSimilarFilter(signals: ContextSignals, excludeIds: string[], cwd: 
   const baseFilter = buildFilter({
     project: project ?? undefined,
     includeGlobal: true,
-    domain: signals.domain,
     excludeDeprecated: true
   })
 
@@ -399,7 +395,6 @@ function buildInjectionReviewPrompt(args: {
 - cwd: ${cwd ?? 'unknown'}
 - project_root: ${signals.projectRoot ?? 'unknown'}
 - project_name: ${signals.projectName ?? 'unknown'}
-- domain: ${signals.domain ?? 'unknown'}
 
 Detected signals (JSON):
 ${JSON.stringify({ errors: signals.errors, commands: signals.commands }, null, 2)}

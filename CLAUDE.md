@@ -57,7 +57,6 @@ Gemini audit (gemini-audit.ts), embedding migration/refresh, collection reset, d
 **Key env vars:**
 - `CC_MEMORIES_ADDRESS`, `CC_MEMORIES_COLLECTION`, `CC_EMBEDDINGS_URL`, `CC_EMBEDDINGS_MODEL`
 - `CC_EXTRACTION_MODEL` (default: claude-sonnet-4-5-20250929)
-- `CC_MEMORIES_DOMAIN`: Override domain inference (empty string disables filtering)
 - `CC_MEMORIES_SETTING_*`: Override any setting (e.g., `CC_MEMORIES_SETTING_MIN_SEMANTIC_SIMILARITY=0.4`)
 - `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`
 - `CLAUDE_MEMORY_DEBUG=1`, `CLAUDE_MEMORY_LOG_LEVEL` (debug/info/warn/error)

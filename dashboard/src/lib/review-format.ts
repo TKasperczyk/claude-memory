@@ -52,7 +52,7 @@ function getRecordContent(record: MemoryRecord): string {
         `Steps:\n${record.steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`,
         record.prerequisites?.length ? `Prerequisites: ${record.prerequisites.join(', ')}` : '',
         record.verification ? `Verification: ${record.verification}` : '',
-        `Context: ${record.context.domain}${record.context.project ? `, project=${record.context.project}` : ''}`
+        record.context.project ? `Context: project=${record.context.project}` : ''
       ].filter(Boolean).join('\n')
 
     case 'warning':
@@ -253,7 +253,7 @@ export function formatInjectionReview(
   lines.push('When analyzing this review, consider:')
   lines.push('1. Are irrelevant memories being retrieved due to overly broad semantic matching?')
   lines.push('2. Are relevant memories being missed due to insufficient keyword/semantic overlap?')
-  lines.push('3. Should domain/project filtering be adjusted?')
+  lines.push('3. Should project filtering be adjusted?')
   lines.push('4. Are the retrieval trigger scores calibrated correctly?')
   lines.push('5. Should certain memory types be weighted differently?')
   lines.push('6. Are there patterns in what gets missed vs what gets irrelevantly included?')

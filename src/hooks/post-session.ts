@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { extractRecords } from '../lib/extract.js'
-import { findGitRoot, inferDomain } from '../lib/context.js'
+import { findGitRoot } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
 import { loadSettings } from '../lib/settings.js'
@@ -125,13 +125,11 @@ export async function handlePostSession(
   }
 
   const projectRoot = findGitRoot(input.cwd) ?? input.cwd
-  const domain = inferDomain(projectRoot)
   const { records: extractedRecords, tokenUsage } = await extractRecords(transcript, {
     sessionId: input.session_id,
     cwd: input.cwd,
     project: projectRoot,
     transcriptPath: input.transcript_path,
-    domain,
     injectedMemories: options.injectedMemories
   })
 
@@ -235,7 +233,6 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
   }
 
   if (!existing.project && incoming.project) updates.project = incoming.project
-  if (!existing.domain && incoming.domain) updates.domain = incoming.domain
   if (!existing.sourceSessionId && incoming.sourceSessionId) updates.sourceSessionId = incoming.sourceSessionId
   if (!existing.sourceExcerpt && incoming.sourceExcerpt) updates.sourceExcerpt = incoming.sourceExcerpt
 

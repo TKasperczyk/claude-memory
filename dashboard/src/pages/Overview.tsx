@@ -324,12 +324,6 @@ export default function Overview() {
         .sort((a, b) => b.value - a.value)
     : []
 
-  const domainData = data
-    ? Object.entries(data.byDomain)
-        .map(([name, value]) => ({ name, value }))
-        .sort((a, b) => b.value - a.value)
-    : []
-
   const usagePercent = data ? Math.round(data.avgUsageRatio * 100) : 0
 
   // Extract sparkline data from stats history
@@ -463,15 +457,6 @@ export default function Overview() {
               <TopListSkeleton title="Top projects" />
             ) : (
               <TopList title="Top projects" data={projectData} />
-            )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5">
-            {isInitialLoading ? (
-              <TopListSkeleton title="Top domains" />
-            ) : (
-              <TopList title="Top domains" data={domainData} />
             )}
           </CardContent>
         </Card>

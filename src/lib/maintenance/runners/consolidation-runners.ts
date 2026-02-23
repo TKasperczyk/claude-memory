@@ -30,7 +30,6 @@ const PROTECTED_SYNTHESIS_FIELDS = new Set([
   'sourceSessionId',
   'sourceExcerpt',
   'project',
-  'domain',
   'subdomain',
   'embedding',
   'generalized',
@@ -201,7 +200,7 @@ function normalizeSynthesizedFields(
           const context = buildContextUpdate(
             keeperRecord.context as unknown as Record<string, unknown>,
             parsed,
-            ['project', 'domain']
+            ['project']
           )
           if (context) {
             updates.context = context

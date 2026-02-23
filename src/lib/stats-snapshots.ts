@@ -64,7 +64,6 @@ function coerceStatsSnapshot(value: unknown, dateKey: string): StatsSnapshot | n
     total: asInteger(record.total) ?? 0,
     byType: coerceCountMap(record.byType),
     byProject: coerceCountMap(record.byProject),
-    byDomain: coerceCountMap(record.byDomain),
     byScope: coerceCountMap(record.byScope),
     avgRetrievalCount: asNumber(record.avgRetrievalCount) ?? 0,
     avgUsageCount: asNumber(record.avgUsageCount) ?? 0,

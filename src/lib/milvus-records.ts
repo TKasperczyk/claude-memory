@@ -38,7 +38,7 @@ export async function buildMilvusRow(record: MemoryRecord, config: Config): Prom
     exact_text: exactText,
     project: normalized.project ?? '',
     scope: normalized.scope,
-    domain: normalized.domain ?? '',
+    domain: '', // deprecated field, kept for schema compat
     timestamp: toInt64(normalized.timestamp, Date.now()),
     success_count: toInt64(normalized.successCount, 0),
     failure_count: toInt64(normalized.failureCount, 0),
@@ -99,7 +99,6 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
     type: rawType,
     project: (row.project as string | undefined) ?? parsed.project,
     scope: normalizeScope(row.scope ?? parsed.scope),
-    domain: (row.domain as string | undefined) ?? parsed.domain,
     timestamp: toInt64((row.timestamp as number | string | undefined) ?? parsed.timestamp, 0),
     successCount: toInt64((row.success_count as number | string | undefined) ?? parsed.successCount, 0),
     failureCount: toInt64((row.failure_count as number | string | undefined) ?? parsed.failureCount, 0),
@@ -171,15 +170,8 @@ export function resolveProject(record: MemoryRecord): string | undefined {
   return undefined
 }
 
-export function resolveDomain(record: MemoryRecord): string | undefined {
-  if (record.domain) return record.domain
-  if (record.type === 'procedure') return record.context.domain
-  return undefined
-}
-
 function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const project = record.project ?? resolveProject(record)
-  const domain = record.domain ?? resolveDomain(record)
   const scope = normalizeScope(record.scope)
   const timestamp = toInt64(record.timestamp, Date.now())
   const successCount = toInt64(record.successCount, 0)
@@ -198,7 +190,6 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     ...record,
     project,
     scope,
-    domain,
     timestamp,
     successCount,
     failureCount,

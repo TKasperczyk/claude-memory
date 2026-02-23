@@ -251,7 +251,6 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         sourceSessionId: asTrimmedString(body.sourceSessionId),
         sourceExcerpt,
         project: asTrimmedString(body.project),
-        domain: asTrimmedString(body.domain),
         successCount: asNumber(body.successCount) ?? undefined,
         failureCount: asNumber(body.failureCount) ?? undefined,
         retrievalCount: asNumber(body.retrievalCount) ?? undefined,
@@ -381,7 +380,6 @@ export function createMemoryRouter(context: ServerContext): express.Router {
           const name = asTrimmedString(body.name)
           const steps = asStringArray(body.steps)
           const contextInput = isPlainObject(body.context) ? body.context : undefined
-          const domain = asTrimmedString(contextInput?.domain)
           const contextProject = asTrimmedString(contextInput?.project) ?? asTrimmedString(body.project)
 
           if (!name) {
@@ -390,9 +388,6 @@ export function createMemoryRouter(context: ServerContext): express.Router {
           if (steps.length === 0 || !steps.some(step => step.trim().length > 0)) {
             return res.status(400).json({ error: 'steps required' })
           }
-          if (!domain) {
-            return res.status(400).json({ error: 'context.domain required' })
-          }
 
           record = {
             ...baseRecord,
@@ -400,7 +395,6 @@ export function createMemoryRouter(context: ServerContext): express.Router {
             name,
             steps,
             context: {
-              domain,
               ...(contextProject ? { project: contextProject } : {})
             }
           }

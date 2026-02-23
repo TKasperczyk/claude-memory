@@ -10,7 +10,6 @@ export async function buildMemoryStats(
     total,
     byType: {},
     byProject: {},
-    byDomain: {},
     byScope: {},
     avgRetrievalCount: 0,
     avgUsageCount: 0,
@@ -27,9 +26,6 @@ export async function buildMemoryStats(
 
     const project = record.project ?? 'unknown'
     stats.byProject[project] = (stats.byProject[project] ?? 0) + 1
-
-    const domain = record.domain ?? 'unknown'
-    stats.byDomain[domain] = (stats.byDomain[domain] ?? 0) + 1
 
     const scope = record.scope ?? 'project'
     stats.byScope[scope] = (stats.byScope[scope] ?? 0) + 1

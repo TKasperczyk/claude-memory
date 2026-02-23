@@ -331,7 +331,6 @@ export default function MemoryDetail({
               {/* Metadata */}
               <div className="grid grid-cols-2 gap-4">
                 <Field label="Project">{record.project ?? '—'}</Field>
-                <Field label="Domain">{record.domain ?? '—'}</Field>
                 <Field label="Scope">
                   <span className={record.scope === 'global' ? 'text-type-discovery font-medium' : ''}>
                     {record.scope ?? 'project'}

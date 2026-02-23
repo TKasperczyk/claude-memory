@@ -20,7 +20,6 @@ export interface ContextSignals {
   commands: string[]
   projectRoot?: string
   projectName?: string
-  domain?: string
 }
 
 const MAX_ERROR_SIGNALS = 6
@@ -71,7 +70,6 @@ export function extractSignals(prompt: string, cwd: string, projectRoot?: string
   const cleanPrompt = stripNoiseWords(prompt)
   const resolvedProjectRoot = projectRoot ?? findGitRoot(cwd)
   const projectName = resolvedProjectRoot ? path.basename(resolvedProjectRoot) : path.basename(cwd)
-  const domain = inferDomain(resolvedProjectRoot ?? cwd)
   const errors = extractErrorSignals(cleanPrompt)
   const commands = extractCommandSignals(cleanPrompt)
 
@@ -79,8 +77,7 @@ export function extractSignals(prompt: string, cwd: string, projectRoot?: string
     errors,
     commands,
     projectRoot: resolvedProjectRoot,
-    projectName,
-    domain
+    projectName
   }
 }
 
@@ -629,60 +626,6 @@ function pickErrorLine(lines: string[]): string {
 }
 
 // looksLikeCommand is imported from shared.ts
-
-export function inferDomain(root: string): string | undefined {
-  // Allow override via env var (e.g., for eval isolation where marker detection
-  // mismatches LLM-assigned domains). Empty string → undefined (skip domain filter).
-  const override = process.env.CC_MEMORIES_DOMAIN
-  if (override !== undefined) return override || undefined
-
-  if (!root) return undefined
-
-  const markers: Array<{ domain: string; files: string[] }> = [
-    { domain: 'rust', files: ['Cargo.toml', 'Cargo.lock'] },
-    { domain: 'go', files: ['go.mod', 'go.sum'] },
-    { domain: 'node', files: ['package.json', 'pnpm-lock.yaml', 'yarn.lock', 'package-lock.json'] },
-    { domain: 'deno', files: ['deno.json', 'deno.jsonc'] },
-    { domain: 'python', files: ['pyproject.toml', 'requirements.txt', 'Pipfile', 'setup.py'] },
-    { domain: 'ruby', files: ['Gemfile', 'Gemfile.lock'] },
-    { domain: 'php', files: ['composer.json'] },
-    { domain: 'java', files: ['pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle'] },
-    { domain: 'docker', files: ['Dockerfile', 'docker-compose.yml', 'docker-compose.yaml'] },
-    { domain: 'terraform', files: ['main.tf', 'terraform.tf'] }
-  ]
-
-  for (const marker of markers) {
-    for (const file of marker.files) {
-      if (fileExists(root, file)) return marker.domain
-    }
-  }
-
-  const entries = safeReadDir(root)
-  if (entries.some(entry => entry.endsWith('.csproj') || entry.endsWith('.sln'))) {
-    return 'dotnet'
-  }
-  if (entries.some(entry => entry.endsWith('.tf'))) {
-    return 'terraform'
-  }
-
-  return undefined
-}
-
-function fileExists(root: string, filename: string): boolean {
-  try {
-    return fs.existsSync(path.join(root, filename))
-  } catch {
-    return false
-  }
-}
-
-function safeReadDir(root: string): string[] {
-  try {
-    return fs.readdirSync(root)
-  } catch {
-    return []
-  }
-}
 
 type GitRootCacheEntry = {
   value?: string

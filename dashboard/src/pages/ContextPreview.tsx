@@ -269,10 +269,6 @@ export default function ContextPreview() {
                     <span className="text-muted-foreground">Project</span>
                     <span>{result.signals.projectName ?? '—'}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Domain</span>
-                    <span>{result.signals.domain ?? '—'}</span>
-                  </div>
                   {result.signals.errors.length > 0 && (
                     <div>
                       <span className="text-muted-foreground">Errors</span>
@@ -426,7 +422,7 @@ export default function ContextPreview() {
                         <div className="min-w-0">
                           <div className="truncate">{getMemorySummary(record)}</div>
                           <div className="text-xs text-muted-foreground">
-                            {record.project ?? '—'} · {record.domain ?? '—'}
+                            {record.project ?? '—'}
                           </div>
                         </div>
                       </button>

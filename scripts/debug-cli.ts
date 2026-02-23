@@ -328,16 +328,6 @@ async function cmdStats(): Promise<void> {
   }
   console.log()
 
-  printSection('By Domain')
-  const domains = Object.entries(stats.byDomain).sort((a, b) => b[1] - a[1])
-  for (const [domain, count] of domains.slice(0, 15)) {
-    printStat(`  ${domain}`, count)
-  }
-  if (domains.length > 15) {
-    console.log(`  ${c.dim}  ... and ${domains.length - 15} more${c.reset}`)
-  }
-  console.log()
-
   printSection('Usage Averages')
   printStat('Avg retrieval count', stats.avgRetrievalCount.toFixed(2))
   printStat('Avg usage count', stats.avgUsageCount.toFixed(2))
@@ -398,7 +388,6 @@ async function cmdSearch(args: string[]): Promise<void> {
   printHeader('SIGNAL EXTRACTION')
   printStat('Errors', result.signals.errors.length > 0 ? result.signals.errors.join(', ') : '(none)')
   printStat('Commands', result.signals.commands.length > 0 ? result.signals.commands.join(', ') : '(none)')
-  printStat('Domain', result.signals.domain ?? '(none)')
   printStat('Project', result.signals.projectName ?? '(none)')
   printStat('Project root', result.signals.projectRoot ?? '(none)')
 
@@ -838,7 +827,6 @@ async function cmdCompare(args: string[]): Promise<void> {
   const metrics: [string, (r: MemoryRecord) => string][] = [
     ['Type', r => r.type],
     ['Scope', r => r.scope ?? 'project'],
-    ['Domain', r => r.domain ?? '(none)'],
     ['Project', r => r.project ?? '(none)'],
     ['Retrieval count', r => String(r.retrievalCount ?? 0)],
     ['Usage count', r => String(r.usageCount ?? 0)],
@@ -935,7 +923,6 @@ function printRecordDetail(record: MemoryRecord): void {
   printStat('Type', typeBadge(record.type))
   printStat('Scope', (record.scope ?? 'project') === 'global' ? `${c.cyan}global${c.reset}` : 'project')
   printStat('Project', record.project ?? '(none)')
-  printStat('Domain', record.domain ?? '(none)')
   printStat('Deprecated', record.deprecated ? `${c.red}yes${c.reset}` : 'no')
   if (record.sourceSessionId) printStat('Source session', truncId(record.sourceSessionId))
   if (record.supersedes) printStat('Supersedes', record.supersedes)

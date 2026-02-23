@@ -13,7 +13,6 @@ export const OUTPUT_FIELDS = [
   'exact_text',
   'project',
   'scope',
-  'domain',
   'timestamp',
   'success_count',
   'failure_count',
@@ -41,7 +40,7 @@ export async function createCollection(client: MilvusClient, config: Config): Pr
       { name: 'exact_text', data_type: DataType.VarChar, max_length: EXACT_TEXT_MAX_LENGTH },
       { name: 'project', data_type: DataType.VarChar, max_length: 256 },
       { name: 'scope', data_type: DataType.VarChar, max_length: 16 },
-      { name: 'domain', data_type: DataType.VarChar, max_length: 64 },
+      { name: 'domain', data_type: DataType.VarChar, max_length: 64 }, // deprecated: kept for Milvus schema compat (cannot drop columns), always ''
       { name: 'timestamp', data_type: DataType.Int64 },
       { name: 'success_count', data_type: DataType.Int64 },
       { name: 'failure_count', data_type: DataType.Int64 },

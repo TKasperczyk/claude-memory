@@ -53,19 +53,12 @@ function formatStatsForPrompt(stats: MemoryStatsSummary): string {
     .map(([scope, count]) => `${count} ${scope}`)
     .join(', ')
 
-  const topDomains = Object.entries(stats.byDomain)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 6)
-    .map(([domain, count]) => `${domain} (${count})`)
-    .join(', ')
-
   const lines = [
     `## Current Database Stats`,
     `- Total memories: ${stats.total} (${stats.deprecated} deprecated)`,
     `- By type: ${typeCounts || 'none'}`,
     `- By scope: ${scopeCounts || 'none'}`,
   ]
-  if (topDomains) lines.push(`- Top domains: ${topDomains}`)
   lines.push(
     `- Avg retrieval count: ${stats.avgRetrievalCount.toFixed(1)}, avg usage ratio: ${stats.avgUsageRatio.toFixed(2)}`
   )

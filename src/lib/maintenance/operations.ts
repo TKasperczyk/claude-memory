@@ -365,7 +365,6 @@ async function synthesizeWarning(
     sourceRecordIds,
     synthesizedAt: Date.now(),
     project: firstRecord.project,
-    domain: firstRecord.domain,
     scope: firstRecord.scope
   }
 
@@ -382,7 +381,6 @@ async function findSimilarWarning(
 
   const filter = buildFilter({
     project: warning.project,
-    domain: warning.domain,
     type: 'warning',
     includeGlobal: true,
     excludeDeprecated: true

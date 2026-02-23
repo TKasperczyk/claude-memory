@@ -226,25 +226,15 @@ async function searchMemories(
     ? stripNoiseWords(queryPlan.resolvedQuery)
     : cleanPrompt
   const effectivePrompt = resolvedPrompt || cleanPrompt
-  // Use Haiku's domain for semantic query enrichment but NOT for Milvus filtering,
-  // since Haiku may guess a domain that doesn't match stored values
-  const semanticDomain = queryPlan?.domain ?? signals.domain
-  const signalsForSemanticQuery = semanticDomain === signals.domain
-    ? signals
-    : { ...signals, domain: semanticDomain }
-
   const keywordQueries = queryPlan
     ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings)
     : buildKeywordQueries(signals, cleanPrompt, settings)
 
   const semanticBase = queryPlan?.semanticQuery?.trim()
   const semanticQuery = semanticBase
-    ? normalizeSemanticQuery(semanticBase, signalsForSemanticQuery, settings)
-    : buildSemanticQuery(cleanPrompt, signalsForSemanticQuery, settings)
-  const scope = {
-    project: signals.projectRoot ?? cwd,
-    domain: signals.domain
-  }
+    ? normalizeSemanticQuery(semanticBase, signals, settings)
+    : buildSemanticQuery(cleanPrompt, signals, settings)
+  const project = signals.projectRoot ?? cwd
 
   // Pre-compute embedding once to avoid duplicate API calls on retry
   let embedding: number[] | undefined
@@ -263,7 +253,7 @@ async function searchMemories(
     keywordQueries,
     config,
     settings,
-    scope,
+    project,
     embedding,
     signal,
     { diagnostic }
@@ -354,7 +344,7 @@ async function searchWithScope(
   keywordQueries: string[],
   config: Config,
   settings: RetrievalSettings,
-  scope: { project?: string; domain?: string },
+  project: string | undefined,
   precomputedEmbedding?: number[],
   signal?: AbortSignal,
   options: { diagnostic?: boolean } = {}
@@ -365,7 +355,7 @@ async function searchWithScope(
   const diagnostic = options.diagnostic === true
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
-  console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${scope.project ?? 'none'}, domain=${scope.domain ?? 'none'}`)
+  console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${project ?? 'none'}`)
 
   const upsertResult = (item: HybridSearchResult): void => {
     const existing = resultsById.get(item.record.id)
@@ -382,8 +372,7 @@ async function searchWithScope(
     const keywordResults = await runHybridSearch({
       query,
       limit: candidateLimit,
-      project: scope.project,
-      domain: scope.domain,
+      project,
       excludeDeprecated: true,
       vectorWeight: 0,
       keywordWeight: 1,
@@ -405,8 +394,7 @@ async function searchWithScope(
       query: '', // Not used when embedding provided
       embedding: precomputedEmbedding,
       limit: candidateLimit,
-      project: scope.project,
-      domain: scope.domain,
+      project,
       excludeDeprecated: true,
       vectorWeight: 1,
       keywordWeight: 0,
@@ -729,9 +717,6 @@ function normalizeSemanticQuery(
   if (signals.projectName && !lowered.includes('project:')) {
     parts.push(`project: ${signals.projectName}`)
   }
-  if (signals.domain && !lowered.includes('domain:')) {
-    parts.push(`domain: ${signals.domain}`)
-  }
 
   return truncateText(parts.join('\n'), settings.maxSemanticQueryChars)
 }
@@ -764,7 +749,6 @@ function buildSemanticQuery(
 
   const parts = [trimmed]
   if (signals.projectName) parts.push(`project: ${signals.projectName}`)
-  if (signals.domain) parts.push(`domain: ${signals.domain}`)
 
   return truncateText(parts.join('\n'), settings.maxSemanticQueryChars)
 }
