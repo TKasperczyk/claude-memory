@@ -33,10 +33,14 @@ FOCUS: the current user prompt that needs memory retrieval.
 
 Goal: resolve what the FOCUS refers to using CONTEXT, then produce a retrieval plan.
 
+How search works (use this to inform your choices):
+- keywordQueries run as exact substring matches (SQL LIKE "%term%") against stored text. A term only matches if it literally appears in the record. Prefer short, concrete terms. Add synonyms because the stored text may use different vocabulary than the query.
+- semanticQuery is embedded into a vector and compared by cosine similarity. Keep it focused on the core technical intent — conversational framing and filler words dilute the signal.
+
 Definitions:
 - resolvedQuery: rewrite FOCUS with pronouns/ellipses resolved. Keep the user's intent.
-- keywordQueries: short, literal search terms (commands, error strings, file names, tool names, flags). 1-5 items, no full sentences.
-- semanticQuery: 1-3 sentences capturing intent and constraints; good for embeddings.
+- keywordQueries: 1-5 search terms for substring matching. Include: exact names (commands, files, tools, flags), individual significant words from compound phrases, and domain synonyms/alternative terms.
+- semanticQuery: 1-3 sentences capturing the core technical intent; good for embeddings. Strip conversational framing.
 Examples:
 CONTEXT:
 User: "We store embeddings in Milvus under collection cc_memories."
@@ -53,9 +57,17 @@ resolvedQuery: "Would running \`xclip -selection clipboard\` pollute my clipboar
 keywordQueries: ["xclip", "-selection clipboard", "clipboard"]
 semanticQuery: "Does running xclip with -selection clipboard overwrite or pollute the clipboard?"
 
+CONTEXT:
+User: "I tried deploying but the rollout keeps failing."
+FOCUS: "How do I check the rollout status?"
+resolvedQuery: "How do I check the deployment rollout status?"
+keywordQueries: ["rollout status", "deployment", "deploy", "kubectl rollout"]
+semanticQuery: "How to check the status of a Kubernetes deployment rollout that is failing."
+
 Rules:
 - Do NOT invent details not in CONTEXT or FOCUS.
 - If CONTEXT is empty or not helpful, resolvedQuery can equal FOCUS.
+- For keywordQueries: include both compound phrases AND their significant individual words. Add domain synonyms for technical concepts (the database may use different terminology than the query).
 - Output ONLY via the tool "${TOOL_NAME}" exactly once.`
 
 const QUERY_TOOL: Anthropic.Tool = {

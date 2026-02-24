@@ -462,9 +462,7 @@ export default function Overview() {
             )}
           </CardContent>
         </Card>
-      </div>
-
-      <Card>
+        <Card>
         <CardContent className="p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
@@ -627,7 +625,8 @@ export default function Overview() {
             </div>
           )}
         </CardContent>
-      </Card>
+        </Card>
+      </div>
 
       <Card className="border-destructive/20 bg-destructive/5">
         <CardContent className="p-5 space-y-4">

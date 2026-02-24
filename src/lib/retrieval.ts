@@ -709,19 +709,18 @@ function normalizeKeywordQueries(
 
 function normalizeSemanticQuery(
   semanticQuery: string,
-  signals: ContextSignals,
+  _signals: ContextSignals,
   settings: RetrievalSettings
 ): string {
   const trimmed = semanticQuery.trim()
   if (!trimmed) return ''
 
-  const parts = [trimmed]
-  const lowered = trimmed.toLowerCase()
-  if (signals.projectName && !lowered.includes('project:')) {
-    parts.push(`project: ${signals.projectName}`)
-  }
-
-  return truncateText(parts.join('\n'), settings.maxSemanticQueryChars)
+  // Project context is NOT appended to the semantic query. Project scoping
+  // is handled by the Milvus filter expression (project == X || scope == "global"),
+  // so embedding it into the query vector is redundant and actively harmful —
+  // it shifts the embedding away from content similarity toward project-name
+  // similarity, degrading retrieval of global records from other projects.
+  return truncateText(trimmed, settings.maxSemanticQueryChars)
 }
 
 function buildKeywordQueries(
@@ -744,16 +743,13 @@ function buildKeywordQueries(
 
 function buildSemanticQuery(
   prompt: string,
-  signals: ContextSignals,
+  _signals: ContextSignals,
   settings: RetrievalSettings
 ): string {
   const trimmed = prompt.trim()
   if (!trimmed) return ''
 
-  const parts = [trimmed]
-  if (signals.projectName) parts.push(`project: ${signals.projectName}`)
-
-  return truncateText(parts.join('\n'), settings.maxSemanticQueryChars)
+  return truncateText(trimmed, settings.maxSemanticQueryChars)
 }
 
 function registerAbortCleanup(signal: AbortSignal, cleanup: () => void): () => void {
