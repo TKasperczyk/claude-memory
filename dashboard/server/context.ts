@@ -11,6 +11,7 @@ export type ServerContext = {
   memoryTypes: RecordType[]
   suggestionAllowedRoots: string[]
   claudeSettingsPath: string
+  claudeConfigPath: string
 }
 
 export function createServerContext(): ServerContext {
@@ -22,12 +23,14 @@ export function createServerContext(): ServerContext {
     path.resolve(homedir(), '.claude', 'skills')
   ]
   const claudeSettingsPath = path.join(homedir(), '.claude', 'settings.json')
+  const claudeConfigPath = path.join(homedir(), '.claude.json')
 
   return {
     configRoot,
     config,
     memoryTypes,
     suggestionAllowedRoots,
-    claudeSettingsPath
+    claudeSettingsPath,
+    claudeConfigPath
   }
 }

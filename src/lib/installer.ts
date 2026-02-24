@@ -69,12 +69,13 @@ const COMMAND_DEFINITIONS: Record<string, CommandDefinition> = {
   }
 }
 
-export function getInstallationStatus(claudeSettingsPath: string, configRoot: string): InstallationStatus {
+export function getInstallationStatus(claudeSettingsPath: string, configRoot: string, claudeConfigPath?: string): InstallationStatus {
   const hookDefinitions = buildHookDefinitions(configRoot)
   const settings = readClaudeSettingsFile(claudeSettingsPath)
   const hooks = buildHookStatus(settings, configRoot, hookDefinitions)
   const commands = buildCommandStatus(getCommandEntries(claudeSettingsPath))
-  const mcp = getMcpStatus(settings, configRoot)
+  const mcpSettings = claudeConfigPath ? readClaudeSettingsFile(claudeConfigPath) : settings
+  const mcp = getMcpStatus(mcpSettings, configRoot)
   return { hooks, commands, mcp }
 }
 
@@ -84,17 +85,19 @@ export function getHookStatus(claudeSettingsPath: string, configRoot: string): R
   return buildHookStatus(settings, configRoot, hookDefinitions)
 }
 
-export function installAll(claudeSettingsPath: string, configRoot: string): InstallationStatus {
+export function installAll(claudeSettingsPath: string, configRoot: string, claudeConfigPath?: string): InstallationStatus {
   const hooks = installHooks(claudeSettingsPath, configRoot)
   const commands = installCommands(claudeSettingsPath)
-  const mcp = installMcp(claudeSettingsPath, configRoot)
+  const mcpPath = claudeConfigPath ?? claudeSettingsPath
+  const mcp = installMcp(mcpPath, configRoot)
   return { hooks, commands, mcp }
 }
 
-export function uninstallAll(claudeSettingsPath: string, configRoot: string): InstallationStatus {
+export function uninstallAll(claudeSettingsPath: string, configRoot: string, claudeConfigPath?: string): InstallationStatus {
   const hooks = uninstallHooks(claudeSettingsPath, configRoot)
   const commands = uninstallCommands(claudeSettingsPath)
-  const mcp = uninstallMcp(claudeSettingsPath, configRoot)
+  const mcpPath = claudeConfigPath ?? claudeSettingsPath
+  const mcp = uninstallMcp(mcpPath, configRoot)
   return { hooks, commands, mcp }
 }
 
