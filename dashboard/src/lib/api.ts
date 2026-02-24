@@ -10,6 +10,7 @@ import type {
   MaintenanceOperationInfo,
   MaintenanceReview,
   MaintenanceSettings,
+  McpStatus,
   MemoryRecord,
   MemoryStatsSummary,
   NearMissRecord,
@@ -124,6 +125,7 @@ export interface HookInstallResponse {
 export interface InstallationStatusResponse {
   hooks: Record<HookEvent, HookStatusEntry>
   commands: Record<string, CommandStatusEntry>
+  mcp: McpStatus
 }
 
 export interface InstallationMutationResponse extends InstallationStatusResponse {

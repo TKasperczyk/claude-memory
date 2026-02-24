@@ -479,7 +479,14 @@ export interface CommandStatus {
   path: string
 }
 
+export interface McpStatus {
+  installed: boolean
+  configured: string | null
+  expected: string
+}
+
 export interface InstallationStatus {
   hooks: Record<HookEvent, HookStatus>
   commands: Record<string, CommandStatus>
+  mcp: McpStatus
 }

@@ -3,9 +3,9 @@ import path from 'path'
 import { SKIP_MARKER, SKIP_EXTRACTION_MARKER, getCommandFilePath } from './claude-commands.js'
 import { readFileIfExists } from './shared.js'
 import { isPlainObject } from './parsing.js'
-import type { CommandStatus, HookEvent, HookStatus, InstallationStatus } from '../../shared/types.js'
+import type { CommandStatus, HookEvent, HookStatus, InstallationStatus, McpStatus } from '../../shared/types.js'
 
-export type { CommandStatus, HookEvent, HookStatus, InstallationStatus } from '../../shared/types.js'
+export type { CommandStatus, HookEvent, HookStatus, InstallationStatus, McpStatus } from '../../shared/types.js'
 
 type HookDefinition = {
   script: string
@@ -31,6 +31,7 @@ export class ClaudeSettingsError extends Error {
 }
 
 const CLAUDE_HOOK_TIMEOUT_SECONDS = 15
+const MCP_SERVER_NAME = 'claude-memory'
 
 const HOOK_SCRIPTS: Record<HookEvent, string> = {
   UserPromptSubmit: 'pre-prompt.js',
@@ -73,7 +74,8 @@ export function getInstallationStatus(claudeSettingsPath: string, configRoot: st
   const settings = readClaudeSettingsFile(claudeSettingsPath)
   const hooks = buildHookStatus(settings, configRoot, hookDefinitions)
   const commands = buildCommandStatus(getCommandEntries(claudeSettingsPath))
-  return { hooks, commands }
+  const mcp = getMcpStatus(settings, configRoot)
+  return { hooks, commands, mcp }
 }
 
 export function getHookStatus(claudeSettingsPath: string, configRoot: string): Record<HookEvent, HookStatus> {
@@ -85,13 +87,15 @@ export function getHookStatus(claudeSettingsPath: string, configRoot: string): R
 export function installAll(claudeSettingsPath: string, configRoot: string): InstallationStatus {
   const hooks = installHooks(claudeSettingsPath, configRoot)
   const commands = installCommands(claudeSettingsPath)
-  return { hooks, commands }
+  const mcp = installMcp(claudeSettingsPath, configRoot)
+  return { hooks, commands, mcp }
 }
 
 export function uninstallAll(claudeSettingsPath: string, configRoot: string): InstallationStatus {
   const hooks = uninstallHooks(claudeSettingsPath, configRoot)
   const commands = uninstallCommands(claudeSettingsPath)
-  return { hooks, commands }
+  const mcp = uninstallMcp(claudeSettingsPath, configRoot)
+  return { hooks, commands, mcp }
 }
 
 export function installHooks(claudeSettingsPath: string, configRoot: string): Record<HookEvent, HookStatus> {
@@ -364,4 +368,67 @@ function removeFileIfExists(filePath: string): void {
     if (code === 'ENOENT') return
     throw error
   }
+}
+
+// --- MCP server installation ---
+
+function buildMcpCommand(configRoot: string): string {
+  const serverPath = path.resolve(configRoot, 'dist', 'mcp-server.js')
+  return `node "${serverPath}"`
+}
+
+function getMcpServerConfig(settings: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!settings || !isPlainObject(settings.mcpServers)) return null
+  const servers = settings.mcpServers as Record<string, unknown>
+  const entry = servers[MCP_SERVER_NAME]
+  if (!isPlainObject(entry)) return null
+  return entry as Record<string, unknown>
+}
+
+function getMcpStatus(settings: Record<string, unknown> | null, configRoot: string): McpStatus {
+  const expected = buildMcpCommand(configRoot)
+  const entry = getMcpServerConfig(settings)
+  if (!entry) {
+    return { installed: false, configured: null, expected }
+  }
+  const args = Array.isArray(entry.args) ? entry.args as string[] : []
+  const command = typeof entry.command === 'string' ? entry.command : ''
+  const configured = [command, ...args].join(' ')
+  const serverPath = path.resolve(configRoot, 'dist', 'mcp-server.js')
+  const installed = configured.includes(serverPath)
+  return { installed, configured, expected }
+}
+
+function installMcp(claudeSettingsPath: string, configRoot: string): McpStatus {
+  const settings = (readClaudeSettingsFile(claudeSettingsPath) ?? {}) as Record<string, unknown>
+  const servers = isPlainObject(settings.mcpServers)
+    ? settings.mcpServers as Record<string, unknown>
+    : {}
+  settings.mcpServers = servers
+
+  const serverPath = path.resolve(configRoot, 'dist', 'mcp-server.js')
+  servers[MCP_SERVER_NAME] = {
+    type: 'stdio',
+    command: 'node',
+    args: [serverPath]
+  }
+
+  writeClaudeSettingsFile(claudeSettingsPath, settings)
+  return getMcpStatus(settings, configRoot)
+}
+
+function uninstallMcp(claudeSettingsPath: string, configRoot: string): McpStatus {
+  const settings = readClaudeSettingsFile(claudeSettingsPath)
+  if (!settings || !isPlainObject(settings.mcpServers)) {
+    return getMcpStatus(settings, configRoot)
+  }
+
+  const servers = settings.mcpServers as Record<string, unknown>
+  delete servers[MCP_SERVER_NAME]
+  if (Object.keys(servers).length === 0) {
+    delete settings.mcpServers
+  }
+
+  writeClaudeSettingsFile(claudeSettingsPath, settings)
+  return getMcpStatus(settings, configRoot)
 }

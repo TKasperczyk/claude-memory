@@ -342,6 +342,7 @@ export default function Overview() {
 
   const hookData = installationStatus?.hooks ?? null
   const commandData = installationStatus?.commands ?? null
+  const mcpData = installationStatus?.mcp ?? null
   const commandEntries = commandData ? Object.entries(commandData) : []
   const installationLoading = installationPending && !installationStatus
   const hasInstallationStatus = Boolean(installationStatus)
@@ -355,9 +356,10 @@ export default function Overview() {
   const anyCommandsInstalled = hasCommands && commandEntries.some(([, entry]) => entry.installed)
   const hasMissingCommands = hasCommands && commandEntries.some(([, entry]) => !entry.installed)
   const hasModifiedCommands = hasCommands && commandEntries.some(([, entry]) => entry.modified)
-  const allInstalled = hasInstallationStatus && allHooksInstalled && allCommandsInstalled
-  const anyInstalled = hasInstallationStatus && (anyHooksInstalled || anyCommandsInstalled)
-  const hasInstallIssues = hasInstallationStatus && (hasMissingHooks || hasMissingCommands || hasModifiedCommands)
+  const mcpInstalled = mcpData?.installed ?? false
+  const allInstalled = hasInstallationStatus && allHooksInstalled && allCommandsInstalled && mcpInstalled
+  const anyInstalled = hasInstallationStatus && (anyHooksInstalled || anyCommandsInstalled || mcpInstalled)
+  const hasInstallIssues = hasInstallationStatus && (hasMissingHooks || hasMissingCommands || hasModifiedCommands || !mcpInstalled)
   const installationErrorMessage = installationError instanceof Error
     ? installationError.message
     : 'Failed to load installation status'
@@ -512,8 +514,8 @@ export default function Overview() {
             <>
               <p className="text-sm text-muted-foreground">
                 {allInstalled
-                  ? 'All claude-memory hooks and commands are installed.'
-                  : 'Install missing hooks and commands to enable automatic memory extraction, injection, and /memory.'}
+                  ? 'All claude-memory hooks, commands, and MCP server are installed.'
+                  : 'Install missing components to enable automatic memory extraction, injection, and search.'}
               </p>
               <div className="space-y-4">
                 <div>
@@ -568,6 +570,22 @@ export default function Overview() {
                         )
                       })
                     )}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    MCP Server
+                  </div>
+                  <div className="mt-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      {mcpInstalled ? (
+                        <Check className="w-4 h-4 text-success" />
+                      ) : (
+                        <X className="w-4 h-4 text-destructive" />
+                      )}
+                      <span className="font-medium">search_memories</span>
+                      <span className="text-xs text-muted-foreground">(mcp-server.js)</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -699,6 +717,9 @@ export default function Overview() {
               </li>
               <li>
                 The /memory command will be removed <span className="text-xs text-muted-foreground">(Command entry disappears)</span>
+              </li>
+              <li>
+                The MCP server will be removed <span className="text-xs text-muted-foreground">(No on-demand memory search)</span>
               </li>
             </ul>
             <p>
