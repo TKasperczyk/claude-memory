@@ -52,7 +52,7 @@ function handleInstallationStatus(
 ): void {
   try {
     const status = getInstallationStatus(claudeSettingsPath, configRoot)
-    res.json({ hooks: status.hooks, commands: status.commands })
+    res.json({ hooks: status.hooks, commands: status.commands, mcp: status.mcp })
   } catch (error) {
     handleClaudeSettingsError(res, error, fallbackMessage)
   }
@@ -83,7 +83,7 @@ function handleInstallationMutation(
     const status = action === 'install'
       ? installAll(claudeSettingsPath, configRoot)
       : uninstallAll(claudeSettingsPath, configRoot)
-    res.json({ success: true, hooks: status.hooks, commands: status.commands })
+    res.json({ success: true, hooks: status.hooks, commands: status.commands, mcp: status.mcp })
   } catch (error) {
     handleClaudeSettingsError(res, error, fallbackMessage)
   }
