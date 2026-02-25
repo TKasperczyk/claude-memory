@@ -1,5 +1,5 @@
 /**
- * Embedding generation via LMStudio (OpenAI-compatible API).
+ * Embedding generation via OpenAI-compatible API (LM Studio, vLLM, etc.).
  */
 
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config } from './types.js'
@@ -31,10 +31,18 @@ async function requestEmbeddings(
   cfg: Config,
   signal?: AbortSignal
 ): Promise<number[][]> {
+  if (cfg.embeddings.insecure && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0') {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+  }
+
   const result = await withTimeout(async (timeoutSignal) => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (cfg.embeddings.apiKey) {
+      headers['Authorization'] = `Bearer ${cfg.embeddings.apiKey}`
+    }
     const response = await fetch(cfg.embeddings.baseUrl + '/embeddings', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         input,
         model: cfg.embeddings.model

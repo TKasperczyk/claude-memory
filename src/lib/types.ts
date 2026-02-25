@@ -133,6 +133,8 @@ export interface Config {
   embeddings: {
     baseUrl: string
     model: string
+    apiKey?: string
+    insecure?: boolean
   }
   extraction: {
     model: string
@@ -151,7 +153,9 @@ export const DEFAULT_CONFIG: Config = {
   },
   embeddings: {
     baseUrl: process.env.CC_EMBEDDINGS_URL ?? 'http://127.0.0.1:1234/v1',
-    model: process.env.CC_EMBEDDINGS_MODEL ?? 'text-embedding-qwen3-embedding-8b'
+    model: process.env.CC_EMBEDDINGS_MODEL ?? 'text-embedding-qwen3-embedding-8b',
+    apiKey: process.env.CC_EMBEDDINGS_API_KEY ?? undefined,
+    insecure: process.env.CC_EMBEDDINGS_INSECURE === 'true' || undefined
   },
   extraction: {
     model: process.env.CC_EXTRACTION_MODEL ?? 'claude-sonnet-4-5-20250929',
