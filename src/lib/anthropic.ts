@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { execFileSync } from 'child_process'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
+import { homedir, platform, userInfo } from 'os'
 import { join } from 'path'
 
 // OAuth subscription auth constants (aligned with OpenCode auth plugin)
@@ -237,44 +238,100 @@ interface ClaudeCodeCredentials {
   claudeAiOauth?: OAuthCredentials
 }
 
-function loadCredentials(): { creds: OAuthCredentials; source: 'kira' | 'claude-code' } | null {
-  // Try Claude Code credentials first (usually fresh from active session)
-  const claudeCodePath = join(homedir(), '.claude', '.credentials.json')
-  if (existsSync(claudeCodePath)) {
-    try {
-      const data = JSON.parse(readFileSync(claudeCodePath, 'utf-8')) as ClaudeCodeCredentials
-      if (data.claudeAiOauth) return { creds: data.claudeAiOauth, source: 'claude-code' }
-    } catch { /* fall through */ }
-  }
+// macOS Keychain service names (current first, then legacy)
+const KEYCHAIN_SERVICE_NAMES = [
+  'Claude Code-credentials',
+  'Claude Code - credentials',
+  'Claude Code',
+]
 
-  // Fall back to kira-runtime credentials
-  const kiraPath = join(homedir(), '.kira', 'credentials.json')
-  if (existsSync(kiraPath)) {
-    try {
-      const creds = JSON.parse(readFileSync(kiraPath, 'utf-8')) as OAuthCredentials
-      if (creds.accessToken) return { creds, source: 'kira' }
-    } catch { /* fall through */ }
-  }
+type CredentialSource = 'claude-code-keychain' | 'claude-code'
 
+function loadKeychainCredentials(): { creds: OAuthCredentials; source: CredentialSource } | null {
+  for (const service of KEYCHAIN_SERVICE_NAMES) {
+    try {
+      const stdout = execFileSync('security', ['find-generic-password', '-s', service, '-w'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      const data = JSON.parse(stdout.trim())
+      if (typeof data !== 'object' || data === null || Array.isArray(data)) continue
+      const oauth = (data as ClaudeCodeCredentials).claudeAiOauth
+      if (oauth?.accessToken) return { creds: oauth, source: 'claude-code-keychain' }
+    } catch { continue }
+  }
   return null
 }
 
-function saveCredentials(creds: OAuthCredentials, source: 'kira' | 'claude-code'): void {
+function loadFileCredentials(): { creds: OAuthCredentials; source: CredentialSource } | null {
+  const path = join(homedir(), '.claude', '.credentials.json')
+  if (!existsSync(path)) return null
   try {
-    if (source === 'claude-code') {
-      const path = join(homedir(), '.claude', '.credentials.json')
-      let existing: ClaudeCodeCredentials = {}
-      try {
-        existing = JSON.parse(readFileSync(path, 'utf-8')) as ClaudeCodeCredentials
-      } catch { /* start fresh */ }
-      existing.claudeAiOauth = creds
-      writeFileSync(path, JSON.stringify(existing, null, 2))
-    } else {
-      const path = join(homedir(), '.kira', 'credentials.json')
-      writeFileSync(path, JSON.stringify(creds, null, 2))
-    }
+    const data = JSON.parse(readFileSync(path, 'utf-8')) as ClaudeCodeCredentials
+    if (data.claudeAiOauth?.accessToken) return { creds: data.claudeAiOauth, source: 'claude-code' }
+  } catch { /* fall through */ }
+  return null
+}
+
+function loadCredentials(): { creds: OAuthCredentials; source: CredentialSource } | null {
+  if (platform() === 'darwin') {
+    const keychain = loadKeychainCredentials()
+    if (keychain) return keychain
+  }
+  return loadFileCredentials()
+}
+
+function saveKeychainCredentials(creds: OAuthCredentials): void {
+  try {
+    const service = KEYCHAIN_SERVICE_NAMES[0]
+    let existing: Record<string, unknown> = {}
+    try {
+      const stdout = execFileSync('security', ['find-generic-password', '-s', service, '-w'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      const data = JSON.parse(stdout.trim())
+      if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
+        existing = data as Record<string, unknown>
+      }
+    } catch { /* start fresh */ }
+
+    existing.claudeAiOauth = creds
+    const payload = JSON.stringify(existing)
+    const user = userInfo().username
+
+    execFileSync('security', [
+      'add-generic-password', '-s', service, '-a', user, '-w', payload, '-U',
+    ], {
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+  } catch (e) {
+    console.error('[claude-memory] Failed to save credentials to Keychain:', e)
+  }
+}
+
+function saveFileCredentials(creds: OAuthCredentials): void {
+  try {
+    const path = join(homedir(), '.claude', '.credentials.json')
+    let existing: ClaudeCodeCredentials = {}
+    try {
+      existing = JSON.parse(readFileSync(path, 'utf-8')) as ClaudeCodeCredentials
+    } catch { /* start fresh */ }
+    existing.claudeAiOauth = creds
+    writeFileSync(path, JSON.stringify(existing, null, 2))
   } catch (e) {
     console.error('[claude-memory] Failed to save refreshed credentials:', e)
+  }
+}
+
+function saveCredentials(creds: OAuthCredentials, source: CredentialSource): void {
+  if (source === 'claude-code-keychain') {
+    saveKeychainCredentials(creds)
+  } else {
+    saveFileCredentials(creds)
   }
 }
 
@@ -312,7 +369,7 @@ async function refreshAccessToken(refreshToken: string): Promise<OAuthCredential
   }
 }
 
-async function getFreshCredentials(): Promise<{ creds: OAuthCredentials; source: 'kira' | 'claude-code' } | null> {
+async function getFreshCredentials(): Promise<{ creds: OAuthCredentials; source: CredentialSource } | null> {
   const loaded = loadCredentials()
   if (!loaded) return null
 
