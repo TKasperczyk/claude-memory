@@ -1,4 +1,4 @@
-import { countRecords, iterateRecords } from './milvus.js'
+import { countRecords, iterateRecords } from './lancedb.js'
 import { DEFAULT_CONFIG, type Config } from './types.js'
 import type { MemoryStatsSummary } from '../../shared/types.js'
 

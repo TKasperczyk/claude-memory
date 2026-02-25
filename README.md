@@ -6,14 +6,14 @@ Technical knowledge persistence for [Claude Code](https://docs.anthropic.com/en/
 
 1. **After each session**, a hook extracts reusable knowledge from the transcript using Claude
 2. **Before each prompt**, a hook searches stored memories and injects relevant ones as context
-3. Knowledge is embedded as 4096-dim vectors and stored in Milvus for hybrid (semantic + keyword) retrieval
+3. Knowledge is embedded as 4096-dim vectors and stored in LanceDB (embedded, in-process) for hybrid (semantic + keyword) retrieval
 4. A maintenance system handles deduplication, consolidation, conflict resolution, and stale record deprecation
 
 ## Prerequisites
 
 - **Node.js** >= 20
 - **pnpm** (package manager)
-- **Milvus** (vector database) — see [Milvus setup](#milvus-setup) below
+- **LanceDB** (vector database) — embedded (no server/service required)
 - **Embedding API** — any OpenAI-compatible endpoint serving a 4096-dim model (e.g., LM Studio with `qwen3-embedding-8b`)
 - **Anthropic API key** or Claude Code OAuth credentials
 
@@ -73,86 +73,9 @@ claude-memory also exposes a read-only MCP server for searching memories:
 }
 ```
 
-## Milvus setup
+## LanceDB
 
-Milvus is the vector database backing semantic search. The simplest way to run it is via Docker Compose (standalone mode with etcd + MinIO):
-
-```bash
-mkdir -p ~/.local/share/milvus && cd ~/.local/share/milvus
-```
-
-Create `docker-compose.yml`:
-
-```yaml
-services:
-  etcd:
-    container_name: milvus-etcd
-    image: quay.io/coreos/etcd:v3.5.5
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
-    volumes:
-      - etcd_data:/etcd
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
-    healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
-  minio:
-    container_name: milvus-minio
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
-    environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-    volumes:
-      - minio_data:/minio_data
-    command: minio server /minio_data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
-  standalone:
-    container_name: milvus-standalone
-    image: milvusdb/milvus:v2.6.6
-    command: ["milvus", "run", "standalone"]
-    environment:
-      ETCD_ENDPOINTS: etcd:2379
-      MINIO_ADDRESS: minio:9000
-    volumes:
-      - milvus_data:/var/lib/milvus
-    ports:
-      - "19530:19530"
-      - "9091:9091"
-    depends_on:
-      - etcd
-      - minio
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-volumes:
-  etcd_data:
-  minio_data:
-  milvus_data:
-```
-
-Then start it:
-
-```bash
-docker compose up -d
-# Verify it's running:
-curl -s http://localhost:19530/v1/vector/collections
-```
-
-The collection (`cc_memories`) is created automatically on first use.
+LanceDB is embedded (no server/service required). Data is stored on disk in the configured LanceDB directory (default: `~/.claude-memory/lancedb`) under the configured table name (default: `cc_memories`).
 
 ## Configuration
 
@@ -166,9 +89,9 @@ Configuration is loaded in this order (later overrides earlier):
 
 ```json
 {
-  "milvus": {
-    "address": "localhost:19530",
-    "collection": "cc_memories"
+  "lancedb": {
+    "directory": "~/.claude-memory/lancedb",
+    "table": "cc_memories"
   },
   "embeddings": {
     "baseUrl": "http://127.0.0.1:1234/v1",
@@ -186,8 +109,8 @@ Configuration is loaded in this order (later overrides earlier):
 
 | Variable | Default | Description |
 |---|---|---|
-| `CC_MEMORIES_ADDRESS` | `localhost:19530` | Milvus address |
-| `CC_MEMORIES_COLLECTION` | `cc_memories` | Milvus collection name |
+| `CC_MEMORIES_LANCEDB_DIR` | `~/.claude-memory/lancedb` | LanceDB directory |
+| `CC_MEMORIES_COLLECTION` | `cc_memories` | LanceDB table name |
 | `CC_EMBEDDINGS_URL` | `http://127.0.0.1:1234/v1` | Embedding API base URL |
 | `CC_EMBEDDINGS_MODEL` | `text-embedding-qwen3-embedding-8b` | Embedding model name |
 | `CC_EMBEDDINGS_API_KEY` | — | Bearer token for authenticated endpoints |
@@ -262,7 +185,7 @@ pnpm start                  # API server (port 3001) + Vite frontend (port 5000)
 
 ### Core (`src/lib/`)
 
-- **Milvus layer** (`milvus-*.ts`): Connection management, CRUD, hybrid search, schema with inline migrations
+- **LanceDB layer** (`lancedb-*.ts`): Connection management, CRUD, hybrid search, schema with inline migrations (`milvus.ts` remains as a compatibility barrel)
 - **Embedding** (`embed.ts`): OpenAI-compatible embedding generation with optional API key auth
 - **Extraction** (`extract.ts`): LLM-based transcript extraction + usefulness rating of injected memories
 - **Retrieval** (`retrieval.ts`, `context.ts`): Multi-query search, MMR reranking, signal extraction. Optional Haiku query planning.
@@ -286,11 +209,11 @@ Each record has a scope (`project` or `global`) and usage counters (`retrievalCo
 
 Hybrid search combining:
 1. **Semantic** — cosine similarity on 4096-dim embeddings
-2. **Keyword** — Milvus text matching on `exact_text` field
+2. **Keyword** — SQL/DataFusion `LIKE` substring matching on `exact_text`
 3. **MMR reranking** — Maximal Marginal Relevance to diversify results
 4. **Usage boost** — records that were previously helpful get scored higher
 
 ## Data storage
 
-- **Milvus** (`cc_memories` collection) — vectors + record metadata
+- **LanceDB** (directory + table; default: `~/.claude-memory/lancedb` + `cc_memories`) — vectors + record metadata
 - **`~/.claude-memory/`** — sessions, extraction logs, token usage events, stats snapshots, settings, config

@@ -13,7 +13,7 @@ import {
   createMockProcedureRecord,
   cleanupTempFiles
 } from './helpers.js'
-import { initMilvus, insertRecord, getRecord, queryRecords } from '../src/lib/milvus.js'
+import { initLanceDB, insertRecord, getRecord, queryRecords } from '../src/lib/lancedb.js'
 import {
   findStaleRecords,
   checkValidity,
@@ -28,7 +28,7 @@ const STALE_CUTOFF_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
 describe('Maintenance E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
-    await initMilvus(TEST_CONFIG)
+    await initLanceDB(TEST_CONFIG)
   })
 
   afterAll(async () => {
@@ -38,7 +38,7 @@ describe('Maintenance E2E', () => {
 
   beforeEach(async () => {
     await dropTestCollection()
-    await initMilvus(TEST_CONFIG)
+    await initLanceDB(TEST_CONFIG)
   })
 
   describe('Stale Detection', () => {
@@ -320,7 +320,7 @@ describe('Maintenance E2E', () => {
       await insertRecord(freshRecord, TEST_CONFIG)
 
       // Check counts before maintenance
-      const beforeRecords = await queryRecords({ filter: 'deprecated == false' }, TEST_CONFIG)
+      const beforeRecords = await queryRecords({ filter: 'deprecated = false' }, TEST_CONFIG)
       expect(beforeRecords.length).toBe(5)
 
       // Run stale check
@@ -342,7 +342,7 @@ describe('Maintenance E2E', () => {
       }
 
       // Check counts after maintenance
-      const afterRecords = await queryRecords({ filter: 'deprecated == false' }, TEST_CONFIG)
+      const afterRecords = await queryRecords({ filter: 'deprecated = false' }, TEST_CONFIG)
 
       // Should have fewer non-deprecated records
       expect(afterRecords.length).toBeLessThan(beforeRecords.length)

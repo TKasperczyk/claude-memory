@@ -8,13 +8,13 @@ import { DEFAULT_CONFIG } from './types.js'
 const CLAUDE_MEMORY_ROOT = path.join(homedir(), '.claude-memory')
 
 export function getCollectionKey(collection?: string): string {
-  const fallback = DEFAULT_CONFIG.milvus.collection
+  const fallback = DEFAULT_CONFIG.lancedb.table
   const raw = (collection ?? fallback).trim()
   return sanitizeRunId(raw || fallback)
 }
 
 export function isDefaultCollection(collection?: string): boolean {
-  return getCollectionKey(collection) === getCollectionKey(DEFAULT_CONFIG.milvus.collection)
+  return getCollectionKey(collection) === getCollectionKey(DEFAULT_CONFIG.lancedb.table)
 }
 
 type NamespacedStoreOptions = {

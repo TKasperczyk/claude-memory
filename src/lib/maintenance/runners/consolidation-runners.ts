@@ -1,7 +1,7 @@
 import { createLogger } from '../../logger.js'
-import { batchUpdateRecords, queryRecords, updateRecord } from '../../milvus.js'
+import { batchUpdateRecords, queryRecords, updateRecord } from '../../lancedb.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
-import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../../shared.js'
+import { buildCandidateRecord, buildRecordSnippet, escapeFilterValue, truncateSnippet } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from '../../types.js'
 import { consolidateCluster, findCrossTypeClusters, findSimilarClusters, llmVerifyConsolidation, pickConsolidationFallback, resolveMergeGroups } from '../consolidation.js'
 import type { MaintenanceAction, MaintenanceCandidateGroup } from '../../../../shared/types.js'
@@ -238,9 +238,9 @@ async function markConsolidationChecked(
   try {
     // Fetch records with embeddings (needed for batchUpdateRecords)
     const ids = records.map(r => r.id)
-    const idList = ids.map(id => `"${id}"`).join(', ')
+    const idList = ids.map(id => `'${escapeFilterValue(id)}'`).join(', ')
     const recordsWithEmbeddings = await queryRecords(
-      { filter: `id in [${idList}]`, includeEmbeddings: true },
+      { filter: `id IN (${idList})`, includeEmbeddings: true },
       config
     )
 

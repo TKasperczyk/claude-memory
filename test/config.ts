@@ -1,13 +1,16 @@
 import { DEFAULT_CONFIG, createConfig } from '../src/lib/types.js'
+import os from 'os'
+import path from 'path'
 
 /**
- * Test configuration - inherits from DEFAULT_CONFIG, only overrides collection name.
+ * Test configuration - inherits from DEFAULT_CONFIG, overrides LanceDB directory/table.
  * This ensures tests use the same models/endpoints as production.
  */
 export const TEST_CONFIG = createConfig({
-  milvus: {
-    ...DEFAULT_CONFIG.milvus,
-    collection: 'cc_memories_e2e_test'
+  lancedb: {
+    ...DEFAULT_CONFIG.lancedb,
+    directory: path.join(os.tmpdir(), `claude-memory-lancedb-test-${process.pid}`),
+    table: 'cc_memories_e2e_test'
   }
 })
 

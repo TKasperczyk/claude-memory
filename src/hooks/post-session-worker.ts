@@ -7,7 +7,7 @@
 import fs, { appendFileSync } from 'fs'
 import { homedir } from 'os'
 import { randomUUID } from 'crypto'
-import { closeMilvus, flushCollection, initMilvus, incrementRecordCounters } from '../lib/milvus.js'
+import { closeLanceDB, flushCollection, initLanceDB, incrementRecordCounters } from '../lib/lancedb.js'
 import { rateInjectedMemories } from '../lib/extract.js'
 import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     auditLog(`START event=${payload.hook_event_name} session=${payload.session_id} transcript=${payload.transcript_path}`)
     const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
     const config = loadConfig(configRoot)
-    const collection = config.milvus.collection
+    const collection = config.lancedb.table
 
     // Try to acquire lock - prevents duplicate extractions when hook fires multiple times
     const lockHandle = acquireWorkerLock(payload.session_id)
@@ -166,9 +166,9 @@ async function main(): Promise<void> {
         }
       }
 
-      debugLog('Initializing Milvus...')
-      await initMilvus(config)
-      debugLog('Milvus initialized')
+      debugLog('Initializing LanceDB...')
+      await initLanceDB(config)
+      debugLog('LanceDB initialized')
 
       // Load session tracking to get injected memories for change detection
       const session = loadSessionTracking(payload.session_id, collection)
@@ -211,7 +211,7 @@ async function main(): Promise<void> {
       }
 
       if (shouldFlush) {
-        debugLog('Flushing Milvus writes...')
+        debugLog('Flushing writes (no-op for LanceDB)...')
         await flushCollection(config)
       }
 
@@ -236,9 +236,9 @@ async function main(): Promise<void> {
     }
   } finally {
     try {
-      await closeMilvus()
+      await closeLanceDB()
     } catch (error) {
-      console.error('[claude-memory] Failed to close Milvus connection:', error)
+      console.error('[claude-memory] Failed to close LanceDB connection:', error)
     }
   }
 }
@@ -302,7 +302,7 @@ async function processUsefulnessRating(
     return { updated: false, tokenUsage: emptyTokenUsage() }
   }
 
-  const collection = config.milvus.collection
+  const collection = config.lancedb.table
   const session = loadSessionTracking(payload.session_id, collection)
   if (!session || session.memories.length === 0) {
     removeSessionTracking(payload.session_id, collection)

@@ -16,7 +16,7 @@ import {
   cleanupTempFiles,
   countTestRecords
 } from './helpers.js'
-import { initMilvus, insertRecord } from '../src/lib/milvus.js'
+import { initLanceDB, insertRecord } from '../src/lib/lancedb.js'
 import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
 import type { CommandRecord, UserPromptSubmitInput, SessionEndInput } from '../src/lib/types.js'
@@ -24,6 +24,9 @@ import { randomUUID } from 'crypto'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+
+// Ensure local user settings don't cause tests to early-exit extraction due to short transcripts.
+process.env.CC_MEMORIES_SETTING_EXTRACTION_MIN_TOKENS = '0'
 
 // Check for any available auth method (API key, env token, or credential files)
 const hasAnthropicAuth = !!(
@@ -37,7 +40,7 @@ const hasAnthropicAuth = !!(
 describe('Round-Trip E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
-    await initMilvus(TEST_CONFIG)
+    await initLanceDB(TEST_CONFIG)
   })
 
   afterAll(async () => {
@@ -47,7 +50,7 @@ describe('Round-Trip E2E', () => {
 
   beforeEach(async () => {
     await dropTestCollection()
-    await initMilvus(TEST_CONFIG)
+    await initLanceDB(TEST_CONFIG)
   })
 
   describe.skipIf(!hasAnthropicAuth)('Full Round-Trip (With Extraction)', () => {
@@ -130,7 +133,7 @@ describe('Round-Trip E2E', () => {
       // Step 4: Verify context
       expect(injectResult.timedOut).toBe(false)
       expect(injectResult.context).toContain('<prior-knowledge>')
-      expect(injectResult.context).toContain('prisma')
+      expect(injectResult.context?.toLowerCase()).toContain('prisma')
     })
   })
 

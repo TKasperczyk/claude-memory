@@ -1,4 +1,4 @@
-import { initMilvus, getRecord, vectorSearchSimilar, queryRecords, countRecords } from '../src/lib/milvus.js'
+import { escapeLikeValue, initLanceDB, getRecord, vectorSearchSimilar, queryRecords, countRecords } from '../src/lib/lancedb.js'
 import { loadSettings } from '../src/lib/settings.js'
 import { DEFAULT_CONFIG } from '../src/lib/types.js'
 
@@ -18,7 +18,7 @@ const duplicates = [
 ]
 
 async function main() {
-  await initMilvus()
+  await initLanceDB()
 
   // First check database status
   const total = await countRecords({})
@@ -30,8 +30,9 @@ async function main() {
 
   // Check if audit IDs are prefixes
   const firstAuditId = duplicates[0][0]
+  const escapedFirstAuditId = escapeLikeValue(firstAuditId)
   const matchingRecords = await queryRecords({
-    filter: `id like "${firstAuditId}%"`,
+    filter: `id LIKE '${escapedFirstAuditId}%' ESCAPE '\\'`,
     limit: 5
   })
   console.log(`Records matching "${firstAuditId}%":`, matchingRecords.map(r => r.id))
@@ -49,11 +50,13 @@ async function main() {
 
     // If not found, try prefix match
     if (!r1) {
-      const matches = await queryRecords({ filter: `id like "${id1}%"`, limit: 1, includeEmbeddings: true })
+      const escaped = escapeLikeValue(id1)
+      const matches = await queryRecords({ filter: `id LIKE '${escaped}%' ESCAPE '\\'`, limit: 1, includeEmbeddings: true })
       r1 = matches[0] ?? null
     }
     if (!r2) {
-      const matches = await queryRecords({ filter: `id like "${id2}%"`, limit: 1, includeEmbeddings: true })
+      const escaped = escapeLikeValue(id2)
+      const matches = await queryRecords({ filter: `id LIKE '${escaped}%' ESCAPE '\\'`, limit: 1, includeEmbeddings: true })
       r2 = matches[0] ?? null
     }
 

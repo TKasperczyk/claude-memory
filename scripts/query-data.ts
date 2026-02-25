@@ -1,7 +1,7 @@
 /**
  * Quick data collection script for improvement plan research
  */
-import { initMilvus, queryRecords, countRecords } from '../src/lib/milvus.js'
+import { initLanceDB, queryRecords, countRecords } from '../src/lib/lancedb.js'
 import { loadConfig } from '../src/lib/config.js'
 import { findGitRoot } from '../src/lib/context.js'
 
@@ -9,20 +9,20 @@ async function main() {
   const configRoot = findGitRoot(process.cwd()) ?? process.cwd()
   const config = loadConfig(configRoot)
 
-  console.log('Initializing Milvus...')
-  await initMilvus(config)
+  console.log('Initializing LanceDB...')
+  await initLanceDB(config)
 
   // 1. Count total records
   const total = await countRecords({}, config)
   console.log(`\n=== Total Records: ${total} ===\n`)
 
   // 2. Generalized records
-  const generalizedCount = await countRecords({ filter: 'generalized == true' }, config)
+  const generalizedCount = await countRecords({ filter: 'generalized = true' }, config)
   console.log(`\n=== Generalized Records: ${generalizedCount} ===`)
 
   if (generalizedCount > 0) {
     const generalizedSamples = await queryRecords({
-      filter: 'generalized == true',
+      filter: 'generalized = true',
       limit: 5,
       orderBy: 'timestamp_desc'
     }, config)
@@ -35,12 +35,12 @@ async function main() {
   }
 
   // 3. Global scope records
-  const globalCount = await countRecords({ filter: 'scope == "global"' }, config)
+  const globalCount = await countRecords({ filter: \"scope = 'global'\" }, config)
   console.log(`\n=== Global Scope Records: ${globalCount} ===`)
 
   if (globalCount > 0) {
     const globalSamples = await queryRecords({
-      filter: 'scope == "global"',
+      filter: \"scope = 'global'\",
       limit: 10,
       orderBy: 'timestamp_desc'
     }, config)
@@ -67,13 +67,13 @@ async function main() {
   }
 
   // 4. Deprecated records
-  const deprecatedCount = await countRecords({ filter: 'deprecated == true' }, config)
+  const deprecatedCount = await countRecords({ filter: 'deprecated = true' }, config)
   console.log(`\n=== Deprecated Records: ${deprecatedCount} ===`)
 
   // 5. Records by type
   console.log('\n=== Records by Type ===')
   for (const type of ['command', 'error', 'discovery', 'procedure']) {
-    const count = await countRecords({ filter: `type == "${type}"` }, config)
+    const count = await countRecords({ filter: `type = '${type}'` }, config)
     console.log(`  ${type}: ${count}`)
   }
 

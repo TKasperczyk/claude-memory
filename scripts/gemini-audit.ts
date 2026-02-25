@@ -431,7 +431,7 @@ async function main(): Promise<void> {
   try {
     printHeader('GEMINI MEMORY AUDIT')
 
-    console.log(`\n${c.dim}Connecting to Milvus...${c.reset}`)
+    console.log(`\n${c.dim}Connecting to LanceDB...${c.reset}`)
     await initMilvus(DEFAULT_CONFIG)
 
     console.log(`${c.dim}Loading active memories (excluding deprecated)...${c.reset}`)

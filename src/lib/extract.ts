@@ -214,7 +214,7 @@ export async function extractRecords(
     })
 
     const tokenUsage = extractTokenUsage(response)
-    recordTokenUsageEvent('extraction', config.extraction.model, tokenUsage, config.milvus.collection)
+    recordTokenUsageEvent('extraction', config.extraction.model, tokenUsage, config.lancedb.table)
     const toolInput = response.content.find((block): block is ToolUseBlock => isToolUseBlock(block) && block.name === TOOL_NAME)?.input
     if (!toolInput) return { records: [], tokenUsage }
     return {
@@ -257,7 +257,7 @@ export async function rateInjectedMemories(
   })
 
   const tokenUsage = extractTokenUsage(response)
-  recordTokenUsageEvent('usefulness-rating', config.extraction.model, tokenUsage, config.milvus.collection)
+  recordTokenUsageEvent('usefulness-rating', config.extraction.model, tokenUsage, config.lancedb.table)
   const toolInput = response.content.find((block): block is ToolUseBlock =>
     isToolUseBlock(block) && block.name === USEFULNESS_TOOL_NAME
   )?.input

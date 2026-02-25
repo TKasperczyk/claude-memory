@@ -2,7 +2,7 @@
  * Analyze why audit-identified duplicates weren't caught by maintenance
  */
 
-import { initMilvus, closeMilvus, getRecord, vectorSearchSimilar } from '../src/lib/milvus.js'
+import { initLanceDB, closeLanceDB, getRecord, vectorSearchSimilar } from '../src/lib/lancedb.js'
 import { DEFAULT_CONFIG } from '../src/lib/types.js'
 
 const duplicateGroups = [
@@ -15,7 +15,7 @@ const duplicateGroups = [
 ]
 
 async function main() {
-  await initMilvus(DEFAULT_CONFIG)
+  await initLanceDB(DEFAULT_CONFIG)
 
   for (const group of duplicateGroups) {
     console.log(`\n=== ${group.name} ===`)
@@ -61,7 +61,7 @@ async function main() {
     }
   }
 
-  await closeMilvus()
+  await closeLanceDB()
 }
 
 main().catch(err => {

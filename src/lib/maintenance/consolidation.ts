@@ -5,7 +5,7 @@ import {
   type MemoryRecord,
   type RecordType
 } from '../types.js'
-import { buildFilter, queryRecords, updateRecord, vectorSearchSimilar } from '../milvus.js'
+import { buildFilter, queryRecords, updateRecord, vectorSearchSimilar } from '../lancedb.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildRecordSnippet, escapeFilterValue } from '../shared.js'
@@ -198,7 +198,7 @@ export async function findSimilarClusters(
   while (true) {
     const batch = await queryRecords(
       {
-        filter: 'deprecated == false',
+        filter: 'deprecated = false',
         limit: QUERY_PAGE_SIZE,
         offset,
         includeEmbeddings: true
@@ -267,7 +267,7 @@ export async function findCrossTypeClusters(
   while (true) {
     const batch = await queryRecords(
       {
-        filter: 'deprecated == false',
+        filter: 'deprecated = false',
         limit: QUERY_PAGE_SIZE,
         offset,
         includeEmbeddings: true
@@ -586,18 +586,18 @@ function wasRecentlyConsolidationChecked(record: MemoryRecord, cutoff: number): 
 }
 
 function buildConsolidationFilter(record: MemoryRecord): string {
-  // Only filter by type - no project/domain so we find cross-project duplicates
+  // Only filter by type - no project filter so we find cross-project duplicates
   return buildFilter({
     type: record.type,
     excludeId: record.id,
     excludeDeprecated: true
-  }) ?? 'deprecated == false'
+  }) ?? 'deprecated = false'
 }
 
 function buildCrossTypeConsolidationFilter(record: MemoryRecord): string {
   const baseFilter = buildFilter({
     excludeId: record.id,
     excludeDeprecated: true
-  }) ?? 'deprecated == false'
-  return `${baseFilter} && type != "${escapeFilterValue(record.type)}"`
+  }) ?? 'deprecated = false'
+  return `${baseFilter} AND type <> '${escapeFilterValue(record.type)}'`
 }

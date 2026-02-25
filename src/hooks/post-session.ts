@@ -14,7 +14,7 @@ import { randomUUID } from 'crypto'
 import { extractRecords } from '../lib/extract.js'
 import { findGitRoot } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
-import { buildEmbeddingInput, initMilvus, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/milvus.js'
+import { buildEmbeddingInput, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/lancedb.js'
 import { loadSettings } from '../lib/settings.js'
 import { parseTranscript, type Transcript } from '../lib/transcript.js'
 import {
@@ -45,7 +45,7 @@ export interface PostSessionResult {
 /**
  * Core post-session hook logic. Exported for testing.
  *
- * Extracts records from transcript and stores them in Milvus.
+ * Extracts records from transcript and stores them in LanceDB.
  */
 export async function handlePostSession(
   input: ExtractionHookInput,

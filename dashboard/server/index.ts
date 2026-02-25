@@ -1,5 +1,5 @@
 /**
- * Dashboard API server - queries Milvus and serves data to frontend.
+ * Dashboard API server - queries LanceDB and serves data to frontend.
  * Run with: pnpm run server
  */
 

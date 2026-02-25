@@ -73,9 +73,9 @@ const finalScore = baseScore + (recencyBoost * recencyWeight)
 
 **Implementation**:
 - `scope` field added to `BaseRecord` in `types.ts`
-- Milvus schema updated with migration (`ensureSchemaFields`)
+- LanceDB schema updated with migration (`ensureSchemaFields`)
 - Extraction prompt includes scope guidance for all record types
-- `hybridSearch` filter: `(project == X OR scope == "global")` when project is set
+- `hybridSearch` filter: `(project = 'X' OR scope = 'global')` when project is set
 - Defaults to `'project'` for backwards compatibility
 
 ---
@@ -89,7 +89,7 @@ const finalScore = baseScore + (recencyBoost * recencyWeight)
 ```typescript
 if (Math.random() < 0.05) {
   const unrated = await queryRecords({
-    filter: 'retrieval_count == 0',
+    filter: 'retrieval_count = 0',
     limit: 1,
     randomSample: true
   })

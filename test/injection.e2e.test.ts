@@ -16,7 +16,7 @@ import {
   createTempProjectFixture,
   cleanupTempFiles
 } from './helpers.js'
-import { initMilvus, insertRecord, hybridSearch } from '../src/lib/milvus.js'
+import { initLanceDB, insertRecord, hybridSearch } from '../src/lib/lancedb.js'
 import { buildContext, extractSignals } from '../src/lib/context.js'
 import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
 import type { UserPromptSubmitInput } from '../src/lib/types.js'
@@ -31,7 +31,7 @@ const embeddingSkipSuffix = hasEmbeddings ? '' : ` (skipped: ${embeddingSkipNote
 describe('Injection E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
-    await initMilvus(TEST_CONFIG)
+    await initLanceDB(TEST_CONFIG)
   })
 
   afterAll(async () => {
@@ -41,7 +41,7 @@ describe('Injection E2E', () => {
 
   beforeEach(async () => {
     await dropTestCollection()
-    await initMilvus(TEST_CONFIG)
+    await initLanceDB(TEST_CONFIG)
   })
 
   describe('Signal Extraction', () => {

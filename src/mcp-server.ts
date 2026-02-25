@@ -9,7 +9,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { loadConfig } from './lib/config.js'
-import { initMilvus, closeMilvus, hybridSearch } from './lib/milvus.js'
+import { initLanceDB, closeLanceDB, hybridSearch } from './lib/lancedb.js'
 import { findAncestorProjects, formatRecordSnippet } from './lib/context.js'
 import { embed } from './lib/embed.js'
 import { loadSettings } from './lib/settings.js'
@@ -23,7 +23,7 @@ let initialized = false
 async function ensureInitialized(): Promise<void> {
   if (initialized) return
   config = loadConfig(process.cwd())
-  await initMilvus(config)
+  await initLanceDB(config)
   initialized = true
 }
 
@@ -146,11 +146,11 @@ async function main(): Promise<void> {
   await server.connect(transport)
 
   process.on('SIGINT', async () => {
-    await closeMilvus()
+    await closeLanceDB()
     process.exit(0)
   })
   process.on('SIGTERM', async () => {
-    await closeMilvus()
+    await closeLanceDB()
     process.exit(0)
   })
 }

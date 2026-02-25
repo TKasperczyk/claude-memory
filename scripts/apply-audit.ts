@@ -7,7 +7,7 @@
 import * as readline from 'readline'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { initMilvus, closeMilvus, iterateRecords, batchUpdateRecords, deleteRecord } from '../src/lib/milvus.js'
+import { initLanceDB, closeLanceDB, iterateRecords, batchUpdateRecords, deleteRecord } from '../src/lib/lancedb.js'
 import { DEFAULT_CONFIG, type MemoryRecord } from '../src/lib/types.js'
 
 // ANSI color codes
@@ -103,9 +103,9 @@ async function main(): Promise<void> {
     printStat('Conflicts', `${result.conflicts.length} (${totalConflictMemories} memories)`, c.red)
     printStat('Redundant', result.redundant.length, c.red)
 
-    // Connect to Milvus
-    console.log(`\n${c.dim}Connecting to Milvus...${c.reset}`)
-    await initMilvus(DEFAULT_CONFIG)
+    // Connect to LanceDB
+    console.log(`\n${c.dim}Connecting to LanceDB...${c.reset}`)
+    await initLanceDB(DEFAULT_CONFIG)
 
     console.log(`${c.dim}Loading all memories...${c.reset}`)
     const records: MemoryRecord[] = []
@@ -129,7 +129,7 @@ async function main(): Promise<void> {
 
     if (existingRedundant.length === 0) {
       console.log(`\n${c.green}✓${c.reset} All redundant memories have already been processed.`)
-      await closeMilvus()
+      await closeLanceDB()
       return
     }
 
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
 
       if (choice === 's') {
         console.log(`${c.dim}Skipped.${c.reset}`)
-        await closeMilvus()
+        await closeLanceDB()
         return
       }
     }
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
       }
     }
 
-    await closeMilvus()
+    await closeLanceDB()
 
   } finally {
     rl?.close()

@@ -4,7 +4,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { SKIP_MARKER, getCommandFilePath } from '../lib/claude-commands.js'
 import { readFileIfExists } from '../lib/shared.js'
-import { closeMilvus } from '../lib/milvus.js'
+import { closeLanceDB } from '../lib/lancedb.js'
 import { findGitRoot, formatRecordSnippet, stripNoiseWords } from '../lib/context.js'
 import { loadConfig } from '../lib/config.js'
 import { loadSettings } from '../lib/settings.js'
@@ -95,19 +95,19 @@ async function main(): Promise<void> {
 
     if (result.timedOut) {
       console.error(`[claude-memory] Pre-prompt timed out after ${settings.prePromptTimeoutMs}ms; skipping injection.`)
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout', config.milvus.collection)
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout', config.lancedb.table)
       return
     }
 
     if (result.results.length === 0) {
       console.error('[claude-memory] No matching memories found.')
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.milvus.collection)
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.lancedb.table)
       return
     }
 
     if (!result.context) {
       console.error('[claude-memory] Context empty after formatting.')
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.milvus.collection)
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.lancedb.table)
       return
     }
 
@@ -127,13 +127,13 @@ async function main(): Promise<void> {
         payload.cwd,
         payload.prompt,
         'injected',
-        config.milvus.collection
+        config.lancedb.table
       )
     } else {
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error', config.milvus.collection)
+      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error', config.lancedb.table)
     }
   } finally {
-    await closeMilvus()
+    await closeLanceDB()
   }
 }
 function trackSession(

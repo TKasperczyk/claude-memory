@@ -43,8 +43,8 @@ import {
   iterateRecords,
   queryRecords,
   resetCollection
-} from '../src/lib/milvus.js'
-import { ensureClient } from '../src/lib/milvus-client.js'
+} from '../src/lib/lancedb.js'
+import { ensureClient } from '../src/lib/lancedb-client.js'
 import { mergeNearMisses } from '../src/lib/diagnostics.js'
 import { retrieveContext } from '../src/lib/retrieval.js'
 import { getTokenUsageActivity } from '../src/lib/token-usage-events.js'
@@ -95,7 +95,7 @@ vi.mock('../src/lib/installer.js', () => {
   }
 })
 
-vi.mock('../src/lib/milvus.js', () => ({
+vi.mock('../src/lib/lancedb.js', () => ({
   insertRecord: vi.fn(),
   countRecords: vi.fn(),
   deleteRecord: vi.fn(),
@@ -110,7 +110,7 @@ vi.mock('../src/lib/milvus.js', () => ({
   buildKeywordFilter: vi.fn()
 }))
 
-vi.mock('../src/lib/milvus-client.js', () => ({
+vi.mock('../src/lib/lancedb-client.js', () => ({
   ensureClient: vi.fn()
 }))
 
@@ -621,12 +621,12 @@ describe('memory routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .get('/api/memories')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -636,12 +636,12 @@ describe('memory routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .get('/api/memories/mem-1')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -651,12 +651,12 @@ describe('memory routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .delete('/api/memories/mem-1')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -671,13 +671,13 @@ describe('memory routes', () => {
     })
     const res = await request(app)
       .post('/api/memories')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
       .send(payload)
 
     expect(res.status).toBe(201)
     expect(mockedInsertRecord).toHaveBeenCalledTimes(1)
     expect(mockedInsertRecord.mock.calls[0]?.[1]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -685,12 +685,12 @@ describe('memory routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .get('/api/stats')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -703,7 +703,7 @@ describe('memory routes', () => {
     expect(mockedGetTokenUsageActivity).toHaveBeenCalledWith('day', {
       limit: 30,
       source: 'all',
-      collection: DEFAULT_CONFIG.milvus.collection
+      collection: DEFAULT_CONFIG.lancedb.table
     })
   })
 
@@ -725,7 +725,7 @@ describe('memory routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .get('/api/token-usage?period=week&limit=5&source=haiku-query')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(res.body.period).toBe('week')
@@ -741,12 +741,12 @@ describe('memory routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .get('/api/search?q=check')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -754,12 +754,12 @@ describe('memory routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .post('/api/reset-collection')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -797,7 +797,7 @@ describe('memory routes', () => {
   })
 
   it('returns a generic error when listing fails', async () => {
-    mockedQueryRecords.mockRejectedValueOnce(new Error('milvus down'))
+    mockedQueryRecords.mockRejectedValueOnce(new Error('db down'))
 
     const { app } = buildApp()
     const res = await request(app).get('/api/memories')
@@ -854,13 +854,13 @@ describe('preview routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .post('/api/preview')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
       .send({ prompt: 'hello', cwd: '/tmp' })
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 })
@@ -891,12 +891,12 @@ describe('sessions routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .get('/api/sessions')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -906,13 +906,13 @@ describe('sessions routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .post('/api/sessions/session-1/review')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
       .send({})
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -984,13 +984,13 @@ describe('extractions routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .post('/api/extractions/run-1/review')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
       .send({})
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -1006,12 +1006,12 @@ describe('extractions routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .get('/api/extractions/run-1')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -1067,13 +1067,13 @@ describe('maintenance routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .post('/api/maintenance/promotion-suggestions/review')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
       .send({ result: { operation: 'promotion-suggestions', actions: [], candidates: [] } })
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -1081,13 +1081,13 @@ describe('maintenance routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .post('/api/maintenance/run')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
       .send({ operation: 'promotion-suggestions' })
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -1095,13 +1095,13 @@ describe('maintenance routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .post('/api/maintenance/run-all')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
       .send({ dryRun: true })
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 
@@ -1109,12 +1109,12 @@ describe('maintenance routes', () => {
     const { app } = buildApp()
     const res = await request(app)
       .get('/api/maintenance/stream')
-      .set('X-Milvus-Collection', 'test-collection')
+      .set('X-LanceDB-Table', 'test-collection')
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
-      milvus: { collection: 'test-collection' }
+      lancedb: { table: 'test-collection' }
     })
   })
 

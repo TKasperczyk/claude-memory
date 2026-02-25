@@ -1,18 +1,18 @@
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
-import { type MilvusClient, type RowData } from '@zilliz/milvus2-sdk-node'
 import { escapeFilterValue } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
-import { OUTPUT_FIELDS, createCollection } from './milvus-schema.js'
-import { ensureClient } from './milvus-client.js'
+import { OUTPUT_FIELDS } from './lancedb-schema.js'
+import { ensureClient, closeLanceDB, initLanceDB, resolveDirectory } from './lancedb-client.js'
 import { getCollectionKey } from './file-store.js'
 import {
-  buildMilvusRow,
+  buildLanceRow,
   mergeRecords,
   needsEmbeddingRefresh,
-  parseRecordFromRow
-} from './milvus-records.js'
+  parseRecordFromRow,
+  type LanceRow
+} from './lancedb-records.js'
 import type { MemoryStats } from '../../shared/types.js'
 
 export type FlushMode = 'never' | 'end-of-batch' | 'always'
@@ -20,28 +20,17 @@ export interface WriteOptions {
   flush?: FlushMode
 }
 
-const QUERY_ITERATOR_BATCH_SIZE = 1000
-const POST_FLUSH_DELAY_MS = parseInt(process.env.CC_MEMORIES_POST_FLUSH_DELAY_MS ?? '500', 10)
+const QUERY_PAGE_SIZE = 1000
 
 export async function insertRecord(
   record: MemoryRecord,
   config: Config = DEFAULT_CONFIG,
-  options: WriteOptions = {}
+  _options: WriteOptions = {}
 ): Promise<void> {
   try {
-    const client = await ensureClient(config)
-
-    const row = await buildMilvusRow(record, config)
-
-    await client.insert({
-      collection_name: config.milvus.collection,
-      data: [row]
-    })
-
-    const flushMode = options.flush ?? 'always'
-    if (flushMode === 'always') {
-      await flushAndWait(client, config.milvus.collection)
-    }
+    const { table } = await ensureClient(config)
+    const row = await buildLanceRow(record, config)
+    await table.add([row])
   } catch (error) {
     console.error('[claude-memory] insertRecord failed:', error)
     throw error
@@ -52,13 +41,13 @@ export async function updateRecord(
   id: string,
   updates: Partial<MemoryRecord>,
   config: Config = DEFAULT_CONFIG,
-  options: WriteOptions = {}
+  _options: WriteOptions = {}
 ): Promise<boolean> {
   try {
-    const client = await ensureClient(config)
+    const { table } = await ensureClient(config)
 
     // NOTE: Read-modify-write can drop increments under concurrency; acceptable for ranking hints.
-    const existing = await getRecordById(client, id, config, { includeEmbedding: true })
+    const existing = await getRecordById(table, id, { includeEmbedding: true })
     if (!existing) return false
 
     const merged = mergeRecords(existing, updates)
@@ -72,17 +61,13 @@ export async function updateRecord(
     const embedding = updates.embedding
       ?? (shouldReembed ? undefined : existing.embedding)
 
-    const row = await buildMilvusRow({ ...merged, embedding }, config)
+    const row = await buildLanceRow({ ...merged, embedding }, config)
 
-    await client.upsert({
-      collection_name: config.milvus.collection,
-      data: [row]
-    })
-
-    const flushMode = options.flush ?? 'always'
-    if (flushMode === 'always') {
-      await flushAndWait(client, config.milvus.collection)
-    }
+    await table
+      .mergeInsert('id')
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([row])
 
     return true
   } catch (error) {
@@ -97,10 +82,10 @@ export async function incrementRecordCounters(
   config: Config = DEFAULT_CONFIG
 ): Promise<boolean> {
   try {
-    const client = await ensureClient(config)
+    const { table } = await ensureClient(config)
 
     // NOTE: Read-modify-write can drop increments under concurrency; acceptable for ranking hints.
-    const existing = await getRecordById(client, id, config, { includeEmbedding: true })
+    const existing = await getRecordById(table, id, { includeEmbedding: true })
     if (!existing) return false
 
     const updates: Partial<MemoryRecord> = {}
@@ -125,12 +110,13 @@ export async function incrementRecordCounters(
     const embedding = updates.embedding
       ?? (shouldReembed ? undefined : existing.embedding)
 
-    const row = await buildMilvusRow({ ...merged, embedding }, config)
+    const row = await buildLanceRow({ ...merged, embedding }, config)
 
-    await client.upsert({
-      collection_name: config.milvus.collection,
-      data: [row]
-    })
+    await table
+      .mergeInsert('id')
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([row])
 
     return true
   } catch (error) {
@@ -144,14 +130,8 @@ export async function deleteRecord(
   config: Config = DEFAULT_CONFIG
 ): Promise<void> {
   try {
-    const client = await ensureClient(config)
-
-    await client.delete({
-      collection_name: config.milvus.collection,
-      filter: `id == "${escapeFilterValue(id)}"`
-    })
-
-    await flushAndWait(client, config.milvus.collection)
+    const { table } = await ensureClient(config)
+    await table.delete(`id = '${escapeFilterValue(id)}'`)
   } catch (error) {
     console.error('[claude-memory] deleteRecord failed:', error)
     throw error
@@ -163,19 +143,11 @@ export async function deleteByFilter(
   config: Config = DEFAULT_CONFIG
 ): Promise<number> {
   try {
-    const client = await ensureClient(config)
-    const count = await client.count({
-      collection_name: config.milvus.collection,
-      expr: filter
-    })
-    if (!count.data) return 0
-
-    await client.delete({
-      collection_name: config.milvus.collection,
-      filter
-    })
-    await flushAndWait(client, config.milvus.collection)
-    return count.data
+    const { table } = await ensureClient(config)
+    const count = await table.countRows(filter)
+    if (count <= 0) return 0
+    await table.delete(filter)
+    return count
   } catch (error) {
     console.error('[claude-memory] deleteByFilter failed:', error)
     throw error
@@ -186,43 +158,39 @@ export async function resetCollection(
   config: Config = DEFAULT_CONFIG
 ): Promise<void> {
   try {
-    const client = await ensureClient(config)
+    // Ensure any cached table handles are closed before dropping.
+    await closeLanceDB()
 
-    const collectionName = config.milvus.collection
-    const hasCollection = await client.hasCollection({
-      collection_name: collectionName
-    })
+    const { connect } = await import('@lancedb/lancedb')
+    const directory = resolveDirectory(config.lancedb.directory)
+    const tableName = config.lancedb.table
+    const conn = await connect(directory)
 
-    if (hasCollection.value) {
-      try {
-        await client.releaseCollection({
-          collection_name: collectionName
-        })
-      } catch {
-        // Ignore - collection might not be loaded
-      }
-
-      await client.dropCollection({
-        collection_name: collectionName
-      })
+    const names = await conn.tableNames()
+    if (names.includes(tableName)) {
+      await conn.dropTable(tableName)
     }
 
-    await createCollection(client, config)
-    await client.loadCollection({
-      collection_name: collectionName
-    })
+    // Recreate empty table (initLanceDB will also ensure migrations)
+    await initLanceDB(config)
 
     // Clear filesystem storage
-    clearFilesystemStorage(collectionName)
+    clearFilesystemStorage(tableName)
+
+    try {
+      conn.close()
+    } catch {
+      // ignore
+    }
   } catch (error) {
     console.error('[claude-memory] resetCollection failed:', error)
     throw error
   }
 }
 
-function clearFilesystemStorage(collection?: string): void {
+function clearFilesystemStorage(table?: string): void {
   const baseDir = path.join(homedir(), '.claude-memory')
-  const collectionKey = getCollectionKey(collection)
+  const collectionKey = getCollectionKey(table)
   const dirsToClean = ['sessions', 'extractions', 'reviews', 'retrieval-events', 'token-usage-events', 'stats-snapshots']
 
   for (const dir of dirsToClean) {
@@ -244,8 +212,8 @@ export async function getRecord(
   options: { includeEmbedding?: boolean } = {}
 ): Promise<MemoryRecord | null> {
   try {
-    const client = await ensureClient(config)
-    return await getRecordById(client, id, config, { includeEmbedding: options.includeEmbedding ?? false })
+    const { table } = await ensureClient(config)
+    return await getRecordById(table, id, { includeEmbedding: options.includeEmbedding ?? false })
   } catch (error) {
     console.error('[claude-memory] getRecord failed:', error)
     throw error
@@ -259,22 +227,22 @@ export async function getRecordStats(
   if (ids.length === 0) return new Map()
 
   try {
-    const client = await ensureClient(config)
+    const { table } = await ensureClient(config)
     const uniqueIds = [...new Set(ids)]
     const statsMap = new Map<string, MemoryStats>()
     const batchSize = 1000
 
     for (let i = 0; i < uniqueIds.length; i += batchSize) {
       const batchIds = uniqueIds.slice(i, i + batchSize)
-      const idFilter = batchIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
+      const idFilter = batchIds.map(id => `'${escapeFilterValue(id)}'`).join(', ')
 
-      const result = await client.query({
-        collection_name: config.milvus.collection,
-        filter: `id in [${idFilter}]`,
-        output_fields: ['id', 'retrieval_count', 'usage_count', 'success_count', 'failure_count']
-      })
+      const rows = await table
+        .query()
+        .where(`id IN (${idFilter})`)
+        .select(['id', 'retrieval_count', 'usage_count', 'success_count', 'failure_count'])
+        .toArray()
 
-      for (const row of result.data ?? []) {
+      for (const row of rows ?? []) {
         const r = row as Record<string, unknown>
         const id = r.id as string
         statsMap.set(id, {
@@ -294,9 +262,8 @@ export async function getRecordStats(
   }
 }
 
-export async function flushCollection(config: Config = DEFAULT_CONFIG): Promise<void> {
-  const client = await ensureClient(config)
-  await flushAndWait(client, config.milvus.collection)
+export async function flushCollection(_config: Config = DEFAULT_CONFIG): Promise<void> {
+  // LanceDB writes are immediately visible (MVCC).
 }
 
 export async function queryRecords(
@@ -310,25 +277,18 @@ export async function queryRecords(
   config: Config = DEFAULT_CONFIG
 ): Promise<MemoryRecord[]> {
   try {
-    const client = await ensureClient(config)
+    const { table } = await ensureClient(config)
 
     const limit = options.limit ?? 1000
     const offset = options.offset ?? 0
-    const filter = options.filter ?? 'id != ""'
+    const filter = options.filter ?? "id <> ''"
     const outputFields = options.includeEmbeddings
       ? [...OUTPUT_FIELDS, 'embedding']
       : OUTPUT_FIELDS
     const orderBy = options.orderBy
 
     if (orderBy) {
-      // Milvus query API doesn't support ordering; stream and keep only the top slice in memory (still a full scan).
-      const iterator = await client.queryIterator({
-        collection_name: config.milvus.collection,
-        filter,
-        output_fields: outputFields,
-        batchSize: QUERY_ITERATOR_BATCH_SIZE
-      })
-
+      // Preserve prior behavior: no DB-side ordering; stream and keep only the top slice in memory (still a full scan).
       const targetCount = Math.max(0, offset + limit)
       if (targetCount === 0) return []
 
@@ -354,26 +314,23 @@ export async function queryRecords(
           ordered.pop()
         }
       }
-      for await (const batch of iterator) {
-        if (!Array.isArray(batch)) continue
-        for (const row of batch) {
-          const record = parseRecordFromRow(row as Record<string, unknown>)
-          if (record) insertSorted(record)
-        }
+
+      for await (const record of iterateRecords({ filter, includeEmbeddings: options.includeEmbeddings }, config)) {
+        insertSorted(record)
       }
 
       return ordered.slice(offset, offset + limit)
     }
 
-    const result = await client.query({
-      collection_name: config.milvus.collection,
-      filter,
-      output_fields: outputFields,
-      limit,
-      offset
-    })
+    const rows = await table
+      .query()
+      .where(filter)
+      .select(outputFields)
+      .limit(limit)
+      .offset(offset)
+      .toArray()
 
-    return (result.data ?? [])
+    return (rows ?? [])
       .map(row => parseRecordFromRow(row as Record<string, unknown>))
       .filter((record): record is MemoryRecord => Boolean(record))
   } catch (error) {
@@ -394,9 +351,9 @@ export async function fetchRecordsByIds(
 
   for (let i = 0; i < ids.length; i += batchSize) {
     const batchIds = ids.slice(i, i + batchSize)
-    const idFilter = batchIds.map(id => `"${escapeFilterValue(id)}"`).join(', ')
+    const idFilter = batchIds.map(id => `'${escapeFilterValue(id)}'`).join(', ')
     const batch = await queryRecords({
-      filter: `id in [${idFilter}]`,
+      filter: `id IN (${idFilter})`,
       limit: batchIds.length,
       includeEmbeddings: options.includeEmbeddings
     }, config)
@@ -416,28 +373,30 @@ export async function* iterateRecords(
   } = {},
   config: Config = DEFAULT_CONFIG
 ): AsyncGenerator<MemoryRecord> {
-  const client = await ensureClient(config)
+  const { table } = await ensureClient(config)
 
-  const filter = options.filter ?? 'id != ""'
+  const filter = options.filter ?? "id <> ''"
   const outputFields = options.includeEmbeddings
     ? [...OUTPUT_FIELDS, 'embedding']
     : OUTPUT_FIELDS
 
-  const iterator = await client.queryIterator({
-    collection_name: config.milvus.collection,
-    filter,
-    output_fields: outputFields,
-    batchSize: QUERY_ITERATOR_BATCH_SIZE
-  })
+  let offset = 0
+  while (true) {
+    const rows = await table
+      .query()
+      .where(filter)
+      .select(outputFields)
+      .limit(QUERY_PAGE_SIZE)
+      .offset(offset)
+      .toArray()
 
-  for await (const batch of iterator) {
-    if (!Array.isArray(batch)) continue
-    for (const row of batch) {
+    if (!rows || rows.length === 0) break
+    for (const row of rows) {
       const record = parseRecordFromRow(row as Record<string, unknown>)
-      if (record) {
-        yield record
-      }
+      if (record) yield record
     }
+    if (rows.length < QUERY_PAGE_SIZE) break
+    offset += rows.length
   }
 }
 
@@ -446,15 +405,9 @@ export async function countRecords(
   config: Config = DEFAULT_CONFIG
 ): Promise<number> {
   try {
-    const client = await ensureClient(config)
-
-    const expr = options.filter ?? 'id != ""'
-    const result = await client.count({
-      collection_name: config.milvus.collection,
-      expr
-    })
-
-    return result.data ?? 0
+    const { table } = await ensureClient(config)
+    const expr = options.filter ?? "id <> ''"
+    return await table.countRows(expr)
   } catch (error) {
     console.error('[claude-memory] countRecords failed:', error)
     throw error
@@ -474,21 +427,21 @@ export async function batchUpdateRecords(
   if (records.length === 0) return { updated: 0, failed: 0 }
 
   try {
-    const client = await ensureClient(config)
+    const { table } = await ensureClient(config)
     const batchSize = 500
     let updated = 0
     let failed = 0
 
     for (let i = 0; i < records.length; i += batchSize) {
       const batch = records.slice(i, i + batchSize)
-      const rows: RowData[] = []
+      const rows: LanceRow[] = []
 
       for (const record of batch) {
         try {
           const merged = mergeRecords(record, updates)
           merged.id = record.id
           // Keep existing embedding - no re-embedding for metadata-only updates
-          const row = await buildMilvusRow({ ...merged, embedding: record.embedding }, config)
+          const row = await buildLanceRow({ ...merged, embedding: record.embedding }, config)
           rows.push(row)
         } catch {
           failed += 1
@@ -496,16 +449,14 @@ export async function batchUpdateRecords(
       }
 
       if (rows.length > 0) {
-        await client.upsert({
-          collection_name: config.milvus.collection,
-          data: rows
-        })
+        await table
+          .mergeInsert('id')
+          .whenMatchedUpdateAll()
+          .whenNotMatchedInsertAll()
+          .execute(rows)
         updated += rows.length
       }
     }
-
-    // Single flush at the end
-    await flushAndWait(client, config.milvus.collection)
 
     return { updated, failed }
   } catch (error) {
@@ -515,30 +466,21 @@ export async function batchUpdateRecords(
 }
 
 async function getRecordById(
-  client: MilvusClient,
+  table: { query: () => any },
   id: string,
-  config: Config,
   options: { includeEmbedding?: boolean } = {}
 ): Promise<MemoryRecord | null> {
   const outputFields = options.includeEmbedding
     ? [...OUTPUT_FIELDS, 'embedding']
     : OUTPUT_FIELDS
 
-  const result = await client.query({
-    collection_name: config.milvus.collection,
-    filter: `id == "${escapeFilterValue(id)}"`,
-    output_fields: outputFields
-  })
+  const rows = await table
+    .query()
+    .where(`id = '${escapeFilterValue(id)}'`)
+    .select(outputFields)
+    .limit(1)
+    .toArray()
 
-  if (!result.data || result.data.length === 0) return null
-
-  return parseRecordFromRow(result.data[0] as Record<string, unknown>)
-}
-
-async function flushAndWait(client: MilvusClient, collectionName: string): Promise<void> {
-  await client.flushSync({
-    collection_names: [collectionName]
-  })
-  // IVF_FLAT index needs time to update after flush before search works reliably
-  await new Promise(resolve => setTimeout(resolve, POST_FLUSH_DELAY_MS))
+  if (!rows || rows.length === 0) return null
+  return parseRecordFromRow(rows[0] as Record<string, unknown>)
 }

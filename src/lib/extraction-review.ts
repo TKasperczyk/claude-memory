@@ -3,7 +3,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { embedBatch } from './embed.js'
 import { formatTranscript } from './extract.js'
 import { getExtractionRun } from './extraction-log.js'
-import { escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
+import { escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './lancedb.js'
 import { asString, isPlainObject } from './parsing.js'
 import { getSchemaDescription } from './record-schema.js'
 import { coerceReviewIssue, parseReviewRating } from './review-coercion.js'
@@ -180,7 +180,7 @@ async function buildExtractionReviewInput(
   runId: string,
   config: Config
 ): Promise<ExtractionReviewInput> {
-  const run = getExtractionRun(runId, config.milvus.collection)
+  const run = getExtractionRun(runId, config.lancedb.table)
   if (!run) {
     throw new Error('Extraction run not found.')
   }
@@ -193,7 +193,7 @@ async function buildExtractionReviewInput(
   }
   const records = await fetchRecordsByIds(extractedIds, config, { includeEmbeddings: true })
   if (records.length === 0) {
-    throw new Error('Could not fetch extracted records from Milvus. They may have been deleted.')
+    throw new Error('Could not fetch extracted records from LanceDB. They may have been deleted.')
   }
 
   const { reviewSimilarThreshold, reviewDuplicateWarningThreshold } = loadSettings()
@@ -294,11 +294,11 @@ function buildTranscriptEmbeddingInputs(segments: string[]): string[] {
 }
 
 function buildExcludeFilter(excludeIds: string[]): string {
-  const parts = ['deprecated == false']
+  const parts = ['deprecated = false']
   for (const id of excludeIds) {
-    parts.push(`id != "${escapeFilterValue(id)}"`)
+    parts.push(`id <> '${escapeFilterValue(id)}'`)
   }
-  return parts.join(' && ')
+  return parts.join(' AND ')
 }
 
 function buildExtractionReviewPrompt(input: {

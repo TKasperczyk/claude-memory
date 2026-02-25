@@ -20,8 +20,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
+    "@lancedb/lancedb": "^0.26.2",
     "@modelcontextprotocol/sdk": "^1.27.0",
-    "@zilliz/milvus2-sdk-node": "^2.5.10",
+    "apache-arrow": "^21.1.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {

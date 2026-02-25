@@ -1,7 +1,7 @@
 import { DEFAULT_CONFIG, type Config } from '../../types.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
 import { buildCandidateRecord } from '../../shared.js'
-import { updateRecord } from '../../milvus.js'
+import { updateRecord } from '../../lancedb.js'
 import {
   checkGlobalPromotion,
   findGlobalCandidates,

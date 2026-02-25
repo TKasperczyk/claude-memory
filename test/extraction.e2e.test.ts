@@ -23,13 +23,16 @@ import {
   createMockErrorRecord
 } from './helpers.js'
 import { parseTranscript } from '../src/lib/transcript.js'
-import { initMilvus, insertRecord, getRecord, findSimilar } from '../src/lib/milvus.js'
+import { initLanceDB, insertRecord, getRecord, findSimilar } from '../src/lib/lancedb.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
 import type { SessionEndInput } from '../src/lib/types.js'
 
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+
+// Ensure local user settings don't cause tests to early-exit extraction due to short transcripts.
+process.env.CC_MEMORIES_SETTING_EXTRACTION_MIN_TOKENS = '0'
 
 // Check for any available auth method (API key, env token, or credential files)
 const hasAnthropicAuth = !!(
@@ -57,7 +60,7 @@ const extractionSkipSuffix = extractionSkipReasons.length > 0
 describe('Extraction E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
-    await initMilvus(TEST_CONFIG)
+    await initLanceDB(TEST_CONFIG)
   })
 
   afterAll(async () => {
@@ -67,7 +70,7 @@ describe('Extraction E2E', () => {
 
   beforeEach(async () => {
     await dropTestCollection()
-    await initMilvus(TEST_CONFIG)
+    await initLanceDB(TEST_CONFIG)
   })
 
   describe('Transcript Parsing', () => {

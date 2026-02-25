@@ -126,9 +126,9 @@ export type ExtractionHookInput = SessionEndInput | PreCompactInput
 
 // Configuration
 export interface Config {
-  milvus: {
-    address: string
-    collection: string
+  lancedb: {
+    directory: string
+    table: string
   }
   embeddings: {
     baseUrl: string
@@ -147,9 +147,9 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  milvus: {
-    address: process.env.CC_MEMORIES_ADDRESS ?? 'localhost:19530',
-    collection: process.env.CC_MEMORIES_COLLECTION ?? 'cc_memories'
+  lancedb: {
+    directory: process.env.CC_MEMORIES_LANCEDB_DIR ?? `${process.env.HOME ?? ''}/.claude-memory/lancedb`,
+    table: process.env.CC_MEMORIES_COLLECTION ?? 'cc_memories'
   },
   embeddings: {
     baseUrl: process.env.CC_EMBEDDINGS_URL ?? 'http://127.0.0.1:1234/v1',
@@ -172,7 +172,7 @@ export const DEFAULT_CONFIG: Config = {
  */
 export function createConfig(overrides: Partial<Config> = {}): Config {
   return {
-    milvus: { ...DEFAULT_CONFIG.milvus, ...overrides.milvus },
+    lancedb: { ...DEFAULT_CONFIG.lancedb, ...overrides.lancedb },
     embeddings: { ...DEFAULT_CONFIG.embeddings, ...overrides.embeddings },
     extraction: { ...DEFAULT_CONFIG.extraction, ...overrides.extraction },
     injection: { ...DEFAULT_CONFIG.injection, ...overrides.injection }

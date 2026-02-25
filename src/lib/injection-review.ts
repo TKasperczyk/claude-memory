@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embedBatch } from './embed.js'
-import { buildFilter, escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './milvus.js'
+import { buildFilter, escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar } from './lancedb.js'
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { formatSimilarRecord } from './review-formatters.js'
@@ -173,7 +173,7 @@ async function buildInjectionReviewInput(
   sessionId: string,
   config: Config
 ): Promise<{ input: InjectionReviewInput; injectedEntries: InjectedMemoryEntry[] }> {
-  const session = loadSessionTracking(sessionId, config.milvus.collection)
+  const session = loadSessionTracking(sessionId, config.lancedb.table)
   if (!session) {
     throw new Error('Session not found.')
   }
@@ -370,13 +370,13 @@ function buildSimilarFilter(signals: ContextSignals, excludeIds: string[], cwd: 
     excludeDeprecated: true
   })
 
-  const parts: string[] = baseFilter ? [baseFilter] : ['scope == "global"']
+  const parts: string[] = baseFilter ? [baseFilter] : [`scope = 'global'`]
 
   for (const id of excludeIds) {
-    parts.push(`id != "${escapeFilterValue(id)}"`)
+    parts.push(`id <> '${escapeFilterValue(id)}'`)
   }
 
-  return parts.join(' && ')
+  return parts.join(' AND ')
 }
 
 function buildInjectionReviewPrompt(args: {

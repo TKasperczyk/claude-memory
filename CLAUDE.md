@@ -31,10 +31,10 @@ pnpm dev                # Vite frontend only
 ### Hooks (src/hooks/)
 - **pre-prompt.ts**: Retrieves and injects relevant memories before each prompt (hybrid search + MMR diversity)
 - **post-session.ts**: Launcher spawning a detached worker for fast exit
-- **post-session-worker.ts**: Extracts knowledge from transcripts via Claude, deduplicates, stores in Milvus
+- **post-session-worker.ts**: Extracts knowledge from transcripts via Claude, deduplicates, stores in LanceDB
 
 ### Core Library (src/lib/)
-- **Milvus layer** (milvus-*.ts): Connection, CRUD, hybrid search, schema with inline migrations via `ensureSchemaFields()`
+- **LanceDB layer** (lancedb-*.ts): Connection, CRUD, hybrid search, schema with inline migrations via `ensureSchemaFields()` (milvus.ts remains as a compatibility barrel)
 - **Extraction** (extract.ts): LLM-based transcript extraction + usefulness rating of injected memories
 - **Retrieval** (retrieval.ts, context.ts): Search, MMR reranking, signal extraction from prompts. Optional Haiku query planning (retrieval-query-generator.ts) enabled by `enableHaikuRetrieval` setting.
 - **Maintenance** (maintenance/): Stale deprecation, consolidation, global promotion, conflict resolution, warning synthesis. Has runners/ subdirectory for each operation.
@@ -52,10 +52,10 @@ Gemini audit (gemini-audit.ts), embedding migration/refresh, collection reset, d
 
 ## Environment
 
-**Required services:** Milvus (localhost:19530), embedding API (http://127.0.0.1:1234/v1), Anthropic API
+**Required services:** embedding API (http://127.0.0.1:1234/v1), Anthropic API (LanceDB is embedded; no server needed)
 
 **Key env vars:**
-- `CC_MEMORIES_ADDRESS`, `CC_MEMORIES_COLLECTION`, `CC_EMBEDDINGS_URL`, `CC_EMBEDDINGS_MODEL`
+- `CC_MEMORIES_LANCEDB_DIR`, `CC_MEMORIES_COLLECTION`, `CC_EMBEDDINGS_URL`, `CC_EMBEDDINGS_MODEL`
 - `CC_EXTRACTION_MODEL` (default: claude-sonnet-4-5-20250929)
 - `CC_MEMORIES_SETTING_*`: Override any setting (e.g., `CC_MEMORIES_SETTING_MIN_SEMANTIC_SIMILARITY=0.4`)
 - `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`

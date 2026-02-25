@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { createHash } from 'crypto'
-import { fetchRecordsByIds } from './milvus.js'
+import { fetchRecordsByIds } from './lancedb.js'
 import { loadSettings, type MaintenanceSettings } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import {

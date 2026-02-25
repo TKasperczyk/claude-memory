@@ -43,12 +43,12 @@ Definitions:
 - semanticQuery: 1-3 sentences capturing the core technical intent; good for embeddings. Strip conversational framing.
 Examples:
 CONTEXT:
-User: "We store embeddings in Milvus under collection cc_memories."
-Assistant: "Use the Milvus client."
+User: "We store embeddings in LanceDB under table cc_memories."
+Assistant: "Use the LanceDB client."
 FOCUS: "How do I query it?"
-resolvedQuery: "How do I query the Milvus collection cc_memories?"
-keywordQueries: ["Milvus", "cc_memories", "query collection"]
-semanticQuery: "How to query the Milvus collection cc_memories for stored embeddings."
+resolvedQuery: "How do I query the LanceDB table cc_memories?"
+keywordQueries: ["LanceDB", "cc_memories", "query table"]
+semanticQuery: "How to query the LanceDB table cc_memories for stored embeddings."
 
 CONTEXT:
 User: "The \`xclip -selection clipboard\` command overwrote my clipboard."

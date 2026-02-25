@@ -1,4 +1,3 @@
-import { type RowData } from '@zilliz/milvus2-sdk-node'
 import { embed, ensureEmbeddingDim } from './embed.js'
 import { getRecordSupplementalEmbeddingParts } from './record-fields.js'
 import { buildExactText } from './shared.js'
@@ -7,7 +6,7 @@ import {
   EXACT_TEXT_MAX_LENGTH,
   SOURCE_EXCERPT_MAX_LENGTH,
   SOURCE_SESSION_ID_MAX_LENGTH
-} from './milvus-schema.js'
+} from './lancedb-schema.js'
 import {
   type Config,
   type MemoryRecord,
@@ -15,7 +14,9 @@ import {
 } from './types.js'
 import { isValidConfidence, isValidOutcome, isValidSeverity, normalizeScope } from './parsing.js'
 
-export async function buildMilvusRow(record: MemoryRecord, config: Config): Promise<RowData> {
+export type LanceRow = Record<string, unknown>
+
+export async function buildLanceRow(record: MemoryRecord, config: Config): Promise<LanceRow> {
   const normalized = normalizeRecord(record)
   const content = serializeRecord(normalized)
   if (content.length > CONTENT_MAX_LENGTH) {
@@ -31,6 +32,9 @@ export async function buildMilvusRow(record: MemoryRecord, config: Config): Prom
     ?? await embed(buildEmbeddingInput(normalized, exactTextRaw, content), config)
   ensureEmbeddingDim(embedding)
 
+  // LanceDB's JS SDK needs plain number[] for FixedSizeList columns — Float32Array breaks inferSchema
+  const embeddingArray = Array.isArray(embedding) ? embedding : Array.from(embedding as unknown as ArrayLike<number>)
+
   return {
     id: normalized.id,
     type: normalized.type,
@@ -38,7 +42,6 @@ export async function buildMilvusRow(record: MemoryRecord, config: Config): Prom
     exact_text: exactText,
     project: normalized.project ?? '',
     scope: normalized.scope,
-    domain: '', // deprecated field, kept for schema compat
     timestamp: toInt64(normalized.timestamp, Date.now()),
     success_count: toInt64(normalized.successCount, 0),
     failure_count: toInt64(normalized.failureCount, 0),
@@ -54,7 +57,7 @@ export async function buildMilvusRow(record: MemoryRecord, config: Config): Prom
     last_warning_synthesis_check: toInt64(normalized.lastWarningSynthesisCheck, 0),
     source_session_id: sourceSessionId ? truncateString(sourceSessionId, SOURCE_SESSION_ID_MAX_LENGTH) : null,
     source_excerpt: sourceExcerpt ? truncateString(sourceExcerpt, SOURCE_EXCERPT_MAX_LENGTH) : null,
-    embedding
+    embedding: embeddingArray
   }
 }
 
@@ -136,8 +139,24 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
     return null
   }
 
-  if (Array.isArray(row.embedding)) {
-    record.embedding = row.embedding as number[]
+  const embeddingValue = row.embedding
+  if (Array.isArray(embeddingValue)) {
+    record.embedding = embeddingValue as number[]
+  } else if (embeddingValue && typeof embeddingValue === 'object') {
+    if (ArrayBuffer.isView(embeddingValue)) {
+      record.embedding = Array.from(embeddingValue as unknown as ArrayLike<number>)
+    } else if (typeof (embeddingValue as { toArray?: unknown }).toArray === 'function') {
+      try {
+        const arr = (embeddingValue as { toArray: () => unknown }).toArray()
+        if (Array.isArray(arr)) {
+          record.embedding = arr as number[]
+        } else if (arr && typeof arr === 'object' && ArrayBuffer.isView(arr)) {
+          record.embedding = Array.from(arr as unknown as ArrayLike<number>)
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
 
   return record
@@ -226,7 +245,8 @@ function truncateString(value: string, maxLength: number): string {
   return value.slice(0, maxLength)
 }
 
-function toInt64(value: number | string | undefined, fallback: number): number {
+function toInt64(value: number | string | bigint | undefined, fallback: number): number {
+  if (typeof value === 'bigint') return Number(value)
   if (typeof value === 'number' && !Number.isNaN(value)) return Math.trunc(value)
   if (typeof value === 'string' && value.trim() !== '') {
     const parsed = Number(value)

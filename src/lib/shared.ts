@@ -62,7 +62,9 @@ export function sanitizeSessionId(sessionId: string): string {
 }
 
 export function escapeFilterValue(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  // Escape SQL string literal content for DataFusion/LanceDB filters.
+  // We always wrap values in single quotes, so escape single quotes by doubling.
+  return value.replace(/'/g, "''")
 }
 
 const UNKNOWN_RECORD_SUMMARY: Record<RecordType, string> = {

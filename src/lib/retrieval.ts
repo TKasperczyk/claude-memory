@@ -1,5 +1,5 @@
 import { truncateText, withTimeout } from './shared.js'
-import { closeMilvus, initMilvus, hybridSearch, computeUsageRatio } from './milvus.js'
+import { closeLanceDB, initLanceDB, hybridSearch, computeUsageRatio } from './lancedb.js'
 import { buildContext, extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embed } from './embed.js'
 import { mergeNearMisses, buildExclusionReason } from './diagnostics.js'
@@ -95,10 +95,10 @@ export async function retrieveContext(
 
   const result = await withTimeout(async (signal) => {
     const unregister = registerAbortCleanup(signal, () => {
-      void closeMilvus()
+      void closeLanceDB()
     })
     try {
-      await initMilvus(runtimeConfig)
+      await initLanceDB(runtimeConfig)
       const searchResult = await searchMemories(
         input.prompt,
         signals,
@@ -136,7 +136,7 @@ export async function retrieveContext(
   }, {
     timeoutMs: settings.prePromptTimeoutMs,
     onTimeout: () => {
-      void closeMilvus()
+      void closeLanceDB()
     }
   })
 
@@ -216,7 +216,7 @@ async function searchMemories(
       outputTokens: queryPlanTokenUsage.outputTokens,
       cacheCreationInputTokens: queryPlanTokenUsage.cacheCreationInputTokens,
       cacheReadInputTokens: queryPlanTokenUsage.cacheReadInputTokens
-    }], { collection: config.milvus.collection })
+    }], { collection: config.lancedb.table })
   }
   const queryPlan = queryPlanResult?.plan ?? null
   if (settings.enableHaikuRetrieval && !queryPlan) {
@@ -689,7 +689,7 @@ function normalizeKeywordQueries(
 
   // Drop queries that are substrings of a strictly longer query.
   // Keyword search uses LIKE '%query%', so 'p4 brain' already matches
-  // everything 'p4' would. Keeping the short form wastes a Milvus query
+  // everything 'p4' would. Keeping the short form wastes a keyword query
   // and pulls in broader, less relevant results.
   const filtered = deduped.filter(query => {
     const lower = query.toLowerCase()
@@ -716,7 +716,7 @@ function normalizeSemanticQuery(
   if (!trimmed) return ''
 
   // Project context is NOT appended to the semantic query. Project scoping
-  // is handled by the Milvus filter expression (project == X || scope == "global"),
+  // is handled by the SQL filter expression (project = 'X' OR scope = 'global'),
   // so embedding it into the query vector is redundant and actively harmful —
   // it shifts the embedding away from content similarity toward project-name
   // similarity, degrading retrieval of global records from other projects.

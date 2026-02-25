@@ -1,14 +1,16 @@
 /**
- * Vector database operations for Claude Memory.
+ * LanceDB operations for Claude Memory.
  *
- * Note: This module preserves the historic `milvus` public API surface,
- * but the backend is now LanceDB (embedded, in-process).
+ * This is the canonical internal API surface. The legacy compatibility barrel
+ * lives at `milvus.ts`.
  */
 
-export { escapeFilterValue } from './shared.js'
 export type { MemoryStats } from '../../shared/types.js'
 
-export { initLanceDB as initMilvus, closeLanceDB as closeMilvus } from './lancedb-client.js'
+export { escapeFilterValue } from './shared.js'
+
+export { initLanceDB, closeLanceDB, resolveDirectory } from './lancedb-client.js'
+
 export {
   insertRecord,
   updateRecord,
@@ -37,4 +39,4 @@ export {
   computeUsageRatio
 } from './lancedb-search.js'
 
-export { buildLanceRow as buildMilvusRow, buildEmbeddingInput } from './lancedb-records.js'
+export { buildLanceRow, buildEmbeddingInput } from './lancedb-records.js'

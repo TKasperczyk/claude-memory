@@ -13,7 +13,7 @@ import {
   type WarningSeverity
 } from '../types.js'
 import type { MaintenanceCandidateGroup } from '../../../shared/types.js'
-import { buildEmbeddingInput, buildFilter, updateRecord, vectorSearchSimilar } from '../milvus.js'
+import { buildEmbeddingInput, buildFilter, updateRecord, vectorSearchSimilar } from '../lancedb.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../shared.js'
@@ -247,7 +247,7 @@ async function findWarningCandidates(
   const recheckCutoffValue = Math.trunc(recheckCutoff)
 
   // Query high-failure records and filter in code to include null/zero check timestamps.
-  const filter = `deprecated == false && failure_count >= ${resolvedMinFailures} && type in ["command", "error"]`
+  const filter = `deprecated = false AND failure_count >= ${resolvedMinFailures} AND type IN ('command', 'error')`
   const records = await fetchRecords(filter, config, true)
   const eligible = records.filter(record => {
     const lastCheck = record.lastWarningSynthesisCheck ?? 0
@@ -431,7 +431,7 @@ export async function runWarningSynthesis(
   candidates: MaintenanceCandidateGroup[]
 }> {
   const maintenance = resolveMaintenanceSettings(settings)
-  const { insertRecord } = await import('../milvus.js')
+  const { insertRecord } = await import('../lancedb.js')
   const actions: WarningSynthesisAction[] = []
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0

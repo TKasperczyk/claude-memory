@@ -8,7 +8,7 @@ import {
   type Config,
   type MemoryRecord
 } from '../types.js'
-import { queryRecords } from '../milvus.js'
+import { queryRecords } from '../lancedb.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { normalizeStep } from '../shared.js'
 
@@ -26,7 +26,7 @@ export async function findStaleRecords(
 ): Promise<MemoryRecord[]> {
   const maintenance = resolveMaintenanceSettings(settings)
   const cutoff = Date.now() - maintenance.staleDays * 24 * 60 * 60 * 1000
-  const filter = `deprecated == false && last_used < ${Math.trunc(cutoff)}`
+  const filter = `deprecated = false AND last_used < ${Math.trunc(cutoff)}`
   return fetchRecords(filter, config, false)
 }
 
@@ -37,12 +37,12 @@ export async function findGlobalCandidates(
   const maintenance = resolveMaintenanceSettings(settings)
   const candidates: MemoryRecord[] = []
   const types = ['error', 'command', 'discovery'] as const
-  const typeFilter = types.map(type => `type == "${type}"`).join(' || ')
+  const typeFilter = types.map(type => `type = '${type}'`).join(' OR ')
   const countFilter = [
-    `(type == "command" && success_count >= ${maintenance.globalPromotionMinSuccessCount})`,
-    `(type != "command" && usage_count >= ${maintenance.globalPromotionMinSuccessCount})`
-  ].join(' || ')
-  const filter = ['deprecated == false', `(${typeFilter})`, `(${countFilter})`].join(' && ')
+    `(type = 'command' AND success_count >= ${maintenance.globalPromotionMinSuccessCount})`,
+    `(type <> 'command' AND usage_count >= ${maintenance.globalPromotionMinSuccessCount})`
+  ].join(' OR ')
+  const filter = ['deprecated = false', `(${typeFilter})`, `(${countFilter})`].join(' AND ')
   const records = await fetchRecords(filter, config, false)
 
   for (const record of records) {
@@ -62,7 +62,7 @@ export async function findLowUsageRecords(
 ): Promise<MemoryRecord[]> {
   const maintenance = resolveMaintenanceSettings(settings)
   // Find records retrieved at least N times with usage ratio below threshold
-  const filter = `deprecated == false && retrieval_count >= ${maintenance.lowUsageMinRetrievals}`
+  const filter = `deprecated = false AND retrieval_count >= ${maintenance.lowUsageMinRetrievals}`
   const records = await fetchRecords(filter, config, false)
 
   return records.filter(record => {
@@ -79,7 +79,7 @@ export async function findLowUsageHighRetrieval(
   settings?: MaintenanceSettings
 ): Promise<MemoryRecord[]> {
   const maintenance = resolveMaintenanceSettings(settings)
-  const filter = ['deprecated == false', `retrieval_count >= ${maintenance.lowUsageHighRetrievalMin}`].join(' && ')
+  const filter = ['deprecated = false', `retrieval_count >= ${maintenance.lowUsageHighRetrievalMin}`].join(' AND ')
   const records = await fetchRecords(filter, config, false)
   return records.filter(record => (record.usageCount ?? 0) === 0)
 }
@@ -94,7 +94,7 @@ export async function findStaleUnusedRecords(
 ): Promise<MemoryRecord[]> {
   const maintenance = resolveMaintenanceSettings(settings)
   const cutoff = Date.now() - maintenance.staleUnusedDays * 24 * 60 * 60 * 1000
-  const filter = ['deprecated == false', `timestamp < ${Math.trunc(cutoff)}`].join(' && ')
+  const filter = ['deprecated = false', `timestamp < ${Math.trunc(cutoff)}`].join(' AND ')
   const records = await fetchRecords(filter, config, false)
   return records.filter(record => (record.usageCount ?? 0) === 0)
 }

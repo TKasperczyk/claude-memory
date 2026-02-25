@@ -1,6 +1,6 @@
-import { ConsistencyLevelEnum } from '@zilliz/milvus2-sdk-node'
 import { embed, ensureEmbeddingDim } from './embed.js'
 import { buildExclusionReason } from './diagnostics.js'
+import { createLogger } from './logger.js'
 import { escapeFilterValue } from './shared.js'
 import {
   DEFAULT_CONFIG,
@@ -16,15 +16,15 @@ import {
   type MemoryRecord,
   type RecordType
 } from './types.js'
-import { OUTPUT_FIELDS } from './milvus-schema.js'
-import { ensureClient } from './milvus-client.js'
+import { OUTPUT_FIELDS } from './lancedb-schema.js'
+import { ensureClient } from './lancedb-client.js'
 import {
   buildEmbeddingInput,
   parseRecordFromRow,
   resolveProject
-} from './milvus-records.js'
+} from './lancedb-records.js'
 
-const SEARCH_NPROBE = 64
+const logger = createLogger('lancedb-search')
 
 export async function hybridSearch(
   params: HybridSearchParamsWithDiagnostic,
@@ -43,7 +43,7 @@ export async function hybridSearch(
   config: Config = DEFAULT_CONFIG
 ): Promise<HybridSearchResult[] | DiagnosticSearchResults> {
   try {
-    const client = await ensureClient(config)
+    const { table } = await ensureClient(config)
 
     const abortSignal = params.signal
     if (abortSignal?.aborted) {
@@ -109,16 +109,15 @@ export async function hybridSearch(
         throw new Error('Search aborted')
       }
       const keywordFilter = buildKeywordFilter(trimmedQuery, baseFilter)
-      const keywordResults = await client.query({
-        collection_name: config.milvus.collection,
-        filter: keywordFilter,
-        output_fields: outputFields,
-        limit: keywordLimit,
-        consistency_level: ConsistencyLevelEnum.Strong
-      })
+      const query = table
+        .query()
+        .where(keywordFilter)
+        .select(outputFields)
+        .limit(keywordLimit)
+      const keywordRows = await query.toArray()
 
-      for (const row of keywordResults.data ?? []) {
-        const record = parseRecordFromRow(row)
+      for (const row of keywordRows ?? []) {
+        const record = parseRecordFromRow(row as Record<string, unknown>)
         if (!record) continue
         combined.set(record.id, { record, similarity: 0, keywordMatch: true })
       }
@@ -131,22 +130,26 @@ export async function hybridSearch(
       const vector = params.embedding ?? await embed(trimmedQuery, config, { signal: abortSignal })
       ensureEmbeddingDim(vector)
 
-      const searchResults = await client.search({
-        collection_name: config.milvus.collection,
-        data: [vector],
-        limit: vectorLimit,
-        filter: baseFilter,
-        output_fields: outputFields,
-        params: { nprobe: SEARCH_NPROBE },
-        consistency_level: ConsistencyLevelEnum.Strong
-      })
+      const vq = table
+        .vectorSearch(vector)
+        .distanceType('cosine')
+      if (baseFilter) vq.where(baseFilter)
+      vq.select([...outputFields, '_distance'])
+	      vq.limit(vectorLimit)
+	      const vectorRows = await vq.toArray()
 
-      for (const row of searchResults.results ?? []) {
-        const similarity = row.score ?? 0
-        if (similarity < minSimilarity) {
-          if (diagnostic) {
-            const record = parseRecordFromRow(row)
-            if (!record) continue
+	      for (const row of vectorRows ?? []) {
+	        const rawDistance = (row as any)._distance
+	        if (typeof rawDistance !== 'number' || !Number.isFinite(rawDistance)) {
+	          logger.debug(`Skipping vector search row with missing/invalid _distance: ${String(rawDistance)}`)
+	          continue
+	        }
+	        const similarity = 1 - rawDistance
+
+	        if (similarity < minSimilarity) {
+	          if (diagnostic) {
+	            const record = parseRecordFromRow(row as Record<string, unknown>)
+	            if (!record) continue
             if (!combined.has(record.id)) {
               const scored = buildScoredRecord({ record, similarity, keywordMatch: false })
               addNearMiss(
@@ -157,7 +160,8 @@ export async function hybridSearch(
           }
           continue
         }
-        const record = parseRecordFromRow(row)
+
+        const record = parseRecordFromRow(row as Record<string, unknown>)
         if (!record) continue
         const existing = combined.get(record.id)
         if (existing) {
@@ -215,7 +219,7 @@ export async function findSimilar(
   extraFilter?: string
 ): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
   try {
-    const client = await ensureClient(config)
+    const { table } = await ensureClient(config)
 
     const vector = record.embedding ?? await embed(buildEmbeddingInput(record), config)
     ensureEmbeddingDim(vector)
@@ -228,29 +232,32 @@ export async function findSimilar(
     })
     const filterParts = [baseFilter, extraFilter]
       .filter((part): part is string => Boolean(part && part.trim()))
-    const filter = filterParts.length > 0 ? filterParts.join(' && ') : undefined
+    const filter = filterParts.length > 0 ? filterParts.join(' AND ') : undefined
 
-    const searchResults = await client.search({
-      collection_name: config.milvus.collection,
-      data: [vector],
-      limit,
-      filter,
-      output_fields: OUTPUT_FIELDS,
-      params: { nprobe: SEARCH_NPROBE },
-      consistency_level: ConsistencyLevelEnum.Strong
-    })
+    const vq = table.vectorSearch(vector).distanceType('cosine')
+    if (filter) vq.where(filter)
+    vq.select([...OUTPUT_FIELDS, '_distance'])
+    vq.limit(limit)
 
-    const matches = (searchResults.results ?? [])
-      .map(row => {
-        const record = parseRecordFromRow(row)
-        return record ? { record, similarity: row.score ?? 0 } : null
-      })
-      .filter((match): match is { record: MemoryRecord; similarity: number } => Boolean(match))
-      .filter(result => result.similarity >= similarityThreshold)
+	    const rows = await vq.toArray()
 
-    matches.sort((a, b) => b.similarity - a.similarity)
-    return matches
-  } catch (error) {
+	    const matches: Array<{ record: MemoryRecord; similarity: number }> = []
+	    for (const row of rows ?? []) {
+	      const rawDistance = (row as any)._distance
+	      if (typeof rawDistance !== 'number' || !Number.isFinite(rawDistance)) {
+	        logger.debug(`Skipping findSimilar row with missing/invalid _distance: ${String(rawDistance)}`)
+	        continue
+	      }
+	      const similarity = 1 - rawDistance
+	      if (similarity < similarityThreshold) continue
+	      const record = parseRecordFromRow(row as Record<string, unknown>)
+	      if (!record) continue
+	      matches.push({ record, similarity })
+	    }
+
+	    matches.sort((a, b) => b.similarity - a.similarity)
+	    return matches
+	  } catch (error) {
     console.error('[claude-memory] findSimilar failed:', error)
     throw error
   }
@@ -266,40 +273,45 @@ export async function vectorSearchSimilar(
   config: Config = DEFAULT_CONFIG
 ): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
   try {
-    const client = await ensureClient(config)
+    const { table } = await ensureClient(config)
     ensureEmbeddingDim(embedding)
 
     const limit = options.limit ?? 10
     const similarityThreshold = options.similarityThreshold ?? 0
 
-    const searchResults = await client.search({
-      collection_name: config.milvus.collection,
-      data: [embedding],
-      limit,
-      filter: options.filter,
-      output_fields: OUTPUT_FIELDS,
-      params: { nprobe: SEARCH_NPROBE },
-      consistency_level: ConsistencyLevelEnum.Strong
-    })
+    const vq = table.vectorSearch(embedding).distanceType('cosine')
+    if (options.filter) vq.where(options.filter)
+    vq.select([...OUTPUT_FIELDS, '_distance'])
+    vq.limit(limit)
 
-    const matches = (searchResults.results ?? [])
-      .map(row => {
-        const record = parseRecordFromRow(row)
-        return record ? { record, similarity: row.score ?? 0 } : null
-      })
-      .filter((match): match is { record: MemoryRecord; similarity: number } => Boolean(match))
-      .filter(result => result.similarity >= similarityThreshold)
+	    const rows = await vq.toArray()
 
-    matches.sort((a, b) => b.similarity - a.similarity)
-    return matches
-  } catch (error) {
+	    const matches: Array<{ record: MemoryRecord; similarity: number }> = []
+	    for (const row of rows ?? []) {
+	      const rawDistance = (row as any)._distance
+	      if (typeof rawDistance !== 'number' || !Number.isFinite(rawDistance)) {
+	        logger.debug(`Skipping vectorSearchSimilar row with missing/invalid _distance: ${String(rawDistance)}`)
+	        continue
+	      }
+	      const similarity = 1 - rawDistance
+	      if (similarity < similarityThreshold) continue
+	      const record = parseRecordFromRow(row as Record<string, unknown>)
+	      if (!record) continue
+	      matches.push({ record, similarity })
+	    }
+
+	    matches.sort((a, b) => b.similarity - a.similarity)
+	    return matches
+	  } catch (error) {
     console.error('[claude-memory] vectorSearchSimilar failed:', error)
     throw error
   }
 }
 
 export function escapeLikeValue(value: string): string {
-  const escapedWildcards = value.replace(/[%_]/g, '\\$&')
+  // Escape SQL LIKE wildcards. We also escape backslashes since we use backslash as the escape char.
+  const escapedSlashes = value.replace(/\\/g, '\\\\')
+  const escapedWildcards = escapedSlashes.replace(/[%_]/g, '\\$&')
   return escapeFilterValue(escapedWildcards)
 }
 
@@ -316,36 +328,36 @@ export function buildFilter(filters: {
   if (filters.project) {
     const allProjects = [filters.project, ...(filters.ancestorProjects ?? [])]
     const projectClause = allProjects.length === 1
-      ? `project == "${escapeFilterValue(allProjects[0])}"`
-      : `project in [${allProjects.map(p => `"${escapeFilterValue(p)}"`).join(', ')}]`
+      ? `project = '${escapeFilterValue(allProjects[0])}'`
+      : `project IN (${allProjects.map(p => `'${escapeFilterValue(p)}'`).join(', ')})`
     if (filters.includeGlobal) {
-      parts.push(`(${projectClause} || scope == "global")`)
+      parts.push(`(${projectClause} OR scope = 'global')`)
     } else {
       parts.push(projectClause)
     }
   }
 
   if (filters.type) {
-    parts.push(`type == "${escapeFilterValue(filters.type)}"`)
+    parts.push(`type = '${escapeFilterValue(filters.type)}'`)
   }
 
   if (filters.excludeId) {
-    parts.push(`id != "${escapeFilterValue(filters.excludeId)}"`)
+    parts.push(`id <> '${escapeFilterValue(filters.excludeId)}'`)
   }
 
   if (filters.excludeDeprecated) {
-    parts.push('deprecated == false')
+    parts.push('deprecated = false')
   }
 
   if (parts.length === 0) return undefined
-  return parts.join(' && ')
+  return parts.join(' AND ')
 }
 
 export function buildKeywordFilter(query: string, baseFilter?: string): string {
   const escaped = escapeLikeValue(query)
-  const likeClause = `exact_text like "%${escaped}%"`
+  const likeClause = `exact_text LIKE '%${escaped}%' ESCAPE '\\'`
   if (!baseFilter) return likeClause
-  return `${baseFilter} && ${likeClause}`
+  return `${baseFilter} AND ${likeClause}`
 }
 
 export function computeUsageRatio(record: MemoryRecord): number {

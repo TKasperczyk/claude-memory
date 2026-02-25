@@ -6,7 +6,7 @@ import type { NearMissRecord } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { isPlainObject, parseOptionalBoolean } from '../utils/params.js'
-import { ensureConfigInitialized } from '../utils/milvus.js'
+import { ensureConfigInitialized } from '../utils/lancedb.js'
 
 const logger = createLogger('preview')
 

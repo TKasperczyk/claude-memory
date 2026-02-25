@@ -4,7 +4,7 @@ import {
   updateRecord,
   deleteRecord,
   getRecord
-} from '../../../src/lib/milvus.js'
+} from '../../../src/lib/lancedb.js'
 import {
   asBoolean,
   asConfidence,

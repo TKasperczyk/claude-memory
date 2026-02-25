@@ -5,7 +5,7 @@ import {
   type Config,
   type MemoryRecord
 } from '../types.js'
-import { batchUpdateRecords, buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from '../milvus.js'
+import { batchUpdateRecords, buildFilter, findSimilar, queryRecords, updateRecord, vectorSearchSimilar } from '../lancedb.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import {
@@ -56,7 +56,7 @@ async function findNewConflicts(
 ): Promise<ConflictPair[]> {
   const maintenance = resolveMaintenanceSettings(settings)
   const pairs: ConflictPair[] = []
-  const filter = 'deprecated == false && last_conflict_check == 0'
+  const filter = 'deprecated = false AND last_conflict_check = 0'
   const unchecked = await fetchRecords(filter, config, true)
   // Track pairs we've already seen to avoid duplicates (A vs B and B vs A)
   const seenPairs = new Set<string>()
@@ -104,7 +104,7 @@ export async function findContradictionPairs(
   while (true) {
     const batch = await queryRecords(
       {
-        filter: 'deprecated == false',
+        filter: 'deprecated = false',
         limit: QUERY_PAGE_SIZE,
         offset,
         includeEmbeddings: true
@@ -322,7 +322,7 @@ export async function runConflictResolution(
 
     logger.info('Fetching unchecked records...')
     // Include embeddings - needed for batchUpdateRecords to rebuild rows without re-embedding
-    const unchecked = await fetchRecords('deprecated == false && last_conflict_check == 0', config, true)
+    const unchecked = await fetchRecords('deprecated = false AND last_conflict_check = 0', config, true)
     candidates = unchecked.length
     logger.info(`Found ${candidates} unchecked records`)
 
@@ -513,7 +513,7 @@ export async function runConflictResolution(
 }
 
 function buildContradictionFilter(record: MemoryRecord): string {
-  // For contradictions, we DO want to filter by project/domain since
+  // For contradictions, we DO want to filter by project since
   // the same command can legitimately have different outcomes in different projects.
   // Don't include global scope bypass (includeGlobal: false).
   return buildFilter({
@@ -521,7 +521,7 @@ function buildContradictionFilter(record: MemoryRecord): string {
     type: record.type,
     excludeId: record.id,
     excludeDeprecated: true
-  }) ?? 'deprecated == false'
+  }) ?? 'deprecated = false'
 }
 
 function buildContradictionInput(pair: ContradictionPair): Record<string, unknown> {

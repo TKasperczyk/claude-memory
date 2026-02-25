@@ -10,14 +10,14 @@ import {
   runMaintenanceOperation,
   type MaintenanceOperation
 } from '../../../src/lib/maintenance-api.js'
-import { countRecords, deleteByFilter } from '../../../src/lib/milvus.js'
+import { countRecords, deleteByFilter } from '../../../src/lib/lancedb.js'
 import { getMaintenanceReview, saveMaintenanceReview } from '../../../src/lib/review-storage.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
 import { getRequestConfig } from '../utils/config.js'
 import { isPlainObject } from '../utils/params.js'
-import { ensureConfigInitialized } from '../utils/milvus.js'
+import { ensureConfigInitialized } from '../utils/lancedb.js'
 
 const logger = createLogger('maintenance')
 
@@ -45,7 +45,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
     try {
       const { operation, resultId } = req.params
       const requestConfig = getRequestConfig(req, baseConfig)
-      const review = getMaintenanceReview(resultId, operation, requestConfig.milvus.collection)
+      const review = getMaintenanceReview(resultId, operation, requestConfig.lancedb.table)
       if (!review) {
         return res.status(404).json({ error: 'Review not found' })
       }
@@ -94,7 +94,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         try {
           const config = await ensureConfigInitialized(req, baseConfig)
           const review = await reviewMaintenanceResultStreaming(normalizedResult, config, stream.onThinking, stream.signal)
-          saveMaintenanceReview(review, config.milvus.collection)
+          saveMaintenanceReview(review, config.lancedb.table)
           stream.sendData({ result: review })
           stream.done()
         } catch (error) {
@@ -109,7 +109,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
       const config = await ensureConfigInitialized(req, baseConfig)
       const review = await reviewMaintenanceResult(normalizedResult, config)
-      saveMaintenanceReview(review, config.milvus.collection)
+      saveMaintenanceReview(review, config.lancedb.table)
       res.json(review)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -262,7 +262,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
   router.post('/api/maintenance/purge-deprecated', async (req, res) => {
     try {
       const config = await ensureConfigInitialized(req, baseConfig)
-      const deleted = await deleteByFilter('deprecated == true', config)
+      const deleted = await deleteByFilter('deprecated = true', config)
       logger.info(`Purged ${deleted} deprecated records`)
       res.json({ deleted })
     } catch (error) {
@@ -274,7 +274,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
   router.get('/api/maintenance/deprecated-count', async (req, res) => {
     try {
       const config = await ensureConfigInitialized(req, baseConfig)
-      const count = await countRecords({ filter: 'deprecated == true' }, config)
+      const count = await countRecords({ filter: 'deprecated = true' }, config)
       res.json({ count })
     } catch (error) {
       logger.error('Failed to count deprecated records', error)

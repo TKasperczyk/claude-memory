@@ -1,90 +1,45 @@
-import { MilvusClient } from '@zilliz/milvus2-sdk-node'
+import { connect } from '@lancedb/lancedb'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
+import { closeLanceDB, countRecords, flushCollection } from '../src/lib/lancedb.js'
 import type { CommandRecord, DiscoveryRecord, ErrorRecord, MemoryRecord, ProcedureRecord } from '../src/lib/types.js'
 
-let client: MilvusClient | null = null
 const tempFixtureDirs: string[] = []
 
 /**
- * Get Milvus client for test operations.
- */
-export function getTestClient(): MilvusClient {
-  if (!client) {
-    client = new MilvusClient({ address: TEST_CONFIG.milvus.address })
-  }
-  return client
-}
-
-/**
- * Drop the test collection if it exists.
+ * Drop the test table if it exists.
  */
 export async function dropTestCollection(): Promise<void> {
-  const milvus = getTestClient()
+  await closeLanceDB()
 
-  // Release collection first if loaded
+  fs.mkdirSync(TEST_CONFIG.lancedb.directory, { recursive: true })
+  const conn = await connect(TEST_CONFIG.lancedb.directory)
+  const names = await conn.tableNames()
+  if (names.includes(TEST_CONFIG.lancedb.table)) {
+    await conn.dropTable(TEST_CONFIG.lancedb.table)
+  }
   try {
-    await milvus.releaseCollection({
-      collection_name: TEST_CONFIG.milvus.collection
-    })
+    conn.close()
   } catch {
-    // Ignore - collection might not exist or not be loaded
+    // ignore
   }
-
-  const hasCollection = await milvus.hasCollection({
-    collection_name: TEST_CONFIG.milvus.collection
-  })
-
-  if (hasCollection.value) {
-    await milvus.dropCollection({
-      collection_name: TEST_CONFIG.milvus.collection
-    })
-  }
-
-  // Wait a bit for Milvus to clean up
-  await sleep(100)
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 /**
- * Flush the test collection.
+ * Flush the test table (no-op for LanceDB).
  */
 export async function flushTestCollection(): Promise<void> {
-  const milvus = getTestClient()
-  await milvus.flush({
-    collection_names: [TEST_CONFIG.milvus.collection]
-  })
+  await flushCollection(TEST_CONFIG)
 }
 
 /**
- * Count records in test collection.
+ * Count records in test table.
  */
 export async function countTestRecords(): Promise<number> {
-  const milvus = getTestClient()
-
-  const hasCollection = await milvus.hasCollection({
-    collection_name: TEST_CONFIG.milvus.collection
-  })
-
-  if (!hasCollection.value) return 0
-
-  await milvus.loadCollection({
-    collection_name: TEST_CONFIG.milvus.collection
-  })
-
-  const result = await milvus.query({
-    collection_name: TEST_CONFIG.milvus.collection,
-    filter: 'id != ""',
-    output_fields: ['id']
-  })
-
-  return result.data?.length ?? 0
+  return await countRecords({}, TEST_CONFIG)
 }
 
 /**

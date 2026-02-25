@@ -4,7 +4,7 @@ import fs from 'fs'
 import { homedir } from 'os'
 import path from 'path'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
-import { queryRecords } from './milvus.js'
+import { queryRecords } from './lancedb.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { looksLikeCommand, normalizeStep, readFileIfExists, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
@@ -100,7 +100,7 @@ export interface SuggestionSummary {
 export async function findSkillCandidatesHeuristic(
   config: Config = DEFAULT_CONFIG
 ): Promise<ProcedureRecord[]> {
-  const filter = `type == "procedure" && usage_count >= ${SKILL_SUCCESS_THRESHOLD} && deprecated == false`
+  const filter = `type = 'procedure' AND usage_count >= ${SKILL_SUCCESS_THRESHOLD} AND deprecated = false`
   const records = await fetchRecords(filter, config)
 
   return records
@@ -113,7 +113,7 @@ export async function findSkillCandidatesHeuristic(
 export async function findClaudeMdCandidatesHeuristic(
   config: Config = DEFAULT_CONFIG
 ): Promise<ClaudeMdCandidateGroups> {
-  const filter = `type == "discovery" && usage_count >= ${CLAUDE_MD_SUCCESS_THRESHOLD} && deprecated == false`
+  const filter = `type = 'discovery' AND usage_count >= ${CLAUDE_MD_SUCCESS_THRESHOLD} AND deprecated = false`
   const records = await fetchRecords(filter, config)
   const verified = records
     .filter(isDiscoveryRecord)

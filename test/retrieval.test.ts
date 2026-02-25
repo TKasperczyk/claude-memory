@@ -3,7 +3,7 @@ import { DEFAULT_CONFIG, type HybridSearchResult, type NearMissRecord, type Retr
 import { retrieveContext } from '../src/lib/retrieval.js'
 import { createMockCommandRecord } from './helpers.js'
 import { loadSettings } from '../src/lib/settings.js'
-import { closeMilvus, hybridSearch, initMilvus } from '../src/lib/milvus.js'
+import { closeLanceDB, hybridSearch, initLanceDB } from '../src/lib/lancedb.js'
 import { embed } from '../src/lib/embed.js'
 import { generateRetrievalQueryPlan } from '../src/lib/retrieval-query-generator.js'
 import { recordTokenUsageEventsAsync } from '../src/lib/token-usage-events.js'
@@ -32,11 +32,11 @@ vi.mock('../src/lib/shared.js', async () => {
   }
 })
 
-vi.mock('../src/lib/milvus.js', async () => {
-  const actual = await vi.importActual<typeof import('../src/lib/milvus.js')>('../src/lib/milvus.js')
+vi.mock('../src/lib/lancedb.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/lib/lancedb.js')>('../src/lib/lancedb.js')
   return {
-    initMilvus: vi.fn(),
-    closeMilvus: vi.fn(),
+    initLanceDB: vi.fn(),
+    closeLanceDB: vi.fn(),
     hybridSearch: vi.fn(),
     computeUsageRatio: actual.computeUsageRatio
   }
@@ -91,8 +91,8 @@ const mockedHybridSearch = vi.mocked(hybridSearch)
 const mockedEmbed = vi.mocked(embed)
 const mockedGenerateRetrievalQueryPlan = vi.mocked(generateRetrievalQueryPlan)
 const mockedRecordTokenUsageEventsAsync = vi.mocked(recordTokenUsageEventsAsync)
-const mockedInitMilvus = vi.mocked(initMilvus)
-const mockedCloseMilvus = vi.mocked(closeMilvus)
+const mockedInitLanceDB = vi.mocked(initLanceDB)
+const mockedCloseLanceDB = vi.mocked(closeLanceDB)
 const mockedWithTimeout = vi.mocked(withTimeout)
 
 const makeSettings = (overrides: Partial<RetrievalSettings> = {}): RetrievalSettings => ({
@@ -124,8 +124,8 @@ beforeEach(async () => {
   mockedEmbed.mockResolvedValue([0.95, 0.05])
   mockedGenerateRetrievalQueryPlan.mockResolvedValue(null)
   mockedHybridSearch.mockResolvedValue([])
-  mockedInitMilvus.mockResolvedValue(undefined)
-  mockedCloseMilvus.mockResolvedValue(undefined)
+  mockedInitLanceDB.mockResolvedValue(undefined)
+  mockedCloseLanceDB.mockResolvedValue(undefined)
   mockedWithTimeout.mockImplementation(actualShared.withTimeout)
 })
 
@@ -339,7 +339,7 @@ describe('Timeout handling', () => {
   it('returns timedOut when retrieval exceeds the configured timeout', async () => {
     vi.useFakeTimers()
     mockedLoadSettings.mockReturnValue(makeSettings({ prePromptTimeoutMs: 5 }))
-    mockedInitMilvus.mockImplementation(() => new Promise(() => {}))
+    mockedInitLanceDB.mockImplementation(() => new Promise(() => {}))
 
     const pending = retrieveContext(
       { prompt: 'long running retrieval', cwd: PROJECT_ROOT },

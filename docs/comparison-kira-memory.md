@@ -6,7 +6,7 @@
 |--------|---------------|----------------------------|
 | **Integration** | Hook-based (Claude Code hooks) | Full autonomous runtime + MCP server |
 | **Entry Points** | `pre-prompt.js`, `post-session.js` | Runtime with Ink CLI, autonomous tick mode |
-| **Persistence** | Milvus only | Milvus + JSONL stream + SQLite (commitments) + JSON files |
+| **Persistence** | LanceDB (embedded) | Vector DB + JSONL stream + SQLite (commitments) + JSON files |
 
 ## Memory Model
 
@@ -47,7 +47,7 @@
 
 ## Key Gaps in claude-memory
 
-1. **No sticky pool** - Searches Milvus on every prompt (more latency)
+1. **No sticky pool** - Searches the vector DB on every prompt (more latency)
 2. **No feedback loop** - Doesn't track if injected memories were useful
 3. **No decay system** - Memories don't fade based on age/usefulness
 4. **No tier system** - All memories treated equally

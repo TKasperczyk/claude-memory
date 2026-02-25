@@ -8,7 +8,7 @@ const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.claude-memory', 'config.jso
 
 function mergeConfig(base: Config, override: Partial<Config>): Config {
   return {
-    milvus: { ...base.milvus, ...override.milvus },
+    lancedb: { ...base.lancedb, ...override.lancedb },
     embeddings: { ...base.embeddings, ...override.embeddings },
     extraction: { ...base.extraction, ...override.extraction },
     injection: { ...base.injection, ...override.injection }

@@ -10,7 +10,7 @@ export function startStatsSnapshotScheduler(config: Config): void {
   const runSnapshot = async (): Promise<void> => {
     try {
       const stats = await buildMemoryStats(config)
-      const snapshot = saveStatsSnapshotIfNeeded(stats, { collection: config.milvus.collection })
+      const snapshot = saveStatsSnapshotIfNeeded(stats, { collection: config.lancedb.table })
       if (snapshot) {
         logger.info('Captured stats snapshot', { timestamp: snapshot.timestamp })
       }

@@ -1,7 +1,7 @@
 /**
  * Test maintenance operations in dry-run mode
  */
-import { initMilvus, queryRecords } from '../src/lib/milvus.js'
+import { initLanceDB, queryRecords } from '../src/lib/lancedb.js'
 import { loadConfig } from '../src/lib/config.js'
 import { findGitRoot } from '../src/lib/context.js'
 import {
@@ -17,8 +17,8 @@ async function main() {
   const configRoot = findGitRoot(process.cwd()) ?? process.cwd()
   const config = loadConfig(configRoot)
 
-  console.log('Initializing Milvus...')
-  await initMilvus(config)
+  console.log('Initializing LanceDB...')
+  await initLanceDB(config)
 
   // 1. Find contradiction pairs
   console.log('\n=== Contradiction Detection (dry-run) ===')
@@ -80,7 +80,7 @@ async function main() {
   // 3. Look at deprecated records to understand why they were deprecated
   console.log('\n=== Deprecated Records Analysis ===')
   const deprecated = await queryRecords({
-    filter: 'deprecated == true',
+    filter: 'deprecated = true',
     limit: 20,
     orderBy: 'timestamp_desc'
   }, config)

@@ -3,7 +3,7 @@
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { loadConfig } from './lib/config.js'
-import { initMilvus } from './lib/milvus.js'
+import { initLanceDB } from './lib/lancedb.js'
 import { resolveMaintenanceSettings } from './lib/settings.js'
 import { runConflictResolution } from './lib/maintenance.js'
 import {
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   const config = loadConfig(process.cwd())
   const dryRun = process.argv.slice(2).includes('--dry-run')
   const maintenanceSettings = resolveMaintenanceSettings()
-  await initMilvus(config)
+  await initLanceDB(config)
 
   console.error('[claude-memory] Maintenance started.')
 

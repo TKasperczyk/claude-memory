@@ -41,14 +41,14 @@ Five types of extractable knowledge:
 - `global` — Retrieved in all projects. Use for cross-project knowledge (e.g., git patterns, shell tricks)
 - Promotion: A project memory can be promoted to global if it proves useful across contexts. Criteria vary by type but generally require repeated success and sufficient usage.
 
-**Domain** is an organizational tag (e.g., "docker", "python", "web-dev"). Used for filtering and grouping, not retrieval scoring.
+**Domain** is deprecated and no longer persisted.
 
 ## Retrieval Pipeline
 
 When a user prompt arrives, the pre-prompt hook runs this pipeline:
 
 1. **Query planning** — Extracts keyword queries from the prompt (error messages, commands, key terms). Optionally uses Haiku for smarter query generation.
-2. **Keyword search** — Runs multiple keyword queries against Milvus (text match, no embeddings)
+2. **Keyword search** — Runs multiple keyword queries against LanceDB (text match, no embeddings)
 3. **Semantic search** — Embeds the prompt and finds similar vectors. Drops results below `minSemanticSimilarity`.
 4. **Unified scoring** — All candidates are re-scored:
    ```

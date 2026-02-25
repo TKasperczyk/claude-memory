@@ -11,13 +11,13 @@
 
 import { loadConfig } from '../src/lib/config.js'
 import {
-  initMilvus,
-  closeMilvus,
+  initLanceDB,
+  closeLanceDB,
   getRecord,
   findSimilar,
   iterateRecords,
   computeUsageRatio
-} from '../src/lib/milvus.js'
+} from '../src/lib/lancedb.js'
 import { type Config, type MemoryRecord, type HybridSearchResult } from '../src/lib/types.js'
 import { retrieveContext } from '../src/lib/retrieval.js'
 import { buildMemoryStats } from '../src/lib/memory-stats.js'
@@ -260,7 +260,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   settings: cmdSettings,
 }
 
-const NO_MILVUS_COMMANDS = new Set(['settings', 'help', 'embedding'])
+const NO_DB_COMMANDS = new Set(['settings', 'help', 'embedding'])
 
 async function main(): Promise<void> {
   if (!command || command === 'help' || flags.help === true) {
@@ -276,15 +276,15 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig(process.cwd())
-  if (!NO_MILVUS_COMMANDS.has(command)) {
-    await initMilvus(config)
+  if (!NO_DB_COMMANDS.has(command)) {
+    await initLanceDB(config)
   }
 
   try {
     await handler(positionalArgs, flags)
   } finally {
-    if (!NO_MILVUS_COMMANDS.has(command)) {
-      await closeMilvus()
+    if (!NO_DB_COMMANDS.has(command)) {
+      await closeLanceDB()
     }
   }
 }
@@ -904,8 +904,8 @@ async function cmdSettings(): Promise<void> {
   console.log()
 
   printHeader('CONFIG')
-  printStat('milvus.address', config.milvus.address)
-  printStat('milvus.collection', config.milvus.collection)
+  printStat('lancedb.directory', config.lancedb.directory)
+  printStat('lancedb.table', config.lancedb.table)
   printStat('embeddings.baseUrl', config.embeddings.baseUrl)
   printStat('embeddings.model', config.embeddings.model)
   printStat('extraction.model', config.extraction.model)
@@ -1056,7 +1056,7 @@ ${c.cyan}Similar Options:${c.reset}
 ${c.cyan}Export Options:${c.reset}
   --format json|jsonl       Output format (default: json)
   --include-embeddings      Include embedding vectors
-  --filter <expr>           Milvus filter expression
+  --filter <expr>           SQL filter expression (DataFusion)
 
 ${c.cyan}Embedding Options:${c.reset}
   --full                    Include full vector in JSON output

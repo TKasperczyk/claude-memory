@@ -9,7 +9,7 @@ import {
   insertRecord,
   queryRecords,
   resetCollection
-} from '../../../src/lib/milvus.js'
+} from '../../../src/lib/lancedb.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
 import { getRetrievalActivity } from '../../../src/lib/retrieval-events.js'
 import { getTokenUsageActivity, backfillFromExtractionRuns } from '../../../src/lib/token-usage-events.js'
@@ -31,7 +31,7 @@ import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { getRequestConfig } from '../utils/config.js'
 import { isPlainObject, parseNonNegativeInt } from '../utils/params.js'
-import { ensureConfigInitialized } from '../utils/milvus.js'
+import { ensureConfigInitialized } from '../utils/lancedb.js'
 
 const logger = createLogger('memory')
 
@@ -62,7 +62,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
       const activity = getRetrievalActivity(period, {
         limit,
-        collection: config.milvus.collection
+        collection: config.lancedb.table
       })
 
       res.json(activity)
@@ -80,7 +80,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
       const history = getStatsHistory(period, {
         limit,
-        collection: requestConfig.milvus.collection
+        collection: requestConfig.lancedb.table
       })
 
       res.json(history)
@@ -100,7 +100,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const activity = getTokenUsageActivity(period, {
         limit,
         source,
-        collection: config.milvus.collection
+        collection: config.lancedb.table
       })
 
       res.json(activity)
@@ -113,7 +113,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
   router.post('/api/token-usage/backfill', (req, res) => {
     try {
       const config = getRequestConfig(req, baseConfig)
-      const count = backfillFromExtractionRuns(config.milvus.collection)
+      const count = backfillFromExtractionRuns(config.lancedb.table)
       res.json({ backfilledEvents: count })
     } catch (error) {
       logger.error('Failed to backfill token usage', error)
@@ -132,11 +132,11 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const deprecated = req.query.deprecated === 'true'
 
       const filterParts: string[] = []
-      if (type) filterParts.push(`type == "${escapeFilterValue(type)}"`)
-      if (project) filterParts.push(`project == "${escapeFilterValue(project)}"`)
-      if (!deprecated) filterParts.push('deprecated == false')
+      if (type) filterParts.push(`type = '${escapeFilterValue(type)}'`)
+      if (project) filterParts.push(`project = '${escapeFilterValue(project)}'`)
+      if (!deprecated) filterParts.push('deprecated = false')
 
-      const filter = filterParts.length > 0 ? filterParts.join(' && ') : undefined
+      const filter = filterParts.length > 0 ? filterParts.join(' AND ') : undefined
 
       const [records, total] = await Promise.all([
         queryRecords({ filter, limit, offset, orderBy: 'timestamp_desc' }, config),
@@ -200,7 +200,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
    * POST /api/memories - Insert a new memory record.
    * Used by evaluation frameworks to programmatically add memories.
    *
-   * Supports X-Milvus-Collection header for collection isolation.
+   * Supports X-LanceDB-Table header for table isolation.
    */
   router.post('/api/memories', async (req, res) => {
     try {
