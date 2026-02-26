@@ -10,13 +10,21 @@ import {
   runMaintenanceOperation,
   type MaintenanceOperation
 } from '../../../src/lib/maintenance-api.js'
+import {
+  buildMaintenanceRun,
+  deleteMaintenanceRun,
+  getLastMaintenanceRun,
+  getMaintenanceRun,
+  listMaintenanceRuns,
+  saveMaintenanceRun
+} from '../../../src/lib/maintenance-log.js'
 import { countRecords, deleteByFilter } from '../../../src/lib/lancedb.js'
 import { getMaintenanceReview, saveMaintenanceReview } from '../../../src/lib/review-storage.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
 import { getRequestConfig } from '../utils/config.js'
-import { isPlainObject } from '../utils/params.js'
+import { isPlainObject, parseNonNegativeInt } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
 
 const logger = createLogger('maintenance')
@@ -40,6 +48,69 @@ class DiffApplyError extends Error {
 export function createMaintenanceRouter(context: ServerContext): express.Router {
   const router = express.Router()
   const { config: baseConfig, configRoot, suggestionAllowedRoots } = context
+
+  router.get('/api/maintenance/runs', (req, res) => {
+    try {
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const runs = listMaintenanceRuns(requestConfig.lancedb.table)
+      const limit = Math.min(parseNonNegativeInt(req.query.limit, 50), 500)
+      const offset = parseNonNegativeInt(req.query.offset, 0)
+      const page = runs.slice(offset, offset + limit)
+
+      res.json({
+        runs: page,
+        count: page.length,
+        total: runs.length,
+        offset,
+        limit
+      })
+    } catch (error) {
+      logger.error('Failed to list maintenance runs', error)
+      res.status(500).json({ error: 'Failed to list maintenance runs' })
+    }
+  })
+
+  router.get('/api/maintenance/runs/last', (req, res) => {
+    try {
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const run = getLastMaintenanceRun(requestConfig.lancedb.table)
+      if (!run) {
+        return res.status(404).json({ error: 'Maintenance run not found' })
+      }
+      res.json({ run })
+    } catch (error) {
+      logger.error('Failed to get last maintenance run', error)
+      res.status(500).json({ error: 'Failed to get last maintenance run' })
+    }
+  })
+
+  router.get('/api/maintenance/runs/:runId', (req, res) => {
+    try {
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const run = getMaintenanceRun(req.params.runId, requestConfig.lancedb.table)
+      if (!run) {
+        return res.status(404).json({ error: 'Maintenance run not found' })
+      }
+      res.json({ run })
+    } catch (error) {
+      logger.error('Failed to get maintenance run', error)
+      res.status(500).json({ error: 'Failed to get maintenance run' })
+    }
+  })
+
+  router.delete('/api/maintenance/runs/:runId', (req, res) => {
+    try {
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const deleted = deleteMaintenanceRun(req.params.runId, requestConfig.lancedb.table)
+      if (!deleted) {
+        return res.status(404).json({ error: 'Maintenance run not found' })
+      }
+      res.json({ success: true })
+    } catch (error) {
+      logger.error('Failed to delete maintenance run', error)
+      res.status(500).json({ error: 'Failed to delete maintenance run' })
+    }
+  })
 
   router.get('/api/maintenance/:operation/review/:resultId', (req, res) => {
     try {
@@ -238,9 +309,15 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         Boolean(dryRun),
         config
       )
+      const run = buildMaintenanceRun([result], {
+        dryRun: Boolean(dryRun),
+        trigger: 'dashboard',
+        operations: [operation]
+      })
+      saveMaintenanceRun(run, config.lancedb.table)
 
       logger.info(`Completed ${operation}`, result.summary)
-      res.json(result)
+      res.json({ ...result, runId: run.runId })
     } catch (error) {
       logger.error('Failed to run maintenance operation', error)
       res.status(500).json({ error: 'Failed to run maintenance operation' })
@@ -252,7 +329,13 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       const config = await ensureConfigInitialized(req, baseConfig)
       const { dryRun } = req.body ?? {}
       const results = await runAllMaintenance(Boolean(dryRun), config)
-      res.json(results)
+      const run = buildMaintenanceRun(results, {
+        dryRun: Boolean(dryRun),
+        trigger: 'dashboard',
+        operations: results.map(result => result.operation)
+      })
+      saveMaintenanceRun(run, config.lancedb.table)
+      res.json(results.map(result => ({ ...result, runId: run.runId })))
     } catch (error) {
       logger.error('Failed to run all maintenance operations', error)
       res.status(500).json({ error: 'Failed to run maintenance operations' })
@@ -305,6 +388,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
     try {
       const config = await ensureConfigInitialized(req, baseConfig)
+      const streamedResults: Awaited<ReturnType<typeof runMaintenanceOperation>>[] = []
 
       sendEvent('start', {
         operations: operationsToRun,
@@ -335,6 +419,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
               }
             }
           )
+          streamedResults.push(result)
           sendEvent('result', result)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
@@ -342,7 +427,17 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         }
       }
 
-      sendEvent('complete', { success: true })
+      if (!stream.signal.aborted) {
+        const run = buildMaintenanceRun(streamedResults, {
+          dryRun,
+          trigger: 'dashboard',
+          operations: streamedResults.map(result => result.operation)
+        })
+        saveMaintenanceRun(run, config.lancedb.table)
+        sendEvent('complete', { success: true, runId: run.runId })
+      } else {
+        sendEvent('complete', { success: true })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       sendEvent('error', { error: message })

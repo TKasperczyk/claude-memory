@@ -271,6 +271,7 @@ export interface MaintenanceSettings {
   reviewSimilarThreshold: number
   reviewDuplicateWarningThreshold: number
   extractionLogRetentionDays: number
+  maintenanceRunRetentionDays: number
 }
 
 export interface ModelSettings {
@@ -463,6 +464,31 @@ export interface OperationResult {
   candidates: MaintenanceCandidateGroup[]
   duration: number
   error?: string
+}
+
+export type MaintenanceTrigger = 'cli' | 'dashboard' | 'auto'
+
+export interface MaintenanceRunSummary {
+  totalActions: number
+  totalDeprecated: number
+  totalUpdated: number
+  totalMerged: number
+  totalPromoted: number
+  totalSuggestions: number
+  operationsRun: number
+  operationsFailed: number
+}
+
+export interface MaintenanceRun {
+  runId: string
+  timestamp: number
+  dryRun: boolean
+  trigger: MaintenanceTrigger
+  operations: string[]
+  results: OperationResult[]
+  summary: MaintenanceRunSummary
+  duration: number
+  hasErrors: boolean
 }
 
 export type HookEvent = 'UserPromptSubmit' | 'SessionEnd' | 'PreCompact'

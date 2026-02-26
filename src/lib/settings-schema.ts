@@ -326,6 +326,16 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.staleAge
   },
   {
+    key: 'maintenanceRunRetentionDays',
+    label: 'Maintenance run retention (days)',
+    description: 'How long to keep maintenance run logs.',
+    step: 1,
+    min: 1,
+    kind: 'int',
+    default: 30,
+    group: MAINTENANCE_GROUPS_META.staleAge
+  },
+  {
     key: 'lowUsageMinRetrievals',
     label: 'Min retrievals for ratio',
     description: 'Min retrievals before evaluating usage ratio.',

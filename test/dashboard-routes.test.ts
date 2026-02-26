@@ -1152,7 +1152,7 @@ describe('maintenance routes', () => {
     expect(res.text).toContain('event: progress')
     expect(res.text).toContain('event: result')
     expect(res.text).toContain('event: complete')
-    expect(res.text).toContain('data: {"success":true}\n\n')
+    expect(res.text).toContain('data: {"success":true,"runId":"')
   })
 
   it('validates suggestion apply payloads', async () => {

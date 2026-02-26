@@ -5,19 +5,14 @@ import { fileURLToPath } from 'url'
 import { loadConfig } from './lib/config.js'
 import { initLanceDB } from './lib/lancedb.js'
 import { resolveMaintenanceSettings } from './lib/settings.js'
-import { runConflictResolution } from './lib/maintenance.js'
 import {
-  runConsolidation,
-  runCrossTypeConsolidation,
-  runGlobalPromotion,
-  runLowUsageCheck,
-  runLowUsageDeprecation,
-  runPromotionSuggestions,
-  runStaleCheck,
-  runStaleUnusedDeprecation,
-  runWarningSynthesis,
-  type MaintenanceRunResult
-} from './lib/maintenance/runners/index.js'
+  MAINTENANCE_OPERATIONS,
+  MAINTENANCE_OPERATION_DEFINITIONS,
+  runMaintenanceOperation,
+  type OperationResult
+} from './lib/maintenance-api.js'
+import { buildMaintenanceRun, saveMaintenanceRun } from './lib/maintenance-log.js'
+import { runPromotionSuggestions as writePromotionSuggestions } from './lib/maintenance/runners/index.js'
 
 export {
   runStaleCheck,
@@ -26,10 +21,10 @@ export {
   runLowUsageCheck,
   runConsolidation,
   runCrossTypeConsolidation,
-  runConflictResolution,
   runGlobalPromotion,
   runWarningSynthesis
-}
+} from './lib/maintenance/runners/index.js'
+export { runConflictResolution } from './lib/maintenance.js'
 
 export type {
   MaintenanceAction,
@@ -37,8 +32,6 @@ export type {
   MaintenanceActionType,
   MaintenanceMergeRecord
 } from '../shared/types.js'
-
-export type { MaintenanceRunResult } from './lib/maintenance/runners/index.js'
 
 async function main(): Promise<void> {
   const config = loadConfig(process.cwd())
@@ -48,16 +41,24 @@ async function main(): Promise<void> {
 
   console.error('[claude-memory] Maintenance started.')
 
-  logMaintenanceResult('Stale check', await runStaleCheck(dryRun, config, maintenanceSettings), dryRun)
-  logMaintenanceResult('Stale unused deprecation', await runStaleUnusedDeprecation(dryRun, config, maintenanceSettings), dryRun)
-  logMaintenanceResult('Low usage deprecation', await runLowUsageDeprecation(dryRun, config, maintenanceSettings), dryRun)
-  logMaintenanceResult('Low usage check', await runLowUsageCheck(dryRun, config, maintenanceSettings), dryRun)
-  logMaintenanceResult('Consolidation', await runConsolidation(dryRun, config, maintenanceSettings), dryRun)
-  logMaintenanceResult('Cross-type consolidation', await runCrossTypeConsolidation(dryRun, config, maintenanceSettings), dryRun)
-  logMaintenanceResult('Conflict resolution', await runConflictResolution(dryRun, config, maintenanceSettings), dryRun)
-  logMaintenanceResult('Global promotion', await runGlobalPromotion(dryRun, config, maintenanceSettings), dryRun)
-  logMaintenanceResult('Warning synthesis', await runWarningSynthesis(dryRun, config, maintenanceSettings), dryRun)
-  await runPromotionSuggestions(config, dryRun)
+  const results: OperationResult[] = []
+  for (const operation of MAINTENANCE_OPERATIONS) {
+    const result = await runMaintenanceOperation(operation, dryRun, config, maintenanceSettings)
+    results.push(result)
+    const label = MAINTENANCE_OPERATION_DEFINITIONS.find(definition => definition.key === operation)?.label ?? operation
+    logMaintenanceResult(label, result, dryRun)
+  }
+
+  const run = buildMaintenanceRun(results, {
+    dryRun,
+    trigger: 'cli',
+    operations: results.map(result => result.operation)
+  })
+  saveMaintenanceRun(run, config.lancedb.table)
+
+  // The API-based loop captures promotion suggestion diffs for persistence,
+  // but only the raw runner actually writes suggestion files to disk.
+  await writePromotionSuggestions(config, dryRun)
 
   if (dryRun) {
     console.error('[claude-memory] Maintenance complete (DRY RUN - no changes made)')
@@ -66,7 +67,7 @@ async function main(): Promise<void> {
   }
 }
 
-function logMaintenanceResult(label: string, result: MaintenanceRunResult, dryRun: boolean): void {
+function logMaintenanceResult(label: string, result: OperationResult, dryRun: boolean): void {
   const prefix = dryRun ? '[DRY RUN] ' : ''
   for (const action of result.actions) {
     const recordId = action.recordId ? ` ${action.recordId}` : ''
