@@ -88,8 +88,8 @@ interface MaintenanceTestResult {
 
 async function capture(): Promise<CaptureResults> {
   // Dynamic imports — works from either worktree
-  const { initMilvus, closeMilvus, countRecords, queryRecords, hybridSearch, getRecord } =
-    await import('../src/lib/milvus.js')
+  const { initLanceDB, closeLanceDB, countRecords, queryRecords, hybridSearch, getRecord } =
+    await import('../src/lib/lancedb.js')
   const { retrieveContext } = await import('../src/lib/retrieval.js')
   const { runAllMaintenance } = await import('../src/lib/maintenance-api.js')
   const { DEFAULT_CONFIG } = await import('../src/lib/types.js')
@@ -105,7 +105,7 @@ async function capture(): Promise<CaptureResults> {
 
   console.error(`[compare] Capturing from ${backend} backend...`)
 
-  await initMilvus(DEFAULT_CONFIG)
+  await initLanceDB(DEFAULT_CONFIG)
 
   // --- Record Integrity ---
   console.error('[compare] Checking record integrity...')
@@ -272,7 +272,7 @@ async function capture(): Promise<CaptureResults> {
     maintenanceResults = [{ operation: 'ALL', candidateCount: -1, actionCount: -1, summary: {}, actions: [], error: String(error) }]
   }
 
-  await closeMilvus()
+  await closeLanceDB()
 
   return {
     backend,

@@ -1,8 +1,7 @@
 /**
  * LanceDB operations for Claude Memory.
  *
- * This is the canonical internal API surface. The legacy compatibility barrel
- * lives at `milvus.ts`.
+ * Canonical internal API surface for vector database operations.
  */
 
 export type { MemoryStats } from '../../shared/types.js'

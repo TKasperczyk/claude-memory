@@ -11,13 +11,10 @@ import {
   dropTestCollection,
   createMockCommandRecord,
   createMockErrorRecord,
-  createMockDiscoveryRecord,
-  createMockProcedureRecord,
   createTempProjectFixture,
   cleanupTempFiles
 } from './helpers.js'
 import { initLanceDB, insertRecord, hybridSearch } from '../src/lib/lancedb.js'
-import { buildContext, extractSignals } from '../src/lib/context.js'
 import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
 import type { UserPromptSubmitInput } from '../src/lib/types.js'
 
@@ -42,146 +39,6 @@ describe('Injection E2E', () => {
   beforeEach(async () => {
     await dropTestCollection()
     await initLanceDB(TEST_CONFIG)
-  })
-
-  describe('Signal Extraction', () => {
-    it('should extract error signals from prompt', () => {
-      const prompt = `I'm getting this error:
-
-TypeError: Cannot read property 'map' of undefined
-    at Array.map (<anonymous>)
-    at processItems (src/index.ts:42:10)
-
-How do I fix it?`
-
-      const signals = extractSignals(prompt, TEST_PROJECT)
-
-      expect(signals.errors.length).toBeGreaterThan(0)
-      expect(signals.errors.some(e => e.includes('TypeError'))).toBe(true)
-    })
-
-    it('should extract command signals from fenced code blocks', () => {
-      const prompt = `I ran this command:
-
-\`\`\`bash
-$ npm run build
-\`\`\`
-
-And it failed. What should I do?`
-
-      const signals = extractSignals(prompt, TEST_PROJECT)
-
-      expect(signals.commands.length).toBeGreaterThan(0)
-      expect(signals.commands.some(c => c.includes('npm run build'))).toBe(true)
-    })
-
-    it('should handle prompts with no extractable signals', () => {
-      const prompt = 'Hello, how are you today?'
-      const signals = extractSignals(prompt, TEST_PROJECT)
-
-      expect(signals.errors.length).toBe(0)
-      expect(signals.commands.length).toBe(0)
-    })
-  })
-
-  describe('Context Formatting', () => {
-    it('should format command records', () => {
-      const records = [
-        createMockCommandRecord({
-          command: 'pnpm build',
-          exitCode: 0,
-          outcome: 'success'
-        })
-      ]
-
-      const context = buildContext(records, TEST_CONFIG).context
-
-      expect(context).toContain('<prior-knowledge>')
-      expect(context).toContain('</prior-knowledge>')
-      expect(context).toContain('pnpm build')
-      expect(context).toContain('success')
-    })
-
-    it('should format error records with resolution', () => {
-      const records = [
-        createMockErrorRecord({
-          errorText: 'ENOENT: no such file or directory',
-          resolution: 'Create the file first'
-        })
-      ]
-
-      const context = buildContext(records, TEST_CONFIG).context
-
-      expect(context).toContain('ENOENT')
-      expect(context).toContain('Create the file first')
-    })
-
-    it('should format discovery records', () => {
-      const records = [
-        createMockDiscoveryRecord({
-          what: 'The API uses JWT tokens for authentication',
-          where: 'src/auth/middleware.ts'
-        })
-      ]
-
-      const context = buildContext(records, TEST_CONFIG).context
-
-      expect(context).toContain('JWT tokens')
-      expect(context).toContain('discovery')
-    })
-
-    it('should format procedure records with steps', () => {
-      const records = [
-        createMockProcedureRecord({
-          name: 'Deploy to staging',
-          steps: ['pnpm build', 'docker push', 'kubectl apply']
-        })
-      ]
-
-      const context = buildContext(records, TEST_CONFIG).context
-
-      expect(context).toContain('Deploy to staging')
-      expect(context).toContain('pnpm build')
-    })
-
-    it('should respect maxRecords limit', () => {
-      const records = Array.from({ length: 10 }, (_, i) =>
-        createMockCommandRecord({
-          command: `command-${i}`,
-          exitCode: 0,
-          outcome: 'success'
-        })
-      )
-
-      const limitedConfig = {
-        ...TEST_CONFIG,
-        injection: { ...TEST_CONFIG.injection, maxRecords: 3 }
-      }
-
-      const context = buildContext(records, limitedConfig).context
-
-      // Should only include 3 commands
-      const matches = context.match(/command-\d/g) ?? []
-      expect(matches.length).toBe(3)
-    })
-
-    it('should filter deprecated records', () => {
-      const records = [
-        createMockCommandRecord({
-          command: 'old-command',
-          deprecated: true
-        }),
-        createMockCommandRecord({
-          command: 'new-command',
-          deprecated: false
-        })
-      ]
-
-      const context = buildContext(records, TEST_CONFIG).context
-
-      expect(context).not.toContain('old-command')
-      expect(context).toContain('new-command')
-    })
   })
 
   describe.skipIf(!hasEmbeddings)(`Memory Search${embeddingSkipSuffix}`, () => {

@@ -18,12 +18,13 @@ function getBucketByDate(activity: TokenUsageActivity, dateKey: string): TokenUs
 
 let collection = ''
 let collectionDir = ''
+let storageRoot = ''
 
 beforeEach(async () => {
   collection = `token-usage-test-${randomUUID()}`
+  storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-token-usage-'))
   collectionDir = path.join(
-    os.homedir(),
-    '.claude-memory',
+    storageRoot,
     'token-usage-events',
     getCollectionKey(collection)
   )
@@ -32,7 +33,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers()
-  await fs.rm(collectionDir, { recursive: true, force: true })
+  await fs.rm(storageRoot, { recursive: true, force: true })
 })
 
 describe('token usage events', () => {
@@ -69,9 +70,9 @@ describe('token usage events', () => {
         cacheCreationInputTokens: 1,
         cacheReadInputTokens: 0
       }
-    ], { collection })
+    ], { collection, baseDir: storageRoot })
 
-    const activity = getTokenUsageActivity('day', { collection, limit: 3, now })
+    const activity = getTokenUsageActivity('day', { collection, limit: 3, now, baseDir: storageRoot })
 
     expect(activity.period).toBe('day')
     expect(activity.source).toBe('all')
@@ -138,9 +139,9 @@ describe('token usage events', () => {
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 0
       }
-    ], { collection })
+    ], { collection, baseDir: storageRoot })
 
-    const activity = getTokenUsageActivity('week', { collection, limit: 2, now })
+    const activity = getTokenUsageActivity('week', { collection, limit: 2, now, baseDir: storageRoot })
     const currentWeek = startOfWeekUtc(now)
     const previousWeek = currentWeek - (7 * DAY_MS)
 
@@ -185,13 +186,14 @@ describe('token usage events', () => {
         cacheCreationInputTokens: 1,
         cacheReadInputTokens: 2
       }
-    ], { collection })
+    ], { collection, baseDir: storageRoot })
 
     const activity = getTokenUsageActivity('day', {
       collection,
       limit: 1,
       now,
-      source: 'haiku-query'
+      source: 'haiku-query',
+      baseDir: storageRoot
     })
 
     expect(activity.source).toBe('haiku-query')
@@ -233,13 +235,13 @@ describe('token usage events', () => {
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 0
       }
-    ], { collection })
+    ], { collection, baseDir: storageRoot })
 
     const filesBefore = await fs.readdir(collectionDir)
     expect(filesBefore).toContain(`${staleDateKey}.jsonl`)
     expect(filesBefore).toContain(`${freshDateKey}.jsonl`)
 
-    const activity = getTokenUsageActivity('day', { collection, limit: 120, now })
+    const activity = getTokenUsageActivity('day', { collection, limit: 120, now, baseDir: storageRoot })
     const staleBucket = getBucketByDate(activity, staleDateKey)
     const freshBucket = getBucketByDate(activity, freshDateKey)
 

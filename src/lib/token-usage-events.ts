@@ -23,6 +23,12 @@ const eventsStore = new JsonLinesStore('token-usage-events', { suffix: EVENT_SUF
 
 type TokenUsageFilter = TokenUsageSource | 'all'
 type TokenUsageTotals = TokenUsage & { totalTokens: number }
+type TokenUsageStoreOptions = { collection?: string; baseDir?: string }
+
+function getEventsStore(baseDir?: string): JsonLinesStore {
+  if (!baseDir) return eventsStore
+  return new JsonLinesStore('token-usage-events', { suffix: EVENT_SUFFIX, baseDir })
+}
 
 function emptyTotals(): TokenUsageTotals {
   return {
@@ -51,12 +57,13 @@ function asTokenUsageSource(value: unknown): TokenUsageSource | null {
   return null
 }
 
-function cleanupOldEvents(collection?: string): void {
+function cleanupOldEvents(options: TokenUsageStoreOptions = {}): void {
   const cutoff = Date.now() - TOKEN_USAGE_RETENTION_DAYS * DAY_MS
+  const store = getEventsStore(options.baseDir)
 
   try {
-    eventsStore.cleanupByAge({
-      collection,
+    store.cleanupByAge({
+      collection: options.collection,
       cutoffMs: cutoff,
       keyToTimestamp: dateKey => parseDateKeyUtc(dateKey)
     })
@@ -90,13 +97,14 @@ function addUsage(target: TokenUsageTotals, value: TokenUsage): void {
   target.totalTokens += value.inputTokens + value.outputTokens
 }
 
-function readDailyTotals(source: TokenUsageFilter, collection?: string): Map<string, TokenUsageTotals> {
+function readDailyTotals(source: TokenUsageFilter, options: TokenUsageStoreOptions = {}): Map<string, TokenUsageTotals> {
+  const store = getEventsStore(options.baseDir)
   const totalsByDate = new Map<string, TokenUsageTotals>()
-  const dateKeys = eventsStore.list({ collection })
+  const dateKeys = store.list({ collection: options.collection })
 
   for (const dateKey of dateKeys) {
-    const entries = eventsStore.readLines<TokenUsageEvent>(dateKey, {
-      collection,
+    const entries = store.readLines<TokenUsageEvent>(dateKey, {
+      collection: options.collection,
       coerce: coerceTokenUsageEvent,
       onError: error => {
         console.error(`[claude-memory] Failed to read token usage events for ${dateKey}:`, error)
@@ -151,12 +159,13 @@ function buildBucket(start: number, end: number, totals: TokenUsageTotals | unde
 
 export function recordTokenUsageEvents(
   events: TokenUsageEvent[],
-  options: { collection?: string } = {}
+  options: TokenUsageStoreOptions = {}
 ): void {
   if (!events || events.length === 0) return
 
   try {
-    cleanupOldEvents(options.collection)
+    const store = getEventsStore(options.baseDir)
+    cleanupOldEvents(options)
 
     const byDate = new Map<string, TokenUsageEvent[]>()
     const now = Date.now()
@@ -190,7 +199,7 @@ export function recordTokenUsageEvents(
     if (byDate.size === 0) return
 
     for (const [dateKey, entries] of byDate) {
-      eventsStore.append(dateKey, entries, { collection: options.collection })
+      store.append(dateKey, entries, { collection: options.collection })
     }
   } catch (error) {
     console.error('[claude-memory] Failed to record token usage events:', error)
@@ -199,7 +208,7 @@ export function recordTokenUsageEvents(
 
 export function recordTokenUsageEventsAsync(
   events: TokenUsageEvent[],
-  options: { collection?: string } = {}
+  options: TokenUsageStoreOptions = {}
 ): void {
   if (!events || events.length === 0) return
   setImmediate(() => {
@@ -209,16 +218,16 @@ export function recordTokenUsageEventsAsync(
 
 export function getTokenUsageActivity(
   period: TimeBucketPeriod,
-  options: { limit?: number; collection?: string; now?: number; source?: TokenUsageFilter } = {}
+  options: { limit?: number; collection?: string; now?: number; source?: TokenUsageFilter; baseDir?: string } = {}
 ): TokenUsageActivity {
   const limit = options.limit ?? (period === 'week' ? 12 : 30)
   const safeLimit = Math.max(1, period === 'week' ? Math.min(limit, 104) : Math.min(limit, 365))
   const now = options.now ?? Date.now()
   const source = options.source ?? 'all'
 
-  cleanupOldEvents(options.collection)
+  cleanupOldEvents({ collection: options.collection, baseDir: options.baseDir })
 
-  const dailyTotals = readDailyTotals(source, options.collection)
+  const dailyTotals = readDailyTotals(source, { collection: options.collection, baseDir: options.baseDir })
   const buckets = buildTimeBuckets(period, safeLimit, now)
   const totalsByBucket = period === 'day' ? dailyTotals : sumWeeklyTotals(dailyTotals)
 
@@ -233,7 +242,7 @@ export function getTokenUsageActivity(
   }
 }
 
-export function backfillFromExtractionRuns(collection?: string): number {
+export function backfillFromExtractionRuns(collection?: string, options: { baseDir?: string } = {}): number {
   const runs = listExtractionRuns(collection)
   const events: TokenUsageEvent[] = []
 
@@ -251,7 +260,7 @@ export function backfillFromExtractionRuns(collection?: string): number {
   }
 
   if (events.length > 0) {
-    recordTokenUsageEvents(events, { collection })
+    recordTokenUsageEvents(events, { collection, baseDir: options.baseDir })
   }
   return events.length
 }

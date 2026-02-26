@@ -17,7 +17,7 @@
 import * as readline from 'readline'
 import { writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { initMilvus, closeMilvus, iterateRecords, batchUpdateRecords, deleteRecord } from '../src/lib/milvus.js'
+import { initLanceDB, closeLanceDB, iterateRecords, batchUpdateRecords, deleteRecord } from '../src/lib/lancedb.js'
 import { DEFAULT_CONFIG, type MemoryRecord } from '../src/lib/types.js'
 
 const GEMINI_MODEL = 'gemini-3-pro-preview'
@@ -432,7 +432,7 @@ async function main(): Promise<void> {
     printHeader('GEMINI MEMORY AUDIT')
 
     console.log(`\n${c.dim}Connecting to LanceDB...${c.reset}`)
-    await initMilvus(DEFAULT_CONFIG)
+    await initLanceDB(DEFAULT_CONFIG)
 
     console.log(`${c.dim}Loading active memories (excluding deprecated)...${c.reset}`)
     const records: MemoryRecord[] = []
@@ -537,7 +537,7 @@ async function main(): Promise<void> {
       printStat('Backup location', backupPath, c.dim)
     }
 
-    await closeMilvus()
+    await closeLanceDB()
 
     printHeader('AUDIT COMPLETE')
 
