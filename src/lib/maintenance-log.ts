@@ -9,8 +9,7 @@ import {
   asTrimmedString,
   isPlainObject
 } from './parsing.js'
-import { JsonStore, isDefaultCollection } from './file-store.js'
-import { loadSettings } from './settings.js'
+import { RunLog } from './run-log.js'
 import type {
   MaintenanceAction,
   MaintenanceActionDetails,
@@ -25,7 +24,7 @@ import type {
 
 export type { MaintenanceRun, MaintenanceRunSummary, MaintenanceTrigger } from '../../shared/types.js'
 
-const maintenanceRunStore = new JsonStore('maintenance-runs')
+// --- Domain helpers (build, aggregate) ---
 
 function emptyMaintenanceRunSummary(): MaintenanceRunSummary {
   return {
@@ -137,87 +136,41 @@ export function buildMaintenanceRun(
   }
 }
 
-export function cleanupOldMaintenanceRunLogs(collection?: string): void {
-  const settings = loadSettings()
-  const daysToKeep = settings.maintenanceRunRetentionDays
-  const cutoff = Date.now() - Math.max(daysToKeep, 1) * 24 * 60 * 60 * 1000
+// --- RunLog subclass (CRUD + retention) ---
 
-  try {
-    maintenanceRunStore.cleanupByAge({
-      collection,
-      cutoffMs: cutoff,
-      includeLegacyForDefault: isDefaultCollection(collection)
-    })
-  } catch (error) {
-    console.error('[claude-memory] Failed to clean up maintenance run logs:', error)
+class MaintenanceRunRunLog extends RunLog<MaintenanceRun> {
+  protected coerce(data: unknown, runId: string): MaintenanceRun | null {
+    return coerceMaintenanceRun(data, runId)
   }
 }
 
-function readMaintenanceRun(runId: string, collection?: string): MaintenanceRun | null {
-  return maintenanceRunStore.read(runId, {
-    collection,
-    includeLegacyForDefault: isDefaultCollection(collection),
-    errorMessage: '[claude-memory] Failed to read maintenance run log:',
-    coerce: data => coerceMaintenanceRun(data, runId),
-    fallback: null
-  })
-}
+const maintenanceLog = new MaintenanceRunRunLog('maintenance-runs', 'maintenanceRunRetentionDays')
 
 export function saveMaintenanceRun(run: MaintenanceRun, collection?: string): void {
-  try {
-    // Cleanup happens on save to avoid extra I/O when maintenance never runs.
-    cleanupOldMaintenanceRunLogs(collection)
-    maintenanceRunStore.write(run.runId, run, {
-      collection,
-      ensureDir: true,
-      pretty: 2
-    })
-  } catch (error) {
-    console.error('[claude-memory] Failed to write maintenance run log:', error)
-  }
-}
-
-export function getMaintenanceRun(runId: string, collection?: string): MaintenanceRun | null {
-  return readMaintenanceRun(runId, collection)
+  maintenanceLog.save(run, collection)
 }
 
 export function listMaintenanceRuns(collection?: string): MaintenanceRun[] {
-  try {
-    const ids = maintenanceRunStore.list({
-      collection,
-      includeLegacyForDefault: isDefaultCollection(collection)
-    })
-    const runs: MaintenanceRun[] = []
+  return maintenanceLog.list(collection)
+}
 
-    for (const runId of ids) {
-      const run = getMaintenanceRun(runId, collection)
-      if (run) runs.push(run)
-    }
-
-    runs.sort((a, b) => b.timestamp - a.timestamp)
-    return runs
-  } catch (error) {
-    console.error('[claude-memory] Failed to list maintenance runs:', error)
-    return []
-  }
+export function getMaintenanceRun(runId: string, collection?: string): MaintenanceRun | null {
+  return maintenanceLog.get(runId, collection)
 }
 
 export function getLastMaintenanceRun(collection?: string): MaintenanceRun | null {
-  const runs = listMaintenanceRuns(collection)
-  return runs[0] ?? null
+  return maintenanceLog.getLast(collection)
 }
 
 export function deleteMaintenanceRun(runId: string, collection?: string): boolean {
-  try {
-    return maintenanceRunStore.delete(runId, {
-      collection,
-      includeLegacyForDefault: isDefaultCollection(collection)
-    })
-  } catch (error) {
-    console.error('[claude-memory] Failed to delete maintenance run log:', error)
-    throw error
-  }
+  return maintenanceLog.delete(runId, collection)
 }
+
+export function cleanupOldMaintenanceRunLogs(collection?: string): void {
+  maintenanceLog.cleanup(collection)
+}
+
+// --- Coercion helpers ---
 
 function coerceMaintenanceRun(value: unknown, runId: string): MaintenanceRun | null {
   if (!isPlainObject(value)) return null

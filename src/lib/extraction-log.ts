@@ -1,88 +1,32 @@
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
-import { JsonStore, isDefaultCollection } from './file-store.js'
 import { getRecordSummary } from './record-summary.js'
-import { loadSettings } from './settings.js'
+import { RunLog } from './run-log.js'
 import type { ExtractionRecordSummary, ExtractionRun, RecordType, TokenUsage } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
 
-const extractionStore = new JsonStore('extractions')
-
-function cleanupOldExtractionLogs(collection?: string): void {
-  const settings = loadSettings()
-  const daysToKeep = settings.extractionLogRetentionDays
-  const cutoff = Date.now() - Math.max(daysToKeep, 1) * 24 * 60 * 60 * 1000
-
-  try {
-    extractionStore.cleanupByAge({
-      collection,
-      cutoffMs: cutoff,
-      includeLegacyForDefault: isDefaultCollection(collection)
-    })
-  } catch (error) {
-    console.error('[claude-memory] Failed to clean up extraction logs:', error)
+class ExtractionRunLog extends RunLog<ExtractionRun> {
+  protected coerce(data: unknown, runId: string): ExtractionRun | null {
+    return coerceExtractionRun(data, runId)
   }
 }
 
-function readExtractionRun(runId: string, collection?: string): ExtractionRun | null {
-  return extractionStore.read(runId, {
-    collection,
-    includeLegacyForDefault: isDefaultCollection(collection),
-    errorMessage: '[claude-memory] Failed to read extraction run log:',
-    coerce: data => coerceExtractionRun(data, runId),
-    fallback: null
-  })
-}
+const extractionLog = new ExtractionRunLog('extractions', 'extractionLogRetentionDays')
 
 export function saveExtractionRun(run: ExtractionRun, collection?: string): void {
-  try {
-    // Cleanup happens on save to avoid extra I/O when no extractions run.
-    cleanupOldExtractionLogs(collection)
-    extractionStore.write(run.runId, run, {
-      collection,
-      ensureDir: true,
-      pretty: 2
-    })
-  } catch (error) {
-    console.error('[claude-memory] Failed to write extraction run log:', error)
-  }
+  extractionLog.save(run, collection)
 }
 
 export function listExtractionRuns(collection?: string): ExtractionRun[] {
-  try {
-    const ids = extractionStore.list({
-      collection,
-      includeLegacyForDefault: isDefaultCollection(collection)
-    })
-    const runs: ExtractionRun[] = []
-
-    for (const runId of ids) {
-      const record = getExtractionRun(runId, collection)
-      if (record) runs.push(record)
-    }
-
-    runs.sort((a, b) => b.timestamp - a.timestamp)
-    return runs
-  } catch (error) {
-    console.error('[claude-memory] Failed to list extraction runs:', error)
-    return []
-  }
+  return extractionLog.list(collection)
 }
 
 export function getExtractionRun(runId: string, collection?: string): ExtractionRun | null {
-  return readExtractionRun(runId, collection)
+  return extractionLog.get(runId, collection)
 }
 
 export function deleteExtractionRun(runId: string, collection?: string): boolean {
-  try {
-    return extractionStore.delete(runId, {
-      collection,
-      includeLegacyForDefault: isDefaultCollection(collection)
-    })
-  } catch (error) {
-    console.error('[claude-memory] Failed to delete extraction run log:', error)
-    throw error
-  }
+  return extractionLog.delete(runId, collection)
 }
 
 function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | null {
