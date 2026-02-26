@@ -3,6 +3,7 @@ import {
   fetchExtractions,
   fetchHookStatus,
   fetchInstallationStatus,
+  fetchMaintenanceRuns,
   fetchMemories,
   fetchMemoryTypes,
   fetchRetrievalActivity,
@@ -16,6 +17,7 @@ import {
   type ExtractionListResponse,
   type HookStatusResponse,
   type InstallationStatusResponse,
+  type MaintenanceRunsListResponse,
   type MemoryListResponse,
   type RecordType,
   type RetrievalActivity,
@@ -109,6 +111,20 @@ export function useExtractions(params: ExtractionsQueryParams) {
     }),
     placeholderData: previousData => previousData,
     refetchInterval: 30000
+  })
+}
+
+export function useMaintenanceRuns(params: { page?: number; limit?: number }) {
+  const { page = 0, limit = 25 } = params
+
+  return useQuery<MaintenanceRunsListResponse>({
+    queryKey: ['maintenanceRuns', { page, limit }],
+    queryFn: () => fetchMaintenanceRuns({
+      limit,
+      offset: page * limit
+    }),
+    placeholderData: previousData => previousData,
+    refetchInterval: 60000
   })
 }
 

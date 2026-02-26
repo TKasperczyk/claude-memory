@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Check, Circle, Eye, Loader2, Play, Trash2 } from 'lucide-react'
 import MemoryDetail from '@/components/MemoryDetail'
+import MaintenanceHistory from '@/components/maintenance-history/MaintenanceHistory'
 import ResultPanel from '@/components/maintenance/ResultPanel'
 import Skeleton from '@/components/Skeleton'
 import { Button } from '@/components/ui/button'
@@ -12,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useApi } from '@/hooks/useApi'
 import { useMaintenanceExecution } from '@/hooks/useMaintenanceExecution'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
@@ -44,6 +46,7 @@ type ApplyConfirmState = { key: string; action: MaintenanceAction } | null
 type SettingsApplyConfirmState = { key: string; recommendation: SettingsRecommendationItem } | null
 
 export default function Maintenance() {
+  const [tab, setTab] = useState('operations')
   const { data: operationsData, error: operationsError, loading: operationsLoading } = useApi(fetchMaintenanceOperations, [])
   const operations = operationsData?.operations ?? []
 
@@ -236,56 +239,48 @@ export default function Maintenance() {
     setConfirmState(null)
   }
 
-  if (operationsLoading) {
-    return (
-      <div className="space-y-6">
-        <section className="p-6 rounded-xl border border-border bg-card space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="space-y-2">
-              <Skeleton className="h-4 w-40" />
-              <Skeleton className="h-3 w-64" />
-            </div>
-            <div className="flex items-center gap-2">
-              <Skeleton className="h-9 w-28" />
-              <Skeleton className="h-9 w-20" />
-            </div>
+  const operationsContent = operationsLoading ? (
+    <div className="space-y-6">
+      <section className="p-6 rounded-xl border border-border bg-card space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-3 w-64" />
           </div>
-          <div className="flex flex-wrap gap-3">
-            {Array.from({ length: 4 }).map((_, index) => (
-              <Skeleton key={index} className="h-6 w-32" />
-            ))}
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-9 w-28" />
+            <Skeleton className="h-9 w-20" />
           </div>
-        </section>
-
-        <div className="space-y-6">
-          {Array.from({ length: 3 }).map((_, index) => (
-            <section key={index} className="p-6 rounded-xl border border-border bg-card space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="space-y-2">
-                  <Skeleton className="h-4 w-48" />
-                  <Skeleton className="h-3 w-64" />
-                </div>
-                <div className="flex items-center gap-2">
-                  <Skeleton className="h-8 w-24" />
-                  <Skeleton className="h-8 w-16" />
-                </div>
-              </div>
-            </section>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <Skeleton key={index} className="h-6 w-32" />
           ))}
         </div>
+      </section>
+
+      <div className="space-y-6">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <section key={index} className="p-6 rounded-xl border border-border bg-card space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-48" />
+                <Skeleton className="h-3 w-64" />
+              </div>
+              <div className="flex items-center gap-2">
+                <Skeleton className="h-8 w-24" />
+                <Skeleton className="h-8 w-16" />
+              </div>
+            </div>
+          </section>
+        ))}
       </div>
-    )
-  }
-
-  if (operationsError) {
-    return <div className="text-sm text-destructive">{operationsError.message}</div>
-  }
-
-  if (operations.length === 0) {
-    return <div className="text-sm text-muted-foreground">No maintenance operations available.</div>
-  }
-
-  return (
+    </div>
+  ) : operationsError ? (
+    <div className="text-sm text-destructive">{operationsError.message}</div>
+  ) : operations.length === 0 ? (
+    <div className="text-sm text-muted-foreground">No maintenance operations available.</div>
+  ) : (
     <div className="flex-1 min-h-0 overflow-y-auto space-y-5">
       <section className="p-5 rounded-xl border border-border border-l-[3px] border-l-primary/50 bg-card space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -696,5 +691,20 @@ export default function Maintenance() {
         onClose={closeMemory}
       />
     </div>
+  )
+
+  return (
+    <Tabs value={tab} onValueChange={setTab} className="flex flex-col flex-1 min-h-0">
+      <TabsList className="shrink-0 self-start">
+        <TabsTrigger value="operations">Operations</TabsTrigger>
+        <TabsTrigger value="history">History</TabsTrigger>
+      </TabsList>
+      <TabsContent value="operations" className="flex-1 min-h-0">
+        {operationsContent}
+      </TabsContent>
+      <TabsContent value="history" className="flex-1 min-h-0">
+        <MaintenanceHistory />
+      </TabsContent>
+    </Tabs>
   )
 }

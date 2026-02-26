@@ -8,6 +8,7 @@ import type {
   InjectionReview,
   InjectionSessionRecord,
   MaintenanceOperationInfo,
+  MaintenanceRun,
   MaintenanceReview,
   MaintenanceSettings,
   McpStatus,
@@ -26,6 +27,7 @@ import type {
   TokenUsageActivity,
   TokenUsageSource
 } from '../../../shared/types.js'
+export type { MaintenanceRunSummary, MaintenanceTrigger } from '../../../shared/types.js'
 import { readSseStream } from './sse'
 
 export type {
@@ -50,6 +52,7 @@ export type {
   MaintenanceCandidateRecord,
   MaintenanceMergeRecord,
   MaintenanceOperationInfo,
+  MaintenanceRun,
   MaintenanceProgress,
   MaintenanceReview,
   MaintenanceSettings,
@@ -181,6 +184,18 @@ export interface ExtractionListResponse {
 export interface ExtractionRunResponse {
   run: ExtractionRun
   records: MemoryRecord[]
+}
+
+export interface MaintenanceRunsListResponse {
+  runs: MaintenanceRun[]
+  count: number
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface MaintenanceRunResponse {
+  run: MaintenanceRun
 }
 
 export interface MaintenanceOperationsResponse {
@@ -483,6 +498,29 @@ export function fetchExtractionRun(runId: string): Promise<ExtractionRunResponse
 
 export function deleteExtractionRun(runId: string): Promise<ActionResponse> {
   return request(`/extractions/${runId}`, { method: 'DELETE' })
+}
+
+export function fetchMaintenanceRuns(params: {
+  limit?: number
+  offset?: number
+} = {}): Promise<MaintenanceRunsListResponse> {
+  const search = new URLSearchParams()
+  if (typeof params.limit === 'number') search.set('limit', String(params.limit))
+  if (typeof params.offset === 'number') search.set('offset', String(params.offset))
+  const query = search.toString()
+  return request(`/maintenance/runs${query ? `?${query}` : ''}`)
+}
+
+export function fetchMaintenanceRun(runId: string): Promise<MaintenanceRunResponse> {
+  return request(`/maintenance/runs/${runId}`)
+}
+
+export function fetchLastMaintenanceRun(): Promise<MaintenanceRunResponse> {
+  return request('/maintenance/runs/last')
+}
+
+export function deleteMaintenanceRun(runId: string): Promise<ActionResponse> {
+  return request(`/maintenance/runs/${runId}`, { method: 'DELETE' })
 }
 
 export async function fetchExtractionReview(runId: string): Promise<ExtractionReview | null> {
