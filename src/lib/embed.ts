@@ -4,6 +4,8 @@
 
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config } from './types.js'
 import { withTimeout } from './shared.js'
+import { createLogger } from './logger.js'
+const logger = createLogger('embed')
 const DEFAULT_TIMEOUT_MS = 30000
 
 const config: Config = DEFAULT_CONFIG
@@ -34,6 +36,8 @@ async function requestEmbeddings(
   if (cfg.embeddings.insecure && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0') {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
   }
+
+  logger.debug(`Embedding request → ${cfg.embeddings.baseUrl} model=${cfg.embeddings.model}`)
 
   const result = await withTimeout(async (timeoutSignal) => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
