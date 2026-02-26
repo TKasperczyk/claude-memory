@@ -247,10 +247,10 @@ export async function getRecordStats(
         const id = r.id as string
         statsMap.set(id, {
           id,
-          retrievalCount: (r.retrieval_count as number) ?? 0,
-          usageCount: (r.usage_count as number) ?? 0,
-          successCount: (r.success_count as number) ?? 0,
-          failureCount: (r.failure_count as number) ?? 0
+          retrievalCount: Number(r.retrieval_count ?? 0),
+          usageCount: Number(r.usage_count ?? 0),
+          successCount: Number(r.success_count ?? 0),
+          failureCount: Number(r.failure_count ?? 0)
         })
       }
     }
