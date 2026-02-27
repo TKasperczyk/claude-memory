@@ -13,6 +13,9 @@ import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPro
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
 import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
+import { runAllMaintenance } from '../lib/maintenance-api.js'
+import { buildMaintenanceRun, getLastMaintenanceRun, saveMaintenanceRun } from '../lib/maintenance-log.js'
+import { loadSettings } from '../lib/settings.js'
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord, type TokenUsage } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
 import { getRecordSearchableTextParts } from '../lib/record-fields.js'
@@ -80,6 +83,46 @@ function readInputFile(filePath: string): string {
     // ignore
   }
   return content
+}
+
+async function maybeRunAutoMaintenance(config: Config): Promise<void> {
+  const settings = loadSettings()
+  const intervalHours = settings.autoMaintenanceIntervalHours
+  if (!intervalHours || intervalHours <= 0) return
+
+  // Check timing BEFORE acquiring lock (cheap read, fast path)
+  const lastRun = getLastMaintenanceRun(config.lancedb.table)
+  const intervalMs = intervalHours * 60 * 60 * 1000
+  if (Date.now() - (lastRun?.timestamp ?? 0) < intervalMs) return
+
+  // Acquire exclusive lock — if another worker is already running maintenance, skip
+  const lockFile = `${LOCKS_DIR}/auto-maintenance.lock`
+  const lockHandle = acquireFileLock(lockFile, {
+    staleAfterMs: 10 * 60 * 1000, // 10 min stale
+    staleStrategy: 'pid',
+    ensureDir: true,
+    proceedOnError: false,
+    write: { data: () => `${process.pid}\n${Date.now()}` }
+  })
+  if (!lockHandle) return
+
+  try {
+    // Re-check after lock (double-check pattern — another worker may have just finished)
+    const freshLastRun = getLastMaintenanceRun(config.lancedb.table)
+    if (Date.now() - (freshLastRun?.timestamp ?? 0) < intervalMs) return
+
+    debugLog('Starting auto-maintenance')
+    const results = await runAllMaintenance(false, config)
+    const run = buildMaintenanceRun(results, {
+      dryRun: false,
+      trigger: 'auto',
+      operations: results.map(result => result.operation)
+    })
+    saveMaintenanceRun(run, config.lancedb.table)
+    debugLog(`Auto-maintenance complete: ${run.summary.totalActions} actions`)
+  } finally {
+    lockHandle.release()
+  }
 }
 
 async function main(): Promise<void> {
@@ -233,6 +276,12 @@ async function main(): Promise<void> {
       debugLog('COMPLETE')
     } finally {
       lockHandle.release()
+    }
+
+    try {
+      await maybeRunAutoMaintenance(config)
+    } catch (error) {
+      console.error('[claude-memory] Auto-maintenance failed:', error)
     }
   } finally {
     try {

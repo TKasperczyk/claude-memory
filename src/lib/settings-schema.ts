@@ -336,6 +336,17 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.staleAge
   },
   {
+    key: 'autoMaintenanceIntervalHours',
+    label: 'Auto-maintenance interval (hours)',
+    description: 'Hours between automatic maintenance runs after extraction. Set to 0 to disable.',
+    step: 1,
+    min: 0,
+    max: 720,
+    kind: 'int',
+    default: 24,
+    group: MAINTENANCE_GROUPS_META.extraction
+  },
+  {
     key: 'lowUsageMinRetrievals',
     label: 'Min retrievals for ratio',
     description: 'Min retrievals before evaluating usage ratio.',

@@ -272,6 +272,7 @@ export interface MaintenanceSettings {
   reviewDuplicateWarningThreshold: number
   extractionLogRetentionDays: number
   maintenanceRunRetentionDays: number
+  autoMaintenanceIntervalHours: number
 }
 
 export interface ModelSettings {
