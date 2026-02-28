@@ -274,7 +274,7 @@ function loadFileCredentials(): { creds: OAuthCredentials; source: CredentialSou
   return null
 }
 
-function loadCredentials(): { creds: OAuthCredentials; source: CredentialSource } | null {
+export function loadCredentials(): { creds: OAuthCredentials; source: CredentialSource } | null {
   if (platform() === 'darwin') {
     const keychain = loadKeychainCredentials()
     if (keychain) return keychain
