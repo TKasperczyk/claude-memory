@@ -3,6 +3,8 @@
  * Run with: pnpm run server
  */
 
+import path from 'path'
+import { fileURLToPath } from 'url'
 import cors from 'cors'
 import express from 'express'
 import { createServerContext } from './context.js'
@@ -24,7 +26,7 @@ const context = createServerContext()
 
 startStatsSnapshotScheduler(context.config)
 
-app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] }))
+app.use(cors({ origin: ['http://localhost:5000', 'http://127.0.0.1:5000'] }))
 app.use(express.json())
 
 // Request logging middleware
@@ -47,6 +49,22 @@ app.use(createExtractionsRouter(context))
 app.use(createMaintenanceRouter(context))
 app.use(createChatRouter(context))
 
+// In production, serve the built Vite frontend as static files
+if (process.env.NODE_ENV === 'production') {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url))
+  const staticDir = path.resolve(__dirname, '../dist')
+
+  app.use(express.static(staticDir))
+
+  // SPA fallback: non-API routes serve index.html
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(staticDir, 'index.html'))
+  })
+}
+
 app.listen(PORT, () => {
-  logger.info(`Dashboard API server running on http://localhost:${PORT}`)
+  logger.info(`Dashboard server running on http://localhost:${PORT}`)
+  if (process.env.NODE_ENV === 'production') {
+    logger.info('Serving frontend from built assets')
+  }
 })

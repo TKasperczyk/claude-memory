@@ -7,8 +7,12 @@
     "claude-memory-mcp": "./dist/mcp-server.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && pnpm run -C dashboard build",
     "dev": "tsx watch src/",
+    "dashboard": "pnpm run -C dashboard start",
+    "dashboard:build": "pnpm run -C dashboard build",
+    "dashboard:server": "pnpm run -C dashboard server",
+    "dashboard:prod": "NODE_ENV=production pnpm run -C dashboard server",
     "maintenance": "tsx src/maintenance.ts",
     "audit": "tsx scripts/gemini-audit.ts",
     "audit:auto": "tsx scripts/gemini-audit.ts --auto",
