@@ -138,8 +138,11 @@ export async function runAllMaintenance(
   const results: OperationResult[] = []
   const maintenance = resolveMaintenanceSettings(settings)
   for (const operation of MAINTENANCE_OPERATIONS) {
-    const effectiveDryRun = operation === 'promotion-suggestions' ? true : dryRun
-    results.push(await runMaintenanceOperation(operation, effectiveDryRun, config, maintenance))
+    // Skip promotion-suggestions in auto mode -- it burns LLM tokens for
+    // evaluations that are never written to disk or surfaced to the user.
+    // Use `pnpm maintenance` (CLI) to generate actionable suggestion diffs.
+    if (operation === 'promotion-suggestions') continue
+    results.push(await runMaintenanceOperation(operation, dryRun, config, maintenance))
   }
   return results
 }
