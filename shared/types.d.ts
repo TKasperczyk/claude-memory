@@ -234,6 +234,7 @@ export interface RetrievalSettings {
   prePromptTimeoutMs: number
   haikuQueryTimeoutMs: number
   maxSemanticQueryChars: number
+  projectMatchBonus: number
 }
 
 export interface MaintenanceSettings {

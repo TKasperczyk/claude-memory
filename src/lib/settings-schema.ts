@@ -215,6 +215,17 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     group: RETRIEVAL_GROUPS.ranking
   },
   {
+    key: 'projectMatchBonus',
+    label: 'Project match bonus',
+    description: 'Flat score boost for memories from the active project. Global memories are unaffected.',
+    step: 0.01,
+    min: 0,
+    max: 0.3,
+    kind: 'float',
+    default: 0.05,
+    group: RETRIEVAL_GROUPS.ranking
+  },
+  {
     key: 'enableHaikuRetrieval',
     label: 'Enable Haiku retrieval',
     description: 'Use Haiku to analyze conversation context and generate better queries.',

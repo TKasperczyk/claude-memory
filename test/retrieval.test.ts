@@ -75,6 +75,7 @@ const BASE_SETTINGS: RetrievalSettings = {
   mmrLambda: 0.7,
   usageRatioWeight: 0.2,
   keywordBonus: 0.08,
+  projectMatchBonus: 0.05,
   enableHaikuRetrieval: false,
   maxKeywordQueries: 4,
   maxKeywordErrors: 2,
@@ -381,9 +382,11 @@ describe('Unified scoring', () => {
     // Scores should be < 1.0 (no longer inflated)
     expect(result.results[0].score).toBeLessThan(1.0)
     expect(result.results[0].score).toBeGreaterThan(0.5)
-    // kw-irrelevant should rank lowest
+    // kw-irrelevant should rank below kw-relevant (or be filtered out entirely)
     const ids = result.results.map(r => r.record.id)
-    expect(ids.indexOf('kw-irrelevant')).toBeGreaterThan(ids.indexOf('kw-relevant'))
+    const irrelevantIdx = ids.indexOf('kw-irrelevant')
+    const relevantIdx = ids.indexOf('kw-relevant')
+    expect(irrelevantIdx === -1 || irrelevantIdx > relevantIdx).toBe(true)
   })
 
   it('filters out keyword matches with low semantic relevance', async () => {
@@ -403,6 +406,30 @@ describe('Unified scoring', () => {
 
     // With default minScore=0.45 and low similarity, keyword junk gets filtered
     expect(result.results).toHaveLength(0)
+  })
+
+  it('boosts project-matching memories over non-matching ones', async () => {
+    // Two results with identical embeddings and similarity, but different projects
+    const projectMatch = makeResult('project-match', [0.8, 0.2], 0.7, 0.7, false)
+    projectMatch.record.project = PROJECT_ROOT
+    const nonMatch = makeResult('non-match', [0.8, 0.2], 0.7, 0.7, false)
+    nonMatch.record.project = '/some/other/project'
+
+    mockedHybridSearch.mockImplementation(async params => {
+      if (params.vectorWeight === 0) return []
+      return [nonMatch, projectMatch] // non-match listed first
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'test project boost', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { minScore: 0.05 } }
+    )
+
+    expect(result.results.length).toBe(2)
+    // Project-matching memory should rank first due to projectMatchBonus
+    expect(result.results[0].record.id).toBe('project-match')
+    expect(result.results[0].score).toBeGreaterThan(result.results[1].score)
   })
 
   it('falls back to original keyword scores when embedding generation fails', async () => {

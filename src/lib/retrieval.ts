@@ -436,8 +436,14 @@ async function searchWithScope(
         }
       }
       const usageRatio = computeUsageRatio(item.record)
-      const bonus = item.keywordMatch ? settings.keywordBonus : 0
-      item.score = item.similarity * UNIFIED_SEMANTIC_WEIGHT + bonus + usageRatio * settings.usageRatioWeight
+      // Scale keyword bonus by similarity: low-similarity keyword matches get proportionally
+      // less boost, preventing broad substring matches from rescuing irrelevant results.
+      const similarityScale = settings.minSemanticSimilarity > 0
+        ? Math.min(item.similarity / settings.minSemanticSimilarity, 1.0)
+        : 1.0
+      const bonus = item.keywordMatch ? settings.keywordBonus * similarityScale : 0
+      const projectBoost = (project && item.record.project === project) ? settings.projectMatchBonus : 0
+      item.score = item.similarity * UNIFIED_SEMANTIC_WEIGHT + bonus + usageRatio * settings.usageRatioWeight + projectBoost
     }
   }
   // When precomputedEmbedding is undefined (embedding generation failed),
