@@ -35,12 +35,12 @@ async function main() {
   }
 
   // 3. Global scope records
-  const globalCount = await countRecords({ filter: \"scope = 'global'\" }, config)
+  const globalCount = await countRecords({ filter: "scope = 'global'" }, config)
   console.log(`\n=== Global Scope Records: ${globalCount} ===`)
 
   if (globalCount > 0) {
     const globalSamples = await queryRecords({
-      filter: \"scope = 'global'\",
+      filter: "scope = 'global'",
       limit: 10,
       orderBy: 'timestamp_desc'
     }, config)
