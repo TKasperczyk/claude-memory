@@ -392,12 +392,18 @@ async function searchWithScope(
   }
 
   if (precomputedEmbedding) {
+    // Semantic search runs WITHOUT project filter. Embedding similarity
+    // (minSemanticSimilarity=0.70) already gates relevance, and the
+    // projectMatchBonus in unified re-scoring ranks same-project memories
+    // higher. Hard project filtering here excluded relevant memories from
+    // sibling repos (e.g., aura-billing-agent invisible when searching
+    // from aura) — the exact scenario the scoring formula handles well.
+    // Keyword search keeps its project filter since substring matching is
+    // too broad without it.
     const semanticResults = await runHybridSearch({
       query: '', // Not used when embedding provided
       embedding: precomputedEmbedding,
       limit: candidateLimit,
-      project,
-      ancestorProjects,
       excludeDeprecated: true,
       vectorWeight: 1,
       keywordWeight: 0,
