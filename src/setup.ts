@@ -100,6 +100,7 @@ interface WizardState {
     baseUrl: string
     model: string
     apiKey?: string
+    insecure?: boolean
   }
   lancedb: {
     directory: string
@@ -182,10 +183,25 @@ async function stepEmbeddings(state: WizardState): Promise<void> {
     state.embeddings.apiKey = undefined
   }
 
+  const isHttps = state.embeddings.baseUrl.startsWith('https')
+  if (isHttps) {
+    state.embeddings.insecure = await confirm('Skip TLS certificate verification?', state.embeddings.insecure ?? false)
+  } else {
+    state.embeddings.insecure = undefined
+  }
+
+  // Temporarily disable TLS verification for the connection test if needed
+  const prevTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED
+  if (state.embeddings.insecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+
   console.log(`\n  Testing connection...`)
   const result = await testEmbeddingConnection(
     state.embeddings.baseUrl, state.embeddings.model, state.embeddings.apiKey
   )
+
+  // Restore TLS setting
+  if (prevTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+  else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls
 
   if (result.ok) {
     console.log(`  ${green('OK')} -- embedding dimension: ${result.dimension}`)
@@ -334,7 +350,8 @@ function stepWriteConfig(state: WizardState): void {
       ...(existing.embeddings as Record<string, unknown> ?? {}),
       baseUrl: state.embeddings.baseUrl,
       model: state.embeddings.model,
-      ...(state.embeddings.apiKey ? { apiKey: state.embeddings.apiKey } : { apiKey: undefined })
+      ...(state.embeddings.apiKey ? { apiKey: state.embeddings.apiKey } : { apiKey: undefined }),
+      ...(state.embeddings.insecure ? { insecure: true } : { insecure: undefined })
     }
   }
 
@@ -439,7 +456,8 @@ async function main(): Promise<void> {
       embeddings: {
         baseUrl: existing?.embeddings?.baseUrl ?? DEFAULT_CONFIG.embeddings.baseUrl,
         model: existing?.embeddings?.model ?? DEFAULT_CONFIG.embeddings.model,
-        apiKey: existing?.embeddings?.apiKey
+        apiKey: existing?.embeddings?.apiKey,
+        insecure: existing?.embeddings?.insecure
       },
       lancedb: {
         directory: existing?.lancedb?.directory ?? DEFAULT_CONFIG.lancedb.directory,
