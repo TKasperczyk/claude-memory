@@ -227,7 +227,7 @@ async function searchMemories(
     : cleanPrompt
   const effectivePrompt = resolvedPrompt || cleanPrompt
   const keywordQueries = queryPlan
-    ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings)
+    ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings, queryPlan.resolvedQuery)
     : buildKeywordQueries(signals, cleanPrompt, settings)
 
   const semanticBase = queryPlan?.semanticQuery?.trim()
@@ -687,29 +687,45 @@ function cosineSimilarity(a: number[], b: number[]): number {
 function normalizeKeywordQueries(
   queries: string[],
   fallback: string,
-  settings: RetrievalSettings
+  settings: RetrievalSettings,
+  resolvedQuery?: string
 ): string[] {
   const trimmed = queries.map(query => query.trim()).filter(query => query.length > 0)
+  const seenLower = new Set<string>()
   const deduped: string[] = []
-  const seen = new Set<string>()
 
   for (const entry of trimmed) {
-    if (seen.has(entry)) continue
+    const key = entry.toLowerCase()
+    if (seenLower.has(key)) continue
     deduped.push(entry)
-    seen.add(entry)
+    seenLower.add(key)
   }
 
-  // Drop queries that are substrings of a strictly longer query.
-  // Keyword search uses LIKE '%query%', so 'p4 brain' already matches
-  // everything 'p4' would. Keeping the short form wastes a keyword query
-  // and pulls in broader, less relevant results.
-  const filtered = deduped.filter(query => {
-    const lower = query.toLowerCase()
-    return !deduped.some(other =>
-      other.length > query.length && other.toLowerCase().includes(lower)
-    )
-  })
-  const result = filtered.length > 0 ? filtered : deduped
+  // Extract proper nouns from multi-word keywords. Haiku sometimes treats
+  // "<ProperNoun> <word>" as an atomic compound (e.g., "jira issue") without
+  // emitting the proper noun standalone. Identify proper nouns by checking
+  // which words start with an uppercase letter in the resolved query.
+  // Matches TitleCase (Jira), ALL_CAPS (AWS, S3), and mixed (k8s won't match
+  // but K8s will — acceptable since most tool names are capitalized).
+  const resolvedTokens = (resolvedQuery || '').split(/\s+/).map(w => w.replace(/[^\w]/g, ''))
+  const properNouns = new Set(
+    resolvedTokens.filter(w => w.length >= 2 && /^[A-Z]/.test(w)).map(w => w.toLowerCase())
+  )
+  // Build result with extracted proper nouns placed right after their source
+  // compound, so they survive maxKeywordQueries truncation.
+  const result: string[] = []
+  for (const query of deduped) {
+    result.push(query)
+    const words = query.split(/\s+/)
+    if (words.length < 2) continue
+    for (const word of words) {
+      const lower = word.toLowerCase()
+      if (lower.length >= 2 && properNouns.has(lower) && !seenLower.has(lower)) {
+        result.push(lower)
+        seenLower.add(lower)
+      }
+    }
+  }
 
   if (result.length === 0 && fallback.trim()) {
     result.push(fallback.trim())

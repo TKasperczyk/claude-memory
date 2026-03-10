@@ -456,19 +456,19 @@ describe('Unified scoring', () => {
 })
 
 describe('Keyword query normalization', () => {
-  it('drops keyword queries that are substrings of longer queries', async () => {
+  const HAIKU_TOKEN_USAGE = {
+    inputTokens: 10, outputTokens: 5,
+    cacheCreationInputTokens: 0, cacheReadInputTokens: 0
+  }
+
+  it('passes all keyword queries through without substring dedup', async () => {
     mockedGenerateRetrievalQueryPlan.mockResolvedValue({
       plan: {
         resolvedQuery: 'p4 brain configuration',
         keywordQueries: ['p4 brain', 'p4', 'brain'],
         semanticQuery: 'p4 brain configuration'
       },
-      tokenUsage: {
-        inputTokens: 10,
-        outputTokens: 5,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 0
-      },
+      tokenUsage: HAIKU_TOKEN_USAGE,
       model: 'claude-haiku-4-5-20251001'
     })
     mockedHybridSearch.mockResolvedValue([])
@@ -479,9 +479,88 @@ describe('Keyword query normalization', () => {
       { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
     )
 
-    // 'p4' and 'brain' are substrings of 'p4 brain', so only 1 keyword call
+    // All 3 keywords should be searched — unified scoring handles relevance
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    expect(keywordCalls).toHaveLength(1)
-    expect(keywordCalls[0][0].query).toBe('p4 brain')
+    expect(keywordCalls).toHaveLength(3)
+    const queries = keywordCalls.map(([params]) => params.query)
+    expect(queries).toContain('p4 brain')
+    expect(queries).toContain('p4')
+    expect(queries).toContain('brain')
+  })
+
+  it('extracts proper nouns from multi-word keywords', async () => {
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'Find my Jira issue about Grafana statistics',
+        keywordQueries: ['jira issue', 'grafana statistics'],
+        semanticQuery: 'Find a Jira issue about Grafana statistics'
+      },
+      tokenUsage: HAIKU_TOKEN_USAGE,
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedHybridSearch.mockResolvedValue([])
+
+    await retrieveContext(
+      { prompt: 'find my jira issue about grafana statistics', cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl' },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
+    )
+
+    const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
+    const queries = keywordCalls.map(([params]) => params.query)
+    // "jira" and "grafana" extracted as proper nouns from compounds
+    expect(queries).toContain('jira issue')
+    expect(queries).toContain('jira')
+    expect(queries).toContain('grafana statistics')
+    expect(queries).toContain('grafana')
+  })
+
+  it('does not duplicate when proper noun already present as keyword', async () => {
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'Configure Redis cluster settings',
+        keywordQueries: ['Redis cluster', 'redis', 'cluster settings'],
+        semanticQuery: 'Configure Redis cluster settings'
+      },
+      tokenUsage: HAIKU_TOKEN_USAGE,
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedHybridSearch.mockResolvedValue([])
+
+    await retrieveContext(
+      { prompt: 'configure redis cluster', cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl' },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
+    )
+
+    const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
+    const queries = keywordCalls.map(([params]) => params.query)
+    // "redis" already present (case-insensitive), should not be duplicated
+    const redisCount = queries.filter(q => q.toLowerCase() === 'redis').length
+    expect(redisCount).toBe(1)
+  })
+
+  it('handles all-caps proper nouns like AWS and S3', async () => {
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'Configure AWS S3 bucket policy',
+        keywordQueries: ['AWS S3 bucket', 'bucket policy'],
+        semanticQuery: 'Configure AWS S3 bucket policy'
+      },
+      tokenUsage: HAIKU_TOKEN_USAGE,
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedHybridSearch.mockResolvedValue([])
+
+    await retrieveContext(
+      { prompt: 'configure aws s3 bucket policy', cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl' },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
+    )
+
+    const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
+    const queries = keywordCalls.map(([params]) => params.query)
+    expect(queries).toContain('aws')
+    expect(queries).toContain('s3')
   })
 })

@@ -69,6 +69,7 @@ Rules:
 - If CONTEXT is empty or not helpful, resolvedQuery can equal FOCUS.
 - For keywordQueries: include both compound phrases AND their significant individual words. Add domain synonyms for technical concepts (the database may use different terminology than the query).
 - NEVER emit generic single words as keywords (e.g., "save", "file", "run", "check", "error", "output", "data", "config"). Always pair common verbs/nouns with a specific qualifier (e.g., "save parquet" not "save", "config file" not "config").
+- ALWAYS emit proper nouns (tool/service/product names like "jira", "grafana", "kubernetes", "redis") as standalone keywords even when they also appear in a compound phrase. These are high-signal identifiers that records are likely indexed by.
 - Output ONLY via the tool "${TOOL_NAME}" exactly once.`
 
 const QUERY_TOOL: Anthropic.Tool = {
