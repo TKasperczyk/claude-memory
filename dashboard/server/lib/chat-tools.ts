@@ -1,6 +1,8 @@
+import { randomUUID } from 'crypto'
 import type Anthropic from '@anthropic-ai/sdk'
 import {
   hybridSearch,
+  insertRecord,
   updateRecord,
   deleteRecord,
   getRecord
@@ -20,7 +22,7 @@ import type { Config, MemoryRecord, RecordType } from '../../../src/lib/types.js
 import type { HybridSearchResult } from '../../../shared/types.js'
 import { parseNonNegativeInt } from '../utils/params.js'
 
-export type ChatToolName = 'search_memories' | 'update_memory' | 'delete_memories'
+export type ChatToolName = 'search_memories' | 'create_memory' | 'update_memory' | 'delete_memories'
 
 const MAX_SEARCH_LIMIT = 50
 const DEFAULT_SEARCH_LIMIT = 8
@@ -53,6 +55,60 @@ const SEARCH_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
     exclude_deprecated: {
       type: 'boolean',
       description: 'Exclude deprecated records (default true).'
+    }
+  }
+}
+
+const CREATE_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['type'],
+  properties: {
+    type: { type: 'string', enum: ['command', 'error', 'discovery', 'procedure', 'warning'] },
+    scope: { type: 'string', enum: ['global', 'project'], description: 'Memory scope (default: project).' },
+    project: { type: 'string', description: 'Project root path. Auto-filled from context if omitted.' },
+    // command fields
+    command: { type: 'string', description: 'Command text. Required for command records.' },
+    exitCode: { type: 'number', description: 'Command exit code. Required for command records.' },
+    outcome: { type: 'string', enum: ['success', 'failure', 'partial'], description: 'Command outcome. Required for command records.' },
+    intent: { type: 'string', description: 'What the command was trying to accomplish. Required for command records.' },
+    resolution: { type: 'string', description: 'How the issue was resolved (command/error records).' },
+    truncatedOutput: { type: 'string', description: 'Truncated command output (command records).' },
+    // error fields
+    errorText: { type: 'string', description: 'Error text. Required for error records.' },
+    errorType: { type: 'string', description: 'Error type/category. Required for error records.' },
+    cause: { type: 'string', description: 'Root cause of the error (error records).' },
+    // discovery fields
+    what: { type: 'string', description: 'Discovery summary. Required for discovery records.' },
+    where: { type: 'string', description: 'Discovery context/location. Required for discovery records.' },
+    evidence: { type: 'string', description: 'Supporting evidence. Required for discovery records.' },
+    confidence: {
+      type: 'string',
+      enum: ['verified', 'inferred', 'tentative'],
+      description: 'Discovery confidence. Required for discovery records.'
+    },
+    // procedure fields
+    name: { type: 'string', description: 'Procedure name. Required for procedure records.' },
+    steps: {
+      type: 'array',
+      items: { type: 'string' },
+      minItems: 1,
+      description: 'Procedure steps. Required for procedure records.'
+    },
+    prerequisites: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Prerequisites for the procedure (procedure records).'
+    },
+    verification: { type: 'string', description: 'How to verify the procedure succeeded (procedure records).' },
+    // warning fields
+    avoid: { type: 'string', description: 'What to avoid. Required for warning records.' },
+    useInstead: { type: 'string', description: 'Recommended alternative. Required for warning records.' },
+    reason: { type: 'string', description: 'Why this should be avoided. Required for warning records.' },
+    severity: {
+      type: 'string',
+      enum: ['caution', 'warning', 'critical'],
+      description: 'Warning severity. Required for warning records.'
     }
   }
 }
@@ -118,6 +174,11 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
     input_schema: SEARCH_TOOL_SCHEMA
   },
   {
+    name: 'create_memory',
+    description: 'Create a new memory record. Requires type and the relevant fields for that type.',
+    input_schema: CREATE_TOOL_SCHEMA
+  },
+  {
     name: 'update_memory',
     description: 'Update a memory record metadata or content fields.',
     input_schema: UPDATE_TOOL_SCHEMA
@@ -133,6 +194,13 @@ export type SearchMemoriesResult = {
   query: string
   count: number
   results: HybridSearchResult[]
+}
+
+export type CreateMemoryResult = {
+  id: string
+  success: boolean
+  record: MemoryRecord
+  error?: string
 }
 
 export type UpdateMemoryResult = {
@@ -152,6 +220,7 @@ export type DeleteMemoriesResult = {
 
 export type ChatToolResult =
   | SearchMemoriesResult
+  | CreateMemoryResult
   | UpdateMemoryResult
   | DeleteMemoriesResult
   | { error: string }
@@ -197,6 +266,8 @@ export async function executeChatTool(
   switch (name) {
     case 'search_memories':
       return runSearchTool(input, context)
+    case 'create_memory':
+      return runCreateTool(input, context)
     case 'update_memory':
       return runUpdateTool(input, context)
     case 'delete_memories':
@@ -248,6 +319,115 @@ async function runSearchTool(
       count: pagedResults.length,
       results: pagedResults
     }
+  }
+}
+
+async function runCreateTool(
+  input: unknown,
+  context: { config: Config; project?: string }
+): Promise<ChatToolExecution> {
+  if (!input || typeof input !== 'object') {
+    return { result: { error: 'Invalid input for create_memory.' }, isError: true }
+  }
+  const raw = input as Record<string, unknown>
+  const type = asRecordType(raw.type) as RecordType | undefined
+  if (!type) {
+    return { result: { error: 'type is required (command, error, discovery, procedure, warning).' }, isError: true }
+  }
+
+  const id = randomUUID()
+  const scope = asScope(raw.scope) ?? 'project'
+  const project = asTrimmedString(raw.project) ?? context.project ?? ''
+  const base = { id, type, scope, project, timestamp: Date.now() }
+
+  let record: MemoryRecord
+  switch (type) {
+    case 'command': {
+      const command = asTrimmedString(raw.command)
+      const exitCode = asNumber(raw.exitCode)
+      const outcome = asOutcome(raw.outcome)
+      const intent = asTrimmedString(raw.intent)
+      if (!command) return { result: { error: 'command is required for command records.' }, isError: true }
+      if (exitCode === null) return { result: { error: 'exitCode is required for command records.' }, isError: true }
+      if (!outcome) return { result: { error: 'outcome is required for command records (success/failure/partial).' }, isError: true }
+      if (!intent) return { result: { error: 'intent is required for command records.' }, isError: true }
+      record = {
+        ...base, type: 'command', command,
+        exitCode: Math.trunc(exitCode),
+        outcome,
+        context: { project, cwd: project, intent },
+      } as MemoryRecord
+      const resolution = asTrimmedString(raw.resolution)
+      if (resolution) record.resolution = resolution
+      const truncatedOutput = asTrimmedString(raw.truncatedOutput)
+      if (truncatedOutput) record.truncatedOutput = truncatedOutput
+      break
+    }
+    case 'error': {
+      const errorText = asTrimmedString(raw.errorText)
+      const errorType = asTrimmedString(raw.errorType)
+      const resolution = asTrimmedString(raw.resolution)
+      if (!errorText) return { result: { error: 'errorText is required for error records.' }, isError: true }
+      if (!errorType) return { result: { error: 'errorType is required for error records.' }, isError: true }
+      if (!resolution) return { result: { error: 'resolution is required for error records.' }, isError: true }
+      record = {
+        ...base, type: 'error', errorText, errorType, resolution,
+        context: { project },
+      } as MemoryRecord
+      const cause = asTrimmedString(raw.cause)
+      if (cause) record.cause = cause
+      break
+    }
+    case 'discovery': {
+      const what = asTrimmedString(raw.what)
+      const where = asTrimmedString(raw.where)
+      const evidence = asTrimmedString(raw.evidence)
+      const confidence = asConfidence(raw.confidence)
+      if (!what) return { result: { error: 'what is required for discovery records.' }, isError: true }
+      if (!where) return { result: { error: 'where is required for discovery records.' }, isError: true }
+      if (!evidence) return { result: { error: 'evidence is required for discovery records.' }, isError: true }
+      if (!confidence) return { result: { error: 'confidence is required for discovery records (verified/inferred/tentative).' }, isError: true }
+      record = {
+        ...base, type: 'discovery', what, where, evidence, confidence,
+      } as MemoryRecord
+      break
+    }
+    case 'procedure': {
+      const name = asTrimmedString(raw.name)
+      const steps = parseSteps(raw.steps)
+      if (!name) return { result: { error: 'name is required for procedure records.' }, isError: true }
+      if (!steps) return { result: { error: 'steps array is required for procedure records.' }, isError: true }
+      record = {
+        ...base, type: 'procedure', name, steps,
+        context: { ...(project ? { project } : {}) },
+      } as MemoryRecord
+      const prerequisites = asStringArray(raw.prerequisites, { trim: true, filterEmpty: true })
+      if (prerequisites.length > 0) record.prerequisites = prerequisites
+      const verification = asTrimmedString(raw.verification)
+      if (verification) record.verification = verification
+      break
+    }
+    case 'warning': {
+      const avoid = asTrimmedString(raw.avoid)
+      const useInstead = asTrimmedString(raw.useInstead)
+      const reason = asTrimmedString(raw.reason)
+      const severity = asSeverity(raw.severity)
+      if (!avoid) return { result: { error: 'avoid is required for warning records.' }, isError: true }
+      if (!useInstead) return { result: { error: 'useInstead is required for warning records.' }, isError: true }
+      if (!reason) return { result: { error: 'reason is required for warning records.' }, isError: true }
+      if (!severity) return { result: { error: 'severity is required for warning records (caution/warning/critical).' }, isError: true }
+      record = {
+        ...base, type: 'warning', avoid, useInstead, reason, severity,
+      } as MemoryRecord
+      break
+    }
+  }
+
+  try {
+    await insertRecord(record, context.config)
+    return { result: { id, success: true, record } }
+  } catch (err) {
+    return { result: { error: `Failed to create memory: ${err instanceof Error ? err.message : String(err)}` }, isError: true }
   }
 }
 
