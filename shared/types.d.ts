@@ -315,6 +315,7 @@ export interface ExtractionRun {
   tokenUsage?: TokenUsage
   extractedEventCount?: number
   isIncremental?: boolean
+  hasRememberMarker?: boolean
 }
 
 export interface ExtractionReviewIssue {

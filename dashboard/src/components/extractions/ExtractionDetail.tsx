@@ -133,6 +133,11 @@ export default function ExtractionDetail({
                     Acc {accuracyBadge.label}
                   </span>
                 )}
+                {run.hasRememberMarker && (
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-info/15 text-info">
+                    /remember
+                  </span>
+                )}
                 {run.parseErrorCount > 0 && (
                   <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
                     {run.parseErrorCount} parse {run.parseErrorCount === 1 ? 'error' : 'errors'}

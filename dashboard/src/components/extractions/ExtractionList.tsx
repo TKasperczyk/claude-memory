@@ -57,6 +57,11 @@ function ExtractionRunCard({
               Acc {accuracyBadge.label}
             </span>
           )}
+          {run.hasRememberMarker && (
+            <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-info/15 text-info">
+              /remember
+            </span>
+          )}
           {hasErrors && (
             <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
               {run.parseErrorCount} err

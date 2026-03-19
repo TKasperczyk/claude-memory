@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { extractRecords } from '../lib/extract.js'
+import { REMEMBER_MARKER } from '../lib/claude-commands.js'
 import { findGitRoot } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/lancedb.js'
@@ -42,6 +43,7 @@ export interface PostSessionResult {
   tokenUsage?: TokenUsage
   extractedEventCount?: number
   isIncremental?: boolean
+  hasRememberMarker?: boolean
 }
 
 /**
@@ -146,21 +148,27 @@ export async function handlePostSession(
   // Use extraction transcript for min-length check so we skip if only overlap, no real new content
   const transcript = extractionTranscript
 
+  // Check for remember marker -- bypasses min-token check
+  const hasRememberMarker = transcript.messages.some(m => m.text.includes(REMEMBER_MARKER))
+
   // Skip extraction for very short conversations (~4 chars per token)
-  const minChars = settings.extractionMinTokens * 4
-  if (minChars > 0) {
-    const conversationChars = transcript.messages.reduce((sum, m) => sum + m.text.length, 0)
-    if (conversationChars < minChars) {
-      return {
-        inserted: 0,
-        updated: 0,
-        skipped: 0,
-        failed: 0,
-        records: [],
-        insertedIds: [],
-        updatedIds: [],
-        reason: 'no_records',
-        transcript: fullTranscript
+  // unless user explicitly flagged content with /remember
+  if (!hasRememberMarker) {
+    const minChars = settings.extractionMinTokens * 4
+    if (minChars > 0) {
+      const conversationChars = transcript.messages.reduce((sum, m) => sum + m.text.length, 0)
+      if (conversationChars < minChars) {
+        return {
+          inserted: 0,
+          updated: 0,
+          skipped: 0,
+          failed: 0,
+          records: [],
+          insertedIds: [],
+          updatedIds: [],
+          reason: 'no_records',
+          transcript: fullTranscript
+        }
       }
     }
   }
@@ -193,6 +201,7 @@ export async function handlePostSession(
       reason: 'no_records',
       transcript: fullTranscript,
       isIncremental: isIncremental || undefined,
+      hasRememberMarker: hasRememberMarker || undefined,
       tokenUsage
     }
   }
@@ -238,7 +247,8 @@ export async function handlePostSession(
     inserted, updated, skipped, failed, records, insertedIds, updatedIds,
     transcript: fullTranscript, tokenUsage,
     extractedEventCount: totalEventCount,
-    isIncremental: isIncremental || undefined
+    isIncremental: isIncremental || undefined,
+    hasRememberMarker: hasRememberMarker || undefined
   }
 }
 

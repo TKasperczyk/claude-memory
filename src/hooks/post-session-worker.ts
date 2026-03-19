@@ -344,7 +344,8 @@ function saveRunLog(
     firstPrompt,
     tokenUsage: hasTokenUsage(tokenUsage) ? tokenUsage : undefined,
     extractedEventCount: result.extractedEventCount,
-    isIncremental: result.isIncremental
+    isIncremental: result.isIncremental,
+    hasRememberMarker: result.hasRememberMarker
   }, collection)
 
   auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}`)
