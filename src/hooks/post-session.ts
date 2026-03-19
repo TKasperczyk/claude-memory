@@ -39,7 +39,7 @@ export interface PostSessionResult {
   insertedIds: string[]
   updatedIds: string[]
   transcript?: Transcript
-  reason?: 'clear' | 'no_transcript' | 'no_records' | 'no_new_events' | 'wrong_event'
+  reason?: 'clear' | 'no_transcript' | 'no_records' | 'too_short' | 'no_new_events' | 'wrong_event'
   tokenUsage?: TokenUsage
   extractedEventCount?: number
   isIncremental?: boolean
@@ -148,8 +148,9 @@ export async function handlePostSession(
   // Use extraction transcript for min-length check so we skip if only overlap, no real new content
   const transcript = extractionTranscript
 
-  // Check for remember marker -- bypasses min-token check
-  const hasRememberMarker = transcript.messages.some(m => m.text.includes(REMEMBER_MARKER))
+  // Check for remember marker in the raw file -- the parsed transcript strips isMeta entries
+  const rawTranscript = fs.readFileSync(input.transcript_path, 'utf-8')
+  const hasRememberMarker = rawTranscript.includes(REMEMBER_MARKER)
 
   // Skip extraction for very short conversations (~4 chars per token)
   // unless user explicitly flagged content with /remember
@@ -166,7 +167,7 @@ export async function handlePostSession(
           records: [],
           insertedIds: [],
           updatedIds: [],
-          reason: 'no_records',
+          reason: 'too_short',
           transcript: fullTranscript
         }
       }

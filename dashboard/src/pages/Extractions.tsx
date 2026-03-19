@@ -47,6 +47,7 @@ export default function Extractions() {
     reviewLoading,
     reviewErrors,
     loadRunDetails,
+    invalidateRun,
     loadReview,
     handleReviewUpdate,
     handleReviewError
@@ -92,6 +93,11 @@ export default function Extractions() {
     if (!selectedRunId) return null
     return filteredRuns.find(run => run.runId === selectedRunId) ?? null
   }, [filteredRuns, selectedRunId])
+
+  const handleInvalidateRun = (runId: string) => {
+    invalidateRun(runId)
+    queryClient.invalidateQueries({ queryKey: ['extractions'] })
+  }
 
   const handleSendToChat = (run: ExtractionRun) => {
     navigate('/chat', { state: { extractionRunId: run.runId } })
@@ -275,6 +281,7 @@ export default function Extractions() {
               onReviewUpdate={handleReviewUpdate}
               onReviewError={handleReviewError}
               onLoadRunDetails={loadRunDetails}
+              onInvalidateRun={handleInvalidateRun}
               onLoadReview={loadReview}
               onDeleteRun={handleDeleteRun}
               onSendToChat={handleSendToChat}

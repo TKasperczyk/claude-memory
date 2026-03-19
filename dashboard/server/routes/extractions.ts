@@ -2,7 +2,9 @@ import express from 'express'
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
-import { deleteExtractionRun, getExtractionRun } from '../../../src/lib/extraction-log.js'
+import { deleteExtractionRun, getExtractionRun, saveExtractionRun } from '../../../src/lib/extraction-log.js'
+import { getRecordSummary } from '../../../src/lib/record-summary.js'
+import { getFirstUserPrompt } from '../../../src/lib/transcript.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
 import { deleteRecord } from '../../../src/lib/lancedb.js'
 import { paginateExtractionRuns, loadExtractionRunDetail } from '../lib/extraction-helpers.js'
@@ -191,6 +193,36 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         transcript_path: run.transcriptPath,
         cwd
       }, config, { flush: 'always' })
+
+      // Update the existing extraction run with new results
+      const insertedIds = result.insertedIds ?? []
+      const updatedIds = result.updatedIds ?? []
+      const allIds = Array.from(new Set([...insertedIds, ...updatedIds]))
+      const extractedRecords = result.records
+        .map(r => {
+          const summary = getRecordSummary(r)
+          if (!r.id || !summary) return null
+          return { id: r.id, type: r.type, summary, timestamp: r.timestamp }
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null)
+
+      saveExtractionRun({
+        ...run,
+        timestamp: Date.now(),
+        recordCount: allIds.length,
+        parseErrorCount: result.transcript?.parseErrors ?? 0,
+        extractedRecordIds: insertedIds,
+        updatedRecordIds: updatedIds.length > 0 ? updatedIds : undefined,
+        extractedRecords: extractedRecords.length > 0 ? extractedRecords : undefined,
+        duration: 0,
+        firstPrompt: result.transcript ? getFirstUserPrompt(result.transcript) : run.firstPrompt,
+        tokenUsage: result.tokenUsage,
+        extractedEventCount: result.extractedEventCount,
+        hasRememberMarker: result.hasRememberMarker,
+        skipReason: result.reason === 'too_short' ? 'too_short'
+          : (result.reason === 'no_records' && allIds.length === 0) ? 'no_records'
+          : undefined
+      }, requestConfig.lancedb.table)
 
       res.json({
         success: true,

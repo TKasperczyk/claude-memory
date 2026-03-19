@@ -22,6 +22,7 @@ export default function ExtractionDetail({
   onReviewUpdate,
   onReviewError,
   onLoadRunDetails,
+  onInvalidateRun,
   onLoadReview,
   onDeleteRun,
   onSendToChat,
@@ -41,6 +42,7 @@ export default function ExtractionDetail({
   onReviewUpdate: (runId: string, nextReview: ExtractionReview) => void
   onReviewError: (runId: string, message: string) => void
   onLoadRunDetails: (run: ExtractionRun) => void
+  onInvalidateRun: (runId: string) => void
   onLoadReview: (run: ExtractionRun) => void
   onDeleteRun: (run: ExtractionRun) => void
   onSendToChat: (run: ExtractionRun) => void
@@ -94,6 +96,13 @@ export default function ExtractionDetail({
     try {
       const result = await reExtract(run.runId)
       setReExtractResult(`Done: ${result.inserted} inserted, ${result.updated} updated, ${result.skipped} skipped`)
+      // Clear cache and reload to reflect updated data
+      onInvalidateRun(run.runId)
+      // Defer reload slightly to let invalidation take effect
+      setTimeout(() => {
+        void onLoadRunDetails(run)
+        void onLoadReview(run)
+      }, 100)
     } catch (error) {
       setReExtractResult(`Failed: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -131,6 +140,11 @@ export default function ExtractionDetail({
                     title={accuracyBadge.title}
                   >
                     Acc {accuracyBadge.label}
+                  </span>
+                )}
+                {run.skipReason && (
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-warning/15 text-warning">
+                    {run.skipReason === 'too_short' ? 'Skipped: too short' : 'Skipped: no records'}
                   </span>
                 )}
                 {run.hasRememberMarker && (

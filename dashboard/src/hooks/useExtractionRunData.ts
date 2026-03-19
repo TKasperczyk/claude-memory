@@ -16,6 +16,19 @@ export function useExtractionRunData() {
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const loadSeqRef = useRef<Record<string, number>>({})
 
+  const invalidateRun = useCallback((runId: string) => {
+    setRecordsByRun(prev => {
+      const next = { ...prev }
+      delete next[runId]
+      return next
+    })
+    setReviewsByRun(prev => {
+      const next = { ...prev }
+      delete next[runId]
+      return next
+    })
+  }, [])
+
   const loadRunDetails = useCallback(async (run: ExtractionRun) => {
     const runId = run.runId
     if (recordsByRun[runId]) return
@@ -73,6 +86,7 @@ export function useExtractionRunData() {
     reviewLoading,
     reviewErrors,
     loadRunDetails,
+    invalidateRun,
     loadReview,
     handleReviewUpdate,
     handleReviewError

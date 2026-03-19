@@ -51,6 +51,10 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const tokenUsage = coerceTokenUsage(record.tokenUsage)
   const extractedEventCount = asInteger(record.extractedEventCount) ?? undefined
   const isIncremental = record.isIncremental === true ? true : undefined
+  const hasRememberMarker = record.hasRememberMarker === true ? true : undefined
+  const skipReason = record.skipReason === 'too_short' ? 'too_short' as const
+    : record.skipReason === 'no_records' ? 'no_records' as const
+    : undefined
 
   return {
     runId: asString(record.runId) ?? runId,
@@ -66,7 +70,9 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     firstPrompt,
     tokenUsage,
     extractedEventCount,
-    isIncremental
+    isIncremental,
+    hasRememberMarker,
+    skipReason
   }
 }
 

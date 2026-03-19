@@ -316,6 +316,7 @@ export interface ExtractionRun {
   extractedEventCount?: number
   isIncremental?: boolean
   hasRememberMarker?: boolean
+  skipReason?: 'too_short' | 'no_records'
 }
 
 export interface ExtractionReviewIssue {

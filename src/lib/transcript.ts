@@ -1,6 +1,7 @@
 import fs from 'fs'
 import readline from 'readline'
 import { safeJsonStringify } from './json.js'
+import { REMEMBER_MARKER } from './claude-commands.js'
 import { truncateTextWithMarker } from './shared.js'
 
 export interface ToolCall {
@@ -163,7 +164,11 @@ export async function parseTranscript(path: string): Promise<Transcript> {
       }
 
       if (!entry || typeof entry !== 'object') continue
-      if (entry.isSidechain || entry.isMeta) continue
+      // Let remember-marker entries through even if isMeta
+      const hasRememberMarker = entry.isMeta && typeof entry.message?.content === 'object'
+        ? JSON.stringify(entry.message.content).includes(REMEMBER_MARKER)
+        : false
+      if (entry.isSidechain || (entry.isMeta && !hasRememberMarker)) continue
 
       const { rawTimestamp, timestampMs } = parseTimestamp(entry.timestamp)
       const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined

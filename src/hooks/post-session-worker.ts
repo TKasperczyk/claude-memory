@@ -345,7 +345,10 @@ function saveRunLog(
     tokenUsage: hasTokenUsage(tokenUsage) ? tokenUsage : undefined,
     extractedEventCount: result.extractedEventCount,
     isIncremental: result.isIncremental,
-    hasRememberMarker: result.hasRememberMarker
+    hasRememberMarker: result.hasRememberMarker,
+    skipReason: result.reason === 'too_short' ? 'too_short'
+      : (result.reason === 'no_records' && uniqueIds.length === 0) ? 'no_records'
+      : undefined
   }, collection)
 
   auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}`)

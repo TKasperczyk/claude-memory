@@ -26,7 +26,8 @@ function ExtractionRunCard({
 }) {
   const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
   const hasErrors = run.parseErrorCount > 0
-  const dotClass = hasErrors ? 'bg-destructive' : 'bg-success'
+  const isSkipped = !!run.skipReason
+  const dotClass = isSkipped ? 'bg-warning' : hasErrors ? 'bg-destructive' : 'bg-success'
   const promptPreview = getFirstSentence(run.firstPrompt)
   const tokenTotal = run.tokenUsage
     ? run.tokenUsage.inputTokens + run.tokenUsage.outputTokens
@@ -55,6 +56,11 @@ function ExtractionRunCard({
               title={accuracyBadge.title}
             >
               Acc {accuracyBadge.label}
+            </span>
+          )}
+          {isSkipped && (
+            <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-warning/15 text-warning">
+              {run.skipReason === 'too_short' ? 'too short' : 'skipped'}
             </span>
           )}
           {run.hasRememberMarker && (
