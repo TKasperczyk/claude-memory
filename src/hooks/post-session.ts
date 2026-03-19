@@ -131,7 +131,7 @@ export async function handlePostSession(
     project: projectRoot,
     transcriptPath: input.transcript_path,
     injectedMemories: options.injectedMemories
-  })
+  }, config)
 
   const records = options.recordAugmenter
     ? extractedRecords.map(record => options.recordAugmenter!(record, transcript))

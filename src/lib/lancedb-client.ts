@@ -112,7 +112,10 @@ export async function ensureClient(config: Config): Promise<LanceContext> {
   const generationAtStart = closeGeneration
   const key = configKey(config)
   const existing = clientsByConfig.get(key)
-  if (existing) return existing
+  if (existing) {
+    await existing.table.checkoutLatest()
+    return existing
+  }
 
   const inFlight = initByConfig.get(key)
   if (inFlight) return inFlight
