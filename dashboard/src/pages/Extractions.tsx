@@ -21,7 +21,6 @@ import { extractProjectFromPath, TIME_FILTERS, type TimeFilterKey } from '@/comp
 import { useExtractions, useInProgressExtractions } from '@/hooks/queries'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
-import { useExtractionRunData } from '@/hooks/useExtractionRunData'
 import { deleteExtractionRun, type ExtractionRun } from '@/lib/api'
 
 const PAGE_SIZE = 25
@@ -38,20 +37,6 @@ export default function Extractions() {
   const { copy, isCopied } = useCopyToClipboard(2000)
   const queryClient = useQueryClient()
   const skipAutoSelectRef = useRef(false)
-
-  const {
-    recordsByRun,
-    loadingRunIds,
-    runErrors,
-    reviewsByRun,
-    reviewLoading,
-    reviewErrors,
-    loadRunDetails,
-    invalidateRun,
-    loadReview,
-    handleReviewUpdate,
-    handleReviewError
-  } = useExtractionRunData()
 
   const { data, error, isPending, isFetching } = useExtractions({ page, limit: PAGE_SIZE })
   const { data: inProgressData } = useInProgressExtractions()
@@ -93,11 +78,6 @@ export default function Extractions() {
     if (!selectedRunId) return null
     return filteredRuns.find(run => run.runId === selectedRunId) ?? null
   }, [filteredRuns, selectedRunId])
-
-  const handleInvalidateRun = (runId: string) => {
-    invalidateRun(runId)
-    queryClient.invalidateQueries({ queryKey: ['extractions'] })
-  }
 
   const handleSendToChat = (run: ExtractionRun) => {
     navigate('/chat', { state: { extractionRunId: run.runId } })
@@ -260,7 +240,6 @@ export default function Extractions() {
             <ExtractionList
               groupedRuns={groupedRuns}
               selectedRunId={selectedRunId}
-              reviewsByRun={reviewsByRun}
               onSelect={setSelectedRunId}
               page={page}
               onPreviousPage={() => setPage(p => Math.max(0, p - 1))}
@@ -271,18 +250,7 @@ export default function Extractions() {
 
             <ExtractionDetail
               run={selectedRun}
-              recordsByRun={recordsByRun}
-              loadingRunIds={loadingRunIds}
-              runErrors={runErrors}
-              reviewsByRun={reviewsByRun}
-              reviewLoading={reviewLoading}
-              reviewErrors={reviewErrors}
               onSelectMemory={handleSelect}
-              onReviewUpdate={handleReviewUpdate}
-              onReviewError={handleReviewError}
-              onLoadRunDetails={loadRunDetails}
-              onInvalidateRun={handleInvalidateRun}
-              onLoadReview={loadReview}
               onDeleteRun={handleDeleteRun}
               onSendToChat={handleSendToChat}
               deleteError={deleteError}
@@ -301,7 +269,9 @@ export default function Extractions() {
         error={detailError}
         onClose={handleClose}
         onDeleted={() => {
-          if (selectedRun) handleInvalidateRun(selectedRun.runId)
+          if (selectedRun) {
+            void queryClient.invalidateQueries({ queryKey: ['extraction-run', selectedRun.runId] })
+          }
         }}
       />
 

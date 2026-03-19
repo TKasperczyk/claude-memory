@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import {
   fetchExtractions,
+  fetchExtractionReview,
+  fetchExtractionRun,
   fetchHookStatus,
   fetchInProgressExtractions,
   fetchInstallationStatus,
@@ -16,6 +18,8 @@ import {
   fetchStatsHistory,
   searchMemories,
   type ExtractionListResponse,
+  type ExtractionRunResponse,
+  type ExtractionReview,
   type HookStatusResponse,
   type InstallationStatusResponse,
   type MaintenanceRunsListResponse,
@@ -213,5 +217,21 @@ export function useStatsHistory(params: {
     queryKey: ['statsHistory', params],
     queryFn: () => fetchStatsHistory(params),
     refetchInterval: 60000
+  })
+}
+
+export function useExtractionRunDetail(runId: string | null) {
+  return useQuery<ExtractionRunResponse>({
+    queryKey: ['extraction-run', runId],
+    queryFn: () => fetchExtractionRun(runId!),
+    enabled: !!runId
+  })
+}
+
+export function useExtractionReview(runId: string | null) {
+  return useQuery<ExtractionReview | null>({
+    queryKey: ['extraction-review', runId],
+    queryFn: () => fetchExtractionReview(runId!),
+    enabled: !!runId
   })
 }

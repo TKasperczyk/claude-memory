@@ -2,8 +2,7 @@ import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import ListItem from '@/components/ListItem'
 import { formatDuration, formatRelativeTimeShort, formatTokenCount, truncateText } from '@/lib/format'
-import type { ExtractionReview, ExtractionRun } from '@/lib/api'
-import { getAccuracyBadge } from './utils'
+import type { ExtractionRun } from '@/lib/api'
 
 function getFirstSentence(text: string | undefined, maxLength = 60): string | undefined {
   if (!text) return undefined
@@ -16,15 +15,12 @@ function getFirstSentence(text: string | undefined, maxLength = 60): string | un
 function ExtractionRunCard({
   run,
   selected,
-  review,
   onSelect
 }: {
   run: ExtractionRun
   selected: boolean
-  review: ExtractionReview | null | undefined
   onSelect: (runId: string) => void
 }) {
-  const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
   const hasErrors = run.parseErrorCount > 0
   const isSkipped = !!run.skipReason
   const dotClass = isSkipped ? 'bg-warning' : hasErrors ? 'bg-destructive' : 'bg-success'
@@ -48,14 +44,6 @@ function ExtractionRunCard({
           {tokenTotal !== null && (
             <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-foreground/10 text-foreground/70">
               {formatTokenCount(tokenTotal)} tok
-            </span>
-          )}
-          {accuracyBadge && (
-            <span
-              className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${accuracyBadge.badge}`}
-              title={accuracyBadge.title}
-            >
-              Acc {accuracyBadge.label}
             </span>
           )}
           {isSkipped && (
@@ -92,7 +80,6 @@ function ExtractionRunCard({
 export default function ExtractionList({
   groupedRuns,
   selectedRunId,
-  reviewsByRun,
   onSelect,
   page,
   onPreviousPage,
@@ -102,7 +89,6 @@ export default function ExtractionList({
 }: {
   groupedRuns: Array<{ name: string; runs: ExtractionRun[] }>
   selectedRunId: string | null
-  reviewsByRun: Record<string, ExtractionReview | null>
   onSelect: (runId: string) => void
   page: number
   onPreviousPage: () => void
@@ -136,7 +122,6 @@ export default function ExtractionList({
                     key={run.runId}
                     run={run}
                     selected={run.runId === selectedRunId}
-                    review={reviewsByRun[run.runId]}
                     onSelect={onSelect}
                   />
                 ))}

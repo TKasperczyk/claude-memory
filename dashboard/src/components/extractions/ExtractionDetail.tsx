@@ -1,29 +1,20 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Trash2, RotateCcw, MessageSquare } from 'lucide-react'
 import MetricTile from '@/components/MetricTile'
 import ListItem from '@/components/ListItem'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration, formatRelativeTimeShort, formatTokenCount, truncateText } from '@/lib/format'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
-import { reExtract, type ExtractionReview, type ExtractionRun, type MemoryRecord } from '@/lib/api'
+import { reExtract, type ExtractionRun, type MemoryRecord } from '@/lib/api'
+import { useExtractionRunDetail, useExtractionReview } from '@/hooks/queries'
 import ExtractionReviewPanel from './ExtractionReviewPanel'
 import { RecordsSkeleton } from './ExtractionSkeletons'
 import { extractProjectFromPath, getAccuracyBadge, truncateSessionId } from './utils'
 
 export default function ExtractionDetail({
   run,
-  recordsByRun,
-  loadingRunIds,
-  runErrors,
-  reviewsByRun,
-  reviewLoading,
-  reviewErrors,
   onSelectMemory,
-  onReviewUpdate,
-  onReviewError,
-  onLoadRunDetails,
-  onInvalidateRun,
-  onLoadReview,
   onDeleteRun,
   onSendToChat,
   deleteError,
@@ -32,18 +23,7 @@ export default function ExtractionDetail({
   isCopied
 }: {
   run: ExtractionRun | null
-  recordsByRun: Record<string, MemoryRecord[]>
-  loadingRunIds: Record<string, boolean>
-  runErrors: Record<string, string>
-  reviewsByRun: Record<string, ExtractionReview | null>
-  reviewLoading: Record<string, boolean>
-  reviewErrors: Record<string, string>
   onSelectMemory: (recordId: string) => void
-  onReviewUpdate: (runId: string, nextReview: ExtractionReview) => void
-  onReviewError: (runId: string, message: string) => void
-  onLoadRunDetails: (run: ExtractionRun) => void
-  onInvalidateRun: (runId: string) => void
-  onLoadReview: (run: ExtractionRun) => void
   onDeleteRun: (run: ExtractionRun) => void
   onSendToChat: (run: ExtractionRun) => void
   deleteError: string | null
@@ -51,19 +31,32 @@ export default function ExtractionDetail({
   copy: (id: string, value: string) => void
   isCopied: (id: string) => boolean
 }) {
+  const queryClient = useQueryClient()
   const [reExtracting, setReExtracting] = useState(false)
   const [reExtractResult, setReExtractResult] = useState<string | null>(null)
 
-  useEffect(() => {
-    setReExtracting(false)
-    setReExtractResult(null)
-  }, [run?.runId])
+  const runId = run?.runId ?? null
+  const { data: runDetail, isLoading: isLoadingRecords, error: runDetailError } = useExtractionRunDetail(runId)
+  const { data: review, isLoading: reviewLoadingState, error: reviewQueryError } = useExtractionReview(runId)
 
-  useEffect(() => {
-    if (!run) return
-    void onLoadRunDetails(run)
-    void onLoadReview(run)
-  }, [run, onLoadRunDetails, onLoadReview])
+  const runRecords: MemoryRecord[] = runDetail?.records ?? []
+  const runError = runDetailError instanceof Error ? runDetailError.message : undefined
+  const reviewError = reviewQueryError instanceof Error ? reviewQueryError.message : undefined
+  const hasReviewLoaded = review !== undefined
+
+  const invalidateRunData = () => {
+    void queryClient.invalidateQueries({ queryKey: ['extraction-run', runId] })
+    void queryClient.invalidateQueries({ queryKey: ['extraction-review', runId] })
+    void queryClient.invalidateQueries({ queryKey: ['extractions'] })
+  }
+
+  const handleReviewUpdate = (_runId: string, nextReview: import('@/lib/api').ExtractionReview) => {
+    queryClient.setQueryData(['extraction-review', runId], nextReview)
+  }
+
+  const handleReviewError = (_runId: string, _message: string) => {
+    // Errors are handled by the query itself; clear on next successful fetch
+  }
 
   if (!run) {
     return (
@@ -75,13 +68,6 @@ export default function ExtractionDetail({
     )
   }
 
-  const runRecords = recordsByRun[run.runId] ?? []
-  const isLoadingRecords = loadingRunIds[run.runId] === true
-  const runError = runErrors[run.runId]
-  const review = reviewsByRun[run.runId] ?? null
-  const reviewLoadingState = reviewLoading[run.runId] ?? false
-  const reviewError = reviewErrors[run.runId]
-  const hasReviewLoaded = Object.prototype.hasOwnProperty.call(reviewsByRun, run.runId)
   const accuracyBadge = review ? getAccuracyBadge(review.accuracyScore) : null
   const transcriptPath = run.transcriptPath || '—'
   const projectName = extractProjectFromPath(run.transcriptPath)
@@ -96,13 +82,7 @@ export default function ExtractionDetail({
     try {
       const result = await reExtract(run.runId)
       setReExtractResult(`Done: ${result.inserted} inserted, ${result.updated} updated, ${result.skipped} skipped`)
-      // Clear cache and reload to reflect updated data
-      onInvalidateRun(run.runId)
-      // Defer reload slightly to let invalidation take effect
-      setTimeout(() => {
-        void onLoadRunDetails(run)
-        void onLoadReview(run)
-      }, 100)
+      invalidateRunData()
     } catch (error) {
       setReExtractResult(`Failed: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -221,13 +201,13 @@ export default function ExtractionDetail({
           <ExtractionReviewPanel
             run={run}
             runRecords={runRecords}
-            review={review}
+            review={review ?? null}
             reviewLoadingState={reviewLoadingState}
             reviewError={reviewError}
             hasReviewLoaded={hasReviewLoaded}
             onSelect={onSelectMemory}
-            onReviewUpdate={onReviewUpdate}
-            onReviewError={onReviewError}
+            onReviewUpdate={handleReviewUpdate}
+            onReviewError={handleReviewError}
             copy={copy}
             isCopied={isCopied}
           />
