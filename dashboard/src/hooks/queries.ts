@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   fetchExtractions,
   fetchHookStatus,
+  fetchInProgressExtractions,
   fetchInstallationStatus,
   fetchMaintenanceRuns,
   fetchMemories,
@@ -97,6 +98,14 @@ export function useMemories(params: MemoriesQueryParams) {
     },
     placeholderData: previousData => previousData,
     refetchInterval: 20000
+  })
+}
+
+export function useInProgressExtractions() {
+  return useQuery({
+    queryKey: ['extractions-in-progress'],
+    queryFn: fetchInProgressExtractions,
+    refetchInterval: 5000
   })
 }
 

@@ -1,11 +1,11 @@
-import { useEffect } from 'react'
-import { Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Trash2, RotateCcw } from 'lucide-react'
 import MetricTile from '@/components/MetricTile'
 import ListItem from '@/components/ListItem'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration, formatRelativeTimeShort, formatTokenCount, truncateText } from '@/lib/format'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
-import type { ExtractionReview, ExtractionRun, MemoryRecord } from '@/lib/api'
+import { reExtract, type ExtractionReview, type ExtractionRun, type MemoryRecord } from '@/lib/api'
 import ExtractionReviewPanel from './ExtractionReviewPanel'
 import { RecordsSkeleton } from './ExtractionSkeletons'
 import { extractProjectFromPath, getAccuracyBadge, truncateSessionId } from './utils'
@@ -47,6 +47,14 @@ export default function ExtractionDetail({
   copy: (id: string, value: string) => void
   isCopied: (id: string) => boolean
 }) {
+  const [reExtracting, setReExtracting] = useState(false)
+  const [reExtractResult, setReExtractResult] = useState<string | null>(null)
+
+  useEffect(() => {
+    setReExtracting(false)
+    setReExtractResult(null)
+  }, [run?.runId])
+
   useEffect(() => {
     if (!run) return
     void onLoadRunDetails(run)
@@ -76,6 +84,20 @@ export default function ExtractionDetail({
   const tokenTotal = run.tokenUsage
     ? run.tokenUsage.inputTokens + run.tokenUsage.outputTokens
     : null
+
+  const handleReExtract = async () => {
+    if (reExtracting) return
+    setReExtracting(true)
+    setReExtractResult(null)
+    try {
+      const result = await reExtract(run.runId)
+      setReExtractResult(`Done: ${result.inserted} inserted, ${result.updated} updated, ${result.skipped} skipped`)
+    } catch (error) {
+      setReExtractResult(`Failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setReExtracting(false)
+    }
+  }
 
   const handleDelete = () => {
     if (isDeleting) return
@@ -116,6 +138,15 @@ export default function ExtractionDetail({
                 )}
               </div>
               <Button
+                variant="outline"
+                size="xs"
+                onClick={handleReExtract}
+                disabled={reExtracting}
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${reExtracting ? 'animate-spin' : ''}`} />
+                {reExtracting ? 'Re-extracting...' : 'Re-extract'}
+              </Button>
+              <Button
                 variant="destructive"
                 size="xs"
                 onClick={handleDelete}
@@ -149,6 +180,11 @@ export default function ExtractionDetail({
           </div>
           {deleteError && (
             <div className="mt-2 text-xs text-destructive">{deleteError}</div>
+          )}
+          {reExtractResult && (
+            <div className={`mt-2 text-xs ${reExtractResult.startsWith('Failed') ? 'text-destructive' : 'text-muted-foreground'}`}>
+              {reExtractResult}
+            </div>
           )}
         </div>
 

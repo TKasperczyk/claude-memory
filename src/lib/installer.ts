@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { SKIP_MARKER, SKIP_EXTRACTION_MARKER, getCommandFilePath } from './claude-commands.js'
+import { SKIP_MARKER, SKIP_EXTRACTION_MARKER, REMEMBER_MARKER, getCommandFilePath } from './claude-commands.js'
 import { readFileIfExists } from './shared.js'
 import { isPlainObject } from './parsing.js'
 import type { CommandStatus, HookEvent, HookStatus, InstallationStatus, McpStatus } from '../../shared/types.js'
@@ -58,6 +58,16 @@ ${SKIP_EXTRACTION_MARKER}
 Acknowledge that memory extraction will be skipped when this session ends. Say exactly: "Memory extraction will be skipped for this session." and nothing else.
 `
 
+const REMEMBER_COMMAND_CONTENT = `---
+description: Mark recent conversation for memory extraction
+---
+
+${SKIP_MARKER}
+${REMEMBER_MARKER}
+
+The user is flagging that the recent conversation contains important knowledge that should be remembered. Briefly acknowledge what you think they want remembered based on the preceding exchanges, then say: "This area has been flagged for memory extraction."
+`
+
 const COMMAND_DEFINITIONS: Record<string, CommandDefinition> = {
   'prior-knowledge': {
     filename: 'prior-knowledge.md',
@@ -66,6 +76,10 @@ const COMMAND_DEFINITIONS: Record<string, CommandDefinition> = {
   'skip-extraction': {
     filename: 'skip-extraction.md',
     content: SKIP_EXTRACTION_COMMAND_CONTENT
+  },
+  'remember': {
+    filename: 'remember.md',
+    content: REMEMBER_COMMAND_CONTENT
   }
 }
 

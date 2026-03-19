@@ -14,6 +14,7 @@ import {
   type WarningRecord
 } from './types.js'
 import type { Transcript, TranscriptEvent } from './transcript.js'
+import { REMEMBER_MARKER } from './claude-commands.js'
 import { stripNoiseWords } from './context.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { getRecordSchemaOneOf } from './record-schema.js'
@@ -54,6 +55,12 @@ Rules:
 - Commands and errors must be verbatim from tool calls/output.
 - When transcript output includes a "[truncated]" marker, do not include that marker in extracted text.
 - Extract warnings when Claude explicitly learns that an approach doesn't work and identifies a better alternative.
+
+MANDATORY extraction (remember markers):
+- When you see a "${REMEMBER_MARKER}" marker in the transcript, it means the user explicitly flagged the surrounding conversation as important.
+- You MUST extract at least one record from the exchanges around the marker (several turns before it, and any turns after it that continue the same topic).
+- Classify as the most appropriate record type (discovery for facts, procedure for multi-step instructions, warning for "don't do X").
+- Even if the content seems routine or trivial, extract it -- the user explicitly asked for it to be remembered.
 
 CRITICAL - Source Evidence (Citation Anchor):
 - EVERY record MUST include a sourceExcerpt field that anchors the record to the transcript.

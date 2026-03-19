@@ -500,6 +500,30 @@ export function deleteExtractionRun(runId: string): Promise<ActionResponse> {
   return request(`/extractions/${runId}`, { method: 'DELETE' })
 }
 
+export interface InProgressExtraction {
+  sessionId: string
+  pid: number
+  startedAt: number
+  elapsedMs: number
+}
+
+export function fetchInProgressExtractions(): Promise<{ inProgress: InProgressExtraction[] }> {
+  return request('/extractions/in-progress')
+}
+
+export interface ReExtractResponse {
+  success: boolean
+  inserted: number
+  updated: number
+  skipped: number
+  failed: number
+  reason?: string
+}
+
+export function reExtract(runId: string): Promise<ReExtractResponse> {
+  return request(`/extractions/${runId}/re-extract`, { method: 'POST' })
+}
+
 export function fetchMaintenanceRuns(params: {
   limit?: number
   offset?: number

@@ -3,6 +3,7 @@ import path from 'path'
 
 export const SKIP_MARKER = '<!-- claude-memory:skip-injection -->'
 export const SKIP_EXTRACTION_MARKER = '<!-- claude-memory:skip-extraction -->'
+export const REMEMBER_MARKER = '<!-- claude-memory:remember -->'
 
 function getCommandsDirectory(claudeSettingsPath?: string): string {
   if (claudeSettingsPath) {

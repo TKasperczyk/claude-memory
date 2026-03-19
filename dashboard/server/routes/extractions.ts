@@ -1,7 +1,12 @@
 import express from 'express'
+import fs from 'fs'
+import path from 'path'
+import { homedir } from 'os'
 import { deleteExtractionRun, getExtractionRun, listExtractionRuns } from '../../../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
 import { deleteRecord, fetchRecordsByIds } from '../../../src/lib/lancedb.js'
+import { handlePostSession } from '../../../src/hooks/post-session.js'
+import { parseTranscript } from '../../../src/lib/transcript.js'
 import { deleteReview, getReview, saveReview } from '../../../src/lib/review-storage.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
@@ -34,6 +39,42 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
     } catch (error) {
       logger.error('Failed to list extractions', error)
       res.status(500).json({ error: 'Failed to list extractions' })
+    }
+  })
+
+  router.get('/api/extractions/in-progress', (_req, res) => {
+    try {
+      const locksDir = path.join(homedir(), '.claude-memory', 'locks')
+      if (!fs.existsSync(locksDir)) {
+        return res.json({ inProgress: [] })
+      }
+
+      const files = fs.readdirSync(locksDir)
+      const staleMs = 5 * 60 * 1000
+      const now = Date.now()
+      const inProgress: Array<{ sessionId: string; pid: number; startedAt: number; elapsedMs: number }> = []
+
+      for (const file of files) {
+        if (!file.endsWith('.lock') || file === 'auto-maintenance.lock') continue
+        const lockPath = path.join(locksDir, file)
+        try {
+          const content = fs.readFileSync(lockPath, 'utf-8').trim()
+          const lines = content.split('\n')
+          const pid = parseInt(lines[0], 10)
+          const startedAt = parseInt(lines[1], 10)
+          if (!Number.isFinite(pid) || !Number.isFinite(startedAt)) continue
+          if (now - startedAt > staleMs) continue
+          const sessionId = file.replace(/\.lock$/, '')
+          inProgress.push({ sessionId, pid, startedAt, elapsedMs: now - startedAt })
+        } catch {
+          continue
+        }
+      }
+
+      res.json({ inProgress })
+    } catch (error) {
+      logger.error('Failed to check in-progress extractions', error)
+      res.json({ inProgress: [] })
     }
   })
 
@@ -141,6 +182,48 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       const message = error instanceof Error ? error.message : String(error)
       logger.error('Extraction review error', error)
       res.status(500).json({ error: message || 'Failed to run extraction review' })
+    }
+  })
+
+  router.post('/api/extractions/:runId/re-extract', async (req, res) => {
+    try {
+      const runId = req.params.runId
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const run = getExtractionRun(runId, requestConfig.lancedb.table)
+      if (!run) {
+        return res.status(404).json({ error: 'Extraction run not found' })
+      }
+
+      if (!run.transcriptPath || !fs.existsSync(run.transcriptPath)) {
+        return res.status(400).json({ error: `Transcript file not found: ${run.transcriptPath || '(empty)'}` })
+      }
+
+      const config = await ensureConfigInitialized(req, baseConfig)
+
+      // Recover the original cwd from transcript events (transcript path is under ~/.claude/, not the project)
+      const transcript = await parseTranscript(run.transcriptPath)
+      const firstCwd = transcript.events.find(e => e.cwd)?.cwd
+      const cwd = firstCwd ?? path.dirname(run.transcriptPath)
+
+      const result = await handlePostSession({
+        hook_event_name: 'SessionEnd',
+        session_id: run.sessionId,
+        transcript_path: run.transcriptPath,
+        cwd
+      }, config, { flush: 'always' })
+
+      res.json({
+        success: true,
+        inserted: result.inserted,
+        updated: result.updated,
+        skipped: result.skipped,
+        failed: result.failed,
+        reason: result.reason
+      })
+    } catch (error) {
+      logger.error('Re-extraction failed', error)
+      const message = error instanceof Error ? error.message : String(error)
+      res.status(500).json({ error: message || 'Re-extraction failed' })
     }
   })
 

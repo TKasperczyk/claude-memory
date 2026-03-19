@@ -17,7 +17,7 @@ import ExtractionList from '@/components/extractions/ExtractionList'
 import ExtractionSummary from '@/components/extractions/ExtractionSummary'
 import { ExtractionListSkeleton } from '@/components/extractions/ExtractionSkeletons'
 import { extractProjectFromPath, TIME_FILTERS, type TimeFilterKey } from '@/components/extractions/utils'
-import { useExtractions } from '@/hooks/queries'
+import { useExtractions, useInProgressExtractions } from '@/hooks/queries'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
 import { useExtractionRunData } from '@/hooks/useExtractionRunData'
@@ -51,6 +51,8 @@ export default function Extractions() {
   } = useExtractionRunData()
 
   const { data, error, isPending, isFetching } = useExtractions({ page, limit: PAGE_SIZE })
+  const { data: inProgressData } = useInProgressExtractions()
+  const inProgress = inProgressData?.inProgress ?? []
   const allRuns = data?.runs ?? []
   const total = data?.total ?? null
   const errorMessage = error instanceof Error ? error.message : 'Failed to load extractions'
@@ -210,6 +212,18 @@ export default function Extractions() {
         <div className="flex items-center gap-2 text-xs text-muted-foreground/70 shrink-0">
           <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
           Updating runs...
+        </div>
+      )}
+
+      {inProgress.length > 0 && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-primary/20 bg-primary/5 text-sm shrink-0">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+          <span>
+            {inProgress.length === 1
+              ? `Extracting session ${inProgress[0].sessionId.slice(0, 8)}... (${Math.round(inProgress[0].elapsedMs / 1000)}s)`
+              : `${inProgress.length} extractions in progress`
+            }
+          </span>
         </div>
       )}
 
