@@ -42,6 +42,7 @@ export default function SessionDetail({
 
   const handleReviewUpdate = (_sessionId: string, nextReview: InjectionReview) => {
     queryClient.setQueryData(['injection-review', sessionId], nextReview)
+    void queryClient.invalidateQueries({ queryKey: ['sessions'] })
   }
 
   const handleReviewError = (_sessionId: string, _message: string) => {

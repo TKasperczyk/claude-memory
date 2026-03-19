@@ -187,6 +187,17 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       const firstCwd = transcript.events.find(e => e.cwd)?.cwd
       const cwd = firstCwd ?? path.dirname(run.transcriptPath)
 
+      // Delete old records that the re-extract will replace
+      const oldInsertedIds = run.extractedRecordIds ?? []
+      const oldUpdatedIds = run.updatedRecordIds ?? []
+      const oldIds = Array.from(new Set([...oldInsertedIds, ...oldUpdatedIds]))
+      for (const id of oldIds) {
+        try { await deleteRecord(id, config) } catch { /* already gone */ }
+      }
+
+      // Clear stale review
+      deleteReview(runId, requestConfig.lancedb.table)
+
       const result = await handlePostSession({
         hook_event_name: 'SessionEnd',
         session_id: run.sessionId,

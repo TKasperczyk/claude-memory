@@ -403,8 +403,8 @@ async function runCreateTool(
   }
 
   const id = randomUUID()
-  const scope = asScope(raw.scope) ?? 'project'
   const project = asTrimmedString(raw.project) ?? context.project ?? ''
+  const scope = asScope(raw.scope) ?? (project ? 'project' : 'global')
   const base = { id, type, scope, project, timestamp: Date.now() }
 
   let record: MemoryRecord
