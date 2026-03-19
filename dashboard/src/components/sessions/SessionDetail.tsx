@@ -1,8 +1,9 @@
-import { useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import MetricTile from '@/components/MetricTile'
 import type { RetrievalContext } from '@/components/MemoryDetail'
 import type { InjectionReview, SessionRecord } from '@/lib/api'
 import { formatRelativeTimeShort } from '@/lib/format'
+import { useInjectionReview } from '@/hooks/queries'
 import {
   extractProjectName,
   getActivityStatus,
@@ -18,35 +19,34 @@ import SessionMemoriesPanel from './SessionMemoriesPanel'
 
 export default function SessionDetail({
   session,
-  review,
-  reviewLoadingState,
-  reviewError,
-  hasReviewLoaded,
   onSelectMemory,
-  onReviewUpdate,
-  onReviewError,
-  onLoadReview,
   onSendToSimulator,
   copy,
   isCopied
 }: {
   session: SessionRecord | null
-  review: InjectionReview | null
-  reviewLoadingState: boolean
-  reviewError?: string
-  hasReviewLoaded: boolean
   onSelectMemory: (recordId: string, context?: RetrievalContext | null) => void
-  onReviewUpdate: (sessionId: string, nextReview: InjectionReview) => void
-  onReviewError: (sessionId: string, message: string) => void
-  onLoadReview: (session: SessionRecord) => void
   onSendToSimulator: (prompt: string, cwd?: string) => void
   copy: (id: string, value: string) => void
   isCopied: (id: string) => boolean
 }) {
-  useEffect(() => {
-    if (!session || session.memories.length === 0) return
-    void onLoadReview(session)
-  }, [session, onLoadReview])
+  const queryClient = useQueryClient()
+  const sessionId = session?.sessionId ?? null
+  const hasMemories = (session?.memories.length ?? 0) > 0
+  const { data: review, isLoading: reviewLoadingState, error: reviewQueryError } = useInjectionReview(
+    hasMemories ? sessionId : null
+  )
+
+  const reviewError = reviewQueryError instanceof Error ? reviewQueryError.message : undefined
+  const hasReviewLoaded = review !== undefined
+
+  const handleReviewUpdate = (_sessionId: string, nextReview: InjectionReview) => {
+    queryClient.setQueryData(['injection-review', sessionId], nextReview)
+  }
+
+  const handleReviewError = (_sessionId: string, _message: string) => {
+    // Errors handled by the query
+  }
 
   if (!session) {
     return (
@@ -131,13 +131,13 @@ export default function SessionDetail({
           <div className="shrink-0">
             <SessionReviewPanel
               session={session}
-              review={review}
+              review={review ?? null}
               reviewLoadingState={reviewLoadingState}
               reviewError={reviewError}
               hasReviewLoaded={hasReviewLoaded}
               onSelect={onSelectMemory}
-              onReviewUpdate={onReviewUpdate}
-              onReviewError={onReviewError}
+              onReviewUpdate={handleReviewUpdate}
+              onReviewError={handleReviewError}
               copy={copy}
               isCopied={isCopied}
             />

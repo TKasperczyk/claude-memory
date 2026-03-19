@@ -1,21 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { InjectionReview, SessionRecord } from '@/lib/api'
+import type { SessionRecord } from '@/lib/api'
 import {
   TIME_FILTERS,
   extractProjectName,
   formatProjectLabel,
   getProjectKey,
   getPromptCount,
-  getSessionHasReview,
   isSessionActive,
   type SortKey,
   type TimeFilterKey
 } from '@/components/sessions/utils'
 
-export function useSessionsState(
-  sessions: SessionRecord[],
-  reviewsBySession: Record<string, InjectionReview | null>
-) {
+export function useSessionsState(sessions: SessionRecord[]) {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('12h')
@@ -112,7 +108,7 @@ export function useSessionsState(
       if (Date.now() - session.lastActivity > timeMs) return false
       if (activeOnly && !isSessionActive(session)) return false
       if (hasMemoriesOnly && session.memories.length === 0) return false
-      if (hasReviewsOnly && !getSessionHasReview(session, reviewsBySession)) return false
+      if (hasReviewsOnly && !session.hasReview) return false
 
       if (!normalizedQuery) return true
 
@@ -133,7 +129,7 @@ export function useSessionsState(
 
       return false
     })
-  }, [sessions, searchQuery, timeFilter, projectFilter, activeOnly, hasMemoriesOnly, hasReviewsOnly, reviewsBySession])
+  }, [sessions, searchQuery, timeFilter, projectFilter, activeOnly, hasMemoriesOnly, hasReviewsOnly])
 
   const sortedSessions = useMemo(() => {
     const sorted = [...filteredSessions]

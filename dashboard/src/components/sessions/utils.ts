@@ -1,4 +1,4 @@
-import type { InjectionReview, InjectionStatus, MemoryStats, RecordType, SessionRecord } from '@/lib/api'
+import type { InjectionStatus, MemoryStats, RecordType, SessionRecord } from '@/lib/api'
 
 export const TYPE_ORDER: RecordType[] = ['error', 'command', 'discovery', 'procedure']
 
@@ -238,16 +238,6 @@ export function getPromptCount(session: SessionRecord): number | null {
   const prompts = getSessionPrompts(session)
   if (Array.isArray(prompts)) return prompts.length
   return null
-}
-
-export function getSessionHasReview(
-  session: SessionRecord,
-  cachedReviews: Record<string, InjectionReview | null>
-): boolean {
-  if (Object.prototype.hasOwnProperty.call(cachedReviews, session.sessionId)) {
-    return cachedReviews[session.sessionId] !== null
-  }
-  return Boolean(session.hasReview)
 }
 
 export interface TypeGroup {

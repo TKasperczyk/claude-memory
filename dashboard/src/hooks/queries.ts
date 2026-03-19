@@ -3,6 +3,7 @@ import {
   fetchExtractions,
   fetchExtractionReview,
   fetchExtractionRun,
+  fetchInjectionReview,
   fetchHookStatus,
   fetchInProgressExtractions,
   fetchInstallationStatus,
@@ -20,6 +21,7 @@ import {
   type ExtractionListResponse,
   type ExtractionRunResponse,
   type ExtractionReview,
+  type InjectionReview,
   type HookStatusResponse,
   type InstallationStatusResponse,
   type MaintenanceRunsListResponse,
@@ -217,6 +219,14 @@ export function useStatsHistory(params: {
     queryKey: ['statsHistory', params],
     queryFn: () => fetchStatsHistory(params),
     refetchInterval: 60000
+  })
+}
+
+export function useInjectionReview(sessionId: string | null) {
+  return useQuery<InjectionReview | null>({
+    queryKey: ['injection-review', sessionId],
+    queryFn: () => fetchInjectionReview(sessionId!),
+    enabled: !!sessionId
   })
 }
 

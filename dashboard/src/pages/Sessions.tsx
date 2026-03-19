@@ -8,7 +8,6 @@ import SessionSummary from '@/components/sessions/SessionSummary'
 import { useSessions } from '@/hooks/queries'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
-import { useSessionReviews } from '@/hooks/useSessionReviews'
 import { useSessionsState } from '@/hooks/useSessionsState'
 
 export default function Sessions() {
@@ -19,15 +18,6 @@ export default function Sessions() {
   const { data, error, isPending } = useSessions()
   const sessions = data?.sessions ?? []
   const errorMessage = error instanceof Error ? error.message : 'Failed to load sessions'
-
-  const {
-    reviewsBySession,
-    reviewLoading,
-    reviewErrors,
-    loadReview,
-    handleReviewUpdate,
-    handleReviewError
-  } = useSessionReviews()
 
   const {
     selectedSessionId,
@@ -51,7 +41,7 @@ export default function Sessions() {
     setActiveOnly,
     sortKey,
     setSortKey
-  } = useSessionsState(sessions, reviewsBySession)
+  } = useSessionsState(sessions)
 
   useEffect(() => {
     if (!selectedId) {
@@ -88,13 +78,6 @@ export default function Sessions() {
   const handleSendToSimulator = (prompt: string, cwd?: string) => {
     navigate('/preview', { state: { prompt, cwd } })
   }
-
-  const selectedReview = selectedSession ? (reviewsBySession[selectedSession.sessionId] ?? null) : null
-  const reviewLoadingState = selectedSession ? (reviewLoading[selectedSession.sessionId] ?? false) : false
-  const reviewError = selectedSession ? reviewErrors[selectedSession.sessionId] : undefined
-  const hasReviewLoaded = selectedSession
-    ? Object.prototype.hasOwnProperty.call(reviewsBySession, selectedSession.sessionId)
-    : false
 
   const isInitialLoading = isPending && sessions.length === 0
 
@@ -161,14 +144,7 @@ export default function Sessions() {
 
             <SessionDetail
               session={selectedSession}
-              review={selectedReview}
-              reviewLoadingState={reviewLoadingState}
-              reviewError={reviewError}
-              hasReviewLoaded={hasReviewLoaded}
               onSelectMemory={handleSelect}
-              onReviewUpdate={handleReviewUpdate}
-              onReviewError={handleReviewError}
-              onLoadReview={loadReview}
               onSendToSimulator={handleSendToSimulator}
               copy={copy}
               isCopied={isCopied}
