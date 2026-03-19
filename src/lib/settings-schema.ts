@@ -638,11 +638,11 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     key: 'maxTranscriptChars',
     label: 'Max transcript chars',
     description: 'Maximum transcript characters sent to the extraction LLM. ~4 chars per token -- size this to fit your model context window.',
-    step: 50000,
+    step: 100000,
     min: 50000,
-    max: 2000000,
+    max: 10000000,
     kind: 'int',
-    default: 500000,
+    default: 3200000,
     group: MAINTENANCE_GROUPS_META.extraction
   },
   {

@@ -37,7 +37,7 @@ export interface ExtractionContext {
 
 const TOOL_NAME = 'emit_records'
 const USEFULNESS_TOOL_NAME = 'emit_usefulness'
-const MAX_TRANSCRIPT_CHARS = 500000  // ~125k tokens, leaves room for system prompt + response in 200k context
+const MAX_TRANSCRIPT_CHARS = 3200000  // ~800k tokens, fallback when setting not provided
 const MAX_USEFULNESS_TRANSCRIPT_CHARS = 300000
 const MAX_INTENT_CHARS = 400
 const MAX_TRUNCATED_OUTPUT_CHARS = 20000
