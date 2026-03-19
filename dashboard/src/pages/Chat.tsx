@@ -153,10 +153,11 @@ export default function Chat() {
   useEffect(() => {
     const runId = locationState?.extractionRunId
     if (!runId || runId === autoSentRunIdRef.current || isStreaming) return
-    autoSentRunIdRef.current = runId
     const message = `Show me extraction run ${runId} with its review and extracted records. Summarize the extraction quality and any issues found.`
-    // Defer to next tick so all state from this render cycle is settled
-    const timer = setTimeout(() => void handleSend(message), 0)
+    const timer = setTimeout(() => {
+      autoSentRunIdRef.current = runId
+      void handleSend(message)
+    }, 0)
     return () => clearTimeout(timer)
   }, [locationState, isStreaming]) // eslint-disable-line react-hooks/exhaustive-deps
 
