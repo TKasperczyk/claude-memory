@@ -29,6 +29,11 @@ export function deleteExtractionRun(runId: string, collection?: string): boolean
   return extractionLog.delete(runId, collection)
 }
 
+export function getLastExtractionRunForSession(sessionId: string, collection?: string): ExtractionRun | null {
+  const runs = extractionLog.list(collection) // sorted by timestamp desc
+  return runs.find(run => run.sessionId === sessionId && run.extractedEventCount != null) ?? null
+}
+
 function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | null {
   if (!isPlainObject(value)) return null
   const record = value
@@ -44,6 +49,8 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const duration = asInteger(record.duration) ?? 0
   const firstPrompt = asTrimmedString(record.firstPrompt)
   const tokenUsage = coerceTokenUsage(record.tokenUsage)
+  const extractedEventCount = asInteger(record.extractedEventCount) ?? undefined
+  const isIncremental = record.isIncremental === true ? true : undefined
 
   return {
     runId: asString(record.runId) ?? runId,
@@ -57,7 +64,9 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     extractedRecords,
     duration,
     firstPrompt,
-    tokenUsage
+    tokenUsage,
+    extractedEventCount,
+    isIncremental
   }
 }
 

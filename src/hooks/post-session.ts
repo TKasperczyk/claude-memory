@@ -16,7 +16,7 @@ import { findGitRoot } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/lancedb.js'
 import { loadSettings } from '../lib/settings.js'
-import { parseTranscript, type Transcript } from '../lib/transcript.js'
+import { parseTranscript, computeIncrementalStartIndex, sliceTranscript, type Transcript } from '../lib/transcript.js'
 import {
   DEFAULT_CONFIG,
   type Config,
@@ -38,8 +38,10 @@ export interface PostSessionResult {
   insertedIds: string[]
   updatedIds: string[]
   transcript?: Transcript
-  reason?: 'clear' | 'no_transcript' | 'no_records' | 'wrong_event'
+  reason?: 'clear' | 'no_transcript' | 'no_records' | 'no_new_events' | 'wrong_event'
   tokenUsage?: TokenUsage
+  extractedEventCount?: number
+  isIncremental?: boolean
 }
 
 /**
@@ -55,6 +57,10 @@ export async function handlePostSession(
     recordAugmenter?: (record: MemoryRecord, transcript: Transcript) => MemoryRecord
     /** Memories injected during this session - used for change detection */
     injectedMemories?: InjectedMemoryEntry[]
+    /** Event count from a prior extraction of this session -- enables incremental mode */
+    previousExtractionEventCount?: number
+    /** How many user turns to overlap for context (default: from settings) */
+    contextOverlapTurns?: number
   } = {}
 ): Promise<PostSessionResult> {
   // Accept both SessionEnd and PreCompact events
@@ -98,12 +104,47 @@ export async function handlePostSession(
     }
   }
 
-  const transcript = await parseTranscript(input.transcript_path)
-  if (transcript.parseErrors > 0) {
-    console.error(`[claude-memory] Transcript parse warnings: ${transcript.parseErrors}`)
+  const fullTranscript = await parseTranscript(input.transcript_path)
+  if (fullTranscript.parseErrors > 0) {
+    console.error(`[claude-memory] Transcript parse warnings: ${fullTranscript.parseErrors}`)
   }
 
+  const totalEventCount = fullTranscript.events.length
   const settings = loadSettings()
+
+  // Incremental extraction: skip if no new events since last extraction
+  const priorEventCount = options.previousExtractionEventCount
+  let isIncremental = false
+  let extractionTranscript = fullTranscript
+
+  if (priorEventCount !== undefined && priorEventCount > 0) {
+    if (totalEventCount <= priorEventCount) {
+      return {
+        inserted: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0,
+        records: [],
+        insertedIds: [],
+        updatedIds: [],
+        reason: 'no_new_events',
+        transcript: fullTranscript,
+        extractedEventCount: totalEventCount
+      }
+    }
+
+    const overlapTurns = options.contextOverlapTurns ?? settings.extractionContextOverlapTurns
+    const startIndex = computeIncrementalStartIndex(fullTranscript.events, priorEventCount, overlapTurns)
+    extractionTranscript = sliceTranscript(fullTranscript, startIndex)
+    isIncremental = true
+    console.error(
+      `[claude-memory] Incremental extraction: ${totalEventCount - priorEventCount} new events, ` +
+      `starting from event ${startIndex} (${overlapTurns}-turn overlap)`
+    )
+  }
+
+  // Use extraction transcript for min-length check so we skip if only overlap, no real new content
+  const transcript = extractionTranscript
 
   // Skip extraction for very short conversations (~4 chars per token)
   const minChars = settings.extractionMinTokens * 4
@@ -119,7 +160,7 @@ export async function handlePostSession(
         insertedIds: [],
         updatedIds: [],
         reason: 'no_records',
-        transcript
+        transcript: fullTranscript
       }
     }
   }
@@ -130,11 +171,14 @@ export async function handlePostSession(
     cwd: input.cwd,
     project: projectRoot,
     transcriptPath: input.transcript_path,
-    injectedMemories: options.injectedMemories
+    injectedMemories: options.injectedMemories,
+    isIncremental,
+    maxTranscriptChars: settings.maxTranscriptChars
   }, config)
 
+  // Use fullTranscript for recordAugmenter (e.g. sourceExcerpt matching) -- it has more context
   const records = options.recordAugmenter
-    ? extractedRecords.map(record => options.recordAugmenter!(record, transcript))
+    ? extractedRecords.map(record => options.recordAugmenter!(record, fullTranscript))
     : extractedRecords
 
   if (records.length === 0) {
@@ -147,7 +191,8 @@ export async function handlePostSession(
       insertedIds: [],
       updatedIds: [],
       reason: 'no_records',
-      transcript,
+      transcript: fullTranscript,
+      isIncremental: isIncremental || undefined,
       tokenUsage
     }
   }
@@ -189,7 +234,12 @@ export async function handlePostSession(
     }
   }
 
-  return { inserted, updated, skipped, failed, records, insertedIds, updatedIds, transcript, tokenUsage }
+  return {
+    inserted, updated, skipped, failed, records, insertedIds, updatedIds,
+    transcript: fullTranscript, tokenUsage,
+    extractedEventCount: totalEventCount,
+    isIncremental: isIncremental || undefined
+  }
 }
 
 async function precomputeEmbeddings(records: MemoryRecord[], config: Config): Promise<void> {

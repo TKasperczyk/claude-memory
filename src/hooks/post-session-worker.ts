@@ -12,7 +12,7 @@ import { rateInjectedMemories } from '../lib/extract.js'
 import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
-import { saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
+import { getLastExtractionRunForSession, saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
 import { runAllMaintenance } from '../lib/maintenance-api.js'
 import { buildMaintenanceRun, getLastMaintenanceRun, saveMaintenanceRun } from '../lib/maintenance-log.js'
 import { loadSettings } from '../lib/settings.js'
@@ -218,6 +218,14 @@ async function main(): Promise<void> {
       const injectedMemories = session ? dedupeInjectedMemories(session.memories) : []
       debugLog(`Loaded ${injectedMemories.length} injected memories for change detection`)
 
+      // Check for prior extraction of this session (incremental extraction)
+      const priorRun = getLastExtractionRunForSession(payload.session_id, collection)
+      const previousEventCount = priorRun?.extractedEventCount
+      if (previousEventCount) {
+        debugLog(`Found prior extraction run ${priorRun.runId} with ${previousEventCount} events`)
+        auditLog(`INCREMENTAL prior_run=${priorRun.runId} prior_events=${previousEventCount} session=${payload.session_id}`)
+      }
+
       let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
       let shouldFlush = false
       const extractionStart = Date.now()
@@ -228,6 +236,7 @@ async function main(): Promise<void> {
         result = await handlePostSession(payload, config, {
           flush: 'end-of-batch',
           injectedMemories,
+          previousExtractionEventCount: previousEventCount,
           recordAugmenter: (record, transcript) => ({
             ...record,
             sourceSessionId: payload.session_id,
@@ -235,7 +244,7 @@ async function main(): Promise<void> {
             sourceExcerpt: record.sourceExcerpt ?? buildSourceExcerpt(record, transcript)
           })
         })
-        debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`)
+        debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${result.isIncremental ? ' (incremental)' : ''}`)
         shouldFlush = (result.inserted + result.updated) > 0
         extractionDuration = Date.now() - extractionStart
         if (result.tokenUsage) {
@@ -265,13 +274,21 @@ async function main(): Promise<void> {
         return
       }
 
+      if (result.reason === 'no_new_events') {
+        debugLog('Skipping: no new events since last extraction')
+        auditLog(`SKIP reason=no_new_events session=${payload.session_id} events=${result.extractedEventCount}`)
+        console.error('[claude-memory] No new events since last extraction; skipping.')
+        return
+      }
+
       if (result.reason === 'no_records') {
         console.error('[claude-memory] No records extracted.')
         return
       }
 
+      const incrementalLabel = result.isIncremental ? ' (incremental)' : ''
       console.error(
-        `[claude-memory] Extraction complete: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`
+        `[claude-memory] Extraction complete${incrementalLabel}: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`
       )
       debugLog('COMPLETE')
     } finally {
@@ -299,7 +316,7 @@ function saveRunLog(
   tokenUsage: TokenUsage,
   collection?: string
 ): void {
-  if (result.reason === 'no_transcript' || result.reason === 'clear' || result.reason === 'wrong_event') {
+  if (result.reason === 'no_transcript' || result.reason === 'clear' || result.reason === 'wrong_event' || result.reason === 'no_new_events') {
     auditLog(`DONE session=${payload.session_id} reason=${result.reason} (no run saved)`)
     return
   }
@@ -325,10 +342,12 @@ function saveRunLog(
     extractedRecords,
     duration,
     firstPrompt,
-    tokenUsage: hasTokenUsage(tokenUsage) ? tokenUsage : undefined
+    tokenUsage: hasTokenUsage(tokenUsage) ? tokenUsage : undefined,
+    extractedEventCount: result.extractedEventCount,
+    isIncremental: result.isIncremental
   }, collection)
 
-  auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms`)
+  auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}`)
 }
 
 function buildRecordSummary(record: MemoryRecord): ExtractionRecordSummary | null {

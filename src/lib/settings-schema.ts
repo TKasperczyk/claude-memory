@@ -635,6 +635,28 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.extraction
   },
   {
+    key: 'maxTranscriptChars',
+    label: 'Max transcript chars',
+    description: 'Maximum transcript characters sent to the extraction LLM. ~4 chars per token -- size this to fit your model context window.',
+    step: 50000,
+    min: 50000,
+    max: 2000000,
+    kind: 'int',
+    default: 500000,
+    group: MAINTENANCE_GROUPS_META.extraction
+  },
+  {
+    key: 'extractionContextOverlapTurns',
+    label: 'Incremental overlap turns',
+    description: 'When re-extracting a resumed session, overlap this many user turns from the previous extraction for context continuity.',
+    step: 1,
+    min: 0,
+    max: 20,
+    kind: 'int',
+    default: 5,
+    group: MAINTENANCE_GROUPS_META.extraction
+  },
+  {
     key: 'extractionDedupThreshold',
     label: 'Extraction dedup threshold',
     description: 'Similarity for dedup during extraction.',

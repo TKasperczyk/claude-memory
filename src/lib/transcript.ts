@@ -663,3 +663,65 @@ export function getFirstUserPrompt(transcript: Transcript): string | undefined {
   }
   return undefined
 }
+
+/**
+ * Compute the event index to start incremental extraction from.
+ *
+ * Walks backward from the prior extraction boundary, counting user messages
+ * until `overlapTurns` are found. Returns the index of the oldest overlap event.
+ */
+export function computeIncrementalStartIndex(
+  events: TranscriptEvent[],
+  priorEventCount: number,
+  overlapTurns: number
+): number {
+  const boundary = Math.min(priorEventCount, events.length)
+  if (boundary <= 0 || overlapTurns <= 0) return boundary
+
+  let turnsFound = 0
+  for (let i = boundary - 1; i >= 0; i--) {
+    if (events[i].type === 'user') {
+      turnsFound++
+      if (turnsFound >= overlapTurns) return i
+    }
+  }
+
+  return 0
+}
+
+/**
+ * Create a new Transcript containing only events from `startEventIndex` onward.
+ *
+ * Messages are sliced to match -- each user/assistant event in the events array
+ * corresponds to one entry in messages (in order), so we count how many
+ * user/assistant events precede the start index to determine the message offset.
+ */
+export function sliceTranscript(transcript: Transcript, startEventIndex: number): Transcript {
+  if (startEventIndex <= 0) return transcript
+
+  const clamped = Math.min(startEventIndex, transcript.events.length)
+  const slicedEvents = transcript.events.slice(clamped)
+
+  let messageOffset = 0
+  for (let i = 0; i < clamped; i++) {
+    const ev = transcript.events[i]
+    if (ev.type === 'user' || ev.type === 'assistant') messageOffset++
+  }
+
+  const slicedMessages = transcript.messages.slice(messageOffset)
+
+  const slicedToolCallIds = new Set<string>()
+  const slicedToolResultIds = new Set<string>()
+  for (const ev of slicedEvents) {
+    if (ev.type === 'tool_call' && ev.id) slicedToolCallIds.add(ev.id)
+    if (ev.type === 'tool_result' && ev.toolUseId) slicedToolResultIds.add(ev.toolUseId)
+  }
+
+  return {
+    events: slicedEvents,
+    messages: slicedMessages,
+    toolCalls: transcript.toolCalls.filter(tc => tc.id && slicedToolCallIds.has(tc.id)),
+    toolResults: transcript.toolResults.filter(tr => tr.toolUseId && slicedToolResultIds.has(tr.toolUseId)),
+    parseErrors: transcript.parseErrors
+  }
+}

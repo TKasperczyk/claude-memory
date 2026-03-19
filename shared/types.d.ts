@@ -268,12 +268,14 @@ export interface MaintenanceSettings {
   warningSynthesisRecheckDays: number
   procedureStepCheckCount: number
   extractionMinTokens: number
+  maxTranscriptChars: number
   extractionDedupThreshold: number
   reviewSimilarThreshold: number
   reviewDuplicateWarningThreshold: number
   extractionLogRetentionDays: number
   maintenanceRunRetentionDays: number
   autoMaintenanceIntervalHours: number
+  extractionContextOverlapTurns: number
 }
 
 export interface ModelSettings {
@@ -311,6 +313,8 @@ export interface ExtractionRun {
   duration: number
   firstPrompt?: string
   tokenUsage?: TokenUsage
+  extractedEventCount?: number
+  isIncremental?: boolean
 }
 
 export interface ExtractionReviewIssue {

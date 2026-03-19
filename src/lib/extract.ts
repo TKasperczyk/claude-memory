@@ -29,6 +29,10 @@ export interface ExtractionContext {
   intent?: string
   /** Memories that were injected during this session - used to detect outdated information */
   injectedMemories?: InjectedMemoryEntry[]
+  /** Whether this is an incremental extraction of a resumed session */
+  isIncremental?: boolean
+  /** Max transcript chars to send to extraction LLM (from settings) */
+  maxTranscriptChars?: number
 }
 
 const TOOL_NAME = 'emit_records'
@@ -293,8 +297,12 @@ function recordTokenUsageEvent(
 function buildUserPrompt(transcript: Transcript, context: ExtractionContext): string {
   const project = context.project ?? context.cwd ?? 'unknown'
   const cwd = context.cwd ?? 'unknown'
-  const transcriptText = formatTranscript(transcript.events, MAX_TRANSCRIPT_CHARS)
+  const transcriptText = formatTranscript(transcript.events, context.maxTranscriptChars ?? MAX_TRANSCRIPT_CHARS)
   const priorKnowledgeSection = buildPriorKnowledgeSection(context.injectedMemories)
+
+  const incrementalNote = context.isIncremental
+    ? `\nNote: This is an incremental extraction of a resumed session. The beginning of this transcript is context from a prior extraction -- focus on extracting NEW knowledge from the later portion. Records from the earlier context were already extracted.\n`
+    : ''
 
   return `Context:
 - session_id: ${context.sessionId}
@@ -302,7 +310,7 @@ function buildUserPrompt(transcript: Transcript, context: ExtractionContext): st
 - cwd: ${cwd}
 - transcript_path: ${context.transcriptPath ?? 'unknown'}
 - intent: ${context.intent ?? 'unknown'}
-${priorKnowledgeSection}
+${priorKnowledgeSection}${incrementalNote}
 Extraction guidance:
 1) CommandRecord: for notable shell commands with meaningful outcomes. Skip routine commands
    like "pnpm build" or "git status" unless they revealed something important.
