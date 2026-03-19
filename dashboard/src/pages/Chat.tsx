@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useLocation } from 'react-router-dom'
 
 const uuid = () =>
   typeof crypto !== 'undefined' && crypto.randomUUID
@@ -48,9 +49,23 @@ function formatToolSummary(tool: ChatToolName, input: unknown): string {
     return id ? `update_memory: ${id}` : 'update_memory'
   }
 
+  if (tool === 'create_memory') {
+    const type = typeof record.type === 'string' ? record.type : ''
+    return type ? `create_memory: ${type}` : 'create_memory'
+  }
+
   if (tool === 'delete_memories') {
     const ids = Array.isArray(record.ids) ? record.ids.length : 0
     return ids ? `delete_memories: ${ids} ids` : 'delete_memories'
+  }
+
+  if (tool === 'list_extractions') {
+    return 'list_extractions'
+  }
+
+  if (tool === 'get_extraction') {
+    const runId = typeof record.runId === 'string' ? record.runId.slice(0, 8) : ''
+    return runId ? `get_extraction: ${runId}...` : 'get_extraction'
   }
 
   return tool
@@ -100,7 +115,13 @@ function ToolCallEntry({ entry }: { entry: ChatEntryTool }) {
   )
 }
 
+interface ChatLocationState {
+  extractionRunId?: string
+}
+
 export default function Chat() {
+  const location = useLocation()
+  const locationState = location.state as ChatLocationState | null
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [input, setInput] = useState('')
   const [project, setProject] = useState('')
@@ -109,6 +130,7 @@ export default function Chat() {
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const autoSentRunIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -127,6 +149,14 @@ export default function Chat() {
     }
   }, [isStreaming])
 
+  // Auto-send when navigated with extraction context
+  useEffect(() => {
+    const runId = locationState?.extractionRunId
+    if (!runId || runId === autoSentRunIdRef.current || isStreaming) return
+    autoSentRunIdRef.current = runId
+    void handleSend(`Show me extraction run ${runId} with its review and extracted records. Summarize the extraction quality and any issues found.`)
+  }, [locationState, isStreaming]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const appendAssistantText = (text: string) => {
     setEntries(prev => {
       const last = prev[prev.length - 1]
@@ -139,8 +169,8 @@ export default function Chat() {
     })
   }
 
-  const handleSend = async () => {
-    const trimmed = input.trim()
+  const handleSend = async (overrideMessage?: string) => {
+    const trimmed = (overrideMessage ?? input).trim()
     if (!trimmed || isStreaming) return
 
     const userEntry: ChatEntryMessage = {

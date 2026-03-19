@@ -2,9 +2,10 @@ import express from 'express'
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
-import { deleteExtractionRun, getExtractionRun, listExtractionRuns } from '../../../src/lib/extraction-log.js'
+import { deleteExtractionRun, getExtractionRun } from '../../../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
-import { deleteRecord, fetchRecordsByIds } from '../../../src/lib/lancedb.js'
+import { deleteRecord } from '../../../src/lib/lancedb.js'
+import { paginateExtractionRuns, loadExtractionRunDetail } from '../lib/extraction-helpers.js'
 import { handlePostSession } from '../../../src/hooks/post-session.js'
 import { parseTranscript } from '../../../src/lib/transcript.js'
 import { deleteReview, getReview, saveReview } from '../../../src/lib/review-storage.js'
@@ -24,18 +25,9 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
   router.get('/api/extractions', (req, res) => {
     try {
       const requestConfig = getRequestConfig(req, baseConfig)
-      const runs = listExtractionRuns(requestConfig.lancedb.table)
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 50), 500)
       const offset = parseNonNegativeInt(req.query.offset, 0)
-      const page = runs.slice(offset, offset + limit)
-
-      res.json({
-        runs: page,
-        count: page.length,
-        total: runs.length,
-        offset,
-        limit
-      })
+      res.json(paginateExtractionRuns(requestConfig.lancedb.table, limit, offset))
     } catch (error) {
       logger.error('Failed to list extractions', error)
       res.status(500).json({ error: 'Failed to list extractions' })
@@ -80,24 +72,12 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
   router.get('/api/extractions/:runId', async (req, res) => {
     try {
-      const requestConfig = getRequestConfig(req, baseConfig)
-      const run = getExtractionRun(req.params.runId, requestConfig.lancedb.table)
-      if (!run) {
+      const config = await ensureConfigInitialized(req, baseConfig)
+      const detail = await loadExtractionRunDetail(req.params.runId, config, { includeReview: false })
+      if (!detail) {
         return res.status(404).json({ error: 'Extraction run not found' })
       }
-
-      const insertedIds = run.extractedRecordIds ?? []
-      const updatedIds = run.updatedRecordIds ?? []
-      const ids = Array.from(new Set([...insertedIds, ...updatedIds]))
-      if (ids.length === 0) {
-        return res.json({ run, records: [] })
-      }
-
-      const config = await ensureConfigInitialized(req, baseConfig)
-
-      const records = await fetchRecordsByIds(ids, config)
-
-      res.json({ run, records })
+      res.json({ run: detail.run, records: detail.records ?? [] })
     } catch (error) {
       logger.error('Failed to get extraction run', error)
       res.status(500).json({ error: 'Failed to get extraction run' })

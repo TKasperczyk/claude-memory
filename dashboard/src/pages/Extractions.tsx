@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import MemoryDetail from '@/components/MemoryDetail'
@@ -26,6 +27,7 @@ import { deleteExtractionRun, type ExtractionRun } from '@/lib/api'
 const PAGE_SIZE = 25
 
 export default function Extractions() {
+  const navigate = useNavigate()
   const [page, setPage] = useState(0)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('12h')
@@ -90,6 +92,10 @@ export default function Extractions() {
     if (!selectedRunId) return null
     return filteredRuns.find(run => run.runId === selectedRunId) ?? null
   }, [filteredRuns, selectedRunId])
+
+  const handleSendToChat = (run: ExtractionRun) => {
+    navigate('/chat', { state: { extractionRunId: run.runId } })
+  }
 
   const handleDeleteRun = (run: ExtractionRun) => {
     if (deletingRunId) return
@@ -271,6 +277,7 @@ export default function Extractions() {
               onLoadRunDetails={loadRunDetails}
               onLoadReview={loadReview}
               onDeleteRun={handleDeleteRun}
+              onSendToChat={handleSendToChat}
               deleteError={deleteError}
               isDeleting={deletingRunId === selectedRun?.runId}
               copy={copy}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Trash2, RotateCcw } from 'lucide-react'
+import { Trash2, RotateCcw, MessageSquare } from 'lucide-react'
 import MetricTile from '@/components/MetricTile'
 import ListItem from '@/components/ListItem'
 import { Button } from '@/components/ui/button'
@@ -24,6 +24,7 @@ export default function ExtractionDetail({
   onLoadRunDetails,
   onLoadReview,
   onDeleteRun,
+  onSendToChat,
   deleteError,
   isDeleting,
   copy,
@@ -42,6 +43,7 @@ export default function ExtractionDetail({
   onLoadRunDetails: (run: ExtractionRun) => void
   onLoadReview: (run: ExtractionRun) => void
   onDeleteRun: (run: ExtractionRun) => void
+  onSendToChat: (run: ExtractionRun) => void
   deleteError: string | null
   isDeleting: boolean
   copy: (id: string, value: string) => void
@@ -137,6 +139,14 @@ export default function ExtractionDetail({
                   </span>
                 )}
               </div>
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => onSendToChat(run)}
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                Chat
+              </Button>
               <Button
                 variant="outline"
                 size="xs"

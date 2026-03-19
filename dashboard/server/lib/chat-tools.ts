@@ -7,6 +7,7 @@ import {
   deleteRecord,
   getRecord
 } from '../../../src/lib/lancedb.js'
+import { paginateExtractionRuns, loadExtractionRunDetail } from './extraction-helpers.js'
 import {
   asBoolean,
   asConfidence,
@@ -19,10 +20,10 @@ import {
   asTrimmedString
 } from '../../../src/lib/parsing.js'
 import type { Config, MemoryRecord, RecordType } from '../../../src/lib/types.js'
-import type { HybridSearchResult } from '../../../shared/types.js'
+import type { ExtractionReview, ExtractionRun, HybridSearchResult } from '../../../shared/types.js'
 import { parseNonNegativeInt } from '../utils/params.js'
 
-export type ChatToolName = 'search_memories' | 'create_memory' | 'update_memory' | 'delete_memories'
+export type ChatToolName = 'search_memories' | 'create_memory' | 'update_memory' | 'delete_memories' | 'list_extractions' | 'get_extraction'
 
 const MAX_SEARCH_LIMIT = 50
 const DEFAULT_SEARCH_LIMIT = 8
@@ -167,6 +168,41 @@ const DELETE_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
   }
 }
 
+const LIST_EXTRACTIONS_SCHEMA: Anthropic.Tool['input_schema'] = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    limit: {
+      type: 'number',
+      minimum: 1,
+      maximum: 50,
+      description: 'Maximum number of extraction runs to return (default 10).'
+    },
+    offset: {
+      type: 'number',
+      minimum: 0,
+      description: 'Offset for pagination (default 0).'
+    }
+  }
+}
+
+const GET_EXTRACTION_SCHEMA: Anthropic.Tool['input_schema'] = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['runId'],
+  properties: {
+    runId: { type: 'string', description: 'Extraction run ID.' },
+    includeReview: {
+      type: 'boolean',
+      description: 'Include the review for this extraction if one exists (default true).'
+    },
+    includeRecords: {
+      type: 'boolean',
+      description: 'Include the extracted memory records (default true).'
+    }
+  }
+}
+
 export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'search_memories',
@@ -187,6 +223,16 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
     name: 'delete_memories',
     description: 'Delete one or more memory records by ID.',
     input_schema: DELETE_TOOL_SCHEMA
+  },
+  {
+    name: 'list_extractions',
+    description: 'List recent extraction runs with timestamps, record counts, and session info.',
+    input_schema: LIST_EXTRACTIONS_SCHEMA
+  },
+  {
+    name: 'get_extraction',
+    description: 'Get details of a specific extraction run, including extracted records and review (if available).',
+    input_schema: GET_EXTRACTION_SCHEMA
   }
 ]
 
@@ -218,11 +264,28 @@ export type DeleteMemoriesResult = {
   error?: string
 }
 
+export type ListExtractionsResult = {
+  runs: ExtractionRun[]
+  count: number
+  total: number
+  offset: number
+  limit: number
+}
+
+export type GetExtractionResult = {
+  run: ExtractionRun
+  records?: MemoryRecord[]
+  review?: ExtractionReview | null
+  error?: string
+}
+
 export type ChatToolResult =
   | SearchMemoriesResult
   | CreateMemoryResult
   | UpdateMemoryResult
   | DeleteMemoriesResult
+  | ListExtractionsResult
+  | GetExtractionResult
   | { error: string }
 
 export type ChatToolExecution = {
@@ -272,6 +335,10 @@ export async function executeChatTool(
       return runUpdateTool(input, context)
     case 'delete_memories':
       return runDeleteTool(input, context)
+    case 'list_extractions':
+      return runListExtractionsTool(input, context)
+    case 'get_extraction':
+      return runGetExtractionTool(input, context)
     default:
       return { result: { error: `Unknown tool: ${name}` }, isError: true }
   }
@@ -550,5 +617,47 @@ async function runDeleteTool(
       deleted,
       missing
     }
+  }
+}
+
+function runListExtractionsTool(
+  input: unknown,
+  context: { config: Config }
+): ChatToolExecution {
+  const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {}
+  const limit = Math.min(Math.max(asNumber(raw.limit) ?? 10, 1), 50)
+  const offset = Math.max(asNumber(raw.offset) ?? 0, 0)
+
+  try {
+    return { result: paginateExtractionRuns(context.config.lancedb.table, limit, offset) }
+  } catch (err) {
+    return { result: { error: `Failed to list extractions: ${err instanceof Error ? err.message : String(err)}` }, isError: true }
+  }
+}
+
+async function runGetExtractionTool(
+  input: unknown,
+  context: { config: Config }
+): Promise<ChatToolExecution> {
+  if (!input || typeof input !== 'object') {
+    return { result: { error: 'Invalid input for get_extraction.' }, isError: true }
+  }
+  const raw = input as Record<string, unknown>
+  const runId = asTrimmedString(raw.runId)
+  if (!runId) {
+    return { result: { error: 'runId is required for get_extraction.' }, isError: true }
+  }
+
+  const includeReview = asBoolean(raw.includeReview) ?? true
+  const includeRecords = asBoolean(raw.includeRecords) ?? true
+
+  try {
+    const detail = await loadExtractionRunDetail(runId, context.config, { includeRecords, includeReview })
+    if (!detail) {
+      return { result: { error: `Extraction run not found: ${runId}` }, isError: true }
+    }
+    return { result: detail }
+  } catch (err) {
+    return { result: { error: `Failed to get extraction: ${err instanceof Error ? err.message : String(err)}` }, isError: true }
   }
 }

@@ -230,7 +230,7 @@ export interface ChatRequest {
   project?: string
 }
 
-export type ChatToolName = 'search_memories' | 'update_memory' | 'delete_memories'
+export type ChatToolName = 'search_memories' | 'create_memory' | 'update_memory' | 'delete_memories' | 'list_extractions' | 'get_extraction'
 
 export interface ChatSearchResult {
   query: string
@@ -253,10 +253,35 @@ export interface ChatDeleteResult {
   error?: string
 }
 
+export interface ChatCreateResult {
+  id: string
+  success: boolean
+  record: MemoryRecord
+  error?: string
+}
+
+export interface ChatListExtractionsResult {
+  runs: ExtractionRun[]
+  count: number
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface ChatGetExtractionResult {
+  run: ExtractionRun
+  records?: MemoryRecord[]
+  review?: ExtractionReview | null
+  error?: string
+}
+
 export type ChatToolResult =
   | ChatSearchResult
+  | ChatCreateResult
   | ChatUpdateResult
   | ChatDeleteResult
+  | ChatListExtractionsResult
+  | ChatGetExtractionResult
   | { error: string }
 
 export type ChatStreamEvent =
