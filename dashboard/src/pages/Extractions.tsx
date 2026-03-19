@@ -300,6 +300,9 @@ export default function Extractions() {
         loading={detailLoading}
         error={detailError}
         onClose={handleClose}
+        onDeleted={() => {
+          if (selectedRun) handleInvalidateRun(selectedRun.runId)
+        }}
       />
 
       <Dialog open={Boolean(deleteConfirmRun)} onOpenChange={(open) => !open && setDeleteConfirmRun(null)}>
