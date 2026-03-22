@@ -50,6 +50,7 @@ type MemoriesQueryParams = {
 type ExtractionsQueryParams = {
   page?: number
   limit?: number
+  sessionId?: string
 }
 
 export function useStats() {
@@ -116,13 +117,14 @@ export function useInProgressExtractions() {
 }
 
 export function useExtractions(params: ExtractionsQueryParams) {
-  const { page = 0, limit = 25 } = params
+  const { page = 0, limit = 25, sessionId } = params
 
   return useQuery<ExtractionListResponse>({
-    queryKey: ['extractions', { page, limit }],
+    queryKey: ['extractions', { page, limit, sessionId }],
     queryFn: () => fetchExtractions({
       limit,
-      offset: page * limit
+      offset: page * limit,
+      sessionId
     }),
     placeholderData: previousData => previousData,
     refetchInterval: 30000

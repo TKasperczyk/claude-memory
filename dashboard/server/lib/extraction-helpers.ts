@@ -12,8 +12,12 @@ export interface PaginatedExtractionRuns {
   limit: number
 }
 
-export function paginateExtractionRuns(table: string, limit: number, offset: number): PaginatedExtractionRuns {
-  const runs = listExtractionRuns(table)
+export function paginateExtractionRuns(table: string, limit: number, offset: number, sessionId?: string): PaginatedExtractionRuns {
+  let runs = listExtractionRuns(table)
+  if (sessionId) {
+    const search = sessionId.toLowerCase()
+    runs = runs.filter(run => run.sessionId.toLowerCase().includes(search))
+  }
   const page = runs.slice(offset, offset + limit)
   return { runs: page, count: page.length, total: runs.length, offset, limit }
 }

@@ -29,7 +29,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       const requestConfig = getRequestConfig(req, baseConfig)
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 50), 500)
       const offset = parseNonNegativeInt(req.query.offset, 0)
-      res.json(paginateExtractionRuns(requestConfig.lancedb.table, limit, offset))
+      const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : undefined
+      res.json(paginateExtractionRuns(requestConfig.lancedb.table, limit, offset, sessionId || undefined))
     } catch (error) {
       logger.error('Failed to list extractions', error)
       res.status(500).json({ error: 'Failed to list extractions' })

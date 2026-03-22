@@ -509,10 +509,12 @@ export async function fetchMemoryTypes(): Promise<RecordType[]> {
 export function fetchExtractions(params: {
   limit?: number
   offset?: number
+  sessionId?: string
 } = {}): Promise<ExtractionListResponse> {
   const search = new URLSearchParams()
   if (typeof params.limit === 'number') search.set('limit', String(params.limit))
   if (typeof params.offset === 'number') search.set('offset', String(params.offset))
+  if (params.sessionId) search.set('sessionId', params.sessionId)
   const query = search.toString()
   return request(`/extractions${query ? `?${query}` : ''}`)
 }

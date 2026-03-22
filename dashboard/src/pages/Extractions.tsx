@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useDeferredValue } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -30,6 +30,12 @@ export default function Extractions() {
   const [page, setPage] = useState(0)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>('12h')
+  const [sessionSearch, setSessionSearch] = useState('')
+  const deferredSessionSearch = useDeferredValue(sessionSearch.trim())
+  const handleSessionSearchChange = (value: string) => {
+    setSessionSearch(value)
+    setPage(0)
+  }
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleteConfirmRun, setDeleteConfirmRun] = useState<ExtractionRun | null>(null)
@@ -38,7 +44,11 @@ export default function Extractions() {
   const queryClient = useQueryClient()
   const skipAutoSelectRef = useRef(false)
 
-  const { data, error, isPending, isFetching } = useExtractions({ page, limit: PAGE_SIZE })
+  const { data, error, isPending, isFetching } = useExtractions({
+    page,
+    limit: PAGE_SIZE,
+    sessionId: deferredSessionSearch || undefined
+  })
   const { data: inProgressData } = useInProgressExtractions()
   const inProgress = inProgressData?.inProgress ?? []
   const allRuns = data?.runs ?? []
@@ -46,15 +56,16 @@ export default function Extractions() {
   const errorMessage = error instanceof Error ? error.message : 'Failed to load extractions'
 
   const filteredRuns = useMemo(() => {
+    if (deferredSessionSearch) return allRuns
     const timeMs = TIME_FILTERS.find(filter => filter.key === timeFilter)?.ms ?? Number.POSITIVE_INFINITY
     return allRuns.filter(run => Date.now() - run.timestamp <= timeMs)
-  }, [allRuns, timeFilter])
+  }, [allRuns, timeFilter, deferredSessionSearch])
 
   const pageInfo = () => {
     if (isPending && !data) return 'Loading...'
     if (error && !data) return 'Error'
     if (!filteredRuns.length) return 'No results'
-    return `${filteredRuns.length}/${allRuns.length}`
+    return `${filteredRuns.length}/${total ?? allRuns.length}`
   }
 
   useEffect(() => {
@@ -221,7 +232,7 @@ export default function Extractions() {
 
       {isInitialLoading ? (
         <ExtractionListSkeleton />
-      ) : allRuns.length === 0 ? (
+      ) : allRuns.length === 0 && !deferredSessionSearch ? (
         <div className="py-16 text-center text-sm text-muted-foreground/70">
           No extraction runs logged yet.
         </div>
@@ -232,8 +243,10 @@ export default function Extractions() {
           <ExtractionFilters
             timeFilter={timeFilter}
             onTimeFilterChange={setTimeFilter}
+            sessionSearch={sessionSearch}
+            onSessionSearchChange={handleSessionSearchChange}
             filteredCount={filteredRuns.length}
-            totalCount={allRuns.length}
+            totalCount={total ?? allRuns.length}
           />
 
           <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)] flex-1 min-h-0">
