@@ -159,7 +159,7 @@ export const DEFAULT_CONFIG: Config = {
   },
   extraction: {
     model: process.env.CC_EXTRACTION_MODEL ?? 'claude-sonnet-4-5-20250929',
-    maxTokens: 4000
+    maxTokens: 128000
   },
   injection: {
     maxRecords: 5,

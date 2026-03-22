@@ -36,6 +36,18 @@ export interface ExtractionContext {
   maxTranscriptChars?: number
 }
 
+const MODEL_MAX_OUTPUT_TOKENS: Record<string, number> = {
+  'claude-sonnet-4-5-20250929': 64000,
+  'claude-opus-4-5-20251101': 64000,
+  'claude-opus-4-6': 128000,
+  'claude-haiku-4-5-20251001': 64000
+}
+const DEFAULT_MAX_OUTPUT_TOKENS = 64000
+
+function getModelMaxOutputTokens(model: string): number {
+  return MODEL_MAX_OUTPUT_TOKENS[model] ?? DEFAULT_MAX_OUTPUT_TOKENS
+}
+
 const TOOL_NAME = 'emit_records'
 const USEFULNESS_TOOL_NAME = 'emit_usefulness'
 const MAX_TRANSCRIPT_CHARS = 3200000  // ~800k tokens, fallback when setting not provided
@@ -211,9 +223,10 @@ export async function extractRecords(
 
     const userPrompt = buildUserPrompt(transcript, resolvedContext)
 
-    const response = await client.messages.create({
+    const maxTokens = getModelMaxOutputTokens(config.extraction.model)
+    const response = await client.messages.stream({
       model: config.extraction.model,
-      max_tokens: config.extraction.maxTokens,
+      max_tokens: maxTokens,
       temperature: 0,
       system: [
         { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
@@ -222,10 +235,13 @@ export async function extractRecords(
       messages: [{ role: 'user', content: userPrompt }],
       tools: [EMIT_RECORDS_TOOL],
       tool_choice: { type: 'tool', name: TOOL_NAME }
-    })
+    }).finalMessage()
 
     const tokenUsage = extractTokenUsage(response)
     recordTokenUsageEvent('extraction', config.extraction.model, tokenUsage, config.lancedb.table)
+    if (response.stop_reason === 'max_tokens') {
+      console.error(`[claude-memory] Extraction hit max_tokens (${maxTokens}) -- output truncated, records likely lost`)
+    }
     const toolInput = response.content.find((block): block is ToolUseBlock => isToolUseBlock(block) && block.name === TOOL_NAME)?.input
     if (!toolInput) return { records: [], tokenUsage }
     return {
