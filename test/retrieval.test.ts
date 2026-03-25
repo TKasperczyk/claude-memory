@@ -479,13 +479,13 @@ describe('Keyword query normalization', () => {
       { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
     )
 
-    // All 3 keywords should be searched — unified scoring handles relevance
+    // All 3 keywords should be searched in a single batched call
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    expect(keywordCalls).toHaveLength(3)
-    const queries = keywordCalls.map(([params]) => params.query)
-    expect(queries).toContain('p4 brain')
-    expect(queries).toContain('p4')
-    expect(queries).toContain('brain')
+    expect(keywordCalls).toHaveLength(1)
+    const keywordQueries = keywordCalls[0][0].keywordQueries
+    expect(keywordQueries).toContain('p4 brain')
+    expect(keywordQueries).toContain('p4')
+    expect(keywordQueries).toContain('brain')
   })
 
   it('extracts proper nouns from multi-word keywords', async () => {
@@ -507,12 +507,13 @@ describe('Keyword query normalization', () => {
     )
 
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    const queries = keywordCalls.map(([params]) => params.query)
+    expect(keywordCalls).toHaveLength(1)
+    const keywordQueries = keywordCalls[0][0].keywordQueries
     // "jira" and "grafana" extracted as proper nouns from compounds
-    expect(queries).toContain('jira issue')
-    expect(queries).toContain('jira')
-    expect(queries).toContain('grafana statistics')
-    expect(queries).toContain('grafana')
+    expect(keywordQueries).toContain('jira issue')
+    expect(keywordQueries).toContain('jira')
+    expect(keywordQueries).toContain('grafana statistics')
+    expect(keywordQueries).toContain('grafana')
   })
 
   it('does not duplicate when proper noun already present as keyword', async () => {
@@ -534,9 +535,10 @@ describe('Keyword query normalization', () => {
     )
 
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    const queries = keywordCalls.map(([params]) => params.query)
+    expect(keywordCalls).toHaveLength(1)
+    const keywordQueries = keywordCalls[0][0].keywordQueries
     // "redis" already present (case-insensitive), should not be duplicated
-    const redisCount = queries.filter(q => q.toLowerCase() === 'redis').length
+    const redisCount = keywordQueries.filter((q: string) => q.toLowerCase() === 'redis').length
     expect(redisCount).toBe(1)
   })
 
@@ -559,8 +561,9 @@ describe('Keyword query normalization', () => {
     )
 
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    const queries = keywordCalls.map(([params]) => params.query)
-    expect(queries).toContain('aws')
-    expect(queries).toContain('s3')
+    expect(keywordCalls).toHaveLength(1)
+    const keywordQueries = keywordCalls[0][0].keywordQueries
+    expect(keywordQueries).toContain('aws')
+    expect(keywordQueries).toContain('s3')
   })
 })

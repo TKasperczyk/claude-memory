@@ -44,6 +44,8 @@ export type {
 
 export interface HybridSearchParamsBase {
   query: string
+  /** Multiple keyword queries combined into a single OR filter (overrides `query` for keyword matching). */
+  keywordQueries?: string[]
   limit?: number
   project?: string
   ancestorProjects?: string[]

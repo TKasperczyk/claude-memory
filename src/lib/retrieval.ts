@@ -369,16 +369,17 @@ async function searchWithScope(
     }
   }
 
-  for (const query of keywordQueries) {
+  if (keywordQueries.length > 0) {
     const keywordResults = await runHybridSearch({
-      query,
+      query: keywordQueries[0],
+      keywordQueries,
       limit: candidateLimit,
       project,
       ancestorProjects,
       excludeDeprecated: true,
       vectorWeight: 0,
       keywordWeight: 1,
-      keywordLimit: candidateLimit,
+      keywordLimit: candidateLimit * keywordQueries.length,
       usageRatioWeight: settings.usageRatioWeight,
       includeEmbeddings: true,
       signal

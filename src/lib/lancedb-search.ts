@@ -104,11 +104,13 @@ export async function hybridSearch(
       nearMisses.set(record.record.id, { record, exclusionReasons: [reason] })
     }
 
-    if (trimmedQuery.length > 0 && keywordWeight > 0) {
+    const effectiveKeywordQueries = (params.keywordQueries ?? (trimmedQuery.length > 0 ? [trimmedQuery] : []))
+      .filter(q => q.trim().length > 0)
+    if (effectiveKeywordQueries.length > 0 && keywordWeight > 0) {
       if (abortSignal?.aborted) {
         throw new Error('Search aborted')
       }
-      const keywordFilter = buildKeywordFilter(trimmedQuery, baseFilter)
+      const keywordFilter = buildKeywordFilter(effectiveKeywordQueries, baseFilter)
       const query = table
         .query()
         .where(keywordFilter)
@@ -353,11 +355,20 @@ export function buildFilter(filters: {
   return parts.join(' AND ')
 }
 
-export function buildKeywordFilter(query: string, baseFilter?: string): string {
-  const escaped = escapeLikeValue(query)
-  const likeClause = `exact_text LIKE '%${escaped}%' ESCAPE '\\'`
-  if (!baseFilter) return likeClause
-  return `${baseFilter} AND ${likeClause}`
+export function buildKeywordFilter(query: string | string[], baseFilter?: string): string {
+  const queries = Array.isArray(query) ? query : [query]
+  const likeClauses = queries
+    .filter(q => q.trim().length > 0)
+    .map(q => {
+      const escaped = escapeLikeValue(q)
+      return `exact_text LIKE '%${escaped}%' ESCAPE '\\'`
+    })
+  if (likeClauses.length === 0) {
+    return baseFilter ?? '1=1'
+  }
+  const keywordClause = likeClauses.length === 1 ? likeClauses[0] : `(${likeClauses.join(' OR ')})`
+  if (!baseFilter) return keywordClause
+  return `${baseFilter} AND ${keywordClause}`
 }
 
 export function computeUsageRatio(record: MemoryRecord): number {
