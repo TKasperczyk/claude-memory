@@ -10,7 +10,8 @@ const EXCLUSION_REASON_STYLES: Record<ExclusionReason['reason'], string> = {
   similarity_below_threshold: 'bg-info/15 text-info',
   mmr_diversity_penalty: 'bg-primary/15 text-primary',
   exceeded_max_records: 'bg-muted-foreground/15 text-muted-foreground',
-  exceeded_token_budget: 'bg-destructive/15 text-destructive'
+  exceeded_token_budget: 'bg-destructive/15 text-destructive',
+  semantic_anchor_gate: 'bg-destructive/15 text-destructive'
 }
 
 function formatDecimal(value: number, digits = 2): string {
@@ -56,6 +57,8 @@ function formatExclusionReason(reason: ExclusionReason): string {
       const overByDetail = overBy > 0 ? `, over by ${formatTokenCount(overBy)}` : ''
       return `Tokens ${formatTokenCount(projected)} > ${formatTokenCount(maxTokens)}${overByDetail}`
     }
+    case 'semantic_anchor_gate':
+      return `No anchor: max similarity ${actual} < ${threshold} (gap: ${gap}) — injection suppressed`
   }
 }
 

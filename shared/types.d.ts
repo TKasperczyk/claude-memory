@@ -204,6 +204,7 @@ export type ScoredRecord = SearchResult
 export interface ExclusionReason {
   reason: 'score_below_threshold' | 'similarity_below_threshold' | 'semantic_only_score_below_threshold'
     | 'mmr_diversity_penalty' | 'exceeded_max_records' | 'exceeded_token_budget'
+    | 'semantic_anchor_gate'
   threshold: number
   actual: number
   gap: number
@@ -222,6 +223,7 @@ export interface RetrievalSettings {
   minSemanticSimilarity: number
   minScore: number
   minSemanticOnlyScore: number
+  semanticAnchorThreshold: number
   maxRecords: number
   maxTokens: number
   mmrLambda: number

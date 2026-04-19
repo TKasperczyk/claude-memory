@@ -160,6 +160,17 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     group: RETRIEVAL_GROUPS.similarity
   },
   {
+    key: 'semanticAnchorThreshold',
+    label: 'Semantic anchor threshold',
+    description: 'Require at least one candidate with semantic similarity at or above this value before injecting anything. If no anchor is found (and the embedding succeeded), injection is skipped entirely -- better to inject nothing than noise. Set to 0 to disable.',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    kind: 'float',
+    default: 0.70,
+    group: RETRIEVAL_GROUPS.similarity
+  },
+  {
     key: 'maxRecords',
     label: 'Max records',
     description: 'Maximum memories injected per prompt.',
@@ -276,21 +287,21 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'prePromptTimeoutMs',
     label: 'Pre-prompt timeout (ms)',
-    description: 'Timeout for the entire pre-prompt hook.',
+    description: 'Timeout for the entire pre-prompt hook. Must exceed haikuQueryTimeoutMs with enough headroom for embedding, LanceDB search, and MMR ranking (typically ~1s combined).',
     step: 100,
     min: 1,
     kind: 'int',
-    default: 5000,
+    default: 8000,
     group: RETRIEVAL_GROUPS.timeouts
   },
   {
     key: 'haikuQueryTimeoutMs',
     label: 'Haiku query timeout (ms)',
-    description: 'Timeout for Haiku query generation.',
+    description: 'Timeout for Haiku query generation. Raised from 2500 to 5000 because Haiku can take 2-3s even without transcript context, and silent timeouts fall back to the raw prompt.',
     step: 100,
     min: 1,
     kind: 'int',
-    default: 2500,
+    default: 5000,
     group: RETRIEVAL_GROUPS.timeouts
   }
 ]

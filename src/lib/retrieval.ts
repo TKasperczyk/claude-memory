@@ -308,6 +308,27 @@ async function searchMemories(
     }
   }
 
+  // Semantic anchor gate: if the embedding succeeded but no candidate cleared
+  // the anchor threshold, inject nothing. Opus injection reviews repeatedly
+  // flag "all keyword-matched low-similarity" injections as worse than
+  // silence; requiring at least one strong semantic hit filters out those
+  // cases. Skipped when embedding failed so keyword-only fallback still works.
+  if (embedding && results.length > 0 && settings.semanticAnchorThreshold > 0) {
+    const maxSim = results.reduce((acc, r) => Math.max(acc, r.similarity), 0)
+    if (maxSim < settings.semanticAnchorThreshold) {
+      console.error(`[claude-memory] Semantic anchor gate: max similarity ${maxSim.toFixed(3)} < threshold ${settings.semanticAnchorThreshold.toFixed(3)}; injecting nothing (${results.length} candidate${results.length === 1 ? '' : 's'} suppressed)`)
+      if (diagnostic && searchNearMisses) {
+        for (const result of results) {
+          searchNearMisses.set(result.record.id, {
+            record: result,
+            exclusionReasons: [buildExclusionReason('semantic_anchor_gate', settings.semanticAnchorThreshold, result.similarity)]
+          })
+        }
+      }
+      results = []
+    }
+  }
+
   const queryInfo: DiagnosticQueryInfo | undefined = diagnostic
     ? {
         semanticQuery: semanticQuery || '',
