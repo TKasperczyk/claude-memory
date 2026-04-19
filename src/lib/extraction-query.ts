@@ -1,8 +1,8 @@
-import { listExtractionRuns, getExtractionRun } from '../../../src/lib/extraction-log.js'
-import { getReview } from '../../../src/lib/review-storage.js'
-import { fetchRecordsByIds } from '../../../src/lib/lancedb.js'
-import type { Config, MemoryRecord } from '../../../src/lib/types.js'
-import type { ExtractionReview, ExtractionRun } from '../../../shared/types.js'
+import { listExtractionRuns, getExtractionRun } from './extraction-log.js'
+import { getReview } from './review-storage.js'
+import { fetchRecordsByIds } from './lancedb.js'
+import type { Config, MemoryRecord } from './types.js'
+import type { ExtractionReview, ExtractionRun } from '../../shared/types.js'
 
 export interface PaginatedExtractionRuns {
   runs: ExtractionRun[]

@@ -1,3 +1,6 @@
+import fs from 'fs'
+import path from 'path'
+import { homedir } from 'os'
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
 import { getRecordSummary } from './record-summary.js'
 import { RunLog } from './run-log.js'
@@ -32,6 +35,43 @@ export function deleteExtractionRun(runId: string, collection?: string): boolean
 export function getLastExtractionRunForSession(sessionId: string, collection?: string): ExtractionRun | null {
   const runs = extractionLog.list(collection) // sorted by timestamp desc
   return runs.find(run => run.sessionId === sessionId && run.extractedEventCount != null) ?? null
+}
+
+export interface InProgressExtraction {
+  sessionId: string
+  pid: number
+  startedAt: number
+  elapsedMs: number
+}
+
+const IN_PROGRESS_STALE_MS = 5 * 60 * 1000
+
+export function listInProgressExtractions(): InProgressExtraction[] {
+  const locksDir = path.join(homedir(), '.claude-memory', 'locks')
+  if (!fs.existsSync(locksDir)) return []
+
+  const files = fs.readdirSync(locksDir)
+  const now = Date.now()
+  const inProgress: InProgressExtraction[] = []
+
+  for (const file of files) {
+    if (!file.endsWith('.lock') || file === 'auto-maintenance.lock') continue
+    const lockPath = path.join(locksDir, file)
+    try {
+      const content = fs.readFileSync(lockPath, 'utf-8').trim()
+      const lines = content.split('\n')
+      const pid = parseInt(lines[0], 10)
+      const startedAt = parseInt(lines[1], 10)
+      if (!Number.isFinite(pid) || !Number.isFinite(startedAt)) continue
+      if (now - startedAt > IN_PROGRESS_STALE_MS) continue
+      const sessionId = file.replace(/\.lock$/, '')
+      inProgress.push({ sessionId, pid, startedAt, elapsedMs: now - startedAt })
+    } catch {
+      continue
+    }
+  }
+
+  return inProgress
 }
 
 function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | null {

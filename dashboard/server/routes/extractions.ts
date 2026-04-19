@@ -1,13 +1,12 @@
 import express from 'express'
 import fs from 'fs'
 import path from 'path'
-import { homedir } from 'os'
-import { deleteExtractionRun, getExtractionRun, saveExtractionRun } from '../../../src/lib/extraction-log.js'
+import { deleteExtractionRun, getExtractionRun, listInProgressExtractions, saveExtractionRun } from '../../../src/lib/extraction-log.js'
 import { getRecordSummary } from '../../../src/lib/record-summary.js'
 import { getFirstUserPrompt } from '../../../src/lib/transcript.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
 import { deleteRecord } from '../../../src/lib/lancedb.js'
-import { paginateExtractionRuns, loadExtractionRunDetail } from '../lib/extraction-helpers.js'
+import { paginateExtractionRuns, loadExtractionRunDetail } from '../../../src/lib/extraction-query.js'
 import { handlePostSession } from '../../../src/hooks/post-session.js'
 import { parseTranscript } from '../../../src/lib/transcript.js'
 import { deleteReview, getReview, saveReview } from '../../../src/lib/review-storage.js'
@@ -39,34 +38,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
   router.get('/api/extractions/in-progress', (_req, res) => {
     try {
-      const locksDir = path.join(homedir(), '.claude-memory', 'locks')
-      if (!fs.existsSync(locksDir)) {
-        return res.json({ inProgress: [] })
-      }
-
-      const files = fs.readdirSync(locksDir)
-      const staleMs = 5 * 60 * 1000
-      const now = Date.now()
-      const inProgress: Array<{ sessionId: string; pid: number; startedAt: number; elapsedMs: number }> = []
-
-      for (const file of files) {
-        if (!file.endsWith('.lock') || file === 'auto-maintenance.lock') continue
-        const lockPath = path.join(locksDir, file)
-        try {
-          const content = fs.readFileSync(lockPath, 'utf-8').trim()
-          const lines = content.split('\n')
-          const pid = parseInt(lines[0], 10)
-          const startedAt = parseInt(lines[1], 10)
-          if (!Number.isFinite(pid) || !Number.isFinite(startedAt)) continue
-          if (now - startedAt > staleMs) continue
-          const sessionId = file.replace(/\.lock$/, '')
-          inProgress.push({ sessionId, pid, startedAt, elapsedMs: now - startedAt })
-        } catch {
-          continue
-        }
-      }
-
-      res.json({ inProgress })
+      res.json({ inProgress: listInProgressExtractions() })
     } catch (error) {
       logger.error('Failed to check in-progress extractions', error)
       res.json({ inProgress: [] })

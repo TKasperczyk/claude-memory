@@ -7,7 +7,7 @@ import {
   deleteRecord,
   getRecord
 } from '../../../src/lib/lancedb.js'
-import { paginateExtractionRuns, loadExtractionRunDetail } from './extraction-helpers.js'
+import { paginateExtractionRuns, loadExtractionRunDetail } from '../../../src/lib/extraction-query.js'
 import {
   asBoolean,
   asConfidence,
