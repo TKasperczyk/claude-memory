@@ -19,7 +19,7 @@ import {
   computeUsageRatio
 } from '../src/lib/lancedb.js'
 import { type Config, type MemoryRecord, type HybridSearchResult } from '../src/lib/types.js'
-import { retrieveContext } from '../src/lib/retrieval.js'
+import { retrieveContext, cosineSimilarity, computeUnifiedScore } from '../src/lib/retrieval.js'
 import { buildMemoryStats } from '../src/lib/memory-stats.js'
 import { loadSettings, resolveMaintenanceSettings } from '../src/lib/settings.js'
 import type { RetrievalSettings } from '../src/lib/settings.js'
@@ -37,6 +37,13 @@ import {
 import { embed } from '../src/lib/embed.js'
 import { getRecordFieldView } from '../src/lib/record-fields.js'
 import { getRecordSummary } from '../src/lib/record-summary.js'
+import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../src/lib/session-tracking.js'
+import { listInProgressExtractions } from '../src/lib/extraction-log.js'
+import { paginateExtractionRuns, loadExtractionRunDetail } from '../src/lib/extraction-query.js'
+import { getInjectionReview, saveInjectionReview, getReview, saveReview } from '../src/lib/review-storage.js'
+import { reviewInjection, reviewInjectionStreaming } from '../src/lib/injection-review.js'
+import { reviewExtraction, reviewExtractionStreaming } from '../src/lib/extraction-review.js'
+import type { ExtractionReview, InjectionReview } from '../shared/types.js'
 
 // ---------------------------------------------------------------------------
 // ANSI color codes (same pattern as gemini-audit.ts)
@@ -65,7 +72,8 @@ const c = {
 // Flags that take a string value (everything else is boolean)
 const VALUE_FLAGS = new Set([
   'cwd', 'max-records', 'min-score', 'mmr-lambda',
-  'threshold', 'limit', 'format', 'filter'
+  'threshold', 'limit', 'format', 'filter',
+  'search', 'project', 'since', 'session', 'offset'
 ])
 
 const rawArgs = process.argv.slice(2)
@@ -229,18 +237,6 @@ function jsonOutput(data: unknown): void {
   console.log(JSON.stringify(data, null, 2))
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0
-  let dot = 0, normA = 0, normB = 0
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i]
-    normA += a[i] * a[i]
-    normB += b[i] * b[i]
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB)
-  return denom === 0 ? 0 : dot / denom
-}
-
 // ---------------------------------------------------------------------------
 // Command dispatch
 // ---------------------------------------------------------------------------
@@ -258,9 +254,17 @@ const COMMANDS: Record<string, CommandHandler> = {
   embedding: cmdEmbedding,
   compare: cmdCompare,
   settings: cmdSettings,
+  sessions: cmdSessions,
+  session: cmdSession,
+  extractions: cmdExtractions,
+  extraction: cmdExtraction,
+  'review-session': cmdReviewSession,
+  'review-extraction': cmdReviewExtraction,
 }
 
-const NO_DB_COMMANDS = new Set(['settings', 'help', 'embedding'])
+const NO_DB_COMMANDS = new Set(['settings', 'help', 'embedding', 'sessions', 'session', 'extractions'])
+// sessions/session/extractions read JSON file stores only; extraction (detail)
+// and review-* fetch records from LanceDB so they go through the default path.
 
 async function main(): Promise<void> {
   if (!command || command === 'help' || flags.help === true) {
@@ -433,15 +437,21 @@ async function cmdSearch(args: string[]): Promise<void> {
     if (qualified.length > 0) {
       const top = qualified[0]
       const usageRatio = computeUsageRatio(top.record)
+      const projectMatch = Boolean(result.signals.projectName && top.record.project === result.signals.projectName)
+      const breakdown = computeUnifiedScore({
+        similarity: top.similarity,
+        keywordMatch: top.keywordMatch,
+        usageRatio,
+        projectMatch,
+        settings
+      })
       console.log()
       printSection(`Score breakdown (#1)`)
-      const semanticComponent = top.similarity * 0.7
-      const keywordComponent = top.keywordMatch ? (settings.keywordBonus ?? 0.08) : 0
-      const usageComponent = usageRatio * (settings.usageRatioWeight ?? 0.2)
-      printStat('  semantic', `${top.similarity.toFixed(4)} * 0.7 = ${semanticComponent.toFixed(4)}`)
-      printStat('  keyword bonus', `${keywordComponent.toFixed(4)}`)
-      printStat('  usage ratio', `${usageRatio.toFixed(4)} * ${settings.usageRatioWeight ?? 0.2} = ${usageComponent.toFixed(4)}`)
-      printStat('  computed total', `${(semanticComponent + keywordComponent + usageComponent).toFixed(4)}`)
+      printStat('  semantic', `${top.similarity.toFixed(4)} * 0.7 = ${breakdown.semantic.toFixed(4)}`)
+      printStat('  keyword bonus', `${breakdown.keywordBonus.toFixed(4)}${top.keywordMatch ? ' (scaled by similarity)' : ''}`)
+      printStat('  usage ratio', `${usageRatio.toFixed(4)} * ${settings.usageRatioWeight} = ${breakdown.usage.toFixed(4)}`)
+      printStat('  project boost', `${breakdown.projectBoost.toFixed(4)}${projectMatch ? '' : ' (no match)'}`)
+      printStat('  computed total', breakdown.total.toFixed(4))
       printStat('  actual score', printScore(top.score))
     }
   }
@@ -915,6 +925,419 @@ async function cmdSettings(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+function parseSinceFlag(raw: string | undefined): number | undefined {
+  if (!raw) return undefined
+  const match = raw.match(/^(\d+)\s*(h|d)$/i)
+  if (!match) return undefined
+  const amount = parseInt(match[1], 10)
+  const unit = match[2].toLowerCase()
+  const ms = unit === 'h' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
+  return Date.now() - amount * ms
+}
+
+async function cmdSessions(): Promise<void> {
+  const config = loadConfig(process.cwd())
+  const search = flagStr('search')?.toLowerCase()
+  const project = flagStr('project')
+  const hasReviewFilter = flagBool('has-review')
+  const sinceCutoff = parseSinceFlag(flagStr('since'))
+  const limit = flagNum('limit') ?? 25
+
+  let sessions = listAllSessions(config.lancedb.table).map(session => ({
+    ...session,
+    memoriesRaw: session.memories,
+    memories: dedupeInjectedMemories(session.memories)
+  }))
+
+  if (search) {
+    sessions = sessions.filter(s =>
+      s.sessionId.toLowerCase().includes(search) ||
+      (s.cwd?.toLowerCase().includes(search) ?? false) ||
+      (s.prompts?.some(p => p.text.toLowerCase().includes(search)) ?? false)
+    )
+  }
+  if (project) {
+    sessions = sessions.filter(s => s.cwd?.endsWith(project) || s.cwd?.includes(`/${project}/`))
+  }
+  if (hasReviewFilter === true) sessions = sessions.filter(s => s.hasReview === true)
+  if (hasReviewFilter === false) sessions = sessions.filter(s => !s.hasReview)
+  if (sinceCutoff !== undefined) sessions = sessions.filter(s => s.lastActivity >= sinceCutoff)
+
+  const total = sessions.length
+  sessions = sessions.slice(0, limit)
+
+  if (jsonMode) {
+    jsonOutput({ total, count: sessions.length, sessions })
+    return
+  }
+
+  printHeader(`SESSIONS (${sessions.length}/${total})`)
+  if (sessions.length === 0) {
+    console.log(`  ${c.dim}(no matching sessions)${c.reset}`)
+    return
+  }
+
+  const rows = sessions.map(s => {
+    const firstPrompt = s.prompts?.[0]?.text ?? ''
+    return [
+      truncId(s.sessionId),
+      formatAge(s.lastActivity),
+      String(s.memories.length),
+      String(s.injectionCount ?? 0),
+      s.hasReview ? `${c.green}yes${c.reset}` : `${c.dim}no${c.reset}`,
+      truncStr(s.cwd ?? '(none)', 30),
+      truncStr(firstPrompt, 40)
+    ]
+  })
+  printTable(['Session', 'Last', 'Mem', 'Inj', 'Rev', 'cwd', 'First prompt'], rows)
+  console.log()
+}
+
+async function cmdSession(args: string[]): Promise<void> {
+  const sessionId = args[0]
+  if (!sessionId) {
+    console.error(`${c.red}Usage:${c.reset} pnpm debug session <sessionId>`)
+    process.exit(1)
+  }
+
+  const config = loadConfig(process.cwd())
+  const session = loadSessionTracking(sessionId, config.lancedb.table)
+  if (!session) {
+    console.error(`${c.red}Session not found:${c.reset} ${sessionId}`)
+    process.exit(1)
+  }
+
+  const memories = dedupeInjectedMemories(session.memories)
+  const review = getInjectionReview(sessionId, config.lancedb.table)
+
+  if (jsonMode) {
+    jsonOutput({ session: { ...session, memories }, review })
+    return
+  }
+
+  printHeader(`SESSION: ${session.sessionId}`)
+  printStat('Created', formatAge(session.createdAt))
+  printStat('Last activity', formatAge(session.lastActivity))
+  printStat('cwd', session.cwd ?? '(none)')
+  printStat('Prompt count', session.promptCount ?? session.prompts?.length ?? 0)
+  printStat('Injection count', session.injectionCount ?? 0)
+  printStat('Last status', session.lastStatus ?? '(unknown)')
+  printStat('Has review', session.hasReview ? `${c.green}yes${c.reset}` : 'no')
+  console.log()
+
+  printSection(`Injected memories (${memories.length})`)
+  for (const m of memories) {
+    console.log(`  ${typeBadge(m.type ?? 'discovery')} ${truncId(m.id)} ${truncStr(m.snippet, 70)}`)
+    const parts: string[] = []
+    if (m.similarity !== undefined) parts.push(`sim=${m.similarity.toFixed(3)}`)
+    if (m.keywordMatch) parts.push('kw')
+    if (m.score !== undefined) parts.push(`score=${m.score.toFixed(3)}`)
+    parts.push(formatAge(m.injectedAt))
+    console.log(`    ${c.dim}${parts.join(' | ')}${c.reset}`)
+  }
+  console.log()
+
+  if (review) {
+    printSection('Injection review')
+    printStat('  Rating', review.overallRating)
+    printStat('  Relevance score', review.relevanceScore.toFixed(3))
+    printStat('  Model', review.model)
+    printStat('  Reviewed', formatAge(review.reviewedAt))
+    console.log(`\n  ${c.dim}${truncStr(review.summary, 200)}${c.reset}`)
+    console.log()
+  } else {
+    console.log(`  ${c.dim}(no review stored; run \`pnpm debug review-session ${truncId(sessionId)}\`)${c.reset}\n`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Extractions
+// ---------------------------------------------------------------------------
+
+async function cmdExtractions(): Promise<void> {
+  if (flagBool('in-progress') === true) {
+    const inProgress = listInProgressExtractions()
+    if (jsonMode) {
+      jsonOutput({ inProgress })
+      return
+    }
+    printHeader(`IN-PROGRESS EXTRACTIONS (${inProgress.length})`)
+    if (inProgress.length === 0) {
+      console.log(`  ${c.dim}(none)${c.reset}\n`)
+      return
+    }
+    const rows = inProgress.map(ip => [
+      truncId(ip.sessionId),
+      String(ip.pid),
+      `${(ip.elapsedMs / 1000).toFixed(1)}s`
+    ])
+    printTable(['Session', 'PID', 'Elapsed'], rows)
+    console.log()
+    return
+  }
+
+  const config = loadConfig(process.cwd())
+  const limit = flagNum('limit') ?? 25
+  const offset = flagNum('offset') ?? 0
+  const session = flagStr('session')
+  const sinceCutoff = parseSinceFlag(flagStr('since'))
+
+  let page = paginateExtractionRuns(config.lancedb.table, limit, offset, session)
+  if (sinceCutoff !== undefined) {
+    const filtered = page.runs.filter(r => r.timestamp >= sinceCutoff)
+    page = { ...page, runs: filtered, count: filtered.length }
+  }
+
+  if (jsonMode) {
+    jsonOutput(page)
+    return
+  }
+
+  printHeader(`EXTRACTIONS (${page.count}/${page.total}, offset ${page.offset})`)
+  if (page.runs.length === 0) {
+    console.log(`  ${c.dim}(no matching runs)${c.reset}\n`)
+    return
+  }
+  const rows = page.runs.map(r => [
+    truncId(r.runId),
+    truncId(r.sessionId),
+    formatAge(r.timestamp),
+    String(r.recordCount),
+    `${(r.duration / 1000).toFixed(1)}s`,
+    r.isIncremental ? `${c.cyan}inc${c.reset}` : '',
+    r.skipReason ?? '',
+  ])
+  printTable(['Run', 'Session', 'When', 'Recs', 'Dur', 'Inc', 'Skip'], rows)
+  console.log()
+}
+
+async function cmdExtraction(args: string[]): Promise<void> {
+  const runId = args[0]
+  if (!runId) {
+    console.error(`${c.red}Usage:${c.reset} pnpm debug extraction <runId>`)
+    process.exit(1)
+  }
+
+  const config = loadConfig(process.cwd())
+  const detail = await loadExtractionRunDetail(runId, config, { includeRecords: true, includeReview: true })
+  if (!detail) {
+    console.error(`${c.red}Extraction run not found:${c.reset} ${runId}`)
+    process.exit(1)
+  }
+
+  if (jsonMode) {
+    jsonOutput(detail)
+    return
+  }
+
+  const { run, records = [], review } = detail
+  printHeader(`EXTRACTION: ${run.runId}`)
+  printStat('Session', run.sessionId)
+  printStat('Timestamp', `${formatAge(run.timestamp)} (${new Date(run.timestamp).toISOString()})`)
+  printStat('Duration', `${(run.duration / 1000).toFixed(2)}s`)
+  printStat('Records', run.recordCount)
+  printStat('Inserted', (run.extractedRecordIds ?? []).length)
+  printStat('Updated', (run.updatedRecordIds ?? []).length)
+  printStat('Parse errors', run.parseErrorCount)
+  printStat('Incremental', run.isIncremental ? `${c.cyan}yes${c.reset}` : 'no')
+  if (run.skipReason) printStat('Skip reason', `${c.yellow}${run.skipReason}${c.reset}`)
+  if (run.hasRememberMarker) printStat('Remember marker', `${c.cyan}yes${c.reset}`)
+  if (run.tokenUsage) {
+    printStat('Input tokens', run.tokenUsage.inputTokens ?? 0)
+    printStat('Output tokens', run.tokenUsage.outputTokens ?? 0)
+  }
+  console.log()
+
+  if (records.length > 0) {
+    printSection(`Records (${records.length})`)
+    for (const rec of records) {
+      const summary = getRecordSummary(rec) ?? '(no summary)'
+      console.log(`  ${typeBadge(rec.type)} ${truncId(rec.id)} ${truncStr(summary, 70)}`)
+    }
+    console.log()
+  }
+
+  if (review) {
+    printSection('Extraction review')
+    printStat('  Rating', review.overallRating)
+    printStat('  Accuracy', review.accuracyScore.toFixed(1))
+    printStat('  Issues', review.issues.length)
+    printStat('  Model', review.model)
+    printStat('  Reviewed', formatAge(review.reviewedAt))
+    console.log(`\n  ${c.dim}${truncStr(review.summary, 200)}${c.reset}`)
+    console.log()
+  } else {
+    console.log(`  ${c.dim}(no review stored; run \`pnpm debug review-extraction ${truncId(runId)}\`)${c.reset}\n`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reviews
+// ---------------------------------------------------------------------------
+
+function makeThinkingHandler(): (chunk: string) => void {
+  if (jsonMode) return () => {}
+  process.stderr.write(`${c.dim}`)
+  return (chunk: string) => process.stderr.write(chunk)
+}
+
+function endThinking(): void {
+  if (!jsonMode) process.stderr.write(`${c.reset}\n`)
+}
+
+async function cmdReviewSession(args: string[]): Promise<void> {
+  const sessionId = args[0]
+  if (!sessionId) {
+    console.error(`${c.red}Usage:${c.reset} pnpm debug review-session <sessionId> [--force] [--no-stream]`)
+    process.exit(1)
+  }
+
+  const config = loadConfig(process.cwd())
+  const force = flagBool('force') === true
+  const stream = flagBool('stream') !== false
+
+  const existing = getInjectionReview(sessionId, config.lancedb.table)
+  if (existing && !force) {
+    if (jsonMode) {
+      jsonOutput(existing)
+      return
+    }
+    printHeader(`CACHED INJECTION REVIEW: ${sessionId}`)
+    printInjectionReview(existing)
+    console.log(`  ${c.dim}(cached; pass --force to re-run)${c.reset}\n`)
+    return
+  }
+
+  if (!jsonMode) {
+    console.error(`${c.dim}Running injection review for ${truncId(sessionId)}...${c.reset}`)
+  }
+  let review: InjectionReview
+  if (stream) {
+    const onThinking = makeThinkingHandler()
+    try {
+      review = await reviewInjectionStreaming(sessionId, config, onThinking)
+    } finally {
+      endThinking()
+    }
+  } else {
+    review = await reviewInjection(sessionId, config)
+  }
+  saveInjectionReview(review, config.lancedb.table)
+
+  if (jsonMode) {
+    jsonOutput(review)
+    return
+  }
+  printHeader(`INJECTION REVIEW: ${sessionId}`)
+  printInjectionReview(review)
+}
+
+async function cmdReviewExtraction(args: string[]): Promise<void> {
+  const runId = args[0]
+  if (!runId) {
+    console.error(`${c.red}Usage:${c.reset} pnpm debug review-extraction <runId> [--force] [--no-stream]`)
+    process.exit(1)
+  }
+
+  const config = loadConfig(process.cwd())
+  const force = flagBool('force') === true
+  const stream = flagBool('stream') !== false
+
+  const existing = getReview(runId, config.lancedb.table)
+  if (existing && !force) {
+    if (jsonMode) {
+      jsonOutput(existing)
+      return
+    }
+    printHeader(`CACHED EXTRACTION REVIEW: ${runId}`)
+    printExtractionReview(existing)
+    console.log(`  ${c.dim}(cached; pass --force to re-run)${c.reset}\n`)
+    return
+  }
+
+  if (!jsonMode) {
+    console.error(`${c.dim}Running extraction review for ${truncId(runId)}...${c.reset}`)
+  }
+  let review: ExtractionReview
+  if (stream) {
+    const onThinking = makeThinkingHandler()
+    try {
+      review = await reviewExtractionStreaming(runId, config, onThinking)
+    } finally {
+      endThinking()
+    }
+  } else {
+    review = await reviewExtraction(runId, config)
+  }
+  saveReview(review, config.lancedb.table)
+
+  if (jsonMode) {
+    jsonOutput(review)
+    return
+  }
+  printHeader(`EXTRACTION REVIEW: ${runId}`)
+  printExtractionReview(review)
+}
+
+function printInjectionReview(review: InjectionReview): void {
+  printStat('Rating', review.overallRating)
+  printStat('Relevance score', review.relevanceScore.toFixed(3))
+  printStat('Model', review.model)
+  printStat('Duration', `${(review.durationMs / 1000).toFixed(1)}s`)
+  console.log()
+
+  if (review.injectedVerdicts.length > 0) {
+    printSection(`Injected verdicts (${review.injectedVerdicts.length})`)
+    for (const v of review.injectedVerdicts) {
+      const color = v.verdict === 'relevant' ? c.green : v.verdict === 'irrelevant' ? c.red : c.yellow
+      console.log(`  ${color}${v.verdict}${c.reset} ${truncId(v.id)} ${truncStr(v.snippet, 60)}`)
+      console.log(`    ${c.dim}${truncStr(v.reason, 100)}${c.reset}`)
+    }
+    console.log()
+  }
+
+  if (review.missedMemories.length > 0) {
+    printSection(`Missed memories (${review.missedMemories.length})`)
+    for (const m of review.missedMemories) {
+      console.log(`  ${c.yellow}*${c.reset} ${truncId(m.id)} ${truncStr(m.snippet, 60)}`)
+      console.log(`    ${c.dim}${truncStr(m.reason, 100)}${c.reset}`)
+    }
+    console.log()
+  }
+
+  printSection('Summary')
+  console.log(`  ${review.summary}\n`)
+}
+
+function printExtractionReview(review: ExtractionReview): void {
+  printStat('Rating', review.overallRating)
+  printStat('Accuracy score', review.accuracyScore.toFixed(1))
+  printStat('Issues', review.issues.length)
+  printStat('Model', review.model)
+  printStat('Duration', `${(review.durationMs / 1000).toFixed(1)}s`)
+  console.log()
+
+  if (review.issues.length > 0) {
+    printSection(`Issues (${review.issues.length})`)
+    for (const issue of review.issues) {
+      const sevColor = issue.severity === 'critical' ? c.red : issue.severity === 'major' ? c.yellow : c.dim
+      const target = issue.recordId ? ` ${truncId(issue.recordId)}` : ''
+      console.log(`  ${sevColor}[${issue.severity}]${c.reset} ${c.bold}${issue.type}${c.reset}${target}`)
+      console.log(`    ${truncStr(issue.description, 120)}`)
+      if (issue.evidence) console.log(`    ${c.dim}evidence: ${truncStr(issue.evidence, 100)}${c.reset}`)
+      if (issue.suggestedFix) console.log(`    ${c.green}fix: ${truncStr(issue.suggestedFix, 100)}${c.reset}`)
+    }
+    console.log()
+  }
+
+  printSection('Summary')
+  console.log(`  ${review.summary}\n`)
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -1025,7 +1448,7 @@ ${c.bold}claude-memory debug CLI${c.reset}
 
 ${c.cyan}Usage:${c.reset} pnpm debug <command> [options]
 
-${c.cyan}Commands:${c.reset}
+${c.cyan}Memory pool:${c.reset}
   stats                     Memory pool statistics
   search <query>            Run retrieval with full diagnostics
   similar <id>              Find records similar to a given ID
@@ -1037,6 +1460,18 @@ ${c.cyan}Commands:${c.reset}
   embedding <text>          Generate embedding for text
   compare <id1> <id2>       Compare two records (cosine similarity)
   settings                  Show resolved settings and config
+
+${c.cyan}Sessions:${c.reset}
+  sessions                  List injection sessions
+  session <sessionId>       Show session detail (memories + cached review)
+
+${c.cyan}Extractions:${c.reset}
+  extractions               List extraction runs (or --in-progress for live)
+  extraction <runId>        Show extraction run detail (records + cached review)
+
+${c.cyan}Reviews (opus):${c.reset}
+  review-session <id>       Run injection review, stream thinking to stderr
+  review-extraction <id>    Run extraction review, stream thinking to stderr
 
 ${c.cyan}Global Options:${c.reset}
   --json                    Machine-readable JSON output
@@ -1052,6 +1487,24 @@ ${c.cyan}Search Options:${c.reset}
 ${c.cyan}Similar Options:${c.reset}
   --threshold <n>           Similarity threshold (default: 0.5)
   --limit <n>               Max results (default: 10)
+
+${c.cyan}Sessions Options:${c.reset}
+  --search <text>           Substring match on sessionId / cwd / prompts
+  --project <name>          Filter by project name in cwd
+  --has-review / --no-has-review   Filter by review presence
+  --since <12h|7d>          Only sessions active within window
+  --limit <n>               Max results (default: 25)
+
+${c.cyan}Extractions Options:${c.reset}
+  --session <id>            Server-side sessionId substring filter
+  --since <12h|7d>          Only runs within window
+  --limit <n>               Page size (default: 25)
+  --offset <n>              Page offset (default: 0)
+  --in-progress             Show live lock files instead of run history
+
+${c.cyan}Review Options:${c.reset}
+  --force                   Re-run even if cached review exists
+  --no-stream               Disable thinking stream (faster non-interactive)
 
 ${c.cyan}Export Options:${c.reset}
   --format json|jsonl       Output format (default: json)
