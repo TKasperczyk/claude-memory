@@ -201,6 +201,7 @@ export async function handlePostSession(
       updatedIds: [],
       reason: 'no_records',
       transcript: fullTranscript,
+      extractedEventCount: totalEventCount,
       isIncremental: isIncremental || undefined,
       hasRememberMarker: hasRememberMarker || undefined,
       tokenUsage

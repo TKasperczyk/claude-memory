@@ -206,8 +206,9 @@ describe('handlePostSession incremental', () => {
     expect(result.reason).toBe('no_new_events')
   })
 
-  it('should not set extractedEventCount on no_records result', async () => {
-    // Use a very short transcript that won't produce records
+  it('should set extractedEventCount on no_records result to prevent re-extraction', async () => {
+    // When LLM runs but finds no records, we still checkpoint so we don't
+    // waste tokens re-extracting the same content on next session close
     const entries = [
       { type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: 'hi' } },
       { type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', content: 'hello' } }
@@ -221,13 +222,10 @@ describe('handlePostSession incremental', () => {
       cwd: TEST_CWD
     }
 
-    // Force min-token skip by setting a high threshold
     const result = await handlePostSession(input, TEST_CONFIG, {})
 
-    // Whether it returns no_records or something else, extractedEventCount should NOT be set
-    // (to prevent false incremental checkpoints)
     if (result.reason === 'no_records') {
-      expect(result.extractedEventCount).toBeUndefined()
+      expect(result.extractedEventCount).toBe(entries.length)
     }
   })
 })
