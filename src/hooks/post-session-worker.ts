@@ -15,7 +15,9 @@ import { loadConfig } from '../lib/config.js'
 import { getLastExtractionRunForSession, saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
 import { runAllMaintenance } from '../lib/maintenance-api.js'
 import { buildMaintenanceRun, getLastMaintenanceRun, saveMaintenanceRun } from '../lib/maintenance-log.js'
+import { buildMemoryStats } from '../lib/memory-stats.js'
 import { loadSettings } from '../lib/settings.js'
+import { hasStatsSnapshot, saveStatsSnapshotIfNeeded } from '../lib/stats-snapshots.js'
 import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord, type TokenUsage } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
 import { getRecordSearchableTextParts } from '../lib/record-fields.js'
@@ -122,6 +124,17 @@ async function maybeRunAutoMaintenance(config: Config): Promise<void> {
     debugLog(`Auto-maintenance complete: ${run.summary.totalActions} actions`)
   } finally {
     lockHandle.release()
+  }
+}
+
+async function maybeCaptureStatsSnapshot(config: Config): Promise<void> {
+  const collection = config.lancedb.table
+  if (hasStatsSnapshot(Date.now(), collection)) return
+
+  const stats = await buildMemoryStats(config)
+  const snapshot = saveStatsSnapshotIfNeeded(stats, { collection })
+  if (snapshot) {
+    debugLog(`Captured stats snapshot ts=${snapshot.timestamp}`)
   }
 }
 
@@ -299,6 +312,12 @@ async function main(): Promise<void> {
       await maybeRunAutoMaintenance(config)
     } catch (error) {
       console.error('[claude-memory] Auto-maintenance failed:', error)
+    }
+
+    try {
+      await maybeCaptureStatsSnapshot(config)
+    } catch (error) {
+      console.error('[claude-memory] Stats snapshot capture failed:', error)
     }
   } finally {
     try {
