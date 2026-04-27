@@ -32,7 +32,7 @@ export type SettingsGroupDefinition = SettingsGroupMeta & {
 
 export type NumericSettingRule = { kind: 'int' | 'float'; min?: number; max?: number }
 export type BooleanSettingRule = { kind: 'bool' }
-export type TextSettingRule = { kind: 'text' }
+export type TextSettingRule = { kind: 'text'; options?: string[] }
 export type SettingRule = NumericSettingRule | BooleanSettingRule | TextSettingRule
 
 const RETRIEVAL_GROUPS = {
@@ -52,6 +52,18 @@ const RETRIEVAL_GROUPS = {
     id: 'ranking',
     label: 'Ranking weights',
     description: 'Balance relevance, diversity, and usage boosts.',
+    section: 'retrieval'
+  },
+  suppression: {
+    id: 'suppression',
+    label: 'Topic suppression',
+    description: 'Reduce repeated memories within a session until the topic changes.',
+    section: 'retrieval'
+  },
+  relations: {
+    id: 'relations',
+    label: 'Relation expansion',
+    description: 'Cascade retrieval through lightweight memory links.',
     section: 'retrieval'
   },
   haiku: {
@@ -149,6 +161,17 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     group: RETRIEVAL_GROUPS.similarity
   },
   {
+    key: 'minExpandedScore',
+    label: 'Min expanded score',
+    description: 'Score floor for memories added through relation expansion.',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    kind: 'float',
+    default: 0.45,
+    group: RETRIEVAL_GROUPS.similarity
+  },
+  {
     key: 'minSemanticOnlyScore',
     label: 'Min semantic-only score',
     description: 'Score cutoff when only semantic search is used.',
@@ -235,6 +258,111 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     kind: 'float',
     default: 0.05,
     group: RETRIEVAL_GROUPS.ranking
+  },
+  {
+    key: 'enableTopicSuppression',
+    label: 'Enable topic suppression',
+    description: 'Track recently injected memories per session and suppress repeats until the prompt embedding indicates a topic change.',
+    kind: 'bool',
+    default: true,
+    group: RETRIEVAL_GROUPS.suppression
+  },
+  {
+    key: 'topicChangeThreshold',
+    label: 'Topic change threshold',
+    description: 'Cosine similarity below this value clears the recently injected window for the session.',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    kind: 'float',
+    default: 0.3,
+    group: RETRIEVAL_GROUPS.suppression
+  },
+  {
+    key: 'recentlyInjectedWindow',
+    label: 'Recently injected window',
+    description: 'Maximum number of recently injected memory IDs kept per session. Set to 0 to disable suppression.',
+    step: 1,
+    min: 0,
+    max: 100,
+    kind: 'int',
+    default: 20,
+    group: RETRIEVAL_GROUPS.suppression
+  },
+  {
+    key: 'suppressionMode',
+    label: 'Suppression mode',
+    description: 'Hard excludes recently injected memories; soft keeps them but reduces their score.',
+    kind: 'text',
+    default: 'soft',
+    options: [
+      { value: 'soft', label: 'Soft' },
+      { value: 'hard', label: 'Hard' }
+    ],
+    group: RETRIEVAL_GROUPS.suppression
+  },
+  {
+    key: 'suppressionPenalty',
+    label: 'Suppression penalty',
+    description: 'Score multiplier penalty for soft suppression. A value of 0.5 halves the score.',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    kind: 'float',
+    default: 0.5,
+    group: RETRIEVAL_GROUPS.suppression
+  },
+  {
+    key: 'enableRelationExpansion',
+    label: 'Enable relation expansion',
+    description: 'Expand initial retrieval hits through stored memory relations before MMR ranking.',
+    kind: 'bool',
+    default: true,
+    group: RETRIEVAL_GROUPS.relations
+  },
+  {
+    key: 'maxRelationHops',
+    label: 'Max relation hops',
+    description: 'Maximum relation hops followed from direct retrieval hits.',
+    step: 1,
+    min: 0,
+    max: 2,
+    kind: 'int',
+    default: 1,
+    group: RETRIEVAL_GROUPS.relations
+  },
+  {
+    key: 'maxRelationExpansions',
+    label: 'Max relation expansions',
+    description: 'Maximum related memories added before MMR ranking.',
+    step: 1,
+    min: 0,
+    max: 20,
+    kind: 'int',
+    default: 5,
+    group: RETRIEVAL_GROUPS.relations
+  },
+  {
+    key: 'relationHopDecay',
+    label: 'Relation hop decay',
+    description: 'Score multiplier applied per relation hop.',
+    step: 0.05,
+    min: 0.1,
+    max: 1,
+    kind: 'float',
+    default: 0.6,
+    group: RETRIEVAL_GROUPS.relations
+  },
+  {
+    key: 'maxRelationsPerRecord',
+    label: 'Max relations per record',
+    description: 'Maximum relates_to edges retained per memory; supersedes provenance edges are not capped.',
+    step: 1,
+    min: 0,
+    max: 500,
+    kind: 'int',
+    default: 50,
+    group: RETRIEVAL_GROUPS.relations
   },
   {
     key: 'enableHaikuRetrieval',
@@ -773,7 +901,7 @@ export const DEFAULT_MODEL_SETTINGS = MODEL_FIELDS.reduce<Record<string, string>
 
 export const ALL_SETTINGS_FIELDS = [...RETRIEVAL_FIELDS, ...MAINTENANCE_FIELDS, ...MODEL_FIELDS] as const
 
-export const DEFAULT_RETRIEVAL_SETTINGS = RETRIEVAL_FIELDS.reduce<Record<string, number | boolean>>(
+export const DEFAULT_RETRIEVAL_SETTINGS = RETRIEVAL_FIELDS.reduce<Record<string, number | boolean | string>>(
   (acc, field) => {
     acc[field.key] = field.default
     return acc
@@ -799,7 +927,7 @@ export const SETTING_RULES = ALL_SETTINGS_FIELDS.reduce((acc, field) => {
   if (field.kind === 'bool') {
     acc[field.key] = { kind: 'bool' }
   } else if (field.kind === 'text') {
-    acc[field.key] = { kind: 'text' }
+    acc[field.key] = { kind: 'text', options: field.options?.map(option => option.value) }
   } else {
     acc[field.key] = { kind: field.kind, min: field.min, max: field.max }
   }

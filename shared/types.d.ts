@@ -1,5 +1,15 @@
 export type RecordType = 'command' | 'error' | 'discovery' | 'procedure' | 'warning'
 export type RecordScope = 'global' | 'project'
+export type RelationKind = 'relates_to' | 'supersedes'
+
+export interface Relation {
+  targetId: string
+  kind: RelationKind
+  weight: number
+  createdAt: string
+  lastReinforcedAt: string
+  reinforcementCount: number
+}
 
 export interface BaseRecord {
   id: string
@@ -24,6 +34,7 @@ export interface BaseRecord {
   embedding?: number[]
   /** UUID of a prior memory that this record supersedes/invalidates */
   supersedes?: string
+  relations?: Relation[]
 }
 
 export interface CommandRecord extends BaseRecord {
@@ -113,6 +124,8 @@ export interface RetrievalEvent {
   id: string
   type?: RecordType
   timestamp: number
+  groupId?: string
+  coInjectedIds?: string[]
 }
 
 export type RetrievalActivityPeriod = 'day' | 'week'
@@ -189,6 +202,18 @@ export interface InjectionSessionRecord {
   injectionCount?: number
   lastStatus?: InjectionStatus
   hasReview?: boolean
+  recentlyInjectedIds?: string[]
+  previousPromptEmbedding?: number[] | null
+  lastPromptAt?: string
+  retrievalStateVersion?: number
+}
+
+export type SuppressionMode = 'hard' | 'soft'
+
+export interface SuppressionDiagnostic {
+  suppressed: true
+  mode: SuppressionMode
+  originalScore: number
 }
 
 export interface SearchResult {
@@ -196,6 +221,12 @@ export interface SearchResult {
   score: number
   similarity: number
   keywordMatch: boolean
+  suppression?: SuppressionDiagnostic
+  via?: {
+    parentId: string
+    kind: RelationKind
+    hop: number
+  }
 }
 
 export type HybridSearchResult = SearchResult
@@ -204,7 +235,7 @@ export type ScoredRecord = SearchResult
 export interface ExclusionReason {
   reason: 'score_below_threshold' | 'similarity_below_threshold' | 'semantic_only_score_below_threshold'
     | 'mmr_diversity_penalty' | 'exceeded_max_records' | 'exceeded_token_budget'
-    | 'semantic_anchor_gate'
+    | 'semantic_anchor_gate' | 'recently_injected_suppression'
   threshold: number
   actual: number
   gap: number
@@ -222,6 +253,7 @@ export interface NearMissRecord {
 export interface RetrievalSettings {
   minSemanticSimilarity: number
   minScore: number
+  minExpandedScore: number
   minSemanticOnlyScore: number
   semanticAnchorThreshold: number
   maxRecords: number
@@ -229,7 +261,17 @@ export interface RetrievalSettings {
   mmrLambda: number
   usageRatioWeight: number
   keywordBonus: number
+  enableTopicSuppression: boolean
+  topicChangeThreshold: number
+  recentlyInjectedWindow: number
+  suppressionMode: SuppressionMode
+  suppressionPenalty: number
   enableHaikuRetrieval: boolean
+  enableRelationExpansion: boolean
+  maxRelationHops: number
+  maxRelationExpansions: number
+  relationHopDecay: number
+  maxRelationsPerRecord: number
   maxKeywordQueries: number
   maxKeywordErrors: number
   maxKeywordCommands: number

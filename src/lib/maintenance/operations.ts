@@ -13,10 +13,11 @@ import {
   type WarningSeverity
 } from '../types.js'
 import type { MaintenanceCandidateGroup } from '../../../shared/types.js'
-import { buildEmbeddingInput, buildFilter, updateRecord, vectorSearchSimilar } from '../lancedb.js'
+import { batchUpdateRecords, buildEmbeddingInput, buildFilter, getRecord, updateRecord, vectorSearchSimilar } from '../lancedb.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../shared.js'
+import { upsertRelation } from '../relations.js'
 import {
   GENERALIZATION_MAX_TOKENS,
   GENERALIZATION_PROMPT,
@@ -53,8 +54,38 @@ interface GlobalPromotionResult {
   reason?: string
 }
 
-export async function markDeprecated(id: string, config: Config = DEFAULT_CONFIG): Promise<boolean> {
-  return updateRecord(id, { deprecated: true }, config)
+export async function markDeprecated(
+  id: string,
+  config: Config = DEFAULT_CONFIG,
+  options: { supersedingRecordId?: string } = {}
+): Promise<boolean> {
+  const deprecatedRecord = await getRecord(id, config, { includeEmbedding: true })
+  if (!deprecatedRecord) return false
+
+  deprecatedRecord.deprecated = true
+  const recordsToWrite: MemoryRecord[] = [deprecatedRecord]
+
+  if (options.supersedingRecordId) {
+    const supersedingRecord = await getRecord(options.supersedingRecordId, config, { includeEmbedding: true })
+    if (!supersedingRecord) {
+      throw new Error(`Superseding record not found: ${options.supersedingRecordId}`)
+    }
+    supersedingRecord.supersedes = id
+    upsertRelation(supersedingRecord, {
+      targetId: id,
+      kind: 'supersedes',
+      weight: 1
+    })
+    recordsToWrite.push(supersedingRecord)
+  }
+
+  const result = await batchUpdateRecords(recordsToWrite, {}, config)
+  if (result.updated !== recordsToWrite.length || result.failed !== 0) {
+    throw new Error(
+      `Failed to persist deprecation update for ${id}: updated ${result.updated}/${recordsToWrite.length}, failed ${result.failed}`
+    )
+  }
+  return true
 }
 
 export async function promoteToGlobal(id: string, config: Config = DEFAULT_CONFIG): Promise<boolean> {

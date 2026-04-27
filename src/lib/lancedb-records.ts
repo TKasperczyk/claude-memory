@@ -13,6 +13,7 @@ import {
   type RecordType
 } from './types.js'
 import { isValidConfidence, isValidOutcome, isValidSeverity, normalizeScope } from './parsing.js'
+import { normalizeRelations, upsertRelation } from './relations.js'
 
 export type LanceRow = Record<string, unknown>
 
@@ -131,8 +132,22 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
       0
     ),
     sourceSessionId: coerceOptionalString(row.source_session_id) ?? parsed.sourceSessionId,
-    sourceExcerpt: coerceOptionalString(row.source_excerpt) ?? parsed.sourceExcerpt
+    sourceExcerpt: coerceOptionalString(row.source_excerpt) ?? parsed.sourceExcerpt,
+    relations: normalizeRelations(parsed.relations)
   } as MemoryRecord
+
+  const supersedes = coerceOptionalString(record.supersedes)
+  if (supersedes) {
+    record.supersedes = supersedes
+    if (!hasRelation(record, supersedes, 'supersedes')) {
+      upsertRelation(record, {
+        targetId: supersedes,
+        kind: 'supersedes',
+        weight: 1,
+        now: new Date(record.timestamp || Date.now()).toISOString()
+      })
+    }
+  }
 
   if (!isValidRecord(record)) {
     console.error(`[claude-memory] Invalid record; skipping id=${record.id} type=${record.type}`)
@@ -204,8 +219,11 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const lastGlobalCheck = toInt64(record.lastGlobalCheck, 0)
   const lastConsolidationCheck = toInt64(record.lastConsolidationCheck, 0)
   const lastConflictCheck = toInt64(record.lastConflictCheck, 0)
+  const lastWarningSynthesisCheck = toInt64(record.lastWarningSynthesisCheck, 0)
+  const supersedes = normalizeOptionalString(record.supersedes)
+  const relations = normalizeRelations(record.relations)
 
-  return {
+  const normalized = {
     ...record,
     project,
     scope,
@@ -220,8 +238,30 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     lastGeneralizationCheck,
     lastGlobalCheck,
     lastConsolidationCheck,
-    lastConflictCheck
+    lastConflictCheck,
+    lastWarningSynthesisCheck,
+    relations
+  } as MemoryRecord
+
+  if (supersedes) {
+    normalized.supersedes = supersedes
+    if (!hasRelation(normalized, supersedes, 'supersedes')) {
+      upsertRelation(normalized, {
+        targetId: supersedes,
+        kind: 'supersedes',
+        weight: 1,
+        now: new Date(timestamp).toISOString()
+      })
+    }
   }
+
+  return normalized
+}
+
+function hasRelation(record: MemoryRecord, targetId: string, kind: 'relates_to' | 'supersedes'): boolean {
+  return Boolean(record.relations?.some(relation =>
+    relation.targetId === targetId && relation.kind === kind
+  ))
 }
 
 function buildSupplementalEmbeddingText(record: MemoryRecord): string | undefined {

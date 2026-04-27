@@ -32,23 +32,13 @@ export function createPreviewRouter(context: ServerContext): express.Router {
         ? coerceRetrievalSettings(rawSettingsOverride as Record<string, unknown>, loadSettings())
         : undefined
 
-      const result = await retrieveContext({ prompt, cwd }, config, { settingsOverride, diagnostic })
+      const result = await retrieveContext({ prompt, cwd, skipSuppressionWriteback: true }, config, { settingsOverride, diagnostic })
 
-      const scoredResults = result.results.map(r => ({
-        record: r.record,
-        score: r.score,
-        similarity: r.similarity,
-        keywordMatch: r.keywordMatch
-      }))
+      const scoredResults = result.results
 
       const diagnosticPayload = diagnostic && result.diagnostics
         ? {
-            injected: result.diagnostics.context.injectedRecords.map(r => ({
-              record: r.record,
-              score: r.score,
-              similarity: r.similarity,
-              keywordMatch: r.keywordMatch
-            })),
+            injected: result.diagnostics.context.injectedRecords,
             nearMisses: combineNearMisses(
               result.diagnostics.search.nearMisses,
               result.diagnostics.context.exclusions

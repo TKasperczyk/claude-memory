@@ -379,9 +379,27 @@ export async function runConflictResolution(
         return
       }
 
+      let writeFailed = false
       for (const action of pendingActions) {
         if (!action.recordId) continue
-        const updatedRecord = await markDeprecated(action.recordId, config)
+        const supersedingRecordId = action.details?.verdict === 'supersedes' && typeof action.details.candidateId === 'string'
+          ? action.details.candidateId
+          : undefined
+        let updatedRecord = false
+        try {
+          updatedRecord = await markDeprecated(
+            action.recordId,
+            config,
+            supersedingRecordId ? { supersedingRecordId } : {}
+          )
+        } catch (error) {
+          errors += 1
+          failedNewIds.add(currentNewId)
+          const message = error instanceof Error ? error.message : String(error)
+          logger.warn(`Skipping conflict action for ${action.recordId}: ${message}`)
+          writeFailed = true
+          break
+        }
         if (updatedRecord) {
           actions.push(action)
           if (action.recordId === currentNewId) {
@@ -391,7 +409,9 @@ export async function runConflictResolution(
           }
         }
       }
-      variants += pendingVariants
+      if (!writeFailed) {
+        variants += pendingVariants
+      }
     }
 
     if (pairs > 0) {

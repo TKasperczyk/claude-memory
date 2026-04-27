@@ -821,7 +821,9 @@ describe('preview routes', () => {
       record: { id: 'rec-1', type: 'command' },
       score: 0.8,
       similarity: 0.81,
-      keywordMatch: true
+      keywordMatch: true,
+      via: { parentId: 'parent-1', kind: 'relates_to', hop: 1 },
+      suppression: { suppressed: true, mode: 'soft', originalScore: 1.6 }
     }
     const nearMiss = {
       record: scored,
@@ -846,6 +848,9 @@ describe('preview routes', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.results).toHaveLength(1)
+    expect(res.body.results[0].via).toEqual(scored.via)
+    expect(res.body.results[0].suppression).toEqual(scored.suppression)
+    expect(res.body.injected[0].via).toEqual(scored.via)
     expect(res.body.nearMisses).toHaveLength(1)
     expect(res.body.injected).toHaveLength(1)
   })

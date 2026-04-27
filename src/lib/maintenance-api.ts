@@ -11,6 +11,7 @@ import {
   runLowUsageCheck,
   runConsolidation,
   runCrossTypeConsolidation,
+  runRelationDiscovery,
   runGlobalPromotion,
   runWarningSynthesis,
   type MaintenanceRunResult
@@ -63,6 +64,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     key: 'conflict-resolution',
     label: 'Conflict Resolution',
     description: 'Verify new memories against existing ones using LLM',
+    allowExecute: true
+  },
+  {
+    key: 'relation-discovery',
+    label: 'Relation Discovery',
+    description: 'Strengthen links between memories repeatedly injected together',
     allowExecute: true
   },
   {
@@ -169,6 +176,8 @@ async function runOperation(
       return runCrossTypeConsolidation(dryRun, config, settings, onProgress)
     case 'conflict-resolution':
       return runConflictResolution(dryRun, config, settings)
+    case 'relation-discovery':
+      return runRelationDiscovery(dryRun, config)
     case 'warning-synthesis':
       return runWarningSynthesis(dryRun, config, settings)
     case 'global-promotion':

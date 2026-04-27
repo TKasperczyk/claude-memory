@@ -52,6 +52,12 @@ function highlightContext(str: string): string {
   return out
 }
 
+function formatSuppressionPenalty(score: number, originalScore: number): string {
+  if (originalScore <= 0) return ''
+  const percent = Math.round((1 - score / originalScore) * 100)
+  return percent > 0 ? ` -${percent}%` : ''
+}
+
 export default function ContextPreview() {
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -367,6 +373,22 @@ export default function ContextPreview() {
                             Score {match.score.toFixed(2)} · Sim {match.similarity.toFixed(2)}
                           </span>
                         </div>
+                        {(match.via || match.suppression) && (
+                          <div className="mb-1 flex flex-wrap gap-1.5">
+                            {match.via && (
+                              <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[10px]">
+                                from hop {match.via.hop}
+                              </span>
+                            )}
+                            {match.suppression && (
+                              <span className="px-1.5 py-0.5 rounded bg-muted-foreground/15 text-muted-foreground text-[10px]">
+                                suppressed: {match.suppression.mode}{match.suppression.mode === 'soft'
+                                  ? formatSuppressionPenalty(match.score, match.suppression.originalScore)
+                                  : ''}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <div className="truncate">{getMemorySummary(match.record)}</div>
                       </button>
                     ))}

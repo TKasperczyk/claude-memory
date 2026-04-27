@@ -1,11 +1,12 @@
 import { truncateText, withTimeout } from './shared.js'
-import { closeLanceDB, initLanceDB, hybridSearch, computeUsageRatio } from './lancedb.js'
+import { closeLanceDB, initLanceDB, hybridSearch, computeUsageRatio, fetchRecordsByIds } from './lancedb.js'
 import { buildContext, extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embed } from './embed.js'
 import { mergeNearMisses, buildExclusionReason } from './diagnostics.js'
 import { generateRetrievalQueryPlan } from './retrieval-query-generator.js'
 import { recordTokenUsageEventsAsync } from './token-usage-events.js'
 import { loadSettings, type RetrievalSettings } from './settings.js'
+import { loadSessionTracking, updateSessionPromptStateIfVersion, updateSessionRetrievalState } from './session-tracking.js'
 import {
   DEFAULT_CONFIG,
   type Config,
@@ -17,7 +18,8 @@ import {
   type HybridSearchParams,
   type MemoryRecord,
   type NearMissRecord,
-  type PrePromptInput
+  type PrePromptInput,
+  type SuppressionMode
 } from './types.js'
 
 /**
@@ -76,6 +78,8 @@ export interface RetrievalRequest {
   prompt: string
   cwd: string
   transcriptPath?: string
+  sessionId?: string
+  skipSuppressionWriteback?: boolean
 }
 
 export interface RetrievalResult {
@@ -85,6 +89,7 @@ export interface RetrievalResult {
   injectedRecords: MemoryRecord[]
   timedOut: boolean
   diagnostics?: RetrievalDiagnostics
+  suppressionWritebackVersion?: number
 }
 
 export interface RetrievalDiagnostics {
@@ -140,7 +145,12 @@ export async function retrieveContext(
         settings,
         input.cwd,
         signal,
-        { diagnostic, transcriptPath: input.transcriptPath }
+        {
+          diagnostic,
+          transcriptPath: input.transcriptPath,
+          sessionId: input.sessionId,
+          skipSuppressionWriteback: input.skipSuppressionWriteback
+        }
       )
       const results = searchResult.results
       if (diagnostic) {
@@ -148,10 +158,13 @@ export async function retrieveContext(
           diagnostic: true,
           mmrExclusions: searchResult.diagnostics?.mmrExclusions
         })
+        const injectedRecords = contextResult.injectedRecords.map(item => item.record)
+        const suppressionWritebackVersion = updateRetrievalPromptState(input.sessionId, searchResult, settings, runtimeConfig.lancedb.table, input.skipSuppressionWriteback)
         return {
           context: contextResult.context || null,
           results,
-          injectedRecords: contextResult.injectedRecords.map(item => item.record),
+          injectedRecords,
+          suppressionWritebackVersion,
           diagnostics: searchResult.diagnostics
             ? { search: searchResult.diagnostics.search, context: contextResult }
             : undefined
@@ -159,11 +172,13 @@ export async function retrieveContext(
       }
 
       if (results.length === 0) {
-        return { context: null, results, injectedRecords: [] }
+        const suppressionWritebackVersion = updateRetrievalPromptState(input.sessionId, searchResult, settings, runtimeConfig.lancedb.table, input.skipSuppressionWriteback)
+        return { context: null, results, injectedRecords: [], suppressionWritebackVersion }
       }
 
       const { context, records: injectedRecords } = buildContext(results, runtimeConfig)
-      return { context: context || null, results, injectedRecords }
+      const suppressionWritebackVersion = updateRetrievalPromptState(input.sessionId, searchResult, settings, runtimeConfig.lancedb.table, input.skipSuppressionWriteback)
+      return { context: context || null, results, injectedRecords, suppressionWritebackVersion }
     } finally {
       unregister()
     }
@@ -190,7 +205,8 @@ export async function retrieveContext(
     results: result.value?.results ?? [],
     injectedRecords: result.value?.injectedRecords ?? [],
     timedOut: false,
-    diagnostics: result.value?.diagnostics
+    diagnostics: result.value?.diagnostics,
+    suppressionWritebackVersion: result.value?.suppressionWritebackVersion
   }
 }
 
@@ -202,7 +218,8 @@ export async function handlePrePrompt(
   return retrieveContext({
     prompt: input.prompt,
     cwd: input.cwd,
-    transcriptPath: input.transcript_path
+    transcriptPath: input.transcript_path,
+    sessionId: input.session_id
   }, config, options)
 }
 
@@ -213,6 +230,8 @@ type SearchMemoriesDiagnostics = {
 
 type SearchMemoriesResult = {
   results: HybridSearchResult[]
+  promptEmbedding?: number[]
+  suppressionStateVersion: number
   diagnostics?: SearchMemoriesDiagnostics
 }
 
@@ -228,10 +247,14 @@ async function searchMemories(
   settings: RetrievalSettings,
   cwd: string,
   signal?: AbortSignal,
-  options: { diagnostic?: boolean; transcriptPath?: string } = {}
+  options: { diagnostic?: boolean; transcriptPath?: string; sessionId?: string; skipSuppressionWriteback?: boolean } = {}
 ): Promise<SearchMemoriesResult> {
   const cleanPrompt = stripNoiseWords(prompt)
   const diagnostic = options.diagnostic === true
+  const session = options.sessionId && settings.enableTopicSuppression
+    ? loadSessionTracking(options.sessionId, config.lancedb.table)
+    : null
+  let suppressionStateVersion = session?.retrievalStateVersion ?? 0
 
   const queryPlanResult = settings.enableHaikuRetrieval
     ? await generateRetrievalQueryPlan(
@@ -283,6 +306,18 @@ async function searchMemories(
     }
   }
 
+  const suppressionResolution = resolveSuppressedIds({
+    sessionId: options.sessionId,
+    session,
+    embedding,
+    settings,
+    collection: config.lancedb.table,
+    skipWriteback: options.skipSuppressionWriteback === true,
+    stateVersion: suppressionStateVersion
+  })
+  const suppressedIds = suppressionResolution.ids
+  suppressionStateVersion = suppressionResolution.stateVersion
+
   let searchQualifiedResult = await searchWithScope(
     keywordQueries,
     config,
@@ -329,6 +364,33 @@ async function searchMemories(
     }
   }
 
+  if (results.length > 0 && settings.enableRelationExpansion) {
+    results = await expandViaRelations(results, config, settings)
+    if (settings.minExpandedScore > 0) {
+      if (diagnostic && searchNearMisses) {
+        for (const result of results) {
+          if (result.via && result.score < settings.minExpandedScore) {
+            searchNearMisses.set(result.record.id, {
+              record: result,
+              exclusionReasons: [buildExclusionReason('score_below_threshold', settings.minExpandedScore, result.score)]
+            })
+          }
+        }
+      }
+      results = results.filter(result => !result.via || result.score >= settings.minExpandedScore)
+    }
+  }
+
+  let suppressionExclusions: NearMissRecord[] = []
+  if (suppressedIds.size > 0) {
+    const suppressionResult = applyRecentlyInjectedSuppression(results, suppressedIds, settings)
+    results = suppressionResult.results
+    suppressionExclusions = suppressionResult.exclusions
+    if (diagnostic && searchNearMisses) {
+      mergeNearMisses(searchNearMisses, suppressionExclusions)
+    }
+  }
+
   const queryInfo: DiagnosticQueryInfo | undefined = diagnostic
     ? {
         semanticQuery: semanticQuery || '',
@@ -370,12 +432,135 @@ async function searchMemories(
 
   return {
     results: finalResults,
+    promptEmbedding: embedding,
+    suppressionStateVersion,
     diagnostics: diagnostic
       ? {
           search: searchDiagnostics ?? { qualified: [], nearMisses: [] },
           mmrExclusions
         }
       : undefined
+  }
+}
+
+function updateRetrievalPromptState(
+  sessionId: string | undefined,
+  searchResult: Pick<SearchMemoriesResult, 'promptEmbedding' | 'suppressionStateVersion'>,
+  settings: RetrievalSettings,
+  collection?: string,
+  skipWriteback?: boolean
+): number | undefined {
+  const embedding = searchResult.promptEmbedding
+  if (skipWriteback || !sessionId || !settings.enableTopicSuppression || !embedding) return undefined
+
+  try {
+    const record = updateSessionPromptStateIfVersion(sessionId, {
+      previousPromptEmbedding: embedding,
+      lastPromptAt: new Date().toISOString(),
+      expectedRetrievalStateVersion: searchResult.suppressionStateVersion
+    }, collection)
+    return record?.retrievalStateVersion
+  } catch (error) {
+    console.error('[claude-memory] Failed to update prompt suppression state:', error)
+    return undefined
+  }
+}
+
+function resolveSuppressedIds(args: {
+  sessionId?: string
+  session: ReturnType<typeof loadSessionTracking>
+  embedding?: number[]
+  settings: RetrievalSettings
+  collection?: string
+  skipWriteback?: boolean
+  stateVersion: number
+}): { ids: Set<string>; stateVersion: number } {
+  const { sessionId, session, embedding, settings, collection, skipWriteback } = args
+  if (!sessionId || !settings.enableTopicSuppression || !embedding) {
+    return { ids: new Set(), stateVersion: args.stateVersion }
+  }
+  if (settings.recentlyInjectedWindow <= 0) {
+    return { ids: new Set(), stateVersion: args.stateVersion }
+  }
+
+  const previousEmbedding = session?.previousPromptEmbedding
+  if (!previousEmbedding || previousEmbedding.length === 0) {
+    return { ids: new Set(), stateVersion: args.stateVersion }
+  }
+
+  const topicSimilarity = cosineSimilarity(embedding, previousEmbedding)
+  if (topicSimilarity < settings.topicChangeThreshold) {
+    const cleared = session?.recentlyInjectedIds?.length ?? 0
+    console.error(
+      `[claude-memory] Topic shift detected: prompt similarity ${topicSimilarity.toFixed(3)} < threshold ${settings.topicChangeThreshold.toFixed(3)}; clearing ${cleared} recently injected memor${cleared === 1 ? 'y' : 'ies'}`
+    )
+    let stateVersion = args.stateVersion
+    if (!skipWriteback) {
+      try {
+        const record = updateSessionRetrievalState(sessionId, { recentlyInjectedIds: [] }, collection)
+        stateVersion = record?.retrievalStateVersion ?? stateVersion
+      } catch (error) {
+        console.error('[claude-memory] Failed to clear recently injected memories after topic shift:', error)
+      }
+    }
+    return { ids: new Set(), stateVersion }
+  }
+
+  return {
+    ids: new Set((session?.recentlyInjectedIds ?? []).slice(-settings.recentlyInjectedWindow)),
+    stateVersion: args.stateVersion
+  }
+}
+
+type SuppressionResult = {
+  results: HybridSearchResult[]
+  exclusions: NearMissRecord[]
+}
+
+export function applyRecentlyInjectedSuppression(
+  candidates: HybridSearchResult[],
+  suppressedIds: Set<string>,
+  settings: Pick<RetrievalSettings, 'suppressionMode' | 'suppressionPenalty'>
+): SuppressionResult {
+  if (candidates.length === 0 || suppressedIds.size === 0) {
+    return { results: candidates, exclusions: [] }
+  }
+
+  const mode: SuppressionMode = settings.suppressionMode === 'hard' ? 'hard' : 'soft'
+  const penalty = Math.min(1, Math.max(0, settings.suppressionPenalty))
+  const results: HybridSearchResult[] = []
+  const exclusions: NearMissRecord[] = []
+
+  for (const candidate of candidates) {
+    if (!suppressedIds.has(candidate.record.id)) {
+      results.push(candidate)
+      continue
+    }
+
+    const originalScore = candidate.score
+    const suppression = { suppressed: true as const, mode, originalScore }
+
+    if (mode === 'hard') {
+      const suppressedCandidate = { ...candidate, suppression }
+      exclusions.push({
+        record: suppressedCandidate,
+        exclusionReasons: [
+          buildExclusionReason('recently_injected_suppression', originalScore, 0)
+        ]
+      })
+      continue
+    }
+
+    results.push({
+      ...candidate,
+      score: originalScore * (1 - penalty),
+      suppression
+    })
+  }
+
+  return {
+    results: mode === 'soft' ? sortByScore(results) : results,
+    exclusions
   }
 }
 
@@ -534,6 +719,132 @@ async function searchWithScope(
     }
   }
   return { results: rankedResults, nearMisses: Array.from(nearMisses?.values() ?? []) }
+}
+
+type RelationExpansionCandidate = {
+  targetId: string
+  parent: HybridSearchResult
+  kind: 'relates_to' | 'supersedes'
+  hop: number
+  rootScore: number
+  rootSimilarity: number
+  cumulativeWeight: number
+  score: number
+  similarity: number
+}
+
+type RelationExpansionFrontierEntry = {
+  result: HybridSearchResult
+  rootScore: number
+  rootSimilarity: number
+  cumulativeWeight: number
+}
+
+export async function expandViaRelations(
+  initialResults: HybridSearchResult[],
+  config: Config,
+  settings: Pick<RetrievalSettings, 'maxRelationHops' | 'maxRelationExpansions' | 'relationHopDecay'>
+): Promise<HybridSearchResult[]> {
+  const maxHops = Math.max(0, Math.trunc(settings.maxRelationHops))
+  const maxExpansions = Math.max(0, Math.trunc(settings.maxRelationExpansions))
+  const hopDecay = Math.min(1, Math.max(0.1, settings.relationHopDecay))
+  if (initialResults.length === 0 || maxHops <= 0 || maxExpansions <= 0) return initialResults
+
+  const byId = new Map<string, HybridSearchResult>()
+  for (const result of initialResults) {
+    byId.set(result.record.id, result)
+  }
+
+  let frontier: RelationExpansionFrontierEntry[] = initialResults.map(result => ({
+    result,
+    rootScore: result.score,
+    rootSimilarity: result.similarity,
+    cumulativeWeight: 1
+  }))
+  const expanded: HybridSearchResult[] = []
+
+  for (let hop = 1; hop <= maxHops && expanded.length < maxExpansions; hop += 1) {
+    const candidatesById = new Map<string, RelationExpansionCandidate>()
+
+    for (const parent of frontier) {
+      for (const relation of parent.result.record.relations ?? []) {
+        if (!relation.targetId || relation.weight <= 0) continue
+        if (byId.has(relation.targetId)) continue
+
+        const decay = Math.pow(hopDecay, hop)
+        const cumulativeWeight = parent.cumulativeWeight * relation.weight
+        const score = parent.rootScore * cumulativeWeight * decay
+        if (score <= 0) continue
+
+        const candidate: RelationExpansionCandidate = {
+          targetId: relation.targetId,
+          parent: parent.result,
+          kind: relation.kind,
+          hop,
+          rootScore: parent.rootScore,
+          rootSimilarity: parent.rootSimilarity,
+          cumulativeWeight,
+          score,
+          similarity: Math.max(0, Math.min(1, parent.rootSimilarity * cumulativeWeight * decay))
+        }
+        const existing = candidatesById.get(relation.targetId)
+        if (!existing || candidate.score > existing.score) {
+          candidatesById.set(relation.targetId, candidate)
+        }
+      }
+    }
+
+    if (candidatesById.size === 0) break
+
+    let fetchedRecords: MemoryRecord[]
+    try {
+      fetchedRecords = await fetchRecordsByIds([...candidatesById.keys()], config, { includeEmbeddings: true })
+    } catch (error) {
+      console.error('[claude-memory] Relation expansion lookup failed:', error)
+      break
+    }
+
+    const recordsById = new Map(fetchedRecords.map(record => [record.id, record]))
+    const nextFrontier: RelationExpansionFrontierEntry[] = []
+    const candidates = Array.from(candidatesById.values())
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score
+        return a.targetId.localeCompare(b.targetId)
+      })
+
+    for (const candidate of candidates) {
+      if (expanded.length >= maxExpansions) break
+      if (byId.has(candidate.targetId)) continue
+
+      const record = recordsById.get(candidate.targetId)
+      if (!record || record.deprecated) continue
+
+      const result: HybridSearchResult = {
+        record,
+        score: candidate.score,
+        similarity: candidate.similarity,
+        keywordMatch: false,
+        via: {
+          parentId: candidate.parent.record.id,
+          kind: candidate.kind,
+          hop: candidate.hop
+        }
+      }
+      byId.set(record.id, result)
+      expanded.push(result)
+      nextFrontier.push({
+        result,
+        rootScore: candidate.rootScore,
+        rootSimilarity: candidate.rootSimilarity,
+        cumulativeWeight: candidate.cumulativeWeight
+      })
+    }
+
+    frontier = nextFrontier
+    if (frontier.length === 0) break
+  }
+
+  return [...initialResults, ...expanded]
 }
 
 /**

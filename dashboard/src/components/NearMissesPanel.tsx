@@ -11,7 +11,8 @@ const EXCLUSION_REASON_STYLES: Record<ExclusionReason['reason'], string> = {
   mmr_diversity_penalty: 'bg-primary/15 text-primary',
   exceeded_max_records: 'bg-muted-foreground/15 text-muted-foreground',
   exceeded_token_budget: 'bg-destructive/15 text-destructive',
-  semantic_anchor_gate: 'bg-destructive/15 text-destructive'
+  semantic_anchor_gate: 'bg-destructive/15 text-destructive',
+  recently_injected_suppression: 'bg-muted-foreground/15 text-muted-foreground'
 }
 
 function formatDecimal(value: number, digits = 2): string {
@@ -59,6 +60,8 @@ function formatExclusionReason(reason: ExclusionReason): string {
     }
     case 'semantic_anchor_gate':
       return `No anchor: max similarity ${actual} < ${threshold} (gap: ${gap}) — injection suppressed`
+    case 'recently_injected_suppression':
+      return `Recently injected, suppressed`
   }
 }
 

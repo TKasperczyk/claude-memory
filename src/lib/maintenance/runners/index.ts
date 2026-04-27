@@ -16,6 +16,8 @@ export {
   runGlobalPromotion
 } from './promotion-runner.js'
 
+export { runRelationDiscovery } from './relations.js'
+
 export { runWarningSynthesis } from './warning-synthesis-runner.js'
 
 export { runPromotionSuggestions } from './promotion-suggestions-runner.js'

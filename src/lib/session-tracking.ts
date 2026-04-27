@@ -1,9 +1,10 @@
 import fs from 'fs'
-import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, isPlainObject } from './parsing.js'
+import { asBoolean, asInjectionStatus, asInteger, asNumber, asRecordType, asString, asStringArray, isPlainObject } from './parsing.js'
 import { JsonStore, isDefaultCollection } from './file-store.js'
 import { acquireFileLock } from './lock.js'
 import { sanitizeSessionId } from './shared.js'
 import {
+  EMBEDDING_DIM,
   type InjectedMemoryEntry,
   type InjectionPromptEntry,
   type InjectionSessionRecord,
@@ -16,6 +17,19 @@ const SNIPPET_TYPE_REGEX = /^(command|error|discovery|procedure|warning):/i
 const LOCK_RETRY_DELAY_MS = 25
 const LOCK_MAX_WAIT_MS = 1000
 const LOCK_STALE_MS = 30_000
+
+type SessionRetrievalStateUpdate = {
+  recentlyInjectedIds?: string[]
+  previousPromptEmbedding?: number[] | null
+  lastPromptAt?: string
+}
+
+type SessionRetrievalStateAtomicUpdate = {
+  sessionId: string
+  newInjectedIds: string[]
+  windowSize: number
+  expectedRetrievalStateVersion?: number
+}
 
 function getLegacySessionTrackingPath(sessionId: string): string {
   return sessionStore.buildPath(sessionId, { legacy: true })
@@ -86,6 +100,165 @@ export function saveSessionTracking(record: InjectionSessionRecord, collection?:
   }
 }
 
+export function appendRecentlyInjectedIds(
+  existingIds: string[],
+  injectedIds: string[],
+  maxIds: number
+): string[] {
+  const limit = Math.max(0, Math.trunc(maxIds))
+  if (limit <= 0) return []
+
+  const nextIds = injectedIds
+    .map(id => id.trim())
+    .filter(id => id.length > 0)
+  if (nextIds.length === 0) {
+    return existingIds
+      .map(id => id.trim())
+      .filter(id => id.length > 0)
+      .slice(-limit)
+  }
+
+  const refreshed = new Set(nextIds)
+  const retained = existingIds
+    .map(id => id.trim())
+    .filter(id => id.length > 0 && !refreshed.has(id))
+
+  return [...retained, ...Array.from(refreshed)].slice(-limit)
+}
+
+export function updateSessionRetrievalState(
+  sessionId: string,
+  update: SessionRetrievalStateUpdate,
+  collection?: string
+): InjectionSessionRecord | null {
+  if (!sessionId) return null
+
+  return withSessionLock(sessionId, () => {
+    const existing = loadSessionTracking(sessionId, collection)
+    const now = Date.now()
+    const currentVersion = existing?.retrievalStateVersion ?? 0
+    const record: InjectionSessionRecord = {
+      sessionId,
+      createdAt: existing?.createdAt ?? now,
+      lastActivity: now,
+      cwd: existing?.cwd,
+      memories: existing?.memories ?? [],
+      prompts: existing?.prompts,
+      promptCount: existing?.promptCount,
+      injectionCount: existing?.injectionCount,
+      lastStatus: existing?.lastStatus,
+      hasReview: existing?.hasReview,
+      recentlyInjectedIds: update.recentlyInjectedIds ?? existing?.recentlyInjectedIds ?? [],
+      previousPromptEmbedding: 'previousPromptEmbedding' in update
+        ? update.previousPromptEmbedding ?? null
+        : existing?.previousPromptEmbedding ?? null,
+      lastPromptAt: update.lastPromptAt ?? existing?.lastPromptAt,
+      retrievalStateVersion: currentVersion + 1
+    }
+    saveSessionTracking(record, collection)
+    return record
+  }, collection)
+}
+
+export function updateSessionPromptStateIfVersion(
+  sessionId: string,
+  update: { previousPromptEmbedding: number[]; lastPromptAt: string; expectedRetrievalStateVersion: number },
+  collection?: string
+): InjectionSessionRecord | null {
+  if (!sessionId) return null
+
+  return withSessionLock(sessionId, () => {
+    const existing = loadSessionTracking(sessionId, collection)
+    const currentVersion = existing?.retrievalStateVersion ?? 0
+    if (currentVersion !== update.expectedRetrievalStateVersion) {
+      console.warn(
+        `[claude-memory] Skipping prompt embedding write for stale retrieval state: expected version ${update.expectedRetrievalStateVersion}, found ${currentVersion}`
+      )
+      return null
+    }
+
+    const now = Date.now()
+    const record: InjectionSessionRecord = {
+      sessionId,
+      createdAt: existing?.createdAt ?? now,
+      lastActivity: now,
+      cwd: existing?.cwd,
+      memories: existing?.memories ?? [],
+      prompts: existing?.prompts,
+      promptCount: existing?.promptCount,
+      injectionCount: existing?.injectionCount,
+      lastStatus: existing?.lastStatus,
+      hasReview: existing?.hasReview,
+      recentlyInjectedIds: existing?.recentlyInjectedIds ?? [],
+      previousPromptEmbedding: update.previousPromptEmbedding,
+      lastPromptAt: update.lastPromptAt,
+      retrievalStateVersion: currentVersion + 1
+    }
+    saveSessionTracking(record, collection)
+    return record
+  }, collection)
+}
+
+export function updateSessionRetrievalStateAtomic(
+  update: SessionRetrievalStateAtomicUpdate,
+  collection?: string
+): InjectionSessionRecord | null {
+  if (!update.sessionId) return null
+
+  return withSessionLock(update.sessionId, () => {
+    const existing = loadSessionTracking(update.sessionId, collection)
+    const currentVersion = existing?.retrievalStateVersion ?? 0
+    if (
+      update.expectedRetrievalStateVersion !== undefined &&
+      currentVersion !== update.expectedRetrievalStateVersion
+    ) {
+      console.warn(
+        `[claude-memory] Skipping recently injected write for stale retrieval state: expected version ${update.expectedRetrievalStateVersion}, found ${currentVersion}`
+      )
+      return null
+    }
+    const now = Date.now()
+    const recentlyInjectedIds = appendRecentlyInjectedIds(
+      existing?.recentlyInjectedIds ?? [],
+      update.newInjectedIds,
+      update.windowSize
+    )
+    const record: InjectionSessionRecord = {
+      sessionId: update.sessionId,
+      createdAt: existing?.createdAt ?? now,
+      lastActivity: now,
+      cwd: existing?.cwd,
+      memories: existing?.memories ?? [],
+      prompts: existing?.prompts,
+      promptCount: existing?.promptCount,
+      injectionCount: existing?.injectionCount,
+      lastStatus: existing?.lastStatus,
+      hasReview: existing?.hasReview,
+      recentlyInjectedIds,
+      previousPromptEmbedding: existing?.previousPromptEmbedding ?? null,
+      lastPromptAt: existing?.lastPromptAt,
+      retrievalStateVersion: currentVersion + 1
+    }
+    saveSessionTracking(record, collection)
+    return record
+  }, collection)
+}
+
+export function markInjectedForSuppression(
+  sessionId: string,
+  injectedIds: string[],
+  windowSize: number,
+  collection?: string,
+  options: { expectedRetrievalStateVersion?: number } = {}
+): InjectionSessionRecord | null {
+  return updateSessionRetrievalStateAtomic({
+    sessionId,
+    newInjectedIds: injectedIds,
+    windowSize,
+    expectedRetrievalStateVersion: options.expectedRetrievalStateVersion
+  }, collection)
+}
+
 export function appendSessionTracking(
   sessionId: string,
   entries: InjectedMemoryEntry[],
@@ -122,7 +295,11 @@ export function appendSessionTracking(
       promptCount: prevPromptCount + 1,
       injectionCount: prevInjectionCount + (didInject ? 1 : 0),
       lastStatus: status,
-      hasReview: existing?.hasReview
+      hasReview: existing?.hasReview,
+      recentlyInjectedIds: existing?.recentlyInjectedIds ?? [],
+      previousPromptEmbedding: existing?.previousPromptEmbedding ?? null,
+      lastPromptAt: existing?.lastPromptAt,
+      retrievalStateVersion: existing?.retrievalStateVersion ?? 0
     }
     saveSessionTracking(record, collection)
     return record
@@ -196,6 +373,12 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
   const record = value
   const memories = coerceMemoryEntries(record.memories)
   const prompts = coercePromptEntries(record.prompts)
+  const recentlyInjectedIds = asStringArray(record.recentlyInjectedIds, {
+    trim: true,
+    filterEmpty: true,
+    unique: true
+  })
+  const previousPromptEmbedding = coerceEmbedding(record.previousPromptEmbedding)
   const now = Date.now()
   const createdAt = asInteger(record.createdAt) ?? now
 
@@ -211,8 +394,25 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
     promptCount: asInteger(record.promptCount) ?? undefined,
     injectionCount: asInteger(record.injectionCount) ?? undefined,
     lastStatus: asInjectionStatus(record.lastStatus),
-    hasReview: hasReview ?? undefined
+    hasReview: hasReview ?? undefined,
+    recentlyInjectedIds,
+    previousPromptEmbedding,
+    lastPromptAt: asString(record.lastPromptAt),
+    retrievalStateVersion: asInteger(record.retrievalStateVersion) ?? 0
   }
+}
+
+function coerceEmbedding(value: unknown): number[] | null {
+  if (value === null || value === undefined) return null
+  if (!Array.isArray(value)) return null
+
+  const embedding: number[] = []
+  for (const item of value) {
+    const parsed = asNumber(item)
+    if (parsed === null) return null
+    embedding.push(parsed)
+  }
+  return embedding.length === EMBEDDING_DIM ? embedding : null
 }
 
 function coerceMemoryEntries(value: unknown): InjectedMemoryEntry[] {

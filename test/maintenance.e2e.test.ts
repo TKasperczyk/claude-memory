@@ -5,6 +5,9 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import fs from 'fs'
+import path from 'path'
+import { homedir } from 'os'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
 import {
   dropTestCollection,
@@ -21,9 +24,29 @@ import {
   findSimilarClusters,
   consolidateCluster
 } from '../src/lib/maintenance.js'
+import { runRelationDiscovery } from '../src/lib/maintenance/runners/index.js'
+import { getCollectionKey, recordRetrievalEvents } from '../src/lib/retrieval-events.js'
 import { SIMILARITY_THRESHOLDS } from '../src/lib/types.js'
 
 const STALE_CUTOFF_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
+
+function makeRelation(targetId: string, kind: 'relates_to' | 'supersedes' = 'relates_to', weight = 1) {
+  return {
+    targetId,
+    kind,
+    weight,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    lastReinforcedAt: '2026-01-01T00:00:00.000Z',
+    reinforcementCount: 1
+  }
+}
+
+function cleanupRetrievalEvents(): void {
+  fs.rmSync(
+    path.join(homedir(), '.claude-memory', 'retrieval-events', getCollectionKey(TEST_CONFIG.lancedb.table)),
+    { recursive: true, force: true }
+  )
+}
 
 describe('Maintenance E2E', () => {
   beforeAll(async () => {
@@ -33,11 +56,13 @@ describe('Maintenance E2E', () => {
 
   afterAll(async () => {
     await dropTestCollection()
+    cleanupRetrievalEvents()
     cleanupTempFiles()
   })
 
   beforeEach(async () => {
     await dropTestCollection()
+    cleanupRetrievalEvents()
     await initLanceDB(TEST_CONFIG)
   })
 
@@ -194,6 +219,150 @@ describe('Maintenance E2E', () => {
     it('should return false for non-existent record', async () => {
       const success = await markDeprecated('non-existent-id', TEST_CONFIG)
       expect(success).toBe(false)
+    })
+
+    it('should write a supersedes relation on the superseding record', async () => {
+      const existing = createMockCommandRecord({
+        command: 'old-command',
+        deprecated: false
+      })
+      const candidate = createMockCommandRecord({
+        command: 'new-command',
+        deprecated: false
+      })
+
+      await insertRecord(existing, TEST_CONFIG)
+      await insertRecord(candidate, TEST_CONFIG)
+
+      const success = await markDeprecated(existing.id, TEST_CONFIG, { supersedingRecordId: candidate.id })
+      expect(success).toBe(true)
+
+      const deprecated = await getRecord(existing.id, TEST_CONFIG)
+      const superseding = await getRecord(candidate.id, TEST_CONFIG)
+
+      expect(deprecated?.deprecated).toBe(true)
+      expect(superseding?.supersedes).toBe(existing.id)
+      expect(superseding?.relations).toContainEqual(expect.objectContaining({
+        targetId: existing.id,
+        kind: 'supersedes',
+        weight: 1,
+        reinforcementCount: 1
+      }))
+    })
+  })
+
+  describe('Relation Discovery', () => {
+    it('should build bidirectional relates_to edges from co-injected retrieval events', async () => {
+      const a = createMockCommandRecord({ command: 'relation-a', deprecated: false })
+      const b = createMockCommandRecord({ command: 'relation-b', deprecated: false })
+      await insertRecord(a, TEST_CONFIG)
+      await insertRecord(b, TEST_CONFIG)
+
+      const now = Date.now()
+      for (let i = 0; i < 3; i += 1) {
+        const groupId = `group-${i}`
+        recordRetrievalEvents([
+          {
+            id: a.id,
+            type: a.type,
+            timestamp: now + i,
+            groupId,
+            coInjectedIds: [a.id, b.id]
+          },
+          {
+            id: b.id,
+            type: b.type,
+            timestamp: now + i,
+            groupId,
+            coInjectedIds: [a.id, b.id]
+          }
+        ], { collection: TEST_CONFIG.lancedb.table })
+      }
+
+      const result = await runRelationDiscovery(false, TEST_CONFIG)
+      expect(result.summary.eligiblePairs).toBe(1)
+      expect(result.summary.updated).toBe(2)
+
+      const updatedA = await getRecord(a.id, TEST_CONFIG)
+      const updatedB = await getRecord(b.id, TEST_CONFIG)
+      const relationA = updatedA?.relations?.find(relation => relation.targetId === b.id && relation.kind === 'relates_to')
+      const relationB = updatedB?.relations?.find(relation => relation.targetId === a.id && relation.kind === 'relates_to')
+      const expectedLastReinforcedAt = new Date(now + 2).toISOString()
+
+      expect(relationA).toEqual(expect.objectContaining({
+        weight: 0.3,
+        reinforcementCount: 3,
+        lastReinforcedAt: expectedLastReinforcedAt
+      }))
+      expect(relationB).toEqual(expect.objectContaining({
+        weight: 0.3,
+        reinforcementCount: 3,
+        lastReinforcedAt: expectedLastReinforcedAt
+      }))
+
+      await runRelationDiscovery(false, TEST_CONFIG)
+      const rerunA = await getRecord(a.id, TEST_CONFIG)
+      const rerunRelationA = rerunA?.relations?.find(relation => relation.targetId === b.id && relation.kind === 'relates_to')
+      expect(rerunRelationA?.reinforcementCount).toBe(3)
+    })
+
+    it('caps relates_to edges while preserving supersedes relations', async () => {
+      const hub = createMockCommandRecord({ command: 'relation-hub', deprecated: false })
+      const a = createMockCommandRecord({ command: 'relation-cap-a', deprecated: false })
+      const b = createMockCommandRecord({ command: 'relation-cap-b', deprecated: false })
+      const c = createMockCommandRecord({ command: 'relation-cap-c', deprecated: false })
+      const superseded = createMockCommandRecord({ command: 'relation-cap-superseded', deprecated: false })
+      hub.relations = [makeRelation(superseded.id, 'supersedes')]
+
+      for (const record of [hub, a, b, c, superseded]) {
+        await insertRecord(record, TEST_CONFIG)
+      }
+
+      const now = Date.now()
+      const pairs = [
+        { target: a, count: 5 },
+        { target: b, count: 4 },
+        { target: c, count: 3 }
+      ]
+      for (const pair of pairs) {
+        for (let i = 0; i < pair.count; i += 1) {
+          const groupId = `${pair.target.id}-${i}`
+          recordRetrievalEvents([
+            { id: hub.id, type: hub.type, timestamp: now + i, groupId, coInjectedIds: [hub.id, pair.target.id] },
+            { id: pair.target.id, type: pair.target.type, timestamp: now + i, groupId, coInjectedIds: [hub.id, pair.target.id] }
+          ], { collection: TEST_CONFIG.lancedb.table })
+        }
+      }
+
+      await runRelationDiscovery(false, TEST_CONFIG, { maxRelationsPerRecord: 2 })
+
+      const updatedHub = await getRecord(hub.id, TEST_CONFIG)
+      const relatesTo = updatedHub?.relations?.filter(relation => relation.kind === 'relates_to') ?? []
+      expect(relatesTo.map(relation => relation.targetId).sort()).toEqual([a.id, b.id].sort())
+      expect(updatedHub?.relations).toContainEqual(expect.objectContaining({
+        targetId: superseded.id,
+        kind: 'supersedes'
+      }))
+    })
+
+    it('prunes stale relates_to edges absent from the current observation window', async () => {
+      const a = createMockCommandRecord({ command: 'relation-prune-a', deprecated: false })
+      const b = createMockCommandRecord({ command: 'relation-prune-b', deprecated: false })
+      a.relations = [makeRelation(b.id), makeRelation(b.id, 'supersedes')]
+      b.relations = [makeRelation(a.id)]
+      await insertRecord(a, TEST_CONFIG)
+      await insertRecord(b, TEST_CONFIG)
+
+      await runRelationDiscovery(false, TEST_CONFIG, { maxRelationsPerRecord: 50 })
+
+      const updatedA = await getRecord(a.id, TEST_CONFIG)
+      const updatedB = await getRecord(b.id, TEST_CONFIG)
+      expect(updatedA?.relations?.some(relation => relation.kind === 'relates_to')).toBe(false)
+      expect(updatedB?.relations?.some(relation => relation.kind === 'relates_to')).toBe(false)
+      expect(updatedA?.relations).toContainEqual(expect.objectContaining({
+        targetId: b.id,
+        kind: 'supersedes'
+      }))
     })
   })
 

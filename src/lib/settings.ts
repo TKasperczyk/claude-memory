@@ -121,6 +121,9 @@ export function validateSettingValue(setting: keyof Settings, value: unknown): S
   if (rule.kind === 'text') {
     const str = typeof value === 'string' ? value.trim() : ''
     if (!str) return { ok: false, error: 'value must be a non-empty string' }
+    if (rule.options && !rule.options.includes(str)) {
+      return { ok: false, error: `value must be one of: ${rule.options.join(', ')}` }
+    }
     return { ok: true, normalized: str }
   }
   if (rule.kind === 'bool') {
@@ -144,7 +147,8 @@ function coerceSettingsByFields<T extends Partial<Settings>>(
     if (rule.kind === 'text') {
       const raw = value[field.key]
       const str = typeof raw === 'string' ? raw.trim() : ''
-      output[field.key] = str || (fallbackValue as string)
+      const validation = validateSettingValue(field.key, str)
+      output[field.key] = validation.ok ? validation.normalized as string : (fallbackValue as string)
       continue
     }
     if (rule.kind === 'bool') {

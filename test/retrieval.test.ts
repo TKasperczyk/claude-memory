@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_CONFIG, type HybridSearchResult, type NearMissRecord, type RetrievalSettings } from '../src/lib/types.js'
-import { retrieveContext } from '../src/lib/retrieval.js'
+import { DEFAULT_CONFIG, type HybridSearchResult, type InjectionSessionRecord, type MemoryRecord, type NearMissRecord, type RetrievalSettings } from '../src/lib/types.js'
+import { expandViaRelations, retrieveContext } from '../src/lib/retrieval.js'
 import { createMockCommandRecord } from './helpers.js'
 import { loadSettings } from '../src/lib/settings.js'
-import { closeLanceDB, hybridSearch, initLanceDB } from '../src/lib/lancedb.js'
+import { closeLanceDB, fetchRecordsByIds, hybridSearch, initLanceDB } from '../src/lib/lancedb.js'
 import { embed } from '../src/lib/embed.js'
 import { generateRetrievalQueryPlan } from '../src/lib/retrieval-query-generator.js'
 import { recordTokenUsageEventsAsync } from '../src/lib/token-usage-events.js'
 import { withTimeout } from '../src/lib/shared.js'
+import {
+  appendRecentlyInjectedIds,
+  loadSessionTracking,
+  updateSessionPromptStateIfVersion,
+  updateSessionRetrievalState
+} from '../src/lib/session-tracking.js'
 
 type BuildContextOptions = { diagnostic?: boolean; mmrExclusions?: unknown[] }
 
@@ -38,6 +44,7 @@ vi.mock('../src/lib/lancedb.js', async () => {
     initLanceDB: vi.fn(),
     closeLanceDB: vi.fn(),
     hybridSearch: vi.fn(),
+    fetchRecordsByIds: vi.fn(),
     computeUsageRatio: actual.computeUsageRatio
   }
 })
@@ -58,6 +65,16 @@ vi.mock('../src/lib/settings.js', () => ({
   loadSettings: vi.fn()
 }))
 
+vi.mock('../src/lib/session-tracking.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/lib/session-tracking.js')>('../src/lib/session-tracking.js')
+  return {
+    ...actual,
+    loadSessionTracking: vi.fn(),
+    updateSessionPromptStateIfVersion: vi.fn(),
+    updateSessionRetrievalState: vi.fn()
+  }
+})
+
 vi.mock('../src/lib/context.js', async () => {
   const actual = await vi.importActual<typeof import('../src/lib/context.js')>('../src/lib/context.js')
   return {
@@ -69,6 +86,7 @@ vi.mock('../src/lib/context.js', async () => {
 const BASE_SETTINGS: RetrievalSettings = {
   minSemanticSimilarity: 0.7,
   minScore: 0.45,
+  minExpandedScore: 0.45,
   minSemanticOnlyScore: 0.65,
   maxRecords: 5,
   maxTokens: 2000,
@@ -76,7 +94,17 @@ const BASE_SETTINGS: RetrievalSettings = {
   usageRatioWeight: 0.2,
   keywordBonus: 0.08,
   projectMatchBonus: 0.05,
+  enableTopicSuppression: true,
+  topicChangeThreshold: 0.3,
+  recentlyInjectedWindow: 20,
+  suppressionMode: 'soft',
+  suppressionPenalty: 0.5,
   enableHaikuRetrieval: false,
+  enableRelationExpansion: true,
+  maxRelationHops: 1,
+  maxRelationExpansions: 5,
+  relationHopDecay: 0.6,
+  maxRelationsPerRecord: 50,
   maxKeywordQueries: 4,
   maxKeywordErrors: 2,
   maxKeywordCommands: 2,
@@ -89,12 +117,16 @@ const PROJECT_ROOT = process.cwd()
 
 const mockedLoadSettings = vi.mocked(loadSettings)
 const mockedHybridSearch = vi.mocked(hybridSearch)
+const mockedFetchRecordsByIds = vi.mocked(fetchRecordsByIds)
 const mockedEmbed = vi.mocked(embed)
 const mockedGenerateRetrievalQueryPlan = vi.mocked(generateRetrievalQueryPlan)
 const mockedRecordTokenUsageEventsAsync = vi.mocked(recordTokenUsageEventsAsync)
 const mockedInitLanceDB = vi.mocked(initLanceDB)
 const mockedCloseLanceDB = vi.mocked(closeLanceDB)
 const mockedWithTimeout = vi.mocked(withTimeout)
+const mockedLoadSessionTracking = vi.mocked(loadSessionTracking)
+const mockedUpdateSessionPromptStateIfVersion = vi.mocked(updateSessionPromptStateIfVersion)
+const mockedUpdateSessionRetrievalState = vi.mocked(updateSessionRetrievalState)
 
 const makeSettings = (overrides: Partial<RetrievalSettings> = {}): RetrievalSettings => ({
   ...BASE_SETTINGS,
@@ -118,6 +150,26 @@ const makeResult = (
   keywordMatch
 })
 
+const makeRelation = (targetId: string, weight: number = 1, kind: 'relates_to' | 'supersedes' = 'relates_to') => ({
+  targetId,
+  kind,
+  weight,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  lastReinforcedAt: '2026-01-01T00:00:00.000Z',
+  reinforcementCount: 1
+})
+
+const makeSession = (overrides: Partial<InjectionSessionRecord> = {}): InjectionSessionRecord => ({
+  sessionId: 'session-1',
+  createdAt: Date.now(),
+  lastActivity: Date.now(),
+  memories: [],
+  recentlyInjectedIds: [],
+  previousPromptEmbedding: null,
+  retrievalStateVersion: 0,
+  ...overrides
+})
+
 beforeEach(async () => {
   vi.clearAllMocks()
   const actualShared = await vi.importActual<typeof import('../src/lib/shared.js')>('../src/lib/shared.js')
@@ -125,13 +177,365 @@ beforeEach(async () => {
   mockedEmbed.mockResolvedValue([0.95, 0.05])
   mockedGenerateRetrievalQueryPlan.mockResolvedValue(null)
   mockedHybridSearch.mockResolvedValue([])
+  mockedFetchRecordsByIds.mockResolvedValue([])
   mockedInitLanceDB.mockResolvedValue(undefined)
   mockedCloseLanceDB.mockResolvedValue(undefined)
   mockedWithTimeout.mockImplementation(actualShared.withTimeout)
+  mockedLoadSessionTracking.mockReturnValue(null)
+  mockedUpdateSessionPromptStateIfVersion.mockReturnValue(makeSession({ retrievalStateVersion: 1 }))
+  mockedUpdateSessionRetrievalState.mockReturnValue(null)
 })
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe('Relation expansion', () => {
+  it('adds related records with hop decay scoring and via metadata', async () => {
+    const parent = makeResult('parent', [1, 0], 0.8, 0.7)
+    parent.record.relations = [makeRelation('child', 0.5)]
+    const child = createMockCommandRecord({
+      id: 'child',
+      command: 'child-command',
+      embedding: [0, 1]
+    })
+    mockedFetchRecordsByIds.mockResolvedValue([child])
+
+    const results = await expandViaRelations([parent], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 1,
+      maxRelationExpansions: 5,
+      relationHopDecay: 0.6
+    }))
+
+    expect(results.map(result => result.record.id)).toEqual(['parent', 'child'])
+    expect(results[1].score).toBeCloseTo(0.8 * 0.5 * 0.6)
+    expect(results[1].via).toEqual({ parentId: 'parent', kind: 'relates_to', hop: 1 })
+    expect(mockedFetchRecordsByIds).toHaveBeenCalledWith(['child'], DEFAULT_CONFIG, { includeEmbeddings: true })
+  })
+
+  it('honors max expansion caps', async () => {
+    const parent = makeResult('parent', [1, 0], 1.0, 0.8)
+    parent.record.relations = [
+      makeRelation('best', 0.9),
+      makeRelation('second', 0.8)
+    ]
+    mockedFetchRecordsByIds.mockResolvedValue([
+      createMockCommandRecord({ id: 'best', command: 'best', embedding: [0.9, 0.1] }),
+      createMockCommandRecord({ id: 'second', command: 'second', embedding: [0.8, 0.2] })
+    ])
+
+    const results = await expandViaRelations([parent], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 1,
+      maxRelationExpansions: 1,
+      relationHopDecay: 0.6
+    }))
+
+    expect(results.map(result => result.record.id)).toEqual(['parent', 'best'])
+  })
+
+  it('honors max hop caps', async () => {
+    const parent = makeResult('parent', [1, 0], 1.0, 0.8)
+    parent.record.relations = [makeRelation('child', 1)]
+    const child = createMockCommandRecord({
+      id: 'child',
+      command: 'child-command',
+      embedding: [0.8, 0.2],
+      relations: [makeRelation('grandchild', 1)]
+    })
+    const grandchild = createMockCommandRecord({
+      id: 'grandchild',
+      command: 'grandchild-command',
+      embedding: [0.7, 0.3]
+    })
+    const recordsById: Record<string, MemoryRecord> = { child, grandchild }
+    mockedFetchRecordsByIds.mockImplementation(async ids =>
+      ids.map(id => recordsById[id]).filter((record): record is MemoryRecord => Boolean(record))
+    )
+
+    const oneHop = await expandViaRelations([parent], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 1,
+      maxRelationExpansions: 5,
+      relationHopDecay: 0.6
+    }))
+    expect(oneHop.map(result => result.record.id)).toEqual(['parent', 'child'])
+
+    mockedFetchRecordsByIds.mockClear()
+    const twoHops = await expandViaRelations([parent], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 2,
+      maxRelationExpansions: 5,
+      relationHopDecay: 0.6
+    }))
+    expect(twoHops.map(result => result.record.id)).toEqual(['parent', 'child', 'grandchild'])
+    expect(twoHops[2].score).toBeCloseTo(1.0 * Math.pow(0.6, 2))
+    expect(twoHops[2].via).toEqual({ parentId: 'child', kind: 'relates_to', hop: 2 })
+  })
+
+  it('terminates on relation cycles and returns each record at most once', async () => {
+    const parent = makeResult('parent', [1, 0], 1.0, 0.8)
+    parent.record.relations = [makeRelation('child', 1)]
+    const child = createMockCommandRecord({
+      id: 'child',
+      command: 'child-command',
+      embedding: [0.8, 0.2],
+      relations: [makeRelation('parent', 1)]
+    })
+    mockedFetchRecordsByIds.mockResolvedValue([child])
+
+    const results = await expandViaRelations([parent], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 2,
+      maxRelationExpansions: 5,
+      relationHopDecay: 0.6
+    }))
+
+    expect(results.map(result => result.record.id)).toEqual(['parent', 'child'])
+    expect(new Set(results.map(result => result.record.id)).size).toBe(results.length)
+    expect(mockedFetchRecordsByIds).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips deprecated related records during expansion', async () => {
+    const parent = makeResult('parent', [1, 0], 1.0, 0.8)
+    parent.record.relations = [makeRelation('deprecated-child', 1)]
+    const deprecatedChild = createMockCommandRecord({
+      id: 'deprecated-child',
+      command: 'deprecated-child-command',
+      deprecated: true,
+      embedding: [0.8, 0.2]
+    })
+    mockedFetchRecordsByIds.mockResolvedValue([deprecatedChild])
+
+    const results = await expandViaRelations([parent], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 1,
+      maxRelationExpansions: 5,
+      relationHopDecay: 0.6
+    }))
+
+    expect(results.map(result => result.record.id)).toEqual(['parent'])
+  })
+
+  it('does not duplicate records already present in the initial hits', async () => {
+    const parent = makeResult('parent', [1, 0], 1.0, 0.8)
+    const child = makeResult('child', [0, 1], 0.9, 0.7)
+    parent.record.relations = [makeRelation('child', 1)]
+
+    const results = await expandViaRelations([parent, child], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 1,
+      maxRelationExpansions: 5,
+      relationHopDecay: 0.6
+    }))
+
+    expect(results.map(result => result.record.id)).toEqual(['parent', 'child'])
+    expect(mockedFetchRecordsByIds).not.toHaveBeenCalled()
+  })
+})
+
+describe('Topic suppression', () => {
+  it('filters suppressed IDs in hard mode and reports diagnostics', async () => {
+    mockedLoadSessionTracking.mockReturnValue(makeSession({
+      sessionId: 'session-hard',
+      recentlyInjectedIds: ['suppressed'],
+      previousPromptEmbedding: [0.95, 0.05]
+    }))
+    const suppressed = makeResult('suppressed', [0.95, 0.05], 0.9, 0.9, false)
+    const fresh = makeResult('fresh', [0.9, 0.1], 0.8, 0.8, false)
+    mockedHybridSearch.mockImplementation(async params => {
+      const qualified = params.vectorWeight === 1 ? [suppressed, fresh] : []
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'same topic', cwd: PROJECT_ROOT, sessionId: 'session-hard' },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        diagnostic: true,
+        settingsOverride: { suppressionMode: 'hard', minScore: 0.05 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['fresh'])
+    const suppressedNearMiss = result.diagnostics?.search.nearMisses.find(entry => entry.record.record.id === 'suppressed')
+    expect(suppressedNearMiss?.record.suppression).toEqual({
+      suppressed: true,
+      mode: 'hard',
+      originalScore: expect.any(Number)
+    })
+    expect(suppressedNearMiss?.exclusionReasons[0].reason).toBe('recently_injected_suppression')
+    expect(mockedUpdateSessionPromptStateIfVersion.mock.calls.at(-1)?.[1]).toMatchObject({
+      previousPromptEmbedding: [0.95, 0.05]
+    })
+    expect(mockedUpdateSessionRetrievalState).not.toHaveBeenCalled()
+  })
+
+  it('downweights suppressed IDs in soft mode', async () => {
+    mockedLoadSessionTracking.mockReturnValue(makeSession({
+      sessionId: 'session-soft',
+      recentlyInjectedIds: ['suppressed'],
+      previousPromptEmbedding: [0.95, 0.05]
+    }))
+    const suppressed = makeResult('suppressed', [0.95, 0.05], 0.9, 0.9, false)
+    const fresh = makeResult('fresh', [0.9, 0.1], 0.8, 0.8, false)
+    mockedHybridSearch.mockImplementation(async params => params.vectorWeight === 1 ? [suppressed, fresh] : [])
+
+    const result = await retrieveContext(
+      { prompt: 'same topic', cwd: PROJECT_ROOT, sessionId: 'session-soft' },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        settingsOverride: { suppressionMode: 'soft', suppressionPenalty: 0.5, minScore: 0.05 }
+      }
+    )
+
+    const suppressedResult = result.results.find(item => item.record.id === 'suppressed')
+    expect(suppressedResult?.suppression).toEqual({
+      suppressed: true,
+      mode: 'soft',
+      originalScore: expect.any(Number)
+    })
+    expect(suppressedResult?.score).toBeCloseTo(suppressedResult!.suppression!.originalScore * 0.5)
+  })
+
+  it('clears suppression on topic shift and lets suppressed IDs through', async () => {
+    mockedEmbed.mockResolvedValue([1, 0])
+    mockedUpdateSessionRetrievalState.mockReturnValueOnce(makeSession({ retrievalStateVersion: 1 }))
+    mockedLoadSessionTracking.mockReturnValue(makeSession({
+      sessionId: 'session-shift',
+      recentlyInjectedIds: ['suppressed'],
+      previousPromptEmbedding: [0, 1]
+    }))
+    const suppressed = makeResult('suppressed', [1, 0], 0.9, 0.9, false)
+    mockedHybridSearch.mockImplementation(async params => params.vectorWeight === 1 ? [suppressed] : [])
+
+    const result = await retrieveContext(
+      { prompt: 'new topic', cwd: PROJECT_ROOT, sessionId: 'session-shift' },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        settingsOverride: { suppressionMode: 'hard', topicChangeThreshold: 0.3, minScore: 0.05 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['suppressed'])
+    expect(mockedUpdateSessionRetrievalState.mock.calls[0][1]).toMatchObject({
+      recentlyInjectedIds: []
+    })
+    expect(mockedUpdateSessionPromptStateIfVersion.mock.calls[0][1].expectedRetrievalStateVersion).toBe(1)
+  })
+
+  it('does not suppress on first prompt without a previous embedding', async () => {
+    mockedLoadSessionTracking.mockReturnValue(makeSession({
+      sessionId: 'session-first',
+      recentlyInjectedIds: ['suppressed'],
+      previousPromptEmbedding: null
+    }))
+    const suppressed = makeResult('suppressed', [0.95, 0.05], 0.9, 0.9, false)
+    mockedHybridSearch.mockImplementation(async params => params.vectorWeight === 1 ? [suppressed] : [])
+
+    const result = await retrieveContext(
+      { prompt: 'first prompt', cwd: PROJECT_ROOT, sessionId: 'session-first' },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        settingsOverride: { suppressionMode: 'hard', minScore: 0.05 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['suppressed'])
+    expect(mockedUpdateSessionPromptStateIfVersion).toHaveBeenCalledTimes(1)
+    expect(mockedUpdateSessionPromptStateIfVersion.mock.calls[0][1]).toMatchObject({
+      previousPromptEmbedding: [0.95, 0.05]
+    })
+    expect(mockedUpdateSessionRetrievalState).not.toHaveBeenCalled()
+  })
+
+  it('slides the recently injected ID window', () => {
+    const existing = Array.from({ length: 20 }, (_, index) => `id-${index + 1}`)
+
+    const next = appendRecentlyInjectedIds(existing, ['id-21'], 20)
+
+    expect(next).toHaveLength(20)
+    expect(next[0]).toBe('id-2')
+    expect(next.at(-1)).toBe('id-21')
+  })
+
+  it('skips suppression writeback when requested by diagnostic callers', async () => {
+    mockedEmbed.mockResolvedValue([1, 0])
+    mockedLoadSessionTracking.mockReturnValue(makeSession({
+      sessionId: 'session-preview',
+      recentlyInjectedIds: ['suppressed'],
+      previousPromptEmbedding: [0, 1]
+    }))
+    const fresh = makeResult('fresh', [0.95, 0.05], 0.9, 0.9, false)
+    mockedHybridSearch.mockImplementation(async params => {
+      const qualified = params.vectorWeight === 1 ? [fresh] : []
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+
+    await retrieveContext(
+      { prompt: 'dashboard preview', cwd: PROJECT_ROOT, sessionId: 'session-preview', skipSuppressionWriteback: true },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        diagnostic: true,
+        settingsOverride: { minScore: 0.05 }
+      }
+    )
+
+    expect(mockedUpdateSessionRetrievalState).not.toHaveBeenCalled()
+    expect(mockedUpdateSessionPromptStateIfVersion).not.toHaveBeenCalled()
+  })
+
+  it('suppresses relation-expanded records after expansion', async () => {
+    mockedLoadSessionTracking.mockReturnValue(makeSession({
+      sessionId: 'session-relation',
+      recentlyInjectedIds: ['child'],
+      previousPromptEmbedding: [0.95, 0.05]
+    }))
+    const parent = makeResult('parent', [0.95, 0.05], 0.9, 0.9, false)
+    parent.record.relations = [makeRelation('child', 1)]
+    const child = createMockCommandRecord({ id: 'child', command: 'child-command', embedding: [0.8, 0.2] })
+    mockedHybridSearch.mockImplementation(async params => params.vectorWeight === 1 ? [parent] : [])
+    mockedFetchRecordsByIds.mockResolvedValue([child])
+
+    const result = await retrieveContext(
+      { prompt: 'same topic with relation', cwd: PROJECT_ROOT, sessionId: 'session-relation' },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        settingsOverride: { suppressionMode: 'hard', minScore: 0.05 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['parent'])
+    expect(mockedFetchRecordsByIds).toHaveBeenCalledWith(['child'], DEFAULT_CONFIG, { includeEmbeddings: true })
+  })
+
+  it('drops relation-expanded records below minExpandedScore', async () => {
+    const parent = makeResult('parent', [0.95, 0.05], 0.9, 0.9, false)
+    parent.record.relations = [makeRelation('weak-child', 0.1)]
+    const child = createMockCommandRecord({ id: 'weak-child', command: 'weak-child-command', embedding: [0.8, 0.2] })
+    mockedHybridSearch.mockImplementation(async params => {
+      const qualified = params.vectorWeight === 1 ? [parent] : []
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+    mockedFetchRecordsByIds.mockResolvedValue([child])
+
+    const result = await retrieveContext(
+      { prompt: 'relation floor', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        diagnostic: true,
+        settingsOverride: { minScore: 0.05, minExpandedScore: 0.45 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['parent'])
+    const nearMiss = result.diagnostics?.search.nearMisses.find(entry => entry.record.record.id === 'weak-child')
+    expect(nearMiss?.exclusionReasons[0]).toMatchObject({
+      reason: 'score_below_threshold',
+      threshold: 0.45
+    })
+  })
 })
 
 describe('MMR re-ranking', () => {

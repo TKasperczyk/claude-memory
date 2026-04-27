@@ -118,6 +118,8 @@ export function toFormState(settings: Partial<RetrievalSettings> | null): Retrie
       acc[field.key] = String(value)
     } else if (typeof value === 'boolean') {
       acc[field.key] = String(value)
+    } else if (typeof value === 'string') {
+      acc[field.key] = value
     } else {
       acc[field.key] = ''
     }
@@ -182,7 +184,7 @@ export function buildSettingsOverride(
     const value = values[key]
     if (value === undefined) continue
     if (value !== base[key]) {
-      ;(override as Record<string, number | boolean>)[key] = value
+      ;(override as Record<string, number | boolean | string>)[key] = value
       hasOverride = true
     }
   }

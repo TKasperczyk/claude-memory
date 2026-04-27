@@ -1,6 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
 import path from 'path'
+import { randomUUID } from 'crypto'
 import { fileURLToPath } from 'url'
 import { SKIP_MARKER, getCommandFilePath } from '../lib/claude-commands.js'
 import { readFileIfExists } from '../lib/shared.js'
@@ -16,7 +17,7 @@ import {
   type MemoryRecord,
   type UserPromptSubmitInput
 } from '../lib/types.js'
-import { appendSessionTracking } from '../lib/session-tracking.js'
+import { appendSessionTracking, markInjectedForSuppression } from '../lib/session-tracking.js'
 
 export { handlePrePrompt } from '../lib/retrieval.js'
 export type { PrePromptDiagnostics, PrePromptResult } from '../lib/retrieval.js'
@@ -120,6 +121,19 @@ async function main(): Promise<void> {
     }
 
     if (injected) {
+      if (settings.enableTopicSuppression && result.suppressionWritebackVersion !== undefined) {
+        try {
+          markInjectedForSuppression(
+            payload.session_id,
+            result.injectedRecords.map(record => record.id),
+            settings.recentlyInjectedWindow,
+            config.lancedb.table,
+            { expectedRetrievalStateVersion: result.suppressionWritebackVersion }
+          )
+        } catch (error) {
+          console.error('[claude-memory] Failed to mark injected memories for suppression:', error)
+        }
+      }
       trackSession(
         payload.session_id,
         result.injectedRecords,
@@ -165,10 +179,14 @@ function trackSession(
     })
     appendSessionTracking(sessionId, entries, cwd, cleanPrompt, status, collection)
     if (status === 'injected' && entries.length > 0) {
+      const groupId = randomUUID()
+      const coInjectedIds = entries.map(entry => entry.id)
       recordRetrievalEvents(entries.map(entry => ({
         id: entry.id,
         type: entry.type,
-        timestamp: entry.injectedAt
+        timestamp: entry.injectedAt,
+        groupId,
+        coInjectedIds
       })), { collection })
     }
   } catch (error) {

@@ -145,9 +145,20 @@ Tuning knobs for retrieval, maintenance, and models. Editable through the dashbo
 | `minSemanticSimilarity` | `0.70` | Minimum cosine similarity for vector results |
 | `semanticAnchorThreshold` | `0.70` | At least one result must clear this before any memories are injected (gates noisy injections) |
 | `minScore` | `0.45` | Minimum hybrid score to include a result |
+| `minExpandedScore` | `0.45` | Minimum score for memories added through relation expansion |
 | `maxRecords` | `8` | Max memories injected per prompt |
 | `maxTokens` | `4000` | Token budget for injected context |
 | `mmrLambda` | `0.7` | MMR diversity parameter (1.0 = pure relevance) |
+| `enableTopicSuppression` | `true` | Suppress memories recently injected in the same session |
+| `topicChangeThreshold` | `0.3` | Clear recently-injected suppression when prompt embedding similarity falls below this |
+| `recentlyInjectedWindow` | `20` | Number of injected memory IDs retained per session; `0` disables suppression |
+| `suppressionMode` | `soft` | `hard` excludes recently injected memories; `soft` downweights them |
+| `suppressionPenalty` | `0.5` | Score penalty for soft suppression |
+| `enableRelationExpansion` | `true` | Expand initial hits through stored memory relations before MMR |
+| `maxRelationHops` | `1` | Max relation hops to follow (0-2) |
+| `maxRelationExpansions` | `5` | Max related memories added per retrieval |
+| `relationHopDecay` | `0.6` | Score decay applied per relation hop |
+| `maxRelationsPerRecord` | `50` | Max `relates_to` edges retained per memory; `supersedes` edges are preserved |
 | `enableHaikuRetrieval` | `false` | Use Haiku to plan / expand retrieval queries |
 | `extractionDedupThreshold` | `0.85` | Similarity threshold for update-vs-insert during extraction |
 | `extractionContextOverlapTurns` | `3` | Overlap when re-extracting a resumed session |

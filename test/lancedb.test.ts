@@ -90,6 +90,31 @@ describe('LanceDB core API', () => {
     expect(loaded?.embedding?.length).toBe(EMBEDDING_DIM)
   })
 
+  it('round-trips relations inside record content and defaults missing relations to empty', async () => {
+    const targetId = randomUUID()
+    const related = makeCommandRecord({
+      embedding: makeEmbedding(1),
+      relations: [{
+        targetId,
+        kind: 'relates_to',
+        weight: 0.75,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastReinforcedAt: '2026-01-02T00:00:00.000Z',
+        reinforcementCount: 3
+      }]
+    })
+    const legacy = makeCommandRecord({ embedding: makeEmbedding(1) })
+
+    await insertRecord(related, config)
+    await insertRecord(legacy, config)
+
+    const loadedRelated = await getRecord(related.id, config)
+    const loadedLegacy = await getRecord(legacy.id, config)
+
+    expect(loadedRelated?.relations).toEqual(related.relations)
+    expect(loadedLegacy?.relations).toEqual([])
+  })
+
   it('supports SQL filters in query/count', async () => {
     const a = makeCommandRecord({ embedding: makeEmbedding(1), project: '/p1', deprecated: false })
     const b = makeCommandRecord({ embedding: makeEmbedding(2), project: '/p2', deprecated: true })
