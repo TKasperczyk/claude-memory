@@ -1,5 +1,5 @@
 .mcp.json
-.codex/
+.codex
 node_modules/
 dist/
 *.log
