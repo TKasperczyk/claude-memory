@@ -373,6 +373,17 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     group: RETRIEVAL_GROUPS.haiku
   },
   {
+    key: 'haikuExpansionCount',
+    label: 'Haiku expansion count',
+    description: 'Number of distinct semantic query reformulations Haiku generates per retrieval. Set to 1 for the legacy single-query path.',
+    step: 1,
+    min: 1,
+    max: 8,
+    kind: 'int',
+    default: 3,
+    group: RETRIEVAL_GROUPS.haiku
+  },
+  {
     key: 'maxKeywordQueries',
     label: 'Max keyword queries',
     description: 'Maximum keyword queries generated per retrieval.',

@@ -260,7 +260,7 @@ async function searchMemories(
     ? await generateRetrievalQueryPlan(
         prompt,
         options.transcriptPath,
-        { signal, timeoutMs: settings.haikuQueryTimeoutMs }
+        { signal, timeoutMs: settings.haikuQueryTimeoutMs, expansionCount: settings.haikuExpansionCount }
       )
     : null
   const queryPlanTokenUsage = queryPlanResult?.tokenUsage
@@ -287,17 +287,19 @@ async function searchMemories(
     ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings, queryPlan.resolvedQuery)
     : buildKeywordQueries(signals, cleanPrompt, settings)
 
-  const semanticBase = queryPlan?.semanticQuery?.trim()
-  const semanticQuery = semanticBase
-    ? normalizeSemanticQuery(semanticBase, signals, settings)
-    : buildSemanticQuery(cleanPrompt, signals, settings)
+  const semanticQueries = queryPlan
+    ? normalizeSemanticQueries(queryPlan.semanticQueries, signals, settings)
+    : normalizeSemanticQueries([buildSemanticQuery(cleanPrompt, signals, settings)], signals, settings)
+  const semanticQuery = semanticQueries.join('\n')
   const project = signals.projectRoot ?? cwd
 
-  // Pre-compute embedding once to avoid duplicate API calls on retry
-  let embedding: number[] | undefined
-  if (semanticQuery) {
+  // Pre-compute embeddings once to avoid duplicate API calls on retry.
+  let embeddings: number[][] = []
+  if (semanticQueries.length > 0) {
     try {
-      embedding = await embed(semanticQuery, config, { signal })
+      embeddings = await Promise.all(
+        semanticQueries.map(query => embed(query, config, { signal }))
+      )
     } catch (error) {
       if (signal?.aborted) {
         throw error
@@ -309,7 +311,7 @@ async function searchMemories(
   const suppressionResolution = resolveSuppressedIds({
     sessionId: options.sessionId,
     session,
-    embedding,
+    embedding: embeddings[0],
     settings,
     collection: config.lancedb.table,
     skipWriteback: options.skipSuppressionWriteback === true,
@@ -323,7 +325,7 @@ async function searchMemories(
     config,
     settings,
     project,
-    embedding,
+    embeddings,
     signal,
     { diagnostic }
   )
@@ -348,7 +350,7 @@ async function searchMemories(
   // flag "all keyword-matched low-similarity" injections as worse than
   // silence; requiring at least one strong semantic hit filters out those
   // cases. Skipped when embedding failed so keyword-only fallback still works.
-  if (embedding && results.length > 0 && settings.semanticAnchorThreshold > 0) {
+  if (embeddings.length > 0 && results.length > 0 && settings.semanticAnchorThreshold > 0) {
     const maxSim = results.reduce((acc, r) => Math.max(acc, r.similarity), 0)
     if (maxSim < settings.semanticAnchorThreshold) {
       console.error(`[claude-memory] Semantic anchor gate: max similarity ${maxSim.toFixed(3)} < threshold ${settings.semanticAnchorThreshold.toFixed(3)}; injecting nothing (${results.length} candidate${results.length === 1 ? '' : 's'} suppressed)`)
@@ -432,7 +434,7 @@ async function searchMemories(
 
   return {
     results: finalResults,
-    promptEmbedding: embedding,
+    promptEmbedding: embeddings[0],
     suppressionStateVersion,
     diagnostics: diagnostic
       ? {
@@ -585,7 +587,7 @@ async function searchWithScope(
   config: Config,
   settings: RetrievalSettings,
   project: string | undefined,
-  precomputedEmbedding?: number[],
+  precomputedEmbeddings: number[][] = [],
   signal?: AbortSignal,
   options: { diagnostic?: boolean } = {}
 ): Promise<SearchWithScopeResult> {
@@ -632,7 +634,7 @@ async function searchWithScope(
     }
   }
 
-  if (precomputedEmbedding) {
+  if (precomputedEmbeddings.length > 0) {
     // Semantic search runs WITHOUT project filter. Embedding similarity
     // (minSemanticSimilarity=0.70) already gates relevance, and the
     // projectMatchBonus in unified re-scoring ranks same-project memories
@@ -641,24 +643,28 @@ async function searchWithScope(
     // from aura) — the exact scenario the scoring formula handles well.
     // Keyword search keeps its project filter since substring matching is
     // too broad without it.
-    const semanticResults = await runHybridSearch({
-      query: '', // Not used when embedding provided
-      embedding: precomputedEmbedding,
-      limit: candidateLimit,
-      excludeDeprecated: true,
-      vectorWeight: 1,
-      keywordWeight: 0,
-      minSimilarity: settings.minSemanticSimilarity,
-      minScore: settings.minSemanticOnlyScore,
-      usageRatioWeight: settings.usageRatioWeight,
-      includeEmbeddings: true,
-      signal
-    }, config, diagnostic)
-    for (const item of semanticResults.results) {
-      upsertResult(item)
-    }
-    if (diagnostic && nearMisses) {
-      mergeNearMisses(nearMisses, semanticResults.nearMisses)
+    const semanticResultSets = await Promise.all(
+      precomputedEmbeddings.map(embedding => runHybridSearch({
+        query: '', // Not used when embedding provided
+        embedding,
+        limit: candidateLimit,
+        excludeDeprecated: true,
+        vectorWeight: 1,
+        keywordWeight: 0,
+        minSimilarity: settings.minSemanticSimilarity,
+        minScore: settings.minSemanticOnlyScore,
+        usageRatioWeight: settings.usageRatioWeight,
+        includeEmbeddings: true,
+        signal
+      }, config, diagnostic))
+    )
+    for (const semanticResults of semanticResultSets) {
+      for (const item of semanticResults.results) {
+        upsertResult(item)
+      }
+      if (diagnostic && nearMisses) {
+        mergeNearMisses(nearMisses, semanticResults.nearMisses)
+      }
     }
   }
 
@@ -673,13 +679,13 @@ async function searchWithScope(
   // where keywordBonus is a small boost (~0.08) instead of the old effective 1.0.
   const allCandidates = Array.from(resultsById.values())
 
-  if (precomputedEmbedding) {
+  if (precomputedEmbeddings.length > 0) {
     for (const item of allCandidates) {
       // Compute real cosine similarity for keyword-only matches that came in with similarity=0
       if (item.similarity === 0 && item.keywordMatch) {
         const candidateEmbedding = item.record.embedding
         if (candidateEmbedding && candidateEmbedding.length > 0) {
-          item.similarity = cosineSimilarity(precomputedEmbedding, candidateEmbedding)
+          item.similarity = maxCosineSimilarity(precomputedEmbeddings, candidateEmbedding)
         }
       }
       const usageRatio = computeUsageRatio(item.record)
@@ -694,7 +700,7 @@ async function searchWithScope(
       }).total
     }
   }
-  // When precomputedEmbedding is undefined (embedding generation failed),
+  // When no embeddings are available (embedding generation failed),
   // candidates keep their original hybridSearch scores (keyword matches have
   // score=1.0+, which passes minScore naturally). No special bypass needed.
 
@@ -1052,6 +1058,14 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / denominator
 }
 
+function maxCosineSimilarity(queries: number[][], candidate: number[]): number {
+  let maxSimilarity = 0
+  for (const query of queries) {
+    maxSimilarity = Math.max(maxSimilarity, cosineSimilarity(query, candidate))
+  }
+  return maxSimilarity
+}
+
 function normalizeKeywordQueries(
   queries: string[],
   fallback: string,
@@ -1117,6 +1131,24 @@ function normalizeSemanticQuery(
   // it shifts the embedding away from content similarity toward project-name
   // similarity, degrading retrieval of global records from other projects.
   return truncateText(trimmed, settings.maxSemanticQueryChars)
+}
+
+function normalizeSemanticQueries(
+  semanticQueries: string[],
+  signals: ContextSignals,
+  settings: RetrievalSettings
+): string[] {
+  const seen = new Set<string>()
+  const normalized: string[] = []
+  for (const query of semanticQueries) {
+    const entry = normalizeSemanticQuery(query, signals, settings)
+    if (!entry) continue
+    const key = entry.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    normalized.push(entry)
+  }
+  return normalized
 }
 
 function buildKeywordQueries(

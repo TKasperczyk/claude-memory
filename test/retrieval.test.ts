@@ -100,6 +100,7 @@ const BASE_SETTINGS: RetrievalSettings = {
   suppressionMode: 'soft',
   suppressionPenalty: 0.5,
   enableHaikuRetrieval: false,
+  haikuExpansionCount: 3,
   enableRelationExpansion: true,
   maxRelationHops: 1,
   maxRelationExpansions: 5,
@@ -619,7 +620,7 @@ describe('Haiku query planning', () => {
       plan: {
         resolvedQuery: 'How do I build the Docker image?',
         keywordQueries: ['docker build'],
-        semanticQuery: 'Build a Docker image for this project.'
+        semanticQueries: ['Build a Docker image for this project.']
       },
       tokenUsage: {
         inputTokens: 10,
@@ -635,11 +636,115 @@ describe('Haiku query planning', () => {
     await retrieveContext(
       { prompt: 'How do I build it?', cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl' },
       DEFAULT_CONFIG,
-      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
+      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true, haikuExpansionCount: 1 } }
     )
 
+    expect(mockedGenerateRetrievalQueryPlan).toHaveBeenCalledWith(
+      'How do I build it?',
+      '/tmp/fake-transcript.jsonl',
+      expect.objectContaining({ expansionCount: 1 })
+    )
+    expect(mockedEmbed.mock.calls.map(([query]) => query)).toEqual(['Build a Docker image for this project.'])
+    const semanticCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 1)
+    expect(semanticCalls).toHaveLength(1)
     const keywordCall = mockedHybridSearch.mock.calls.find(([params]) => params.vectorWeight === 0)
     expect(keywordCall?.[0].query).toBe('docker build')
+  })
+
+  it('embeds all Haiku semantic variants when expansion count is 3', async () => {
+    const semanticQueries = [
+      'ubiquiti gateway docker setup',
+      'UniFi gateway controller container configuration',
+      'docker exec MongoDB queries for UniFi gateway setup'
+    ]
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'Do you remember our ubiquiti gateway docker setup?',
+        keywordQueries: ['ubiquiti', 'UniFi', 'docker', 'docker exec'],
+        semanticQueries
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedHybridSearch.mockResolvedValue([])
+
+    await retrieveContext(
+      { prompt: 'Do you remember our ubiquiti gateway docker setup?', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true, haikuExpansionCount: 3 } }
+    )
+
+    expect(mockedGenerateRetrievalQueryPlan).toHaveBeenCalledWith(
+      'Do you remember our ubiquiti gateway docker setup?',
+      undefined,
+      expect.objectContaining({ expansionCount: 3 })
+    )
+    expect(mockedEmbed.mock.calls.map(([query]) => query)).toEqual(semanticQueries)
+    expect(new Set(mockedEmbed.mock.calls.map(([query]) => query)).size).toBe(3)
+    const semanticCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 1)
+    expect(semanticCalls).toHaveLength(3)
+  })
+
+  it('dedupes semantic expansion candidates by id and keeps max similarity', async () => {
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'Do you remember our ubiquiti gateway docker setup?',
+        keywordQueries: ['ubiquiti', 'docker'],
+        semanticQueries: [
+          'ubiquiti gateway docker setup',
+          'UniFi gateway controller container setup',
+          'docker exec MongoDB query for UniFi controller'
+        ]
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedEmbed.mockImplementation(async query => {
+      if (query === 'ubiquiti gateway docker setup') return [1, 0]
+      if (query === 'UniFi gateway controller container setup') return [2, 0]
+      return [3, 0]
+    })
+
+    const sharedLow = makeResult('shared', [1, 0], 0.62, 0.62, false)
+    const sharedHigh = makeResult('shared', [1, 0], 0.82, 0.82, false)
+    const onlyThird = makeResult('only-third', [1, 0], 0.76, 0.76, false)
+
+    mockedHybridSearch.mockImplementation(async params => {
+      if (params.vectorWeight === 0) return []
+      if (params.embedding?.[0] === 1) return [sharedLow]
+      if (params.embedding?.[0] === 2) return [sharedHigh]
+      if (params.embedding?.[0] === 3) return [onlyThird]
+      return []
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'Do you remember our ubiquiti gateway docker setup?', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        settingsOverride: {
+          enableHaikuRetrieval: true,
+          haikuExpansionCount: 3,
+          minScore: 0.05,
+          semanticAnchorThreshold: 0
+        }
+      }
+    )
+
+    const sharedResults = result.results.filter(item => item.record.id === 'shared')
+    expect(sharedResults).toHaveLength(1)
+    expect(sharedResults[0].similarity).toBe(0.82)
+    expect(result.results.map(item => item.record.id)).toContain('only-third')
   })
 
   it('falls back to prompt-based queries when Haiku is unavailable', async () => {
@@ -662,7 +767,7 @@ describe('Haiku query planning', () => {
       plan: {
         resolvedQuery: 'How do I deploy?',
         keywordQueries: ['deploy'],
-        semanticQuery: 'Deployment workflow'
+        semanticQueries: ['Deployment workflow']
       },
       model: 'claude-haiku-4-5-20251001'
     } as any)
@@ -870,7 +975,7 @@ describe('Keyword query normalization', () => {
       plan: {
         resolvedQuery: 'p4 brain configuration',
         keywordQueries: ['p4 brain', 'p4', 'brain'],
-        semanticQuery: 'p4 brain configuration'
+        semanticQueries: ['p4 brain configuration']
       },
       tokenUsage: HAIKU_TOKEN_USAGE,
       model: 'claude-haiku-4-5-20251001'
@@ -897,7 +1002,7 @@ describe('Keyword query normalization', () => {
       plan: {
         resolvedQuery: 'Find my Jira issue about Grafana statistics',
         keywordQueries: ['jira issue', 'grafana statistics'],
-        semanticQuery: 'Find a Jira issue about Grafana statistics'
+        semanticQueries: ['Find a Jira issue about Grafana statistics']
       },
       tokenUsage: HAIKU_TOKEN_USAGE,
       model: 'claude-haiku-4-5-20251001'
@@ -925,7 +1030,7 @@ describe('Keyword query normalization', () => {
       plan: {
         resolvedQuery: 'Configure Redis cluster settings',
         keywordQueries: ['Redis cluster', 'redis', 'cluster settings'],
-        semanticQuery: 'Configure Redis cluster settings'
+        semanticQueries: ['Configure Redis cluster settings']
       },
       tokenUsage: HAIKU_TOKEN_USAGE,
       model: 'claude-haiku-4-5-20251001'
@@ -951,7 +1056,7 @@ describe('Keyword query normalization', () => {
       plan: {
         resolvedQuery: 'Configure AWS S3 bucket policy',
         keywordQueries: ['AWS S3 bucket', 'bucket policy'],
-        semanticQuery: 'Configure AWS S3 bucket policy'
+        semanticQueries: ['Configure AWS S3 bucket policy']
       },
       tokenUsage: HAIKU_TOKEN_USAGE,
       model: 'claude-haiku-4-5-20251001'

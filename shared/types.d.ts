@@ -267,6 +267,7 @@ export interface RetrievalSettings {
   suppressionMode: SuppressionMode
   suppressionPenalty: number
   enableHaikuRetrieval: boolean
+  haikuExpansionCount: number
   enableRelationExpansion: boolean
   maxRelationHops: number
   maxRelationExpansions: number
