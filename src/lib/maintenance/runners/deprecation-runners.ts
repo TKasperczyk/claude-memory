@@ -53,7 +53,12 @@ export async function runStaleCheck(
           details: { validityReason: reason }
         })
 
-        const applied = await applyActionWithDryRun(dryRun, actions, action, () => markDeprecated(record.id, config))
+        const applied = await applyActionWithDryRun(
+          dryRun,
+          actions,
+          action,
+          () => markDeprecated(record.id, config, { reason: `stale-check:${reason}` })
+        )
         if (applied) {
           deprecated += 1
         }
@@ -111,7 +116,12 @@ export async function runLowUsageDeprecation(
       })
 
       try {
-        const applied = await applyActionWithDryRun(dryRun, actions, action, () => markDeprecated(record.id, config))
+        const applied = await applyActionWithDryRun(
+          dryRun,
+          actions,
+          action,
+          () => markDeprecated(record.id, config, { reason: 'low-usage-zero' })
+        )
         if (applied) {
           deprecated += 1
         }
@@ -171,7 +181,12 @@ export async function runStaleUnusedDeprecation(
       })
 
       try {
-        const applied = await applyActionWithDryRun(dryRun, actions, action, () => markDeprecated(record.id, config))
+        const applied = await applyActionWithDryRun(
+          dryRun,
+          actions,
+          action,
+          () => markDeprecated(record.id, config, { reason: 'stale-unused' })
+        )
         if (applied) {
           deprecated += 1
         }
@@ -231,7 +246,12 @@ export async function runLowUsageCheck(
       })
 
       try {
-        const applied = await applyActionWithDryRun(dryRun, actions, action, () => markDeprecated(record.id, config))
+        const applied = await applyActionWithDryRun(
+          dryRun,
+          actions,
+          action,
+          () => markDeprecated(record.id, config, { reason: 'low-usage-ratio' })
+        )
         if (applied) {
           deprecated += 1
         }

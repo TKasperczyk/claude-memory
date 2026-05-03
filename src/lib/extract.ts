@@ -508,7 +508,7 @@ function truncateBlock(value: string, maxLength: number): string {
   return `${head}\n...[truncated]...\n${tail}`
 }
 
-function coerceExtractionResult(input: unknown, context: ExtractionContext): MemoryRecord[] {
+export function coerceExtractionResult(input: unknown, context: ExtractionContext): MemoryRecord[] {
   if (!isPlainObject(input)) return []
   const rawRecords = Array.isArray(input.records) ? input.records : []
   const records: MemoryRecord[] = []
@@ -574,8 +574,7 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
     }
   }
 
-  const scope = asScope(input.scope)
-  if (scope) record.scope = scope
+  applyCommonOptionalFields(record, input)
 
   const truncatedOutputRaw = asString(input.truncatedOutput)
   const truncatedOutput = truncatedOutputRaw ? stripTruncationMarkers(truncatedOutputRaw) : undefined
@@ -584,9 +583,6 @@ function coerceCommandRecord(input: Record<string, unknown>, context: Extraction
   }
   const resolution = asString(input.resolution)
   if (resolution) record.resolution = resolution
-
-  const projectOverride = asString(input.project)
-  if (projectOverride) record.project = projectOverride
 
   return record
 }
@@ -614,8 +610,7 @@ function coerceErrorRecord(input: Record<string, unknown>, context: ExtractionCo
     }
   }
 
-  const scope = asScope(input.scope)
-  if (scope) record.scope = scope
+  applyCommonOptionalFields(record, input)
 
   const cause = asString(input.cause)
   if (cause) record.cause = cause
@@ -624,9 +619,6 @@ function coerceErrorRecord(input: Record<string, unknown>, context: ExtractionCo
   if (file) record.context.file = file
   const tool = asString((contextInput as Record<string, unknown>).tool)
   if (tool) record.context.tool = tool
-
-  const projectOverride = asString(input.project)
-  if (projectOverride) record.project = projectOverride
 
   return record
 }
@@ -650,11 +642,9 @@ function coerceDiscoveryRecord(input: Record<string, unknown>, context: Extracti
     sourceExcerpt
   }
 
-  const scope = asScope(input.scope)
-  if (scope) record.scope = scope
-
   const project = asString(input.project) ?? context.project ?? context.cwd
   if (project) record.project = project
+  applyCommonOptionalFields(record, input)
 
   return record
 }
@@ -677,8 +667,7 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
     context: {}
   }
 
-  const scope = asScope(input.scope)
-  if (scope) record.scope = scope
+  applyCommonOptionalFields(record, input)
 
   const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
   if (project) record.context.project = project
@@ -688,9 +677,6 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
 
   const verification = asString(input.verification)
   if (verification) record.verification = verification
-
-  const projectOverride = asString(input.project)
-  if (projectOverride) record.project = projectOverride
 
   return record
 }
@@ -715,13 +701,22 @@ function coerceWarningRecord(input: Record<string, unknown>, context: Extraction
     synthesizedAt: Date.now()
   }
 
+  const project = asString(input.project) ?? context.project ?? context.cwd
+  if (project) record.project = project
+  applyCommonOptionalFields(record, input)
+
+  return record
+}
+
+function applyCommonOptionalFields(record: MemoryRecord, input: Record<string, unknown>): void {
   const scope = asScope(input.scope)
   if (scope) record.scope = scope
 
-  const project = asString(input.project) ?? context.project ?? context.cwd
+  const project = asString(input.project)
   if (project) record.project = project
 
-  return record
+  const supersedes = asString(input.supersedes)
+  if (supersedes) record.supersedes = supersedes
 }
 
 function inferIntent(transcript: Transcript): string | undefined {

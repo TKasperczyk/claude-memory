@@ -5,7 +5,7 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
 import { closeLanceDB, countRecords, flushCollection } from '../src/lib/lancedb.js'
-import type { CommandRecord, DiscoveryRecord, ErrorRecord, MemoryRecord, ProcedureRecord } from '../src/lib/types.js'
+import type { CommandRecord, DiscoveryRecord, ErrorRecord, MemoryRecord, ProcedureRecord, WarningRecord } from '../src/lib/types.js'
 
 const tempFixtureDirs: string[] = []
 
@@ -135,6 +135,24 @@ export function createMockProcedureRecord(overrides: Partial<ProcedureRecord> = 
     timestamp: Date.now(),
     successCount: 3,
     failureCount: 0,
+    lastUsed: Date.now(),
+    deprecated: false,
+    ...overrides
+  }
+}
+
+export function createMockWarningRecord(overrides: Partial<WarningRecord> = {}): WarningRecord {
+  return {
+    id: randomUUID(),
+    type: 'warning',
+    avoid: 'Using the deprecated command',
+    useInstead: 'Use the supported command instead',
+    reason: 'The deprecated command fails in this project',
+    severity: 'warning',
+    project: TEST_PROJECT,
+    timestamp: Date.now(),
+    successCount: 0,
+    failureCount: 1,
     lastUsed: Date.now(),
     deprecated: false,
     ...overrides

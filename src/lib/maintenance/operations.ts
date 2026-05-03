@@ -57,12 +57,17 @@ interface GlobalPromotionResult {
 export async function markDeprecated(
   id: string,
   config: Config = DEFAULT_CONFIG,
-  options: { supersedingRecordId?: string } = {}
+  options: { supersedingRecordId?: string; reason?: string } = {}
 ): Promise<boolean> {
   const deprecatedRecord = await getRecord(id, config, { includeEmbedding: true })
   if (!deprecatedRecord) return false
 
   deprecatedRecord.deprecated = true
+  if (!deprecatedRecord.deprecatedAt) {
+    deprecatedRecord.deprecatedAt = Date.now()
+    if (options.reason) deprecatedRecord.deprecatedReason = options.reason
+    if (options.supersedingRecordId) deprecatedRecord.supersedingRecordId = options.supersedingRecordId
+  }
   const recordsToWrite: MemoryRecord[] = [deprecatedRecord]
 
   if (options.supersedingRecordId) {

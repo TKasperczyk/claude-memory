@@ -9,6 +9,7 @@ import {
   runStaleUnusedDeprecation,
   runLowUsageDeprecation,
   runLowUsageCheck,
+  runQualityDeprecation,
   runConsolidation,
   runCrossTypeConsolidation,
   runRelationDiscovery,
@@ -34,19 +35,19 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     key: 'stale-unused-deprecation',
     label: 'Stale Unused Deprecation',
     description: 'Deprecate old records that have never been used',
-    allowExecute: true
+    allowExecute: false
   },
   {
     key: 'low-usage-deprecation',
     label: 'Zero Usage Deprecation',
     description: 'Deprecate records with high retrievals and zero usage',
-    allowExecute: true
+    allowExecute: false
   },
   {
     key: 'low-usage',
     label: 'Low Usage',
     description: 'Deprecate records below the configured usage ratio',
-    allowExecute: true
+    allowExecute: false
   },
   {
     key: 'consolidation',
@@ -64,6 +65,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     key: 'conflict-resolution',
     label: 'Conflict Resolution',
     description: 'Verify new memories against existing ones using LLM',
+    allowExecute: true
+  },
+  {
+    key: 'quality-deprecation',
+    label: 'Quality Deprecation',
+    description: 'Deprecate high-confidence extraction artifacts',
     allowExecute: true
   },
   {
@@ -99,6 +106,17 @@ export type { OperationResult } from '../../shared/types.js'
 
 export const MAINTENANCE_OPERATIONS: MaintenanceOperation[] =
   MAINTENANCE_OPERATION_DEFINITIONS.map(definition => definition.key) as MaintenanceOperation[]
+
+export const AUTO_MAINTENANCE_OPERATIONS: MaintenanceOperation[] = [
+  'consolidation',
+  'cross-type-consolidation',
+  'conflict-resolution',
+  'quality-deprecation',
+  'relation-discovery',
+  'warning-synthesis',
+  'global-promotion',
+  'stale-check'
+]
 
 export type MaintenanceProgressCallback = (progress: MaintenanceProgress) => void
 
@@ -144,11 +162,7 @@ export async function runAllMaintenance(
 ): Promise<OperationResult[]> {
   const results: OperationResult[] = []
   const maintenance = resolveMaintenanceSettings(settings)
-  for (const operation of MAINTENANCE_OPERATIONS) {
-    // Skip promotion-suggestions in auto mode -- it burns LLM tokens for
-    // evaluations that are never written to disk or surfaced to the user.
-    // Use `pnpm maintenance` (CLI) to generate actionable suggestion diffs.
-    if (operation === 'promotion-suggestions') continue
+  for (const operation of AUTO_MAINTENANCE_OPERATIONS) {
     results.push(await runMaintenanceOperation(operation, dryRun, config, maintenance))
   }
   return results
@@ -170,6 +184,8 @@ async function runOperation(
       return runLowUsageDeprecation(dryRun, config, settings)
     case 'low-usage':
       return runLowUsageCheck(dryRun, config, settings)
+    case 'quality-deprecation':
+      return runQualityDeprecation(dryRun, config)
     case 'consolidation':
       return runConsolidation(dryRun, config, settings, onProgress)
     case 'cross-type-consolidation':

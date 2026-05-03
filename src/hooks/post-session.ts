@@ -15,7 +15,8 @@ import { extractRecords } from '../lib/extract.js'
 import { REMEMBER_MARKER } from '../lib/claude-commands.js'
 import { findGitRoot } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
-import { buildEmbeddingInput, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/lancedb.js'
+import { buildEmbeddingInput, escapeFilterValue, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/lancedb.js'
+import { markDeprecated } from '../lib/maintenance/operations.js'
 import { loadSettings } from '../lib/settings.js'
 import { parseTranscript, computeIncrementalStartIndex, sliceTranscript, type Transcript } from '../lib/transcript.js'
 import {
@@ -35,6 +36,7 @@ export interface PostSessionResult {
   updated: number
   skipped: number
   failed: number
+  supersedesMissing?: number
   records: MemoryRecord[]
   insertedIds: string[]
   updatedIds: string[]
@@ -214,6 +216,7 @@ export async function handlePostSession(
   let updated = 0
   let skipped = 0
   let failed = 0
+  let supersedesMissing = 0
   const insertedIds: string[] = []
   const updatedIds: string[] = []
 
@@ -221,7 +224,10 @@ export async function handlePostSession(
 
   for (const record of records) {
     try {
-      const matches = await findSimilar(record, settings.extractionDedupThreshold, 1, config)
+      const dedupFilter = record.supersedes
+        ? `id <> '${escapeFilterValue(record.supersedes)}'`
+        : undefined
+      const matches = await findSimilar(record, settings.extractionDedupThreshold, 1, config, dedupFilter)
       if (matches.length > 0) {
         const existing = matches[0].record
         const updates = buildUpdates(existing, record)
@@ -232,6 +238,7 @@ export async function handlePostSession(
         } else {
           skipped += 1
         }
+        supersedesMissing += await applySupersedesDeprecation(record, existing.id, config)
         continue
       }
 
@@ -239,6 +246,7 @@ export async function handlePostSession(
       await insertRecord(prepared, config, { flush: flushMode })
       inserted += 1
       insertedIds.push(prepared.id)
+      supersedesMissing += await applySupersedesDeprecation(prepared, prepared.id, config)
     } catch (error) {
       failed += 1
       console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}:`, error)
@@ -246,12 +254,29 @@ export async function handlePostSession(
   }
 
   return {
-    inserted, updated, skipped, failed, records, insertedIds, updatedIds,
+    inserted, updated, skipped, failed, supersedesMissing, records, insertedIds, updatedIds,
     transcript: fullTranscript, tokenUsage,
     extractedEventCount: totalEventCount,
     isIncremental: isIncremental || undefined,
     hasRememberMarker: hasRememberMarker || undefined
   }
+}
+
+async function applySupersedesDeprecation(
+  record: MemoryRecord,
+  storedId: string,
+  config: Config
+): Promise<number> {
+  if (!record.supersedes || record.supersedes === storedId) return 0
+
+  const applied = await markDeprecated(record.supersedes, config, {
+    supersedingRecordId: storedId,
+    reason: `extraction:superseded-by:${storedId}`
+  })
+  if (applied) return 0
+
+  console.error(`[claude-memory] supersedes target missing: ${record.supersedes}`)
+  return 1
 }
 
 async function precomputeEmbeddings(records: MemoryRecord[], config: Config): Promise<void> {
@@ -297,6 +322,9 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
   if (!existing.project && incoming.project) updates.project = incoming.project
   if (!existing.sourceSessionId && incoming.sourceSessionId) updates.sourceSessionId = incoming.sourceSessionId
   if (!existing.sourceExcerpt && incoming.sourceExcerpt) updates.sourceExcerpt = incoming.sourceExcerpt
+  if (incoming.supersedes && incoming.supersedes !== existing.id && existing.supersedes !== incoming.supersedes) {
+    updates.supersedes = incoming.supersedes
+  }
 
   if (existing.type === 'command' && incoming.type === 'command') {
     const commandUpdates = updates as Partial<typeof existing>

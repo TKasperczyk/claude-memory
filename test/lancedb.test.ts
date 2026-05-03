@@ -79,13 +79,21 @@ describe('LanceDB core API', () => {
   })
 
   it('inserts and gets records round-trip', async () => {
-    const record = makeCommandRecord({ embedding: makeEmbedding(1) })
+    const record = makeCommandRecord({
+      embedding: makeEmbedding(1),
+      deprecatedAt: 1700000000000,
+      deprecatedReason: 'test:legacy',
+      supersedingRecordId: 'newer-id'
+    })
     await insertRecord(record, config)
 
     const loaded = await getRecord(record.id, config, { includeEmbedding: true })
     expect(loaded).not.toBeNull()
     expect(loaded?.id).toBe(record.id)
     expect((loaded as any).command).toBe('pnpm build')
+    expect(loaded?.deprecatedAt).toBe(1700000000000)
+    expect(loaded?.deprecatedReason).toBe('test:legacy')
+    expect(loaded?.supersedingRecordId).toBe('newer-id')
     expect(Array.isArray(loaded?.embedding)).toBe(true)
     expect(loaded?.embedding?.length).toBe(EMBEDDING_DIM)
   })

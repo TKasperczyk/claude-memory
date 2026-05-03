@@ -92,6 +92,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const extractedEventCount = asInteger(record.extractedEventCount) ?? undefined
   const isIncremental = record.isIncremental === true ? true : undefined
   const hasRememberMarker = record.hasRememberMarker === true ? true : undefined
+  const supersedesMissing = asInteger(record.supersedesMissing) ?? undefined
   const skipReason = record.skipReason === 'too_short' ? 'too_short' as const
     : record.skipReason === 'no_records' ? 'no_records' as const
     : undefined
@@ -112,6 +113,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     extractedEventCount,
     isIncremental,
     hasRememberMarker,
+    supersedesMissing,
     skipReason
   }
 }

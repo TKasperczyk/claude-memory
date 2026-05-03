@@ -180,7 +180,10 @@ async function resolveContradiction(
   pair: ContradictionPair,
   config: Config = DEFAULT_CONFIG
 ): Promise<boolean> {
-  return markDeprecated(pair.older.id, config)
+  return markDeprecated(pair.older.id, config, {
+    supersedingRecordId: pair.newer.id,
+    reason: `conflict-resolution:superseded-by:${pair.newer.id}`
+  })
 }
 
 export async function checkContradiction(
@@ -216,11 +219,17 @@ async function resolveContradictionWithLLM(
 ): Promise<{ action: ContradictionResult['verdict']; recordId?: string }> {
   switch (result.verdict) {
     case 'keep_newer': {
-      const updated = await markDeprecated(pair.older.id, config)
+      const updated = await markDeprecated(pair.older.id, config, {
+        supersedingRecordId: pair.newer.id,
+        reason: `conflict-resolution:superseded-by:${pair.newer.id}`
+      })
       return updated ? { action: 'keep_newer', recordId: pair.older.id } : { action: 'keep_both' }
     }
     case 'keep_older': {
-      const updated = await markDeprecated(pair.newer.id, config)
+      const updated = await markDeprecated(pair.newer.id, config, {
+        supersedingRecordId: pair.older.id,
+        reason: `conflict-resolution:superseded-by:${pair.older.id}`
+      })
       return updated ? { action: 'keep_older', recordId: pair.newer.id } : { action: 'keep_both' }
     }
     case 'merge': {
@@ -237,7 +246,10 @@ async function resolveContradictionWithLLM(
         if (!updated) return { action: 'keep_both' }
       }
 
-      const deprecated = await markDeprecated(pair.older.id, config)
+      const deprecated = await markDeprecated(pair.older.id, config, {
+        supersedingRecordId: pair.newer.id,
+        reason: `conflict-resolution:superseded-by:${pair.newer.id}`
+      })
       return deprecated ? { action: 'merge', recordId: pair.older.id } : { action: 'keep_both' }
     }
     case 'keep_both':
@@ -385,12 +397,15 @@ export async function runConflictResolution(
         const supersedingRecordId = action.details?.verdict === 'supersedes' && typeof action.details.candidateId === 'string'
           ? action.details.candidateId
           : undefined
+        const reason = supersedingRecordId
+          ? `conflict-resolution:superseded-by:${supersedingRecordId}`
+          : 'conflict-resolution:hallucination'
         let updatedRecord = false
         try {
           updatedRecord = await markDeprecated(
             action.recordId,
             config,
-            supersedingRecordId ? { supersedingRecordId } : {}
+            supersedingRecordId ? { supersedingRecordId, reason } : { reason }
           )
         } catch (error) {
           errors += 1

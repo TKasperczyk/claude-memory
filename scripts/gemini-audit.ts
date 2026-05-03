@@ -17,7 +17,8 @@
 import * as readline from 'readline'
 import { writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { initLanceDB, closeLanceDB, iterateRecords, batchUpdateRecords, deleteRecord } from '../src/lib/lancedb.js'
+import { initLanceDB, closeLanceDB, iterateRecords, deleteRecord } from '../src/lib/lancedb.js'
+import { markDeprecated } from '../src/lib/maintenance/operations.js'
 import { DEFAULT_CONFIG, type MemoryRecord } from '../src/lib/types.js'
 
 const GEMINI_MODEL = 'gemini-3-pro-preview'
@@ -301,10 +302,12 @@ async function applyDuplicates(
 
     if (choice === 'k') {
       const [keepId, ...deprecateIds] = validIds
-      const recordsToDeprecate = deprecateIds
-        .map(id => recordsById.get(id))
-        .filter((r): r is MemoryRecord => Boolean(r))
-      await batchUpdateRecords(recordsToDeprecate, { deprecated: true }, DEFAULT_CONFIG)
+      for (const id of deprecateIds) {
+        await markDeprecated(id, DEFAULT_CONFIG, {
+          supersedingRecordId: keepId,
+          reason: `audit:duplicate:merged-into:${keepId}`
+        })
+      }
       console.log(`${c.green}✓${c.reset} Kept ${keepId.slice(0, 8)}..., deprecated ${deprecateIds.length} others`)
       applied += deprecateIds.length
     }
@@ -344,10 +347,12 @@ async function applyConflicts(
 
     if (choice === 'a' && resolvedKeepId) {
       const deprecateIds = validIds.filter(id => id !== resolvedKeepId)
-      const recordsToDeprecate = deprecateIds
-        .map(id => recordsById.get(id))
-        .filter((r): r is MemoryRecord => Boolean(r))
-      await batchUpdateRecords(recordsToDeprecate, { deprecated: true }, DEFAULT_CONFIG)
+      for (const id of deprecateIds) {
+        await markDeprecated(id, DEFAULT_CONFIG, {
+          supersedingRecordId: resolvedKeepId,
+          reason: `audit:conflict:superseded-by:${resolvedKeepId}`
+        })
+      }
       console.log(`${c.green}✓${c.reset} Kept ${conflict.keepId.slice(0, 8)}..., deprecated ${deprecateIds.length} others`)
       applied += deprecateIds.length
     }
@@ -391,7 +396,9 @@ async function applyRedundant(
     // Batch in chunks of 100
     for (let i = 0; i < recordsToDeprecate.length; i += 100) {
       const chunk = recordsToDeprecate.slice(i, i + 100)
-      await batchUpdateRecords(chunk, { deprecated: true }, DEFAULT_CONFIG)
+      for (const record of chunk) {
+        await markDeprecated(record.id, DEFAULT_CONFIG, { reason: 'audit:redundant' })
+      }
       process.stdout.write(`\r${c.green}✓${c.reset} Deprecated ${Math.min(i + 100, recordsToDeprecate.length)}/${recordsToDeprecate.length}`)
     }
     console.log('')
@@ -436,7 +443,6 @@ async function main(): Promise<void> {
 
     console.log(`${c.dim}Loading active memories (excluding deprecated)...${c.reset}`)
     const records: MemoryRecord[] = []
-    // Include embeddings - required for batchUpdateRecords to rebuild rows
     for await (const record of iterateRecords({ includeEmbeddings: true }, DEFAULT_CONFIG)) {
       if (!record.deprecated) {
         records.push(record)

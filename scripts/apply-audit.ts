@@ -7,7 +7,8 @@
 import * as readline from 'readline'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { initLanceDB, closeLanceDB, iterateRecords, batchUpdateRecords, deleteRecord } from '../src/lib/lancedb.js'
+import { initLanceDB, closeLanceDB, iterateRecords, deleteRecord } from '../src/lib/lancedb.js'
+import { markDeprecated } from '../src/lib/maintenance/operations.js'
 import { DEFAULT_CONFIG, type MemoryRecord } from '../src/lib/types.js'
 
 // ANSI color codes
@@ -172,18 +173,24 @@ async function main(): Promise<void> {
 
       console.log(`\n${c.yellow}Deprecating ${recordsToUpdate.length} records...${c.reset}`)
 
-      const result = await batchUpdateRecords(recordsToUpdate, { deprecated: true }, DEFAULT_CONFIG)
+      let updated = 0
+      let failed = 0
+      for (const record of recordsToUpdate) {
+        const success = await markDeprecated(record.id, DEFAULT_CONFIG, { reason: 'audit:redundant' })
+        if (success) updated += 1
+        else failed += 1
+      }
 
-      console.log(`${c.green}✓${c.reset} Deprecated ${result.updated}/${recordsToUpdate.length} records`)
+      console.log(`${c.green}✓${c.reset} Deprecated ${updated}/${recordsToUpdate.length} records`)
 
-      if (result.failed > 0) {
-        console.log(`${c.red}✗${c.reset} Failed to update ${result.failed} records`)
+      if (failed > 0) {
+        console.log(`${c.red}✗${c.reset} Failed to update ${failed} records`)
       }
 
       printHeader('CHANGES APPLIED')
-      printStat('Deprecated', result.updated, c.yellow)
-      if (result.failed > 0) {
-        printStat('Failed', result.failed, c.red)
+      printStat('Deprecated', updated, c.yellow)
+      if (failed > 0) {
+        printStat('Failed', failed, c.red)
       }
       printStat('Backup location', backupPath, c.dim)
 

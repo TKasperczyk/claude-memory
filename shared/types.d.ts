@@ -25,6 +25,9 @@ export interface BaseRecord {
   usageCount?: number
   lastUsed?: number
   deprecated?: boolean
+  deprecatedAt?: number
+  deprecatedReason?: string
+  supersedingRecordId?: string
   generalized?: boolean
   lastGeneralizationCheck?: number
   lastGlobalCheck?: number
@@ -284,7 +287,6 @@ export interface RetrievalSettings {
 
 export interface MaintenanceSettings {
   staleDays: number
-  discoveryMaxAgeDays: number
   lowUsageMinRetrievals: number
   lowUsageRatioThreshold: number
   lowUsageHighRetrievalMin: number
@@ -361,6 +363,7 @@ export interface ExtractionRun {
   extractedEventCount?: number
   isIncremental?: boolean
   hasRememberMarker?: boolean
+  supersedesMissing?: number
   skipReason?: 'too_short' | 'no_records'
 }
 

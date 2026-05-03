@@ -4,6 +4,7 @@ import path from 'path'
 import { homedir } from 'os'
 import { reviewMaintenanceResult, reviewMaintenanceResultStreaming } from '../../../src/lib/maintenance-review.js'
 import {
+  AUTO_MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATION_DEFINITIONS,
   runAllMaintenance,
@@ -300,6 +301,10 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       if (!MAINTENANCE_OPERATIONS.includes(operation as MaintenanceOperation)) {
         return res.status(400).json({ error: 'Unknown operation' })
       }
+      const definition = MAINTENANCE_OPERATION_DEFINITIONS.find(item => item.key === operation)
+      if (!dryRun && definition?.allowExecute === false) {
+        return res.status(403).json({ error: 'Operation is preview-only' })
+      }
 
       const mode = dryRun ? 'preview' : 'run'
       logger.info(`Running ${operation} (${mode})`)
@@ -370,7 +375,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
     const singleOperation = typeof req.query.operation === 'string' ? req.query.operation : null
     const operationsToRun = singleOperation
       ? MAINTENANCE_OPERATIONS.filter(op => op === singleOperation)
-      : MAINTENANCE_OPERATIONS
+      : AUTO_MAINTENANCE_OPERATIONS
 
     if (singleOperation && !MAINTENANCE_OPERATIONS.includes(singleOperation as MaintenanceOperation)) {
       return res.status(400).json({ error: 'Unknown operation' })
@@ -401,6 +406,10 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         sendEvent('progress', { operation, status: 'running' })
 
         try {
+          const definition = MAINTENANCE_OPERATION_DEFINITIONS.find(item => item.key === operation)
+          if (!dryRun && definition?.allowExecute === false) {
+            throw new Error('Operation is preview-only')
+          }
           const effectiveDryRun = operation === 'promotion-suggestions' ? true : dryRun
           const result = await runMaintenanceOperation(
             operation,

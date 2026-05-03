@@ -7,6 +7,7 @@ import {
   deleteRecord,
   getRecord
 } from '../../../src/lib/lancedb.js'
+import { markDeprecated } from '../../../src/lib/maintenance/operations.js'
 import { paginateExtractionRuns, loadExtractionRunDetail } from '../../../src/lib/extraction-query.js'
 import {
   asBoolean,
@@ -513,7 +514,8 @@ async function runUpdateTool(
 
   const updates: Partial<MemoryRecord> = {}
   const deprecated = asBoolean(record.deprecated)
-  if (deprecated !== null) updates.deprecated = deprecated
+  const shouldDeprecate = deprecated === true
+  if (deprecated === false) updates.deprecated = false
 
   const scope = asScope(record.scope)
   if (scope) updates.scope = scope
@@ -566,11 +568,17 @@ async function runUpdateTool(
   const severity = asSeverity(record.severity)
   if (severity) updates.severity = severity
 
-  if (Object.keys(updates).length === 0) {
+  if (Object.keys(updates).length === 0 && !shouldDeprecate) {
     return { result: { id, success: false, updates, error: 'No updates provided.' }, isError: true }
   }
 
-  const success = await updateRecord(id, updates, context.config)
+  let success = true
+  if (Object.keys(updates).length > 0) {
+    success = await updateRecord(id, updates, context.config)
+  }
+  if (success && shouldDeprecate) {
+    success = await markDeprecated(id, context.config, { reason: 'manual:dashboard' })
+  }
   const updatedRecord = success ? await getRecord(id, context.config) : null
 
   return {

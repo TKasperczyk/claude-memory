@@ -17,6 +17,7 @@ const PROTECTED_SYNTHESIS_FIELDS = new Set([
   'deprecated',
   'deprecatedAt',
   'deprecatedReason',
+  'supersedingRecordId',
   'extractionRunId',
   'insertedAt',
   'lastRetrievedAt',
@@ -412,7 +413,10 @@ export async function runConsolidation(
             const mergeRecords = [group.keptId, ...groupDeprecatedIds]
               .map(id => clusterRecords.find(r => r.id === id))
               .filter(Boolean) as MemoryRecord[]
-            const result = await consolidateCluster(mergeRecords, config, { keeperId: group.keptId })
+            const result = await consolidateCluster(mergeRecords, config, {
+              keeperId: group.keptId,
+              deprecationReasonPrefix: 'consolidation'
+            })
             checkedAt = Date.now()
             if (!result || result.deprecatedIds.length === 0) continue
 
@@ -589,7 +593,10 @@ export async function runCrossTypeConsolidation(
             const mergeRecords = [group.keptId, ...group.mergedIds]
               .map(id => clusterRecords.find(r => r.id === id))
               .filter(Boolean) as MemoryRecord[]
-            const result = await consolidateCluster(mergeRecords, config, { keeperId: group.keptId })
+            const result = await consolidateCluster(mergeRecords, config, {
+              keeperId: group.keptId,
+              deprecationReasonPrefix: 'cross-type-consolidation'
+            })
             checkedAt = Date.now()
             if (!result || result.deprecatedIds.length === 0) continue
 

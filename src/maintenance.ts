@@ -6,19 +6,19 @@ import { loadConfig } from './lib/config.js'
 import { initLanceDB } from './lib/lancedb.js'
 import { resolveMaintenanceSettings } from './lib/settings.js'
 import {
-  MAINTENANCE_OPERATIONS,
+  AUTO_MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATION_DEFINITIONS,
   runMaintenanceOperation,
   type OperationResult
 } from './lib/maintenance-api.js'
 import { buildMaintenanceRun, saveMaintenanceRun } from './lib/maintenance-log.js'
-import { runPromotionSuggestions as writePromotionSuggestions } from './lib/maintenance/runners/index.js'
 
 export {
   runStaleCheck,
   runStaleUnusedDeprecation,
   runLowUsageDeprecation,
   runLowUsageCheck,
+  runQualityDeprecation,
   runConsolidation,
   runCrossTypeConsolidation,
   runGlobalPromotion,
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   console.error('[claude-memory] Maintenance started.')
 
   const results: OperationResult[] = []
-  for (const operation of MAINTENANCE_OPERATIONS) {
+  for (const operation of AUTO_MAINTENANCE_OPERATIONS) {
     const result = await runMaintenanceOperation(operation, dryRun, config, maintenanceSettings)
     results.push(result)
     const label = MAINTENANCE_OPERATION_DEFINITIONS.find(definition => definition.key === operation)?.label ?? operation
@@ -55,10 +55,6 @@ async function main(): Promise<void> {
     operations: results.map(result => result.operation)
   })
   saveMaintenanceRun(run, config.lancedb.table)
-
-  // The API-based loop captures promotion suggestion diffs for persistence,
-  // but only the raw runner actually writes suggestion files to disk.
-  await writePromotionSuggestions(config, dryRun)
 
   if (dryRun) {
     console.error('[claude-memory] Maintenance complete (DRY RUN - no changes made)')

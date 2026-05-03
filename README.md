@@ -7,7 +7,7 @@ Technical knowledge persistence for [Claude Code](https://docs.anthropic.com/en/
 1. **After each session** (or before a context compaction), a hook extracts reusable knowledge from the transcript using Claude.
 2. **Before each prompt**, a hook searches stored memories with hybrid (semantic + keyword) retrieval and injects the relevant ones as context.
 3. Knowledge is embedded as 4096-dim vectors and stored in [LanceDB](https://lancedb.com/) (embedded, in-process -- no server).
-4. A maintenance system handles deduplication, consolidation, conflict resolution, low-usage and stale deprecation, global promotion, and warning synthesis.
+4. A maintenance system handles consolidation, conflict resolution, quality deprecation, relation discovery, global promotion, warning synthesis, and conservative stale validity checks.
 5. Each injection is rated for usefulness on the next session and the score feeds back into ranking.
 
 ## Prerequisites
@@ -182,7 +182,7 @@ pnpm test:ui                  # vitest UI
 
 # Setup & ops
 pnpm wizard                   # interactive setup (recommended)
-pnpm maintenance              # run the full maintenance pipeline
+pnpm maintenance              # run the safe auto-maintenance pipeline
 pnpm maintenance --dry-run    # preview without writing
 
 # Dashboard
@@ -208,7 +208,7 @@ A web UI for browsing and operating the memory pool. Start with `pnpm dashboard`
 | **Extractions** | List extraction runs, drill into per-record details, re-run extraction on a session |
 | **Sessions** | Inspect injected memories per session and run an Opus-powered "was this injection useful?" review |
 | **Chat** | Interactive chat with tool access -- search the pool, create memories, trigger extractions |
-| **Maintenance** | Dry-run or execute every maintenance phase and review the diffs |
+| **Maintenance** | Preview maintenance phases, execute safe phases, and review the diffs |
 | **Simulator** (Context Preview) | Replay retrieval for a custom prompt with full diagnostics |
 | **Settings** | Edit retrieval, maintenance, and model settings (writes `~/.claude-memory/settings.json`) |
 
@@ -285,18 +285,36 @@ Hybrid scoring combines:
 
 ### Maintenance
 
-`pnpm maintenance` runs all phases in order. Each can be dry-run individually from the dashboard or `pnpm debug`.
+`pnpm maintenance`, dashboard "Run all", and hook-triggered auto-maintenance use the same safe operation list:
+
+```ts
+[
+  'consolidation',
+  'cross-type-consolidation',
+  'conflict-resolution',
+  'quality-deprecation',
+  'relation-discovery',
+  'warning-synthesis',
+  'global-promotion',
+  'stale-check'
+]
+```
+
+Weak usage-based deprecators are preview-only in the dashboard and are excluded from run-all/auto execution. They can still be invoked individually as dry-run candidate reviews.
 
 | Phase | Purpose |
 |---|---|
-| Stale check | Mark long-untouched records as stale |
-| Stale-unused deprecation | Deprecate stale records that were never retrieved |
-| Low-usage deprecation | Deprecate records that scored low usefulness across enough injections |
 | Consolidation | Merge near-duplicates within the same record type |
 | Cross-type consolidation | Merge near-duplicates across record types (e.g. `command` <-> `procedure`) |
 | Conflict resolution | Resolve contradictory records via LLM judgement |
-| Global promotion | Promote project-scoped records that recur across projects to `global` scope |
+| Quality deprecation | Deprecate high-confidence extraction artifacts such as raw tool dumps |
+| Relation discovery | Strengthen links between memories repeatedly injected together |
 | Warning synthesis | Synthesise `warning` records from clusters of related errors |
+| Global promotion | Promote project-scoped records that recur across projects to `global` scope |
+| Stale check | Validate stale command/procedure records with conservative command checks |
+| Stale-unused deprecation (preview-only) | Surface old zero-usage records for review |
+| Low-usage deprecation (preview-only) | Surface high-retrieval zero-usage records for review |
+| Low usage (preview-only) | Surface records below the configured usefulness ratio for review |
 | Promotion suggestions (dry-run only) | Surface candidates for promotion to review |
 
 ## Data storage

@@ -10,6 +10,7 @@ import {
   queryRecords,
   resetCollection
 } from '../../../src/lib/lancedb.js'
+import { markDeprecated } from '../../../src/lib/maintenance/operations.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
 import { getRetrievalActivity } from '../../../src/lib/retrieval-events.js'
 import { getTokenUsageActivity, backfillFromExtractionRuns } from '../../../src/lib/token-usage-events.js'
@@ -244,6 +245,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       // Build the record with defaults
       const now = Date.now()
       const id = asTrimmedString(body.id) ?? randomUUID()
+      const requestedDeprecated = asBoolean(body.deprecated) === true
       const baseRecord = {
         id,
         timestamp: asNumber(body.timestamp) ?? now,
@@ -256,7 +258,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         retrievalCount: asNumber(body.retrievalCount) ?? undefined,
         usageCount: asNumber(body.usageCount) ?? undefined,
         lastUsed: asNumber(body.lastUsed) ?? undefined,
-        deprecated: asBoolean(body.deprecated) ?? undefined,
+        deprecated: false,
         generalized: asBoolean(body.generalized) ?? undefined,
         lastGeneralizationCheck: asNumber(body.lastGeneralizationCheck) ?? undefined,
         lastGlobalCheck: asNumber(body.lastGlobalCheck) ?? undefined,
@@ -445,6 +447,21 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
       // Build and insert
       await insertRecord(record, config)
+      if (requestedDeprecated) {
+        try {
+          const deprecated = await markDeprecated(record.id, config, { reason: 'manual:dashboard' })
+          if (!deprecated) {
+            throw new Error('markDeprecated returned false')
+          }
+        } catch (error) {
+          try {
+            await deleteRecord(record.id, config)
+          } catch (deleteError) {
+            logger.error('Failed to roll back memory after deprecation failure', deleteError)
+          }
+          throw error
+        }
+      }
 
       res.status(201).json({ id: record.id, success: true })
     } catch (error) {

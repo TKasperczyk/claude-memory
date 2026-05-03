@@ -174,10 +174,10 @@ describe('Maintenance E2E', () => {
       expect(result.reason).toContain('missing-command')
     })
 
-    it('should handle discovery records (always valid unless aged)', async () => {
+    it('should treat discovery records as valid regardless of age', async () => {
       const record = createMockDiscoveryRecord({
         what: 'Test discovery',
-        timestamp: Date.now()
+        timestamp: Date.now() - 200 * 24 * 60 * 60 * 1000
       })
 
       const result = await checkValidity(record)
@@ -185,18 +185,21 @@ describe('Maintenance E2E', () => {
       expect(result.valid).toBe(true)
     })
 
-    it('should invalidate old discovery records', async () => {
-      const oldTimestamp = Date.now() - 200 * 24 * 60 * 60 * 1000 // 200 days
-
-      const record = createMockDiscoveryRecord({
-        what: 'Old discovery',
-        timestamp: oldTimestamp
+    it('should treat prose procedure steps as valid when they are not explicit shell commands', async () => {
+      const record = createMockProcedureRecord({
+        name: 'Manual dashboard check',
+        steps: [
+          'Open the dashboard and inspect the status panel',
+          'Confirm the warning banner is no longer visible'
+        ],
+        context: {
+          project: TEST_PROJECT
+        }
       })
 
       const result = await checkValidity(record)
 
-      expect(result.valid).toBe(false)
-      expect(result.reason).toContain('discovery-aged')
+      expect(result.valid).toBe(true)
     })
   })
 
@@ -214,6 +217,7 @@ describe('Maintenance E2E', () => {
 
       const updated = await getRecord(record.id, TEST_CONFIG)
       expect(updated!.deprecated).toBe(true)
+      expect(updated!.deprecatedAt).toEqual(expect.any(Number))
     })
 
     it('should return false for non-existent record', async () => {
@@ -241,6 +245,7 @@ describe('Maintenance E2E', () => {
       const superseding = await getRecord(candidate.id, TEST_CONFIG)
 
       expect(deprecated?.deprecated).toBe(true)
+      expect(deprecated?.supersedingRecordId).toBe(candidate.id)
       expect(superseding?.supersedes).toBe(existing.id)
       expect(superseding?.relations).toContainEqual(expect.objectContaining({
         targetId: existing.id,
@@ -248,6 +253,28 @@ describe('Maintenance E2E', () => {
         weight: 1,
         reinforcementCount: 1
       }))
+    })
+
+    it('should write deprecation metadata once and preserve it on repeated calls', async () => {
+      const record = createMockCommandRecord({
+        command: 'metadata-once',
+        deprecated: false
+      })
+
+      await insertRecord(record, TEST_CONFIG)
+
+      const first = await markDeprecated(record.id, TEST_CONFIG, { reason: 'test:first' })
+      expect(first).toBe(true)
+      const afterFirst = await getRecord(record.id, TEST_CONFIG)
+      expect(afterFirst?.deprecated).toBe(true)
+      expect(afterFirst?.deprecatedReason).toBe('test:first')
+      expect(afterFirst?.deprecatedAt).toEqual(expect.any(Number))
+
+      const second = await markDeprecated(record.id, TEST_CONFIG, { reason: 'test:second' })
+      expect(second).toBe(true)
+      const afterSecond = await getRecord(record.id, TEST_CONFIG)
+      expect(afterSecond?.deprecatedReason).toBe('test:first')
+      expect(afterSecond?.deprecatedAt).toBe(afterFirst?.deprecatedAt)
     })
   })
 

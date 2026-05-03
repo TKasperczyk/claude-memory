@@ -103,32 +103,35 @@ export async function checkValidity(record: MemoryRecord, settings?: Maintenance
   const maintenance = resolveMaintenanceSettings(settings)
   switch (record.type) {
     case 'command': {
-      const command = extractExecutable(record.command)
-      if (!command) return { valid: false, reason: 'missing-command' }
+      const parsed = parseCommandLine(record.command)
+      const command = parsed.executable
+      if (!command) {
+        return isClearlyProjectLocalCommand(record.command, null, parsed.args)
+          ? { valid: true }
+          : { valid: false, reason: 'missing-command' }
+      }
       const exists = commandExists(command, record.context.cwd ?? record.context.project ?? record.project)
+      if (!exists && isClearlyProjectLocalCommand(record.command, command, parsed.args)) return { valid: true }
       return exists ? { valid: true } : { valid: false, reason: `missing-command:${command}` }
     }
     case 'procedure': {
       const baseDir = record.context.project ?? record.project
       const steps = pickProcedureSteps(record.steps, maintenance.procedureStepCheckCount)
-      if (steps.length === 0) return { valid: false, reason: 'missing-procedure-step' }
+      if (steps.length === 0) return { valid: true }
 
       for (const step of steps) {
-        const command = extractExecutable(step)
-        if (!command) return { valid: false, reason: 'missing-command' }
+        if (!looksLikeShellCommandStep(step, baseDir)) continue
+        const parsed = parseCommandLine(step)
+        const command = parsed.executable
+        if (!command) continue
         const exists = commandExists(command, baseDir)
+        if (!exists && isClearlyProjectLocalCommand(step, command, parsed.args)) continue
         if (!exists) return { valid: false, reason: `missing-command:${command}` }
       }
 
       return { valid: true }
     }
     case 'discovery': {
-      const timestamp = record.timestamp ?? 0
-      if (!timestamp) return { valid: true, reason: 'no-timestamp' }
-      const ageDays = (Date.now() - timestamp) / (1000 * 60 * 60 * 24)
-      if (ageDays >= maintenance.discoveryMaxAgeDays) {
-        return { valid: false, reason: `discovery-aged:${Math.floor(ageDays)}d` }
-      }
       return { valid: true }
     }
     case 'error':
@@ -209,6 +212,79 @@ function pickProcedureSteps(steps: string[], maxSteps: number): string[] {
 
 function extractExecutable(commandLine: string): string | null {
   return parseCommandLine(commandLine).executable
+}
+
+const PACKAGE_MANAGER_COMMANDS = new Set(['npm', 'pnpm', 'yarn', 'bun'])
+const PROJECT_LOCAL_COMMANDS = new Set(['npx', 'tsx', 'node', 'python', 'python3', 'uv', 'uvx'])
+const KNOWN_SHELL_COMMANDS = new Set([
+  'adb',
+  'awk',
+  'bun',
+  'cargo',
+  'cat',
+  'chmod',
+  'chown',
+  'cmake',
+  'cp',
+  'curl',
+  'docker',
+  'find',
+  'ffmpeg',
+  'git',
+  'go',
+  'grep',
+  'ls',
+  'magick',
+  'make',
+  'mkdir',
+  'mv',
+  'node',
+  'npm',
+  'npx',
+  'pnpm',
+  'python',
+  'python3',
+  'pytest',
+  'rm',
+  'rsync',
+  'scp',
+  'sed',
+  'ssh',
+  'systemctl',
+  'tar',
+  'tsx',
+  'unzip',
+  'uv',
+  'uvx',
+  'vitest',
+  'wget',
+  'yarn',
+  'zip'
+])
+
+function isClearlyProjectLocalCommand(commandLine: string, executable: string | null, args: string[]): boolean {
+  const command = executable ?? extractExecutable(commandLine)
+  if (!command) return false
+  if (looksLikePath(command)) return true
+  if (PACKAGE_MANAGER_COMMANDS.has(command)) return true
+  if (PROJECT_LOCAL_COMMANDS.has(command)) return true
+  if (args.length > 0 && (args[0] === 'run' || args[0] === 'exec') && PACKAGE_MANAGER_COMMANDS.has(command)) return true
+  return false
+}
+
+function looksLikeShellCommandStep(step: string, cwd?: string): boolean {
+  const trimmed = step.trim()
+  if (!trimmed) return false
+  if (trimmed.startsWith('$ ')) return true
+
+  const parsed = parseCommandLine(trimmed)
+  const command = parsed.executable
+  if (!command) return false
+  if (looksLikePath(command)) return true
+  if (KNOWN_SHELL_COMMANDS.has(command)) return true
+  if (commandExists(command, cwd)) return true
+  if (/^\p{Lu}/u.test(command)) return false
+  return /\s--?[A-Za-z0-9][A-Za-z0-9-]*/.test(trimmed)
 }
 
 function parseCommandLine(commandLine: string): { executable: string | null; args: string[] } {

@@ -300,8 +300,9 @@ async function main(): Promise<void> {
       }
 
       const incrementalLabel = result.isIncremental ? ' (incremental)' : ''
+      const supersedesMissingLabel = result.supersedesMissing ? `, supersedesMissing=${result.supersedesMissing}` : ''
       console.error(
-        `[claude-memory] Extraction complete${incrementalLabel}: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`
+        `[claude-memory] Extraction complete${incrementalLabel}: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${supersedesMissingLabel}`
       )
       debugLog('COMPLETE')
     } finally {
@@ -365,12 +366,13 @@ function saveRunLog(
     extractedEventCount: result.extractedEventCount,
     isIncremental: result.isIncremental,
     hasRememberMarker: result.hasRememberMarker,
+    supersedesMissing: result.supersedesMissing || undefined,
     skipReason: result.reason === 'too_short' ? 'too_short'
       : (result.reason === 'no_records' && uniqueIds.length === 0) ? 'no_records'
       : undefined
   }, collection)
 
-  auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}`)
+  auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}`)
 }
 
 function buildRecordSummary(record: MemoryRecord): ExtractionRecordSummary | null {

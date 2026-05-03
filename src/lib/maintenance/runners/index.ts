@@ -8,6 +8,10 @@ export {
 } from './deprecation-runners.js'
 
 export {
+  runQualityDeprecation
+} from './quality-deprecation-runner.js'
+
+export {
   runConsolidation,
   runCrossTypeConsolidation
 } from './consolidation-runners.js'

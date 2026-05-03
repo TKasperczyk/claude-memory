@@ -163,6 +163,14 @@ export function getRecordSecondaryTextParts(record: RecordFieldSource): Array<st
   return getRecordTextGroups(record).secondary
 }
 
+export function getPrimaryRecordText(record: RecordFieldSource): string {
+  return joinTextParts(getRecordPrimaryTextParts(record))
+}
+
+export function getSecondaryRecordText(record: RecordFieldSource): string {
+  return joinTextParts(getRecordSecondaryTextParts(record))
+}
+
 export function getRecordExactTextParts(record: RecordFieldSource): Array<string | undefined> {
   return getRecordTextGroups(record).exact
 }
@@ -173,6 +181,14 @@ export function getRecordSearchableTextParts(record: RecordFieldSource): Array<s
 
 export function getRecordSupplementalEmbeddingParts(record: RecordFieldSource): Array<string | undefined> {
   return getRecordTextGroups(record).supplementalEmbedding
+}
+
+function joinTextParts(parts: Array<string | undefined>): string {
+  return parts
+    .map(part => typeof part === 'string' ? part.trim() : '')
+    .filter(Boolean)
+    .join('\n')
+    .trim()
 }
 
 export function getRecordSummaryText(

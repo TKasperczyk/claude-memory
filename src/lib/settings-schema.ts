@@ -457,16 +457,6 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.staleAge
   },
   {
-    key: 'discoveryMaxAgeDays',
-    label: 'Discovery max age (days)',
-    description: 'Discoveries older than this are invalidated.',
-    step: 1,
-    min: 1,
-    kind: 'int',
-    default: 180,
-    group: MAINTENANCE_GROUPS_META.staleAge
-  },
-  {
     key: 'procedureStepCheckCount',
     label: 'Procedure step checks',
     description: 'Number of steps sampled for command validation in procedures.',

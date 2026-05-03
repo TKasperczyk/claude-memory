@@ -42,8 +42,10 @@ import {
   insertRecord,
   iterateRecords,
   queryRecords,
-  resetCollection
+  resetCollection,
+  updateRecord
 } from '../src/lib/lancedb.js'
+import { markDeprecated } from '../src/lib/maintenance/operations.js'
 import { ensureClient } from '../src/lib/lancedb-client.js'
 import { mergeNearMisses } from '../src/lib/diagnostics.js'
 import { retrieveContext } from '../src/lib/retrieval.js'
@@ -65,6 +67,7 @@ import {
   runAllMaintenance,
   runMaintenanceOperation
 } from '../src/lib/maintenance-api.js'
+import { executeChatTool } from '../dashboard/server/lib/chat-tools.js'
 
 vi.mock('../src/lib/settings.js', () => ({
   getDefaultMaintenanceSettings: vi.fn(),
@@ -107,7 +110,12 @@ vi.mock('../src/lib/lancedb.js', () => ({
   iterateRecords: vi.fn(),
   queryRecords: vi.fn(),
   resetCollection: vi.fn(),
-  buildKeywordFilter: vi.fn()
+  buildKeywordFilter: vi.fn(),
+  updateRecord: vi.fn()
+}))
+
+vi.mock('../src/lib/maintenance/operations.js', () => ({
+  markDeprecated: vi.fn()
 }))
 
 vi.mock('../src/lib/lancedb-client.js', () => ({
@@ -164,9 +172,10 @@ vi.mock('../src/lib/maintenance-review.js', () => ({
 
 vi.mock('../src/lib/maintenance-api.js', () => ({
   MAINTENANCE_OPERATIONS: ['promotion-suggestions', 'cleanup'],
+  AUTO_MAINTENANCE_OPERATIONS: ['cleanup'],
   MAINTENANCE_OPERATION_DEFINITIONS: [
-    { id: 'promotion-suggestions', label: 'Promotion Suggestions' },
-    { id: 'cleanup', label: 'Cleanup' }
+    { key: 'promotion-suggestions', label: 'Promotion Suggestions', allowExecute: false },
+    { key: 'cleanup', label: 'Cleanup', allowExecute: true }
   ],
   runAllMaintenance: vi.fn(),
   runMaintenanceOperation: vi.fn()
@@ -194,6 +203,8 @@ const mockedResetCollection = vi.mocked(resetCollection)
 const mockedHybridSearch = vi.mocked(hybridSearch)
 const mockedEnsureClient = vi.mocked(ensureClient)
 const mockedInsertRecord = vi.mocked(insertRecord)
+const mockedUpdateRecord = vi.mocked(updateRecord)
+const mockedMarkDeprecated = vi.mocked(markDeprecated)
 const mockedIterateRecords = vi.mocked(iterateRecords)
 const mockedBuildKeywordFilter = vi.mocked(buildKeywordFilter)
 const mockedEscapeFilterValue = vi.mocked(escapeFilterValue)
@@ -316,6 +327,8 @@ beforeEach(() => {
   mockedHybridSearch.mockResolvedValue([])
   mockedEnsureClient.mockResolvedValue({} as any)
   mockedInsertRecord.mockResolvedValue(undefined)
+  mockedUpdateRecord.mockResolvedValue(true)
+  mockedMarkDeprecated.mockResolvedValue(true)
   mockedIterateRecords.mockReturnValue(makeAsyncIterable([]))
   mockedBuildKeywordFilter.mockImplementation((_query, baseFilter) => baseFilter)
   mockedEscapeFilterValue.mockImplementation(value => String(value))
@@ -563,6 +576,45 @@ describe('memory routes', () => {
     expect(mockedInsertRecord).toHaveBeenCalledWith(expect.objectContaining(expected), expect.anything())
   })
 
+  it('inserts deprecated requests as active before routing through markDeprecated', async () => {
+    const { app } = buildApp({ memoryTypes: ALL_MEMORY_TYPES })
+    const payload = buildMemoryPayload({
+      type: 'discovery',
+      what: 'old fact',
+      where: 'docs',
+      evidence: 'manual entry',
+      confidence: 'verified',
+      deprecated: true
+    })
+
+    const res = await request(app).post('/api/memories').send(payload)
+
+    expect(res.status).toBe(201)
+    expect(mockedInsertRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'mem-1', deprecated: false }),
+      expect.anything()
+    )
+    expect(mockedMarkDeprecated).toHaveBeenCalledWith('mem-1', expect.anything(), { reason: 'manual:dashboard' })
+  })
+
+  it('rolls back inserted memories when manual deprecation metadata write fails', async () => {
+    mockedMarkDeprecated.mockResolvedValueOnce(false)
+    const { app } = buildApp({ memoryTypes: ALL_MEMORY_TYPES })
+    const payload = buildMemoryPayload({
+      type: 'discovery',
+      what: 'old fact',
+      where: 'docs',
+      evidence: 'manual entry',
+      confidence: 'verified',
+      deprecated: true
+    })
+
+    const res = await request(app).post('/api/memories').send(payload)
+
+    expect(res.status).toBe(500)
+    expect(mockedDeleteRecord).toHaveBeenCalledWith('mem-1', expect.anything())
+  })
+
   it('rejects missing sourceExcerpt', async () => {
     const { app } = buildApp()
     const res = await request(app)
@@ -804,6 +856,22 @@ describe('memory routes', () => {
 
     expect(res.status).toBe(500)
     expect(res.body).toEqual({ error: 'Failed to list memories' })
+  })
+})
+
+describe('dashboard chat tools', () => {
+  it('routes deprecated=true updates through markDeprecated', async () => {
+    mockedGetRecord.mockResolvedValueOnce({ id: 'mem-1', type: 'command', deprecated: true })
+
+    const result = await executeChatTool(
+      'update_memory',
+      { id: 'mem-1', deprecated: true },
+      { config: DEFAULT_CONFIG }
+    )
+
+    expect(result.isError).toBe(false)
+    expect(mockedUpdateRecord).not.toHaveBeenCalled()
+    expect(mockedMarkDeprecated).toHaveBeenCalledWith('mem-1', DEFAULT_CONFIG, { reason: 'manual:dashboard' })
   })
 })
 
@@ -1087,13 +1155,24 @@ describe('maintenance routes', () => {
     const res = await request(app)
       .post('/api/maintenance/run')
       .set('X-LanceDB-Table', 'test-collection')
-      .send({ operation: 'promotion-suggestions' })
+      .send({ operation: 'cleanup' })
 
     expect(res.status).toBe(200)
     expect(mockedEnsureClient).toHaveBeenCalledTimes(1)
     expect(mockedEnsureClient.mock.calls[0]?.[0]).toMatchObject({
       lancedb: { table: 'test-collection' }
     })
+  })
+
+  it('blocks execution for preview-only maintenance operations', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .post('/api/maintenance/run')
+      .send({ operation: 'promotion-suggestions', dryRun: false })
+
+    expect(res.status).toBe(403)
+    expect(res.body).toEqual({ error: 'Operation is preview-only' })
+    expect(mockedRunMaintenanceOperation).not.toHaveBeenCalled()
   })
 
   it('honors collection override header for maintenance run-all', async () => {

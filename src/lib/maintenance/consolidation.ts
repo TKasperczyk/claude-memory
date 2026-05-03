@@ -319,7 +319,7 @@ export async function findCrossTypeClusters(
 export async function consolidateCluster(
   cluster: MemoryRecord[],
   config: Config = DEFAULT_CONFIG,
-  options: { keeperId?: string } = {}
+  options: { keeperId?: string; deprecationReasonPrefix?: string } = {}
 ): Promise<ConsolidationResult | null> {
   if (cluster.length < 2) return null
 
@@ -359,9 +359,13 @@ export async function consolidateCluster(
   await updateRecord(keeper.id, updates, config)
 
   const deprecatedIds: string[] = []
+  const reasonPrefix = options.deprecationReasonPrefix ?? 'consolidation'
   for (const record of cluster) {
     if (record.id === keeper.id) continue
-    await markDeprecated(record.id, config)
+    await markDeprecated(record.id, config, {
+      supersedingRecordId: keeper.id,
+      reason: `${reasonPrefix}:merged-into:${keeper.id}`
+    })
     deprecatedIds.push(record.id)
   }
 

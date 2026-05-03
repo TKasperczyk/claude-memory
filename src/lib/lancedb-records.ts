@@ -50,6 +50,9 @@ export async function buildLanceRow(record: MemoryRecord, config: Config): Promi
     usage_count: toInt64(normalized.usageCount, 0),
     last_used: toInt64(normalized.lastUsed, normalized.timestamp ?? Date.now()),
     deprecated: Boolean(normalized.deprecated),
+    deprecated_at: normalized.deprecatedAt ?? null,
+    deprecated_reason: normalizeOptionalString(normalized.deprecatedReason) ?? null,
+    superseding_record_id: normalizeOptionalString(normalized.supersedingRecordId) ?? null,
     generalized: Boolean(normalized.generalized),
     last_generalization_check: toInt64(normalized.lastGeneralizationCheck, 0),
     last_global_check: toInt64(normalized.lastGlobalCheck, 0),
@@ -110,6 +113,9 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
     usageCount: toInt64((row.usage_count as number | string | undefined) ?? parsed.usageCount, 0),
     lastUsed: toInt64((row.last_used as number | string | undefined) ?? parsed.lastUsed, 0),
     deprecated: toBoolean(row.deprecated ?? parsed.deprecated, false),
+    deprecatedAt: toOptionalInt64((row.deprecated_at as number | string | bigint | null | undefined) ?? parsed.deprecatedAt),
+    deprecatedReason: coerceOptionalString(row.deprecated_reason) ?? parsed.deprecatedReason,
+    supersedingRecordId: coerceOptionalString(row.superseding_record_id) ?? parsed.supersedingRecordId,
     generalized: toBoolean(row.generalized ?? parsed.generalized, false),
     lastGeneralizationCheck: toInt64(
       (row.last_generalization_check as number | string | undefined) ?? parsed.lastGeneralizationCheck,
@@ -214,6 +220,9 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const usageCount = toInt64(record.usageCount, 0)
   const lastUsed = toInt64(record.lastUsed, timestamp)
   const deprecated = Boolean(record.deprecated ?? false)
+  const deprecatedAt = toOptionalInt64(record.deprecatedAt)
+  const deprecatedReason = normalizeOptionalString(record.deprecatedReason)
+  const supersedingRecordId = normalizeOptionalString(record.supersedingRecordId)
   const generalized = toBoolean(record.generalized, false)
   const lastGeneralizationCheck = toInt64(record.lastGeneralizationCheck, 0)
   const lastGlobalCheck = toInt64(record.lastGlobalCheck, 0)
@@ -234,6 +243,9 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     usageCount,
     lastUsed,
     deprecated,
+    deprecatedAt,
+    deprecatedReason,
+    supersedingRecordId,
     generalized,
     lastGeneralizationCheck,
     lastGlobalCheck,
@@ -293,6 +305,17 @@ function toInt64(value: number | string | bigint | undefined, fallback: number):
     if (!Number.isNaN(parsed)) return Math.trunc(parsed)
   }
   return Math.trunc(fallback)
+}
+
+function toOptionalInt64(value: number | string | bigint | null | undefined): number | undefined {
+  if (value === null || value === undefined) return undefined
+  if (typeof value === 'bigint') return Number(value)
+  if (typeof value === 'number' && !Number.isNaN(value)) return Math.trunc(value)
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (!Number.isNaN(parsed)) return Math.trunc(parsed)
+  }
+  return undefined
 }
 
 function toBoolean(value: unknown, fallback: boolean): boolean {
