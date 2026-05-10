@@ -2,8 +2,6 @@ export type { MaintenanceCandidateGroup, MaintenanceCandidateRecord } from '../.
 
 export { GLOBAL_PROMOTION_MIN_CONFIDENCE } from './operations.js'
 
-export type { ContradictionPair } from './conflicts.js'
-
 export {
   findStaleRecords,
   findGlobalCandidates,
@@ -33,7 +31,5 @@ export {
 } from './consolidation.js'
 
 export {
-  findContradictionPairs,
-  checkContradiction,
   runConflictResolution
 } from './conflicts.js'

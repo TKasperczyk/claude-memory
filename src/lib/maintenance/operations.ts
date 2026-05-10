@@ -651,13 +651,6 @@ function filterGeneralizationUpdates(
   }
 }
 
-export function filterContradictionMerge(
-  record: MemoryRecord,
-  updates: Partial<MemoryRecord>
-): Partial<MemoryRecord> {
-  return filterGeneralizationUpdates(record, updates)
-}
-
 function maybeUpdateString(existing: string | undefined, candidate: unknown): string | undefined {
   if (typeof candidate !== 'string') return undefined
   const trimmed = candidate.trim()

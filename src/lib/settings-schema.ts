@@ -599,17 +599,6 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.consolidation
   },
   {
-    key: 'consolidationTextSimilarityRatio',
-    label: 'Contradiction text similarity ratio',
-    description: 'Levenshtein ratio used to skip near-duplicate text during contradiction detection.',
-    step: 0.01,
-    min: 0,
-    max: 1,
-    kind: 'float',
-    default: 0.2,
-    group: MAINTENANCE_GROUPS_META.consolidation
-  },
-  {
     key: 'conflictSimilarityThreshold',
     label: 'Conflict similarity threshold',
     description: 'Similarity to trigger conflict check.',
@@ -628,37 +617,6 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     min: 1,
     kind: 'int',
     default: 10,
-    group: MAINTENANCE_GROUPS_META.conflictResolution
-  },
-  {
-    key: 'contradictionSimilarityThreshold',
-    label: 'Contradiction similarity threshold (legacy)',
-    description: 'Similarity threshold for legacy contradiction checks.',
-    step: 0.01,
-    min: 0,
-    max: 1,
-    kind: 'float',
-    default: 0.75,
-    group: MAINTENANCE_GROUPS_META.conflictResolution
-  },
-  {
-    key: 'contradictionSearchLimit',
-    label: 'Contradiction search limit (legacy)',
-    description: 'Max similar records to fetch per seed in contradiction checks.',
-    step: 1,
-    min: 1,
-    kind: 'int',
-    default: 8,
-    group: MAINTENANCE_GROUPS_META.conflictResolution
-  },
-  {
-    key: 'contradictionBatchSize',
-    label: 'Contradiction batch size (legacy)',
-    description: 'Pairs processed per contradiction batch.',
-    step: 1,
-    min: 1,
-    kind: 'int',
-    default: 15,
     group: MAINTENANCE_GROUPS_META.conflictResolution
   },
   {

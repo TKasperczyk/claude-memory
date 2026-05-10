@@ -297,12 +297,8 @@ export interface MaintenanceSettings {
   consolidationRecheckDays: number
   crossTypeConsolidationThreshold: number
   enableConsolidationLlmVerification: boolean
-  consolidationTextSimilarityRatio: number
   conflictSimilarityThreshold: number
   conflictCheckBatchSize: number
-  contradictionSimilarityThreshold: number
-  contradictionSearchLimit: number
-  contradictionBatchSize: number
   globalPromotionBatchSize: number
   globalPromotionRecheckDays: number
   globalPromotionMinSuccessCount: number

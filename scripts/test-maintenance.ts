@@ -5,11 +5,8 @@ import { initLanceDB, queryRecords } from '../src/lib/lancedb.js'
 import { loadConfig } from '../src/lib/config.js'
 import { findGitRoot } from '../src/lib/context.js'
 import {
-  findContradictionPairs,
   findGlobalCandidates,
-  checkGlobalPromotion,
-  checkContradiction,
-  type ContradictionPair
+  checkGlobalPromotion
 } from '../src/lib/maintenance.js'
 import { buildExactText } from '../src/lib/shared.js'
 
@@ -20,32 +17,7 @@ async function main() {
   console.log('Initializing LanceDB...')
   await initLanceDB(config)
 
-  // 1. Find contradiction pairs
-  console.log('\n=== Contradiction Detection (dry-run) ===')
-  const pairs = await findContradictionPairs(config)
-  console.log(`Found ${pairs.length} potential contradiction pairs`)
-
-  for (const pair of pairs.slice(0, 5)) {
-    console.log(`\nPair (similarity: ${pair.similarity.toFixed(3)}):`)
-    console.log(`  NEWER [${pair.newer.type}] ${pair.newer.id.slice(0, 8)}...`)
-    console.log(`    ${buildExactText(pair.newer).slice(0, 150)}...`)
-    console.log(`  OLDER [${pair.older.type}] ${pair.older.id.slice(0, 8)}...`)
-    console.log(`    ${buildExactText(pair.older).slice(0, 150)}...`)
-
-    // Check what LLM would say (limit to first 2 to save API costs)
-    if (pairs.indexOf(pair) < 2) {
-      try {
-        console.log('  Checking with LLM...')
-        const result = await checkContradiction(pair, config)
-        console.log(`  LLM verdict: ${result.verdict}`)
-        console.log(`  Reason: ${result.reason}`)
-      } catch (err) {
-        console.log(`  LLM check failed: ${err}`)
-      }
-    }
-  }
-
-  // 2. Find global promotion candidates
+  // 1. Find global promotion candidates
   console.log('\n=== Global Promotion Candidates ===')
   const globalCandidates = await findGlobalCandidates(config)
   console.log(`Found ${globalCandidates.length} global candidates (heuristic-based)`)
@@ -77,7 +49,7 @@ async function main() {
     }
   }
 
-  // 3. Look at deprecated records to understand why they were deprecated
+  // 2. Look at deprecated records to understand why they were deprecated
   console.log('\n=== Deprecated Records Analysis ===')
   const deprecated = await queryRecords({
     filter: 'deprecated = true',

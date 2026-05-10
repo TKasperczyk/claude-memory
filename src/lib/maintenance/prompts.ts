@@ -3,7 +3,6 @@ import { createAnthropicClient } from '../anthropic.js'
 import type { MemoryRecord } from '../types.js'
 
 export const GENERALIZATION_MAX_TOKENS = 1500
-export const CONTRADICTION_MAX_TOKENS = 1200
 export const CONFLICT_ADJUDICATION_MAX_TOKENS = 1200
 export const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
 export const CURRENTNESS_MAX_TOKENS = 2500
@@ -32,28 +31,6 @@ Return JSON:
   "shouldGeneralize": boolean,
   "reason": "why it needs generalization (or why it's fine)",
   "generalized": { /* only if shouldGeneralize, partial record with updated fields */ }
-}`
-
-export const CONTRADICTION_PROMPT = `Analyze these two memory records for contradiction.
-
-Both records are about the same topic (high semantic similarity) but have different content.
-Determine if they actually contradict each other or are complementary/additive.
-
-Contradicting means:
-- One record supersedes or corrects the other
-- They give conflicting advice for the same situation
-- The newer record reflects updated knowledge that invalidates the older
-
-Complementary means:
-- They cover different aspects of the same topic
-- Both can be true simultaneously
-- They add to each other without conflict
-
-Return JSON:
-{
-  "verdict": "keep_newer" | "keep_older" | "keep_both" | "merge",
-  "reason": "brief explanation",
-  "merged": { /* only if verdict is "merge", partial record combining both */ }
 }`
 
 export const CONFLICT_ADJUDICATION_PROMPT = `You adjudicate conflicts between a newly extracted memory and an existing memory.

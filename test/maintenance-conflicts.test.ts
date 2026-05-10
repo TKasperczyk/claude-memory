@@ -30,7 +30,6 @@ vi.mock('../src/lib/maintenance/scans.js', () => ({
 }))
 
 vi.mock('../src/lib/maintenance/operations.js', () => ({
-  filterContradictionMerge: vi.fn((_record: MemoryRecord, updates: Partial<MemoryRecord>) => updates),
   markDeprecated: vi.fn(async () => true)
 }))
 
