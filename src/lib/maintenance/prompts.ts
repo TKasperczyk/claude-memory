@@ -6,6 +6,8 @@ export const GENERALIZATION_MAX_TOKENS = 1500
 export const CONTRADICTION_MAX_TOKENS = 1200
 export const CONFLICT_ADJUDICATION_MAX_TOKENS = 1200
 export const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
+export const CURRENTNESS_MAX_TOKENS = 2500
+export const CURRENTNESS_TOOL_NAME = 'emit_currentness_verdicts'
 export const GLOBAL_PROMOTION_MAX_TOKENS = 800
 export const WARNING_SYNTHESIS_MAX_TOKENS = 1500
 export const WARNING_SYNTHESIS_TOOL_NAME = 'emit_warning'
@@ -69,6 +71,21 @@ Rules:
 - When deprecating a record because the other record supersedes it, set supersedingRecordId to the record that should remain active.
 - Provide a concise reason.
 - Output ONLY via the tool call "${CONFLICT_ADJUDICATION_TOOL_NAME}" exactly once.`
+
+export const CURRENTNESS_PROMPT = `Review a cluster of project discovery memories that may describe evolving current state, sprint queues, deferred work, test-count snapshots, or version progressions.
+
+For each record, emit exactly one verdict:
+- "current": this is the best/current record for the topic.
+- "historical_useful": this is older or contextual, but still useful enough to keep active.
+- "superseded": this no longer reflects the current state for this topic and should be deprecated.
+
+Rules:
+- Use only the provided records; do not invent project history.
+- Be conservative: choose "historical_useful" when unsure.
+- Timestamps are a recency signal, not the only source of truth.
+- If one record describes an older state and another record in the cluster describes the later resolved/current state, mark the older state "superseded" and set supersedingRecordId to the current record.
+- Do not mark records superseded merely because they are old; there must be a clear replacement/current-state record in the cluster.
+- Output ONLY via the tool call "${CURRENTNESS_TOOL_NAME}" exactly once.`
 
 export const GLOBAL_PROMOTION_PROMPT = `Evaluate if this memory record should be promoted to global scope.
 
@@ -237,6 +254,39 @@ export const CONFLICT_ADJUDICATION_TOOL: Anthropic.Tool = {
       supersedingRecordId: {
         type: 'string',
         description: 'Optional ID of the record that should remain active and supersede the deprecated record.'
+      }
+    }
+  }
+}
+
+export const CURRENTNESS_TOOL: Anthropic.Tool = {
+  name: CURRENTNESS_TOOL_NAME,
+  description: 'Emit currentness verdicts for a cluster of evolving discovery records.',
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['records', 'reason'],
+    properties: {
+      records: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id', 'verdict', 'reason'],
+          properties: {
+            id: { type: 'string' },
+            verdict: { type: 'string', enum: ['current', 'historical_useful', 'superseded'] },
+            reason: { type: 'string' },
+            supersedingRecordId: {
+              type: 'string',
+              description: 'Required when verdict is superseded: ID of the current/replacement record in this cluster.'
+            }
+          }
+        }
+      },
+      reason: {
+        type: 'string',
+        description: 'Overall explanation of the cluster currentness decision.'
       }
     }
   }

@@ -10,6 +10,7 @@ import {
   runLowUsageDeprecation,
   runLowUsageCheck,
   runQualityDeprecation,
+  runCurrentnessCheck,
   runConsolidation,
   runCrossTypeConsolidation,
   runRelationDiscovery,
@@ -68,6 +69,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     allowExecute: true
   },
   {
+    key: 'currentness-check',
+    label: 'Currentness Check',
+    description: 'Deprecate superseded current-state and sprint-progress discoveries',
+    allowExecute: true
+  },
+  {
     key: 'quality-deprecation',
     label: 'Quality Deprecation',
     description: 'Deprecate high-confidence extraction artifacts',
@@ -111,6 +118,7 @@ export const AUTO_MAINTENANCE_OPERATIONS: MaintenanceOperation[] = [
   'consolidation',
   'cross-type-consolidation',
   'conflict-resolution',
+  'currentness-check',
   'quality-deprecation',
   'relation-discovery',
   'warning-synthesis',
@@ -192,6 +200,8 @@ async function runOperation(
       return runCrossTypeConsolidation(dryRun, config, settings, onProgress)
     case 'conflict-resolution':
       return runConflictResolution(dryRun, config, settings)
+    case 'currentness-check':
+      return runCurrentnessCheck(dryRun, config, settings, onProgress)
     case 'relation-discovery':
       return runRelationDiscovery(dryRun, config)
     case 'warning-synthesis':

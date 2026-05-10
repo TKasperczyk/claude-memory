@@ -12,6 +12,10 @@ export {
 } from './quality-deprecation-runner.js'
 
 export {
+  runCurrentnessCheck
+} from './currentness-runner.js'
+
+export {
   runConsolidation,
   runCrossTypeConsolidation
 } from './consolidation-runners.js'

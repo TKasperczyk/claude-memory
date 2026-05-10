@@ -28,6 +28,10 @@ vi.mock('../src/lib/maintenance/runners/index.js', () => ({
     calls.push('quality-deprecation')
     return result()
   }),
+  runCurrentnessCheck: vi.fn(async () => {
+    calls.push('currentness-check')
+    return result()
+  }),
   runConsolidation: vi.fn(async () => {
     calls.push('consolidation')
     return result()
