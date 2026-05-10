@@ -1,10 +1,10 @@
 import { CLAUDE_CODE_SYSTEM_PROMPT } from '../../anthropic.js'
-import { buildFilter, vectorSearchSimilar } from '../../lancedb.js'
+import { batchUpdateRecords, buildFilter, vectorSearchSimilar } from '../../lancedb.js'
 import { createLogger } from '../../logger.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../../parsing.js'
-import { buildCandidateRecord, buildRecordSnippet } from '../../shared.js'
+import { buildCandidateRecord, buildRecordSnippet, escapeFilterValue } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord } from '../../types.js'
-import type { MaintenanceSettings } from '../../settings.js'
+import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
 import {
   CURRENTNESS_MAX_TOKENS,
   CURRENTNESS_PROMPT,
@@ -26,6 +26,7 @@ const logger = createLogger('maintenance')
 const CURRENTNESS_SIMILARITY_THRESHOLD = 0.7
 const CURRENTNESS_SEARCH_LIMIT = 12
 const CURRENTNESS_MAX_CLUSTER_SIZE = 8
+const ACTIVE_DISCOVERY_FILTER = 'deprecated = false AND type = \'discovery\''
 
 type CurrentnessVerdictKind = 'current' | 'historical_useful' | 'superseded'
 
@@ -36,19 +37,18 @@ type CurrentnessVerdict = {
   supersedingRecordId?: string
 }
 
+type CurrentnessCandidate = DiscoveryRecord & { embedding: number[] }
+
 type CurrentnessCluster = {
   id: string
-  records: DiscoveryRecord[]
+  records: CurrentnessCandidate[]
+  members: CurrentnessClusterMember[]
 }
 
-const CURRENTNESS_SIGNAL_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
-  { label: 'remaining queue', pattern: /\bremaining\s+(?:sprint\s+)?queue\b/i },
-  { label: 'current state', pattern: /\bcurrent\s+state\b/i },
-  { label: 'after sprint', pattern: /\bafter\s+sprint\b/i },
-  { label: 'deferred future work', pattern: /\bdeferred\s+to\s+future\b/i },
-  { label: 'test count progression', pattern: /\b(?:test(?:\s+suite)?\s+count|tests?\s+across|test-count).{0,80}\b(?:progression|snapshot|baseline)\b/i },
-  { label: 'version progression', pattern: /\b(?:version|v\d+).{0,80}\b(?:progression|snapshot|baseline)\b/i }
-]
+type CurrentnessClusterMember = {
+  record: CurrentnessCandidate
+  similarity: number
+}
 
 export async function runCurrentnessCheck(
   dryRun: boolean,
@@ -56,6 +56,7 @@ export async function runCurrentnessCheck(
   _settings?: MaintenanceSettings,
   onProgress?: ProgressCallback
 ): Promise<MaintenanceRunResult> {
+  const maintenance = resolveMaintenanceSettings(_settings)
   const actions: MaintenanceRunResult['actions'] = []
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let candidates = 0
@@ -64,23 +65,26 @@ export async function runCurrentnessCheck(
   let current = 0
   let historical = 0
   let deprecated = 0
+  let singletons = 0
   let errors = 0
 
   try {
     logger.info('Starting currentness check')
-    const candidateRecords = await findCurrentnessCandidates(config)
-    candidates = candidateRecords.length
-    const currentnessClusters = await findCurrentnessClusters(candidateRecords, config)
+    const currentnessResult = await findCurrentnessClusters(config, maintenance)
+    candidates = currentnessResult.candidates
+    const currentnessClusters = currentnessResult.clusters
+    singletons = currentnessResult.singletons.length
     clusters = currentnessClusters.length
 
     if (currentnessClusters.length > 0) {
       candidateGroups.push(...currentnessClusters.map(cluster => ({
         id: cluster.id,
         label: `Currentness cluster ${cluster.id.split('-').at(-1) ?? ''}`.trim(),
-        reason: `currentness signal + similarity >= ${Math.round(CURRENTNESS_SIMILARITY_THRESHOLD * 100)}%`,
-        records: cluster.records.map(record =>
-          buildCandidateRecord(record, getCurrentnessSignal(record) ?? 'currentness signal', {
-            timestamp: record.timestamp ?? 0
+        reason: `embedding similarity >= ${Math.round(CURRENTNESS_SIMILARITY_THRESHOLD * 100)}%`,
+        records: cluster.members.map(member =>
+          buildCandidateRecord(member.record, member.similarity === 1 ? 'embedding seed' : 'embedding neighbor', {
+            similarity: member.similarity,
+            timestamp: member.record.timestamp ?? 0
           })
         )
       })))
@@ -99,6 +103,7 @@ export async function runCurrentnessCheck(
       try {
         const verdicts = await checkCurrentnessCluster(cluster.records, config)
         checked += cluster.records.length
+        const checkedAt = Date.now()
 
         for (const verdict of verdicts) {
           if (verdict.verdict === 'current') {
@@ -139,15 +144,31 @@ export async function runCurrentnessCheck(
           )
           if (applied) deprecated += 1
         }
+
+        if (!dryRun) {
+          const failed = await markCurrentnessChecked(cluster.records, checkedAt, config)
+          if (failed > 0) {
+            errors += failed
+            logger.warn(`Currentness cluster ${cluster.id}: failed to mark ${failed}/${cluster.records.length} records as checked`)
+          }
+        }
       } catch (error) {
         errors += 1
         logger.warn(`Currentness cluster ${cluster.id} failed: ${toErrorMessage(error)}`)
       }
     }
+
+    if (!dryRun && currentnessResult.singletons.length > 0) {
+      const failed = await markCurrentnessChecked(currentnessResult.singletons, Date.now(), config)
+      if (failed > 0) {
+        errors += failed
+        logger.warn(`Currentness check: failed to mark ${failed}/${currentnessResult.singletons.length} singleton records as checked`)
+      }
+    }
   } catch (error) {
     return buildErrorResult(
       actions,
-      { candidates, clusters, checked, current, historical, deprecated, errors },
+      { candidates, clusters, singletons, checked, current, historical, deprecated, errors },
       candidateGroups,
       error
     )
@@ -156,34 +177,21 @@ export async function runCurrentnessCheck(
   logger.info(`Currentness check complete: ${deprecated} deprecated, ${historical} historical, ${current} current, ${errors} errors`)
   return buildResult(
     actions,
-    { candidates, clusters, checked, current, historical, deprecated, errors },
+    { candidates, clusters, singletons, checked, current, historical, deprecated, errors },
     candidateGroups
   )
 }
 
-async function findCurrentnessCandidates(config: Config): Promise<DiscoveryRecord[]> {
-  const records = await fetchRecords('deprecated = false AND type = \'discovery\'', config, true)
-  return records.filter(isCurrentnessCandidate)
-}
-
-function isCurrentnessCandidate(record: MemoryRecord): record is DiscoveryRecord {
-  return record.type === 'discovery'
-    && !record.deprecated
-    && isValidEmbedding(record.embedding)
-    && Boolean(getCurrentnessSignal(record))
-}
-
-function getCurrentnessSignal(record: DiscoveryRecord): string | null {
-  const text = [record.what, record.where, record.evidence].filter(Boolean).join('\n')
-  const match = CURRENTNESS_SIGNAL_PATTERNS.find(signal => signal.pattern.test(text))
-  return match?.label ?? null
-}
-
 async function findCurrentnessClusters(
-  candidates: DiscoveryRecord[],
-  config: Config
-): Promise<CurrentnessCluster[]> {
-  const candidatesByProject = new Map<string, DiscoveryRecord[]>()
+  config: Config,
+  maintenance: MaintenanceSettings
+): Promise<{ candidates: number; clusters: CurrentnessCluster[]; singletons: CurrentnessCandidate[] }> {
+  const records = await fetchRecords(ACTIVE_DISCOVERY_FILTER, config, true)
+  const candidates = records.filter(isCurrentnessCandidate)
+  const recheckCutoff = Date.now() - maintenance.currentnessRecheckDays * 24 * 60 * 60 * 1000
+  const recheckCutoffValue = Math.trunc(recheckCutoff)
+  const dueCandidates = candidates.filter(record => !wasRecentlyCurrentnessChecked(record, recheckCutoffValue))
+  const candidatesByProject = new Map<string, CurrentnessCandidate[]>()
   for (const record of candidates) {
     const project = record.project ?? ''
     if (!candidatesByProject.has(project)) candidatesByProject.set(project, [])
@@ -191,18 +199,19 @@ async function findCurrentnessClusters(
   }
 
   const clusters: CurrentnessCluster[] = []
+  const singletonById = new Map<string, CurrentnessCandidate>()
   let clusterIndex = 0
 
   for (const projectCandidates of candidatesByProject.values()) {
     const candidateById = new Map(projectCandidates.map(record => [record.id, record]))
+    const dueIds = new Set(projectCandidates
+      .filter(record => !wasRecentlyCurrentnessChecked(record, recheckCutoffValue))
+      .map(record => record.id))
     const seen = new Set<string>()
 
     for (const record of projectCandidates) {
+      if (!dueIds.has(record.id)) continue
       if (seen.has(record.id)) continue
-      if (!isValidEmbedding(record.embedding)) {
-        seen.add(record.id)
-        continue
-      }
 
       const matches = await vectorSearchSimilar(
         record.embedding,
@@ -214,30 +223,51 @@ async function findCurrentnessClusters(
         config
       )
 
-      const members = [record]
+      const members: CurrentnessClusterMember[] = [{ record, similarity: 1 }]
+      const memberIds = new Set<string>([record.id])
       for (const match of matches) {
         const candidate = candidateById.get(match.record.id)
-        if (!candidate || seen.has(candidate.id)) continue
-        members.push(candidate)
+        if (!candidate || seen.has(candidate.id) || memberIds.has(candidate.id)) continue
+        members.push({ record: candidate, similarity: match.similarity })
+        memberIds.add(candidate.id)
         if (members.length >= CURRENTNESS_MAX_CLUSTER_SIZE) break
       }
 
       if (members.length < 2) {
-        seen.add(record.id)
+        singletonById.set(record.id, record)
         continue
       }
 
-      for (const member of members) seen.add(member.id)
-      members.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
+      for (const member of members) {
+        seen.add(member.record.id)
+        singletonById.delete(member.record.id)
+      }
+      members.sort((a, b) => {
+        const timestampDiff = (a.record.timestamp ?? 0) - (b.record.timestamp ?? 0)
+        if (timestampDiff !== 0) return timestampDiff
+        return a.record.id < b.record.id ? -1 : 1
+      })
       clusterIndex += 1
       clusters.push({
         id: `currentness-cluster-${clusterIndex}`,
-        records: members
+        records: members.map(member => member.record),
+        members
       })
     }
   }
 
-  return clusters
+  return { candidates: dueCandidates.length, clusters, singletons: Array.from(singletonById.values()) }
+}
+
+function isCurrentnessCandidate(record: MemoryRecord): record is CurrentnessCandidate {
+  return record.type === 'discovery'
+    && !record.deprecated
+    && isValidEmbedding(record.embedding)
+}
+
+function wasRecentlyCurrentnessChecked(record: MemoryRecord, cutoff: number): boolean {
+  const lastCheck = record.lastCurrentnessCheck ?? 0
+  return lastCheck !== 0 && lastCheck >= cutoff
 }
 
 function buildCurrentnessFilter(record: DiscoveryRecord): string {
@@ -246,7 +276,32 @@ function buildCurrentnessFilter(record: DiscoveryRecord): string {
     type: 'discovery',
     excludeId: record.id,
     excludeDeprecated: true
-  }) ?? 'deprecated = false AND type = \'discovery\''
+  }) ?? ACTIVE_DISCOVERY_FILTER
+}
+
+async function markCurrentnessChecked(
+  records: DiscoveryRecord[],
+  checkedAt: number,
+  config: Config
+): Promise<number> {
+  if (records.length === 0) return 0
+
+  try {
+    const ids = records.map(record => record.id)
+    const idList = ids.map(id => `'${escapeFilterValue(id)}'`).join(', ')
+    const recordsWithEmbeddings = await fetchRecords(`id IN (${idList})`, config, true)
+    if (recordsWithEmbeddings.length === 0) return records.length
+
+    const result = await batchUpdateRecords(
+      recordsWithEmbeddings,
+      { lastCurrentnessCheck: checkedAt },
+      config
+    )
+    return result.failed
+  } catch (error) {
+    logger.warn(`Currentness checked marker failed: ${toErrorMessage(error)}`)
+    return records.length
+  }
 }
 
 async function checkCurrentnessCluster(
@@ -286,7 +341,6 @@ function buildCurrentnessInput(records: DiscoveryRecord[]): Record<string, unkno
       id: record.id,
       timestamp: record.timestamp ?? 0,
       snippet: buildRecordSnippet(record),
-      signal: getCurrentnessSignal(record),
       record: buildGeneralizationInput(record)
     }))
   }

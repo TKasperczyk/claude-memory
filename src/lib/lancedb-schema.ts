@@ -36,6 +36,7 @@ export const OUTPUT_FIELDS = [
   'last_global_check',
   'last_consolidation_check',
   'last_conflict_check',
+  'last_currentness_check',
   'last_warning_synthesis_check',
   'source_session_id',
   'source_excerpt'
@@ -64,6 +65,7 @@ export function buildTableSchema(): Schema {
     new Field('last_global_check', new Int64(), false),
     new Field('last_consolidation_check', new Int64(), false),
     new Field('last_conflict_check', new Int64(), false),
+    new Field('last_currentness_check', new Int64(), false),
     new Field('last_warning_synthesis_check', new Int64(), false),
     new Field('source_session_id', new Utf8(), true),
     new Field('source_excerpt', new Utf8(), true),
@@ -80,6 +82,7 @@ export const MIGRATION_COLUMNS: Array<{ name: string; valueSql: string }> = [
   { name: 'last_global_check', valueSql: '0' },
   { name: 'last_consolidation_check', valueSql: '0' },
   { name: 'last_conflict_check', valueSql: '0' },
+  { name: 'last_currentness_check', valueSql: '0' },
   { name: 'last_warning_synthesis_check', valueSql: '0' },
   { name: 'source_session_id', valueSql: 'NULL' },
   { name: 'source_excerpt', valueSql: 'NULL' },

@@ -111,6 +111,12 @@ const MAINTENANCE_GROUPS_META = {
     description: 'Compare new memories against existing knowledge.',
     section: 'maintenance'
   },
+  currentness: {
+    id: 'currentness',
+    label: 'Currentness',
+    description: 'Review evolving project-state discovery clusters.',
+    section: 'maintenance'
+  },
   globalPromotion: {
     id: 'global-promotion',
     label: 'Global promotion',
@@ -580,6 +586,16 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.consolidation
   },
   {
+    key: 'currentnessRecheckDays',
+    label: 'Currentness recheck cadence (days)',
+    description: 'Days before re-evaluating a discovery record for currentness.',
+    step: 1,
+    min: 1,
+    kind: 'int',
+    default: 7,
+    group: MAINTENANCE_GROUPS_META.currentness
+  },
+  {
     key: 'crossTypeConsolidationThreshold',
     label: 'Cross-type consolidation threshold',
     description: 'Higher similarity threshold for cross-type merges (0-1).',
@@ -795,6 +811,7 @@ const MAINTENANCE_GROUP_ORDER = [
   MAINTENANCE_GROUPS_META.lowUsage,
   MAINTENANCE_GROUPS_META.consolidation,
   MAINTENANCE_GROUPS_META.conflictResolution,
+  MAINTENANCE_GROUPS_META.currentness,
   MAINTENANCE_GROUPS_META.globalPromotion,
   MAINTENANCE_GROUPS_META.warningSynthesis,
   MAINTENANCE_GROUPS_META.similarityThresholds

@@ -58,6 +58,7 @@ export async function buildLanceRow(record: MemoryRecord, config: Config): Promi
     last_global_check: toInt64(normalized.lastGlobalCheck, 0),
     last_consolidation_check: toInt64(normalized.lastConsolidationCheck, 0),
     last_conflict_check: toInt64(normalized.lastConflictCheck, 0),
+    last_currentness_check: toInt64(normalized.lastCurrentnessCheck, 0),
     last_warning_synthesis_check: toInt64(normalized.lastWarningSynthesisCheck, 0),
     source_session_id: sourceSessionId ? truncateString(sourceSessionId, SOURCE_SESSION_ID_MAX_LENGTH) : null,
     source_excerpt: sourceExcerpt ? truncateString(sourceExcerpt, SOURCE_EXCERPT_MAX_LENGTH) : null,
@@ -131,6 +132,10 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
     ),
     lastConflictCheck: toInt64(
       (row.last_conflict_check as number | string | undefined) ?? parsed.lastConflictCheck,
+      0
+    ),
+    lastCurrentnessCheck: toInt64(
+      (row.last_currentness_check as number | string | undefined) ?? parsed.lastCurrentnessCheck,
       0
     ),
     lastWarningSynthesisCheck: toInt64(
@@ -228,6 +233,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const lastGlobalCheck = toInt64(record.lastGlobalCheck, 0)
   const lastConsolidationCheck = toInt64(record.lastConsolidationCheck, 0)
   const lastConflictCheck = toInt64(record.lastConflictCheck, 0)
+  const lastCurrentnessCheck = toInt64(record.lastCurrentnessCheck, 0)
   const lastWarningSynthesisCheck = toInt64(record.lastWarningSynthesisCheck, 0)
   const supersedes = normalizeOptionalString(record.supersedes)
   const relations = normalizeRelations(record.relations)
@@ -251,6 +257,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     lastGlobalCheck,
     lastConsolidationCheck,
     lastConflictCheck,
+    lastCurrentnessCheck,
     lastWarningSynthesisCheck,
     relations
   } as MemoryRecord

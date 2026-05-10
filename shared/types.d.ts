@@ -33,6 +33,7 @@ export interface BaseRecord {
   lastGlobalCheck?: number
   lastConsolidationCheck?: number
   lastConflictCheck?: number
+  lastCurrentnessCheck?: number
   lastWarningSynthesisCheck?: number
   embedding?: number[]
   /** UUID of a prior memory that this record supersedes/invalidates */
@@ -295,6 +296,7 @@ export interface MaintenanceSettings {
   consolidationMaxClusterSize: number
   consolidationThreshold: number
   consolidationRecheckDays: number
+  currentnessRecheckDays: number
   crossTypeConsolidationThreshold: number
   enableConsolidationLlmVerification: boolean
   conflictSimilarityThreshold: number

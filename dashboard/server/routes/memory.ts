@@ -264,6 +264,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         lastGlobalCheck: asNumber(body.lastGlobalCheck) ?? undefined,
         lastConsolidationCheck: asNumber(body.lastConsolidationCheck) ?? undefined,
         lastConflictCheck: asNumber(body.lastConflictCheck) ?? undefined,
+        lastCurrentnessCheck: asNumber(body.lastCurrentnessCheck) ?? undefined,
         lastWarningSynthesisCheck: asNumber(body.lastWarningSynthesisCheck) ?? undefined,
         embedding
       }

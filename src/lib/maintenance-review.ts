@@ -34,7 +34,7 @@ const OPERATION_PROMPTS: Record<string, string> = {
   'consolidation': 'This operation merges near-duplicate records. Goal: Reduce redundancy while keeping the best version. Key question: Were the right records kept?',
   'cross-type-consolidation': 'This operation merges highly similar records across different types. Goal: Keep the most actionable representative record. Key question: Did the chosen type and recency make sense?',
   'conflict-resolution': 'This operation resolves conflicts between new and existing records. Goal: Deprecate superseded knowledge. Key question: Are the LLM verdicts correct?',
-  'currentness-check': 'This operation reviews current-state and sprint-progress discovery clusters. Goal: Deprecate records superseded by newer current-state records while preserving useful history.',
+  'currentness-check': 'This operation reviews topical discovery clusters for evolving project state. Goal: Deprecate records superseded by newer current-state records while preserving useful history.',
   'quality-deprecation': 'This operation deprecates high-confidence extraction artifacts only. Goal: Remove raw tool dumps, vague transient errors, and metric dumps without touching concise but durable knowledge.',
   'warning-synthesis': 'This operation creates warning records from repeated failures. Goal: Extract actionable warnings. Key question: Are synthesized warnings useful?',
   'global-promotion': 'This operation elevates project-scoped records to global scope. Goal: Share universal knowledge. Key question: Are promoted records truly universal?',
@@ -59,7 +59,7 @@ const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
     'consolidationRecheckDays'
   ],
   'conflict-resolution': ['conflictSimilarityThreshold', 'conflictCheckBatchSize'],
-  'currentness-check': [],
+  'currentness-check': ['currentnessRecheckDays'],
   'warning-synthesis': [
     'warningSynthesisMinFailures',
     'warningClusterSimilarityThreshold',
@@ -447,6 +447,7 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
     lastGlobalCheck: record.lastGlobalCheck,
     lastConsolidationCheck: record.lastConsolidationCheck,
     lastConflictCheck: record.lastConflictCheck,
+    lastCurrentnessCheck: record.lastCurrentnessCheck,
     lastWarningSynthesisCheck: record.lastWarningSynthesisCheck
   }
 

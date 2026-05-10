@@ -83,7 +83,8 @@ describe('LanceDB core API', () => {
       embedding: makeEmbedding(1),
       deprecatedAt: 1700000000000,
       deprecatedReason: 'test:legacy',
-      supersedingRecordId: 'newer-id'
+      supersedingRecordId: 'newer-id',
+      lastCurrentnessCheck: 1700000000123
     })
     await insertRecord(record, config)
 
@@ -94,6 +95,7 @@ describe('LanceDB core API', () => {
     expect(loaded?.deprecatedAt).toBe(1700000000000)
     expect(loaded?.deprecatedReason).toBe('test:legacy')
     expect(loaded?.supersedingRecordId).toBe('newer-id')
+    expect(loaded?.lastCurrentnessCheck).toBe(1700000000123)
     expect(Array.isArray(loaded?.embedding)).toBe(true)
     expect(loaded?.embedding?.length).toBe(EMBEDDING_DIM)
   })

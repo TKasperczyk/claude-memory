@@ -1,29 +1,47 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_CONFIG, EMBEDDING_DIM, type DiscoveryRecord, type MemoryRecord } from '../src/lib/types.js'
+import { DEFAULT_CONFIG, EMBEDDING_DIM, type DiscoveryRecord } from '../src/lib/types.js'
+import type { MaintenanceSettings } from '../src/lib/settings.js'
+import { DEFAULT_MAINTENANCE_SETTINGS } from '../src/lib/settings-schema.js'
 import { runCurrentnessCheck } from '../src/lib/maintenance/runners/currentness-runner.js'
-import { vectorSearchSimilar } from '../src/lib/lancedb.js'
+import { batchUpdateRecords, vectorSearchSimilar } from '../src/lib/lancedb.js'
 import { fetchRecords } from '../src/lib/maintenance/scans.js'
 import { markDeprecated } from '../src/lib/maintenance/operations.js'
 import { createMockDiscoveryRecord } from './helpers.js'
 
 const mockState = vi.hoisted(() => ({
   records: [] as DiscoveryRecord[],
+  matchesBySeed: new Map<string, string[]>(),
   verdictInput: {} as Record<string, unknown>
 }))
 
 vi.mock('../src/lib/lancedb.js', () => ({
-  buildFilter: vi.fn(() => 'project = \'/tmp/e2e-test-project\' AND type = \'discovery\' AND deprecated = false'),
+  batchUpdateRecords: vi.fn(async () => ({ updated: mockState.records.length, failed: 0 })),
+  buildFilter: vi.fn((filters: { project?: string; type?: string; excludeId?: string; excludeDeprecated?: boolean }) => {
+    const parts: string[] = []
+    if (filters.project) parts.push(`project = '${filters.project}'`)
+    if (filters.type) parts.push(`type = '${filters.type}'`)
+    if (filters.excludeId) parts.push(`id <> '${filters.excludeId}'`)
+    if (filters.excludeDeprecated) parts.push('deprecated = false')
+    return parts.join(' AND ')
+  }),
   vectorSearchSimilar: vi.fn(async (embedding: number[]) => {
     const seed = mockState.records.find(record => record.embedding === embedding)
-    if (!seed || seed.id !== 'sprint-25-state') return []
-    return mockState.records
-      .filter(record => record.id !== seed.id)
+    if (!seed) return []
+    const matchIds = mockState.matchesBySeed.get(seed.id) ?? []
+    return matchIds
+      .map(id => mockState.records.find(record => record.id === id))
+      .filter((record): record is DiscoveryRecord => Boolean(record))
       .map(record => ({ record, similarity: 0.74 }))
   })
 }))
 
 vi.mock('../src/lib/maintenance/scans.js', () => ({
-  fetchRecords: vi.fn(async () => mockState.records),
+  fetchRecords: vi.fn(async (filter?: string) => {
+    if (filter?.startsWith('id IN')) {
+      return mockState.records.filter(record => filter.includes(`'${record.id}'`))
+    }
+    return mockState.records
+  }),
   isValidEmbedding: vi.fn((embedding: unknown) => Array.isArray(embedding) && embedding.length === EMBEDDING_DIM)
 }))
 
@@ -52,18 +70,23 @@ vi.mock('../src/lib/maintenance/prompts.js', async () => {
   }
 })
 
+const settings: MaintenanceSettings = {
+  ...DEFAULT_MAINTENANCE_SETTINGS,
+  currentnessRecheckDays: 7
+}
+
 function embedding(index: number): number[] {
   const vector = new Array<number>(EMBEDDING_DIM).fill(0)
   vector[index] = 1
   return vector
 }
 
-function sprintDiscovery(id: string, what: string, timestamp: string, index: number): DiscoveryRecord {
+function discovery(id: string, what: string, timestamp: string, index: number): DiscoveryRecord {
   return createMockDiscoveryRecord({
     id,
     what,
     where: '/home/luthriel/Programming/borg',
-    evidence: 'Sprint notes and test output.',
+    evidence: 'Repository inspection and test output.',
     timestamp: Date.parse(timestamp),
     embedding: embedding(index)
   })
@@ -72,86 +95,124 @@ function sprintDiscovery(id: string, what: string, timestamp: string, index: num
 describe('currentness runner', () => {
   beforeEach(() => {
     mockState.records = []
+    mockState.matchesBySeed = new Map<string, string[]>()
     mockState.verdictInput = {}
     vi.mocked(fetchRecords).mockClear()
     vi.mocked(vectorSearchSimilar).mockClear()
+    vi.mocked(batchUpdateRecords).mockClear()
     vi.mocked(markDeprecated).mockClear()
   })
 
-  it('deprecates superseded sprint-progression discoveries with superseding metadata', async () => {
-    const current = sprintDiscovery(
-      'sprint-96-queue',
-      'Remaining sprint queue after Sprint 9.6: trivial cleanup, OQ tightening, and simulator follow-ups remain current.',
-      '2026-05-10T07:30:10.197Z',
-      4
+  it('uses embedding clusters instead of English currentness keywords', async () => {
+    const oldTools = discovery(
+      'finalizer-tools-12',
+      "The finalizer's tools array contains 12 internal tools.",
+      '2026-05-08T09:00:00.000Z',
+      0
     )
-    const historical = sprintDiscovery(
-      'sprint-31-summary',
-      'Current state after Sprint 31a-33: shipped review fixes and captured historical remediation context.',
-      '2026-04-28T09:00:00.000Z',
-      3
+    const currentTools = discovery(
+      'finalizer-tools-3',
+      "The finalizer's tools array contains 3 emission tools.",
+      '2026-05-10T09:00:00.000Z',
+      1
     )
-    const supersededRecords = [
-      sprintDiscovery(
-        'sprint-25-state',
-        'Borg project current state after Sprint 25: early sprint numbering and 417 tests.',
-        '2026-04-23T09:00:00.000Z',
-        0
-      ),
-      sprintDiscovery(
-        'sprint-8d-queue',
-        'Remaining sprint queue after Sprint 8d.6: OQ resolution selection and semantic graph work remain.',
-        '2026-05-09T21:30:43.653Z',
-        1
-      ),
-      sprintDiscovery(
-        'test-count-old',
-        'Borg project test count progression snapshot: Sprint 6c to 6d reached 1268 tests.',
-        '2026-05-09T22:00:00.000Z',
-        2
-      )
-    ]
+    const unrelated = discovery(
+      'unrelated-cache',
+      'The cache writer persists token usage events as JSONL.',
+      '2026-05-10T10:00:00.000Z',
+      2
+    )
 
-    mockState.records = [supersededRecords[0], supersededRecords[1], supersededRecords[2], historical, current]
+    mockState.records = [oldTools, currentTools, unrelated]
+    mockState.matchesBySeed.set(oldTools.id, [currentTools.id])
     mockState.verdictInput = {
       records: [
-        ...supersededRecords.map(record => ({
-          id: record.id,
-          verdict: 'superseded',
-          reason: 'A newer cluster record describes the current sprint state.',
-          supersedingRecordId: current.id
-        })),
         {
-          id: historical.id,
-          verdict: 'historical_useful',
-          reason: 'This shipped-work summary remains useful historical context.'
+          id: oldTools.id,
+          verdict: 'superseded',
+          reason: 'The newer record gives the replacement tool count.',
+          supersedingRecordId: currentTools.id
         },
         {
-          id: current.id,
+          id: currentTools.id,
           verdict: 'current',
-          reason: 'This is the newest current sprint queue record.'
+          reason: 'This is the latest observed tool count.'
         }
       ],
-      reason: 'The cluster contains successive sprint-state snapshots.'
+      reason: 'The records describe the same finalizer tool array at different points in time.'
     }
 
-    const result = await runCurrentnessCheck(false, DEFAULT_CONFIG)
+    const result = await runCurrentnessCheck(false, DEFAULT_CONFIG, settings)
 
     expect(result.summary).toMatchObject({
-      candidates: 5,
+      candidates: 3,
       clusters: 1,
-      checked: 5,
+      checked: 2,
       current: 1,
-      historical: 1,
-      deprecated: 3,
+      historical: 0,
+      deprecated: 1,
       errors: 0
     })
-    expect(result.actions.map(action => action.recordId)).toEqual(supersededRecords.map(record => record.id))
-    for (const record of supersededRecords) {
-      expect(markDeprecated).toHaveBeenCalledWith(record.id, DEFAULT_CONFIG, {
-        reason: `currentness:superseded-by:${current.id}`,
-        supersedingRecordId: current.id
-      })
+    expect(vectorSearchSimilar).toHaveBeenCalled()
+    expect(result.candidates[0]?.records.map(record => record.id)).toEqual([oldTools.id, currentTools.id])
+    expect(markDeprecated).toHaveBeenCalledWith(oldTools.id, DEFAULT_CONFIG, {
+      reason: `currentness:superseded-by:${currentTools.id}`,
+      supersedingRecordId: currentTools.id
+    })
+    expect(batchUpdateRecords).toHaveBeenCalledWith(
+      [oldTools, currentTools],
+      { lastCurrentnessCheck: expect.any(Number) },
+      DEFAULT_CONFIG
+    )
+  })
+
+  it('adjudicates a Polish-language topical cluster', async () => {
+    const oldRecord = discovery(
+      'narzedzia-finalizatora-12',
+      'Tablica narzedzi finalizatora ma 12 narzedzi wewnetrznych.',
+      '2026-05-08T09:00:00.000Z',
+      3
+    )
+    const currentRecord = discovery(
+      'narzedzia-finalizatora-3',
+      'Tablica narzedzi finalizatora ma 3 narzedzia emisji.',
+      '2026-05-10T09:00:00.000Z',
+      4
+    )
+
+    mockState.records = [oldRecord, currentRecord]
+    mockState.matchesBySeed.set(oldRecord.id, [currentRecord.id])
+    mockState.verdictInput = {
+      records: [
+        {
+          id: oldRecord.id,
+          verdict: 'superseded',
+          reason: 'Nowszy rekord opisuje aktualna liczbe narzedzi.',
+          supersedingRecordId: currentRecord.id
+        },
+        {
+          id: currentRecord.id,
+          verdict: 'current',
+          reason: 'To najnowszy opis tej samej tablicy narzedzi.'
+        }
+      ],
+      reason: 'Rekordy opisuja ten sam temat w roznych momentach.'
     }
+
+    const result = await runCurrentnessCheck(false, DEFAULT_CONFIG, settings)
+
+    expect(result.summary).toMatchObject({
+      candidates: 2,
+      clusters: 1,
+      checked: 2,
+      current: 1,
+      deprecated: 1,
+      errors: 0
+    })
+    expect(result.candidates[0]?.records.map(record => record.id)).toEqual([oldRecord.id, currentRecord.id])
+    expect(markDeprecated).toHaveBeenCalledWith(oldRecord.id, DEFAULT_CONFIG, {
+      reason: `currentness:superseded-by:${currentRecord.id}`,
+      supersedingRecordId: currentRecord.id
+    })
   })
 })

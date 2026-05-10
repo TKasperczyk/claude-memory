@@ -38,6 +38,7 @@ const PROTECTED_SYNTHESIS_FIELDS = new Set([
   'lastGlobalCheck',
   'lastConsolidationCheck',
   'lastConflictCheck',
+  'lastCurrentnessCheck',
   'lastWarningSynthesisCheck',
   'supersedes'
 ])
