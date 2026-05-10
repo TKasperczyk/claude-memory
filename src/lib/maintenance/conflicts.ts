@@ -50,6 +50,12 @@ interface ConflictPair {
   existingRecord: MemoryRecord
 }
 
+type ConflictVerdict = {
+  verdict: 'deprecate_existing' | 'deprecate_candidate' | 'keep_both'
+  reason: string
+  supersedingRecordId?: string
+}
+
 async function findNewConflicts(
   config: Config = DEFAULT_CONFIG,
   settings?: MaintenanceSettings
@@ -261,7 +267,7 @@ async function resolveContradictionWithLLM(
 async function resolveConflictWithLLM(
   pair: ConflictPair,
   config: Config
-): Promise<{ verdict: 'supersedes' | 'variant' | 'hallucination'; reason: string }> {
+): Promise<ConflictVerdict> {
   const client = await getAnthropicClient()
   if (!client) {
     throw new Error('No authentication available for conflict adjudication. Set ANTHROPIC_API_KEY or run kira login.')
@@ -324,7 +330,7 @@ export async function runConflictResolution(
   let checked = 0
   let deprecatedExisting = 0
   let deprecatedNew = 0
-  let variants = 0
+  let keptBoth = 0
   let processed = 0
   let errors = 0
 
@@ -359,13 +365,13 @@ export async function runConflictResolution(
     // Stage actions per candidate so errors don't cause partial deprecations.
     let currentNewId: string | null = null
     let pendingActions: ConflictMaintenanceAction[] = []
-    let pendingVariants = 0
+    let pendingKeptBoth = 0
     let pendingFailed = false
 
     const resetPending = (newId: string) => {
       currentNewId = newId
       pendingActions = []
-      pendingVariants = 0
+      pendingKeptBoth = 0
       pendingFailed = false
     }
 
@@ -373,7 +379,7 @@ export async function runConflictResolution(
       if (!currentNewId) return
       if (pendingFailed) {
         pendingActions = []
-        pendingVariants = 0
+        pendingKeptBoth = 0
         return
       }
 
@@ -387,19 +393,19 @@ export async function runConflictResolution(
             deprecatedExisting += 1
           }
         }
-        variants += pendingVariants
+        keptBoth += pendingKeptBoth
         return
       }
 
       let writeFailed = false
       for (const action of pendingActions) {
         if (!action.recordId) continue
-        const supersedingRecordId = action.details?.verdict === 'supersedes' && typeof action.details.candidateId === 'string'
-          ? action.details.candidateId
+        const supersedingRecordId = typeof action.details?.supersedingRecordId === 'string'
+          ? action.details.supersedingRecordId
           : undefined
         const reason = supersedingRecordId
           ? `conflict-resolution:superseded-by:${supersedingRecordId}`
-          : 'conflict-resolution:hallucination'
+          : `conflict-resolution:${String(action.details?.verdict ?? 'deprecate')}`
         let updatedRecord = false
         try {
           updatedRecord = await markDeprecated(
@@ -425,7 +431,7 @@ export async function runConflictResolution(
         }
       }
       if (!writeFailed) {
-        variants += pendingVariants
+        keptBoth += pendingKeptBoth
       }
     }
 
@@ -462,7 +468,12 @@ export async function runConflictResolution(
             logger.info(`Adjudicated ${checked}/${pairs} pairs (${avgMs}ms/pair, ~${etaSec}s remaining)`)
           }
 
-          if (verdict.verdict === 'supersedes') {
+          if (verdict.verdict === 'deprecate_existing') {
+            const supersedingRecordId = resolveConflictSupersedingRecordId(
+              verdict,
+              pair.existingRecord.id,
+              pair.newRecord.id
+            )
             const action: ConflictMaintenanceAction = {
               type: 'deprecate',
               recordId: pair.existingRecord.id,
@@ -471,12 +482,18 @@ export async function runConflictResolution(
               details: {
                 verdict: verdict.verdict,
                 candidateId: newId,
-                existingId: pair.existingRecord.id
+                existingId: pair.existingRecord.id,
+                supersedingRecordId
               }
             }
 
             pendingActions.push(action)
-          } else if (verdict.verdict === 'hallucination') {
+          } else if (verdict.verdict === 'deprecate_candidate') {
+            const supersedingRecordId = resolveConflictSupersedingRecordId(
+              verdict,
+              pair.newRecord.id,
+              pair.existingRecord.id
+            )
             const action: ConflictMaintenanceAction = {
               type: 'deprecate',
               recordId: newId,
@@ -485,21 +502,22 @@ export async function runConflictResolution(
               details: {
                 verdict: verdict.verdict,
                 candidateId: newId,
-                existingId: pair.existingRecord.id
+                existingId: pair.existingRecord.id,
+                supersedingRecordId
               }
             }
 
             pendingActions = [action]
-            pendingVariants = 0
+            pendingKeptBoth = 0
             deprecatedNewIds.add(newId)
           } else {
-            pendingVariants += 1
+            pendingKeptBoth += 1
           }
         } catch {
           errors += 1
           failedNewIds.add(newId)
           pendingActions = []
-          pendingVariants = 0
+          pendingKeptBoth = 0
           pendingFailed = true
         }
       }
@@ -510,7 +528,7 @@ export async function runConflictResolution(
     if (checked > 0) {
       const adjudicationDuration = Date.now() - adjudicationStart
       logger.info(`Adjudication complete in ${Math.round(adjudicationDuration / 1000)}s`)
-      logger.info(`Verdicts: ${deprecatedExisting} supersedes, ${deprecatedNew} hallucinations, ${variants} variants`)
+      logger.info(`Verdicts: ${deprecatedExisting} deprecate_existing, ${deprecatedNew} deprecate_candidate, ${keptBoth} keep_both`)
     }
 
     const recordsToMark = unchecked.filter(r => !deprecatedNewIds.has(r.id) && !failedNewIds.has(r.id))
@@ -534,7 +552,7 @@ export async function runConflictResolution(
     logger.error('Conflict resolution failed', error)
     return {
       actions,
-      summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, processed, errors },
+      summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, keptBoth, processed, errors },
       candidates: candidateGroups,
       error: message
     }
@@ -542,9 +560,19 @@ export async function runConflictResolution(
 
   return {
     actions,
-    summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, variants, processed, errors },
+    summary: { candidates, pairs, checked, deprecatedExisting, deprecatedNew, keptBoth, processed, errors },
     candidates: candidateGroups
   }
+}
+
+function resolveConflictSupersedingRecordId(
+  verdict: ConflictVerdict,
+  deprecatedId: string,
+  defaultSupersedingId: string
+): string | undefined {
+  const candidate = verdict.supersedingRecordId?.trim()
+  if (candidate && candidate !== deprecatedId) return candidate
+  return defaultSupersedingId
 }
 
 function buildContradictionFilter(record: MemoryRecord): string {
@@ -618,17 +646,24 @@ function parseContradictionResponse(rawText: string): ContradictionResult {
 
 function coerceConflictVerdict(
   value: unknown
-): { verdict: 'supersedes' | 'variant' | 'hallucination'; reason: string } | null {
+): ConflictVerdict | null {
   if (!isPlainObject(value)) return null
   const verdict = value.verdict
   const reason = typeof value.reason === 'string' ? value.reason.trim() : ''
+  const supersedingRecordId = typeof value.supersedingRecordId === 'string'
+    ? value.supersedingRecordId.trim()
+    : ''
 
-  if (verdict !== 'supersedes' && verdict !== 'variant' && verdict !== 'hallucination') {
+  if (verdict !== 'deprecate_existing' && verdict !== 'deprecate_candidate' && verdict !== 'keep_both') {
     return null
   }
   if (!reason) return null
 
-  return { verdict, reason }
+  return {
+    verdict,
+    reason,
+    ...(supersedingRecordId ? { supersedingRecordId } : {})
+  }
 }
 
 function parseVerdict(value: unknown): ContradictionResult['verdict'] {

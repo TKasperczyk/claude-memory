@@ -56,14 +56,17 @@ Return JSON:
 
 export const CONFLICT_ADJUDICATION_PROMPT = `You adjudicate conflicts between a newly extracted memory and an existing memory.
 
-Compare the Existing Memory and the New Candidate. Determine their relationship and emit a verdict:
-- "supersedes": the new memory updates/corrects the existing fact; deprecate the existing record.
-- "variant": both can be true in different contexts; keep both records.
-- "hallucination": the new memory is vague/incorrect compared to the existing; deprecate the new record.
+Compare the Existing Memory and the New Candidate. Decide what should happen:
+- "deprecate_existing": the candidate should stay and the existing record should be deprecated.
+- "deprecate_candidate": the existing record should stay and the candidate should be deprecated.
+- "keep_both": both records should remain active.
 
 Rules:
 - Use only the provided records; do not invent context.
-- Be conservative: choose "variant" when both could be true.
+- Be conservative: choose "keep_both" when both could still be useful or current.
+- Treat timestamps as a recency signal, not the only source of truth.
+- If one record describes an older state and the other describes a later resolved/current state for the same topic, deprecate the older state.
+- When deprecating a record because the other record supersedes it, set supersedingRecordId to the record that should remain active.
 - Provide a concise reason.
 - Output ONLY via the tool call "${CONFLICT_ADJUDICATION_TOOL_NAME}" exactly once.`
 
@@ -229,8 +232,12 @@ export const CONFLICT_ADJUDICATION_TOOL: Anthropic.Tool = {
     additionalProperties: false,
     required: ['verdict', 'reason'],
     properties: {
-      verdict: { type: 'string', enum: ['supersedes', 'variant', 'hallucination'] },
-      reason: { type: 'string' }
+      verdict: { type: 'string', enum: ['deprecate_existing', 'deprecate_candidate', 'keep_both'] },
+      reason: { type: 'string' },
+      supersedingRecordId: {
+        type: 'string',
+        description: 'Optional ID of the record that should remain active and supersede the deprecated record.'
+      }
     }
   }
 }
