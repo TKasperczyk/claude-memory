@@ -123,7 +123,7 @@ export async function runCurrentnessCheck(
             record,
             reason: verdict.reason,
             details: {
-              verdict: verdict.verdict,
+              currentnessVerdict: verdict.verdict,
               supersedingRecordId
             }
           })

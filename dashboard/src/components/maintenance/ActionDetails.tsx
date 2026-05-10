@@ -61,15 +61,15 @@ export default function ActionDetails({
   let existingStatus: ConflictStatus | null = null
   let outcomeText: string | null = null
 
-  if (verdict === 'supersedes') {
+  if (verdict === 'deprecate_existing') {
     candidateStatus = 'kept'
     existingStatus = 'deprecated'
-    outcomeText = 'Outcome: New replaces existing.'
-  } else if (verdict === 'hallucination') {
+    outcomeText = 'Outcome: Candidate replaces existing.'
+  } else if (verdict === 'deprecate_candidate') {
     candidateStatus = 'deprecated'
     existingStatus = 'kept'
-    outcomeText = 'Outcome: Existing kept, new deprecated.'
-  } else if (verdict === 'variant') {
+    outcomeText = 'Outcome: Existing kept, candidate deprecated.'
+  } else if (verdict === 'keep_both') {
     candidateStatus = 'kept'
     existingStatus = 'kept'
     outcomeText = 'Outcome: Keep both.'

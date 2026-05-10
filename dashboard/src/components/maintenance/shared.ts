@@ -92,21 +92,21 @@ export const SETTINGS_RECOMMENDATION_STYLES: Record<
 }
 
 export const CONFLICT_STYLES: Record<ConflictVerdict, { badge: string; label: string; ring: string; background: string }> = {
-  supersedes: {
+  deprecate_existing: {
     badge: 'bg-success/15 text-success',
-    label: 'Supersedes',
+    label: 'Deprecate existing',
     ring: 'ring-success/30',
     background: 'bg-success/5'
   },
-  variant: {
+  keep_both: {
     badge: 'bg-info/15 text-info',
-    label: 'Variant',
+    label: 'Keep both',
     ring: 'ring-info/30',
     background: 'bg-info/5'
   },
-  hallucination: {
+  deprecate_candidate: {
     badge: 'bg-destructive/15 text-destructive',
-    label: 'Hallucination',
+    label: 'Deprecate candidate',
     ring: 'ring-destructive/30',
     background: 'bg-destructive/5'
   }
@@ -119,7 +119,7 @@ export const CONFLICT_STATUS_STYLES: Record<ConflictStatus, string> = {
 
 export function getConflictVerdict(details?: MaintenanceAction['details']): ConflictVerdict | null {
   const verdict = details?.verdict
-  if (verdict === 'supersedes' || verdict === 'variant' || verdict === 'hallucination') {
+  if (verdict === 'deprecate_existing' || verdict === 'deprecate_candidate' || verdict === 'keep_both') {
     return verdict
   }
   return null

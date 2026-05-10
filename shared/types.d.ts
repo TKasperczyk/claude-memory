@@ -447,7 +447,7 @@ export interface MaintenanceReview {
 }
 
 export type MaintenanceActionType = 'deprecate' | 'update' | 'merge' | 'promote' | 'suggestion'
-export type ConflictVerdict = 'supersedes' | 'variant' | 'hallucination'
+export type ConflictVerdict = 'deprecate_existing' | 'deprecate_candidate' | 'keep_both'
 
 export interface MaintenanceMergeRecord {
   id: string
