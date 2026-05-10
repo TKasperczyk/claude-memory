@@ -263,7 +263,10 @@ export async function runConflictResolution(
         if (deprecatedNewIds.has(newId) || failedNewIds.has(newId)) continue
 
         try {
-          const verdict = await resolveConflictWithLLM(pair, config)
+          const verdict = normalizeConflictVerdictForPair(
+            await resolveConflictWithLLM(pair, config),
+            pair
+          )
           checked += 1
 
           // Log progress every 5 pairs or at the end
@@ -381,6 +384,26 @@ function resolveConflictSupersedingRecordId(
   const candidate = verdict.supersedingRecordId?.trim()
   if (candidate && candidate !== deprecatedId) return candidate
   return defaultSupersedingId
+}
+
+function normalizeConflictVerdictForPair(
+  verdict: ConflictVerdict,
+  pair: ConflictPair
+): ConflictVerdict {
+  const candidateTime = pair.newRecord.timestamp ?? 0
+  const existingTime = pair.existingRecord.timestamp ?? 0
+  if (
+    verdict.verdict === 'deprecate_existing'
+    && candidateTime > 0
+    && existingTime > 0
+    && candidateTime < existingTime
+  ) {
+    return {
+      verdict: 'keep_both',
+      reason: `${verdict.reason} Kept both because the candidate is older than the existing record, so deprecating the existing record would require stronger evidence.`
+    }
+  }
+  return verdict
 }
 
 function buildConflictAdjudicationInput(pair: ConflictPair): Record<string, unknown> {

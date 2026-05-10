@@ -129,6 +129,45 @@ describe('conflict resolution verdict actions', () => {
     })
   })
 
+  it('does not deprecate a newer existing record when an older candidate receives a bad deprecate_existing verdict', async () => {
+    const candidate = createMockDiscoveryRecord({
+      id: 'older-candidate',
+      what: 'Remaining quality debt from code review: cli/app.ts is still large.',
+      where: 'src/cli/app.ts',
+      evidence: 'Deferred to future sprint.',
+      timestamp: Date.parse('2026-04-23T20:48:30.198Z'),
+      lastConflictCheck: 0,
+      embedding: embedding(0)
+    })
+    const existing = createMockDiscoveryRecord({
+      id: 'newer-existing',
+      what: 'Sprint 27 split remaining quality debt: cli/app.ts was reduced to 75 LOC.',
+      where: 'src/cli/',
+      evidence: 'Commit ed4b5e9 completed the split.',
+      timestamp: Date.parse('2026-04-24T09:58:25.539Z'),
+      embedding: embedding(1)
+    })
+
+    mockState.unchecked = [candidate]
+    mockState.matches = [{ record: existing, similarity: 0.75 }]
+    mockState.verdictInput = {
+      verdict: 'deprecate_existing',
+      reason: 'The existing record supersedes the candidate, but the emitted action is wrong.',
+      supersedingRecordId: candidate.id
+    }
+
+    const result = await runConflictResolution(false, DEFAULT_CONFIG)
+
+    expect(result.summary).toMatchObject({
+      checked: 1,
+      deprecatedExisting: 0,
+      deprecatedNew: 0,
+      keptBoth: 1
+    })
+    expect(result.actions).toHaveLength(0)
+    expect(markDeprecated).not.toHaveBeenCalled()
+  })
+
   it('uses action-oriented conflict verdict labels in the tool schema', () => {
     expect(CONFLICT_ADJUDICATION_TOOL.input_schema.properties?.verdict).toEqual({
       type: 'string',

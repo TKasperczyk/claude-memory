@@ -45,8 +45,10 @@ Rules:
 - Be conservative: choose "keep_both" when both could still be useful or current.
 - Treat timestamps as a recency signal, not the only source of truth.
 - If one record describes an older state and the other describes a later resolved/current state for the same topic, deprecate the older state.
+- If the candidate timestamp is older than the existing timestamp, do not choose "deprecate_existing" unless the candidate clearly contains a more current correction despite its older timestamp.
+- If the older record still contains useful details not covered by the newer record, choose "keep_both".
 - When deprecating a record because the other record supersedes it, set supersedingRecordId to the record that should remain active.
-- Provide a concise reason.
+- Provide a concise final reason that matches the verdict. Do not include deliberation or self-correction.
 - Output ONLY via the tool call "${CONFLICT_ADJUDICATION_TOOL_NAME}" exactly once.`
 
 export const CURRENTNESS_PROMPT = `Review a cluster of project discovery memories that may describe evolving current state, sprint queues, deferred work, test-count snapshots, or version progressions.
