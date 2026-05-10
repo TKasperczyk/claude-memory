@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc && pnpm run -C dashboard build",
+    "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/",
     "dashboard": "pnpm run -C dashboard start",
     "dashboard:build": "pnpm run -C dashboard build",
