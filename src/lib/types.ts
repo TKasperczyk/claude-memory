@@ -1,7 +1,9 @@
 // Record type definitions for Claude Memory
 // See PLAN.md for full schemas
 
+import path from 'path'
 import type { NearMissRecord, RecordType, ScoredRecord } from '../../shared/types.js'
+import { CLAUDE_MEMORY_ROOT } from './paths.js'
 
 export const EMBEDDING_DIM = 4096
 
@@ -154,7 +156,7 @@ export interface Config {
 
 export const DEFAULT_CONFIG: Config = {
   lancedb: {
-    directory: process.env.CC_MEMORIES_LANCEDB_DIR ?? `${process.env.HOME ?? ''}/.claude-memory/lancedb`,
+    directory: process.env.CC_MEMORIES_LANCEDB_DIR ?? path.join(CLAUDE_MEMORY_ROOT, 'lancedb'),
     table: process.env.CC_MEMORIES_COLLECTION ?? 'cc_memories'
   },
   embeddings: {

@@ -1,10 +1,10 @@
-import os from 'os'
 import path from 'path'
 import { DEFAULT_CONFIG, createConfig, type Config } from './types.js'
 import { readJsonFileSafe } from './json.js'
 import { loadSettings } from './settings.js'
+import { CLAUDE_MEMORY_ROOT } from './paths.js'
 
-const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.claude-memory', 'config.json')
+const GLOBAL_CONFIG_PATH = path.join(CLAUDE_MEMORY_ROOT, 'config.json')
 
 function mergeConfig(base: Config, override: Partial<Config>): Config {
   return {

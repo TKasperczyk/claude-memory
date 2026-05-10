@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { connect, type Connection, type Table } from '@lancedb/lancedb'
 import { DEFAULT_CONFIG, type Config } from './types.js'
 import { buildTableSchema, ensureSchemaFields } from './lancedb-schema.js'
+import { CLAUDE_MEMORY_ROOT } from './paths.js'
 
 type LanceContext = {
   conn: Connection
@@ -28,7 +29,7 @@ function isInitializationCancelledError(error: unknown): boolean {
 
 export function resolveDirectory(directory: string): string {
   const trimmed = directory.trim()
-  if (trimmed === '') return path.join(homedir(), '.claude-memory', 'lancedb')
+  if (trimmed === '') return path.join(CLAUDE_MEMORY_ROOT, 'lancedb')
   if (trimmed === '~') return homedir()
   if (trimmed.startsWith('~/')) return path.join(homedir(), trimmed.slice(2))
   return trimmed

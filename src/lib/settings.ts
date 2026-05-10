@@ -1,9 +1,9 @@
 import fs from 'fs'
 import path from 'path'
-import { homedir } from 'os'
 import { isPlainObject } from './parsing.js'
 import { readJsonFile, writeJsonFile } from './json.js'
 import type { MaintenanceSettings, ModelSettings, RetrievalSettings, Settings } from '../../shared/types.js'
+import { CLAUDE_MEMORY_ROOT } from './paths.js'
 import {
   DEFAULT_MAINTENANCE_SETTINGS,
   DEFAULT_MODEL_SETTINGS,
@@ -19,7 +19,7 @@ import {
 
 export type { MaintenanceSettings, ModelSettings, RetrievalSettings, Settings } from '../../shared/types.js'
 
-const SETTINGS_DIR = path.join(homedir(), '.claude-memory')
+const SETTINGS_DIR = CLAUDE_MEMORY_ROOT
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json')
 
 export function getDefaultRetrievalSettings(): RetrievalSettings {

@@ -9,7 +9,6 @@ import fs, { appendFileSync } from 'fs'
 import { spawn } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
-import { homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { extractRecords } from '../lib/extract.js'
 import { REMEMBER_MARKER } from '../lib/claude-commands.js'
@@ -27,6 +26,7 @@ import {
   type InjectedMemoryEntry,
   type TokenUsage
 } from '../lib/types.js'
+import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE } from '../lib/paths.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -399,7 +399,6 @@ export function deriveUsageDelta(record: MemoryRecord): { successDelta: number; 
 }
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
-const DEBUG_LOG_FILE = `${homedir()}/.claude-memory/debug.log`
 
 function debugLog(msg: string): void {
   if (!DEBUG) return
@@ -449,7 +448,7 @@ function launcherMain(): void {
   }
 
   // Write to temp file
-  const tempFile = join(homedir(), '.claude-memory', `hook-input-${process.pid}-${Date.now()}-${randomUUID()}.json`)
+  const tempFile = join(CLAUDE_MEMORY_ROOT, `hook-input-${process.pid}-${Date.now()}-${randomUUID()}.json`)
   try {
     fs.mkdirSync(dirname(tempFile), { recursive: true })
     fs.writeFileSync(tempFile, input, { flag: 'wx' })
@@ -477,13 +476,37 @@ function launcherMain(): void {
   debugLog(`Spawning worker: ${workerPath}`)
 
   // Spawn worker with temp file path as argument
-  // ALL stdio must be 'ignore' - any inherited fd keeps Claude Code waiting
+  // Stdin/stdout stay ignored; stderr goes to a regular file fd so worker diagnostics survive.
   const command = usesTsWorker ? 'npx' : 'node'
   const args = usesTsWorker ? ['tsx', workerPath, tempFile] : [workerPath, tempFile]
-  const child = spawn(command, args, {
-    detached: true,
-    stdio: ['ignore', 'ignore', 'ignore']
-  })
+  let stderrFd: number | undefined
+  let stderrStdio: 'ignore' | number = 'ignore'
+
+  try {
+    fs.mkdirSync(dirname(DEBUG_LOG_FILE), { recursive: true })
+    stderrFd = fs.openSync(DEBUG_LOG_FILE, 'a')
+    stderrStdio = stderrFd
+  } catch (error) {
+    debugLog(`Failed to open worker stderr log: ${error}`)
+  }
+
+  let child: ReturnType<typeof spawn> | null = null
+  try {
+    child = spawn(command, args, {
+      detached: true,
+      stdio: ['ignore', 'ignore', stderrStdio]
+    })
+  } finally {
+    if (stderrFd !== undefined) {
+      try {
+        fs.closeSync(stderrFd)
+      } catch (error) {
+        debugLog(`Failed to close parent worker stderr fd: ${error}`)
+      }
+    }
+  }
+
+  if (!child) return
 
   child.on('error', error => {
     debugLog(`Worker spawn failed: ${error}`)

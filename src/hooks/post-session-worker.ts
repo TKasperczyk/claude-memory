@@ -5,8 +5,8 @@
  */
 
 import fs, { appendFileSync } from 'fs'
-import { homedir } from 'os'
 import { randomUUID } from 'crypto'
+import { join } from 'path'
 import { closeLanceDB, flushCollection, initLanceDB, incrementRecordCounters } from '../lib/lancedb.js'
 import { rateInjectedMemories } from '../lib/extract.js'
 import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
@@ -27,11 +27,10 @@ import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
 import { SKIP_EXTRACTION_MARKER } from '../lib/claude-commands.js'
 import { addTokenUsage, emptyTokenUsage, hasTokenUsage } from '../lib/token-usage.js'
+import { CLAUDE_MEMORY_ROOT, LOCKS_DIR } from '../lib/paths.js'
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
-const DEBUG_LOG_FILE = `${homedir()}/.claude-memory/debug.log`
-const AUDIT_LOG_FILE = `${homedir()}/.claude-memory/extraction-audit.log`
-const LOCKS_DIR = `${homedir()}/.claude-memory/locks`
+const AUDIT_LOG_FILE = join(CLAUDE_MEMORY_ROOT, 'extraction-audit.log')
 const LOCK_STALE_MS = 5 * 60 * 1000
 const workerStartTime = Date.now()
 
@@ -55,11 +54,6 @@ function debugLog(msg: string): void {
   const elapsed = Date.now() - workerStartTime
   const line = `[worker] ${ts} +${elapsed}ms ${msg}\n`
   console.error(line.trim())
-  try {
-    appendFileSync(DEBUG_LOG_FILE, line)
-  } catch {
-    // ignore
-  }
 }
 
 /** Always-on audit log for debugging extraction issues */

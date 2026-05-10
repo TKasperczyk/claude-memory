@@ -1,9 +1,9 @@
 import fs from 'fs'
 import path from 'path'
-import { homedir } from 'os'
 import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
 import { getRecordSummary } from './record-summary.js'
 import { RunLog } from './run-log.js'
+import { LOCKS_DIR } from './paths.js'
 import type { ExtractionRecordSummary, ExtractionRun, RecordType, TokenUsage } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
@@ -47,7 +47,7 @@ export interface InProgressExtraction {
 const IN_PROGRESS_STALE_MS = 5 * 60 * 1000
 
 export function listInProgressExtractions(): InProgressExtraction[] {
-  const locksDir = path.join(homedir(), '.claude-memory', 'locks')
+  const locksDir = LOCKS_DIR
   if (!fs.existsSync(locksDir)) return []
 
   const files = fs.readdirSync(locksDir)

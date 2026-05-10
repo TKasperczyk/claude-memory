@@ -11,6 +11,7 @@ import { MODEL_OPTIONS } from './lib/settings-schema.js'
 import { installAll } from './lib/installer.js'
 import { loadCredentials } from './lib/anthropic.js'
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config } from './lib/types.js'
+import { CLAUDE_MEMORY_ROOT } from './lib/paths.js'
 
 // ---------------------------------------------------------------------------
 // ANSI helpers (zero dependencies)
@@ -86,7 +87,7 @@ async function choose(prompt: string, options: { value: string; label: string }[
 // ---------------------------------------------------------------------------
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const MEMORY_DIR = path.join(os.homedir(), '.claude-memory')
+const MEMORY_DIR = CLAUDE_MEMORY_ROOT
 const CONFIG_PATH = path.join(MEMORY_DIR, 'config.json')
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
 const CLAUDE_CONFIG_PATH = path.join(os.homedir(), '.claude.json')

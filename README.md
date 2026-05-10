@@ -321,3 +321,4 @@ Weak usage-based deprecators are preview-only in the dashboard and are excluded 
 
 - **LanceDB** -- vectors + record metadata. Default location: `~/.claude-memory/lancedb`, table `cc_memories`.
 - **`~/.claude-memory/`** -- `config.json`, `settings.json`, sessions, extraction logs, token-usage events, stats snapshots, installer state.
+- **`~/.claude-memory/debug.log`** -- worker stderr/debug output; unbounded, so rotate it externally if needed.

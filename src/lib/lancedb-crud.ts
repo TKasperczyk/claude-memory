@@ -1,11 +1,11 @@
 import fs from 'fs'
 import path from 'path'
-import { homedir } from 'os'
 import { escapeFilterValue } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import { OUTPUT_FIELDS } from './lancedb-schema.js'
 import { ensureClient, closeLanceDB, initLanceDB, resolveDirectory } from './lancedb-client.js'
 import { getCollectionKey } from './file-store.js'
+import { CLAUDE_MEMORY_ROOT } from './paths.js'
 import {
   buildLanceRow,
   mergeRecords,
@@ -189,7 +189,7 @@ export async function resetCollection(
 }
 
 function clearFilesystemStorage(table?: string): void {
-  const baseDir = path.join(homedir(), '.claude-memory')
+  const baseDir = CLAUDE_MEMORY_ROOT
   const collectionKey = getCollectionKey(table)
   const dirsToClean = ['sessions', 'extractions', 'reviews', 'retrieval-events', 'token-usage-events', 'stats-snapshots']
 

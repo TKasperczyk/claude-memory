@@ -1,11 +1,9 @@
 import fs from 'fs'
 import path from 'path'
-import { homedir } from 'os'
 import { readJsonFileSafe, writeJsonFile } from './json.js'
 import { sanitizeRunId } from './shared.js'
 import { DEFAULT_CONFIG } from './types.js'
-
-const CLAUDE_MEMORY_ROOT = path.join(homedir(), '.claude-memory')
+import { CLAUDE_MEMORY_ROOT } from './paths.js'
 
 export function getCollectionKey(collection?: string): string {
   const fallback = DEFAULT_CONFIG.lancedb.table
