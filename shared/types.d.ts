@@ -345,6 +345,12 @@ export interface TokenUsage {
   cacheReadInputTokens: number
 }
 
+export type ExtractionFailure =
+  | { kind: 'api_error'; status?: number; code?: string; message: string }
+  | { kind: 'parse_error'; message: string }
+  | { kind: 'max_tokens'; maxTokens: number }
+  | { kind: 'no_auth'; message: string }
+
 export interface ExtractionRun {
   runId: string
   sessionId: string
@@ -363,6 +369,7 @@ export interface ExtractionRun {
   hasRememberMarker?: boolean
   supersedesMissing?: number
   skipReason?: 'too_short' | 'no_records'
+  error?: ExtractionFailure
 }
 
 export interface ExtractionReviewIssue {

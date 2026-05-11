@@ -4,7 +4,7 @@ import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPl
 import { getRecordSummary } from './record-summary.js'
 import { RunLog } from './run-log.js'
 import { LOCKS_DIR } from './paths.js'
-import type { ExtractionRecordSummary, ExtractionRun, RecordType, TokenUsage } from '../../shared/types.js'
+import type { ExtractionFailure, ExtractionRecordSummary, ExtractionRun, RecordType, TokenUsage } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
 
@@ -96,6 +96,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const skipReason = record.skipReason === 'too_short' ? 'too_short' as const
     : record.skipReason === 'no_records' ? 'no_records' as const
     : undefined
+  const error = coerceExtractionFailure(record.error)
 
   return {
     runId: asString(record.runId) ?? runId,
@@ -114,8 +115,44 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     isIncremental,
     hasRememberMarker,
     supersedesMissing,
-    skipReason
+    skipReason,
+    error
   }
+}
+
+function coerceExtractionFailure(value: unknown): ExtractionFailure | undefined {
+  if (!isPlainObject(value)) return undefined
+
+  const kind = asString(value.kind)
+  if (kind === 'api_error') {
+    const message = asString(value.message)
+    if (message === undefined) return undefined
+    const status = asInteger(value.status)
+    const code = asString(value.code)
+    return {
+      kind,
+      ...(status !== null ? { status } : {}),
+      ...(code !== undefined ? { code } : {}),
+      message
+    }
+  }
+
+  if (kind === 'parse_error') {
+    const message = asString(value.message)
+    return message === undefined ? undefined : { kind, message }
+  }
+
+  if (kind === 'no_auth') {
+    const message = asString(value.message)
+    return message === undefined ? undefined : { kind, message }
+  }
+
+  if (kind === 'max_tokens') {
+    const maxTokens = asInteger(value.maxTokens)
+    return maxTokens === null ? undefined : { kind, maxTokens }
+  }
+
+  return undefined
 }
 
 function coerceTokenUsage(value: unknown): TokenUsage | undefined {

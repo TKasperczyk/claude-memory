@@ -8,7 +8,7 @@ import fs, { appendFileSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { closeLanceDB, flushCollection, initLanceDB, incrementRecordCounters } from '../lib/lancedb.js'
-import { rateInjectedMemories } from '../lib/extract.js'
+import { rateInjectedMemories, sanitizeExtractionFailure } from '../lib/extract.js'
 import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
@@ -18,7 +18,7 @@ import { buildMaintenanceRun, getLastMaintenanceRun, saveMaintenanceRun } from '
 import { buildMemoryStats } from '../lib/memory-stats.js'
 import { loadSettings } from '../lib/settings.js'
 import { hasStatsSnapshot, saveStatsSnapshotIfNeeded } from '../lib/stats-snapshots.js'
-import { type Config, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord, type TokenUsage } from '../lib/types.js'
+import { type Config, type ExtractionFailure, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord, type TokenUsage } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
 import { getRecordSearchableTextParts } from '../lib/record-fields.js'
 import { getRecordSummary } from '../lib/record-summary.js'
@@ -28,6 +28,16 @@ import { findGitRoot } from '../lib/context.js'
 import { SKIP_EXTRACTION_MARKER } from '../lib/claude-commands.js'
 import { addTokenUsage, emptyTokenUsage, hasTokenUsage } from '../lib/token-usage.js'
 import { CLAUDE_MEMORY_ROOT, LOCKS_DIR } from '../lib/paths.js'
+
+function auditErrorSuffix(failure?: ExtractionFailure): string {
+  if (!failure) return ''
+  if (failure.kind === 'api_error') {
+    if (failure.code) return ` error=api_error:${failure.code}`
+    if (failure.status !== undefined) return ` error=api_error:status_${failure.status}`
+    return ' error=api_error'
+  }
+  return ` error=${failure.kind}`
+}
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
 const AUDIT_LOG_FILE = join(CLAUDE_MEMORY_ROOT, 'extraction-audit.log')
@@ -343,6 +353,7 @@ function saveRunLog(
     .map(record => buildRecordSummary(record))
     .filter((record): record is ExtractionRecordSummary => Boolean(record))
   const firstPrompt = result.transcript ? getFirstUserPrompt(result.transcript) : undefined
+  const extractionError = sanitizeExtractionFailure(result.extractionError)
 
   saveExtractionRun({
     runId,
@@ -363,10 +374,11 @@ function saveRunLog(
     supersedesMissing: result.supersedesMissing || undefined,
     skipReason: result.reason === 'too_short' ? 'too_short'
       : (result.reason === 'no_records' && uniqueIds.length === 0) ? 'no_records'
-      : undefined
+      : undefined,
+    error: extractionError
   }, collection)
 
-  auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}`)
+  auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}${auditErrorSuffix(extractionError)}`)
 }
 
 function buildRecordSummary(record: MemoryRecord): ExtractionRecordSummary | null {

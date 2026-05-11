@@ -21,6 +21,7 @@ import { parseTranscript, computeIncrementalStartIndex, sliceTranscript, type Tr
 import {
   DEFAULT_CONFIG,
   type Config,
+  type ExtractionFailure,
   type MemoryRecord,
   type ExtractionHookInput,
   type InjectedMemoryEntry,
@@ -43,6 +44,7 @@ export interface PostSessionResult {
   transcript?: Transcript
   reason?: 'clear' | 'no_transcript' | 'no_records' | 'too_short' | 'no_new_events' | 'wrong_event'
   tokenUsage?: TokenUsage
+  extractionError?: ExtractionFailure
   extractedEventCount?: number
   isIncremental?: boolean
   hasRememberMarker?: boolean
@@ -177,7 +179,7 @@ export async function handlePostSession(
   }
 
   const projectRoot = findGitRoot(input.cwd) ?? input.cwd
-  const { records: extractedRecords, tokenUsage } = await extractRecords(transcript, {
+  const { records: extractedRecords, tokenUsage, error } = await extractRecords(transcript, {
     sessionId: input.session_id,
     cwd: input.cwd,
     project: projectRoot,
@@ -206,7 +208,8 @@ export async function handlePostSession(
       extractedEventCount: totalEventCount,
       isIncremental: isIncremental || undefined,
       hasRememberMarker: hasRememberMarker || undefined,
-      tokenUsage
+      tokenUsage,
+      extractionError: error
     }
   }
 
@@ -255,7 +258,7 @@ export async function handlePostSession(
 
   return {
     inserted, updated, skipped, failed, supersedesMissing, records, insertedIds, updatedIds,
-    transcript: fullTranscript, tokenUsage,
+    transcript: fullTranscript, tokenUsage, extractionError: error,
     extractedEventCount: totalEventCount,
     isIncremental: isIncremental || undefined,
     hasRememberMarker: hasRememberMarker || undefined

@@ -6,6 +6,7 @@ import {
   type Config,
   type DiscoveryRecord,
   type ErrorRecord,
+  type ExtractionFailure,
   type InjectedMemoryEntry,
   type MemoryRecord,
   type ProcedureRecord,
@@ -36,6 +37,31 @@ export interface ExtractionContext {
   maxTranscriptChars?: number
 }
 
+export function sanitizeExtractionFailure(failure: ExtractionFailure | undefined): ExtractionFailure | undefined {
+  if (!failure) return undefined
+  switch (failure.kind) {
+    case 'api_error':
+      return {
+        kind: 'api_error',
+        ...(failure.status !== undefined ? { status: failure.status } : {}),
+        ...(failure.code !== undefined ? { code: failure.code } : {}),
+        message: failure.message.split('\n')[0].slice(0, 200)
+      }
+    case 'parse_error':
+      return {
+        kind: 'parse_error',
+        message: failure.message.split('\n')[0].slice(0, 200)
+      }
+    case 'no_auth':
+      return {
+        kind: 'no_auth',
+        message: failure.message.split('\n')[0].slice(0, 200)
+      }
+    case 'max_tokens':
+      return failure
+  }
+}
+
 const MODEL_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'claude-sonnet-4-5-20250929': 64000,
   'claude-opus-4-5-20251101': 64000,
@@ -56,6 +82,7 @@ const MAX_INTENT_CHARS = 400
 const MAX_TRUNCATED_OUTPUT_CHARS = 20000
 const MAX_TOOL_INPUT_CHARS = 12000
 const USEFULNESS_MAX_TOKENS = 800
+const NO_AUTH_EXTRACTION_MESSAGE = 'No authentication available for extraction. Set ANTHROPIC_API_KEY or run kira login.'
 const SYSTEM_PROMPT = `You extract durable technical knowledge from Claude Code transcripts.
 
 Rules:
@@ -207,7 +234,7 @@ export async function extractRecords(
   transcript: Transcript,
   context: ExtractionContext,
   config: Config = DEFAULT_CONFIG
-): Promise<{ records: MemoryRecord[]; tokenUsage: TokenUsage }> {
+): Promise<{ records: MemoryRecord[]; tokenUsage: TokenUsage; error?: ExtractionFailure }> {
   const derivedIntent = context.intent ?? inferIntent(transcript) ?? 'unknown'
   const resolvedContext: ExtractionContext = {
     ...context,
@@ -217,8 +244,12 @@ export async function extractRecords(
   try {
     const client = await createAnthropicClient()
     if (!client) {
-      console.error('[claude-memory] No authentication available for extraction. Set ANTHROPIC_API_KEY or run kira login.')
-      return { records: [], tokenUsage: emptyTokenUsage() }
+      console.error('[claude-memory] ' + NO_AUTH_EXTRACTION_MESSAGE)
+      return {
+        records: [],
+        tokenUsage: emptyTokenUsage(),
+        error: { kind: 'no_auth', message: NO_AUTH_EXTRACTION_MESSAGE }
+      }
     }
 
     const userPrompt = buildUserPrompt(transcript, resolvedContext)
@@ -239,18 +270,53 @@ export async function extractRecords(
 
     const tokenUsage = extractTokenUsage(response)
     recordTokenUsageEvent('extraction', config.extraction.model, tokenUsage, config.lancedb.table)
+    const extractionError: ExtractionFailure | undefined = response.stop_reason === 'max_tokens'
+      ? { kind: 'max_tokens', maxTokens }
+      : undefined
     if (response.stop_reason === 'max_tokens') {
       console.error(`[claude-memory] Extraction hit max_tokens (${maxTokens}) -- output truncated, records likely lost`)
     }
-    const toolInput = response.content.find((block): block is ToolUseBlock => isToolUseBlock(block) && block.name === TOOL_NAME)?.input
-    if (!toolInput) return { records: [], tokenUsage }
+    const toolBlock = response.content.find((block): block is ToolUseBlock => isToolUseBlock(block) && block.name === TOOL_NAME)
+    if (!toolBlock) {
+      return {
+        records: [],
+        tokenUsage,
+        error: extractionError ?? { kind: 'parse_error', message: 'Extraction tool call missing in response.' }
+      }
+    }
+    const toolInput = toolBlock.input
+    if (!isPlainObject(toolInput)) {
+      return {
+        records: [],
+        tokenUsage,
+        error: extractionError ?? { kind: 'parse_error', message: 'Extraction tool input was not an object.' }
+      }
+    }
     return {
       records: coerceExtractionResult(toolInput, resolvedContext),
-      tokenUsage
+      tokenUsage,
+      ...(extractionError ? { error: extractionError } : {})
     }
   } catch (error) {
     console.error('[claude-memory] extractRecords failed:', error)
-    return { records: [], tokenUsage: emptyTokenUsage() }
+    const errorRecord = error && typeof error === 'object' ? error as Record<string, unknown> : undefined
+    const status = typeof errorRecord?.status === 'number' ? errorRecord.status : undefined
+    const sdkError = errorRecord?.error && typeof errorRecord.error === 'object'
+      ? errorRecord.error as Record<string, unknown>
+      : undefined
+    const code = typeof sdkError?.type === 'string'
+      ? sdkError.type
+      : typeof errorRecord?.code === 'string'
+        ? errorRecord.code
+        : undefined
+    const message = typeof errorRecord?.message === 'string' ? errorRecord.message : String(error)
+    const failure: ExtractionFailure = {
+      kind: 'api_error',
+      ...(status !== undefined ? { status } : {}),
+      ...(code !== undefined ? { code } : {}),
+      message
+    }
+    return { records: [], tokenUsage: emptyTokenUsage(), error: failure }
   }
 }
 

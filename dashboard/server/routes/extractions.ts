@@ -5,6 +5,7 @@ import { deleteExtractionRun, getExtractionRun, listInProgressExtractions, saveE
 import { getRecordSummary } from '../../../src/lib/record-summary.js'
 import { getFirstUserPrompt } from '../../../src/lib/transcript.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
+import { sanitizeExtractionFailure } from '../../../src/lib/extract.js'
 import { deleteRecord } from '../../../src/lib/lancedb.js'
 import { paginateExtractionRuns, loadExtractionRunDetail } from '../../../src/lib/extraction-query.js'
 import { handlePostSession } from '../../../src/hooks/post-session.js'
@@ -205,7 +206,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         hasRememberMarker: result.hasRememberMarker,
         skipReason: result.reason === 'too_short' ? 'too_short'
           : (result.reason === 'no_records' && allIds.length === 0) ? 'no_records'
-          : undefined
+          : undefined,
+        error: sanitizeExtractionFailure(result.extractionError)
       }, requestConfig.lancedb.table)
 
       res.json({
