@@ -131,6 +131,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const tokenUsage = coerceTokenUsage(record.tokenUsage)
   const extractedEventCount = asInteger(record.extractedEventCount) ?? undefined
   const isIncremental = record.isIncremental === true ? true : undefined
+  const isReExtract = record.isReExtract === true ? true : undefined
   const hasRememberMarker = record.hasRememberMarker === true ? true : undefined
   const supersedesMissing = asInteger(record.supersedesMissing) ?? undefined
   const skipReason = record.skipReason === 'too_short' ? 'too_short' as const
@@ -155,6 +156,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     tokenUsage,
     extractedEventCount,
     isIncremental,
+    isReExtract,
     hasRememberMarker,
     supersedesMissing,
     skipReason,

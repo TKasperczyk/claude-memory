@@ -14,10 +14,10 @@ import {
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import StatsCard from '@/components/StatsCard'
 import { RetrievalActivityChart, MemoryGrowthChart, TokenUsageChart } from '@/components/charts'
-import { useInstallationStatus, useRetrievalActivity, useStats, useStatsHistory, useTokenUsage } from '@/hooks/queries'
+import { useExtractionWarnings, useInstallationStatus, useRetrievalActivity, useStats, useStatsHistory, useTokenUsage } from '@/hooks/queries'
 import { installAll, resetCollection, uninstallAll, type HookEvent, type RecordType } from '@/lib/api'
 import { TYPE_COLORS } from '@/lib/memory-ui'
 
@@ -221,6 +221,11 @@ export default function Overview() {
   const { data: retrievalActivity, isPending: retrievalActivityPending } = useRetrievalActivity({ period: 'day', limit: 30 })
   const { data: statsHistory, isPending: statsHistoryPending } = useStatsHistory({ period: 'day', limit: 30 })
   const { data: tokenUsage, isPending: tokenUsagePending } = useTokenUsage({ period: 'day', limit: 30, source: 'all' })
+  const {
+    data: extractionWarnings,
+    isPending: extractionWarningsPending,
+    isError: extractionWarningsError
+  } = useExtractionWarnings()
   const [resetOpen, setResetOpen] = useState(false)
   const [resetInput, setResetInput] = useState('')
   const [resetError, setResetError] = useState<string | null>(null)
@@ -364,9 +369,30 @@ export default function Overview() {
     ? installationError.message
     : 'Failed to load installation status'
   const showInstallationRecovery = Boolean(installationError) && !installationLoading && !hasInstallationStatus
+  const visibleExtractionWarnings = !extractionWarningsPending && !extractionWarningsError
+    ? extractionWarnings?.warnings ?? []
+    : []
 
   return (
     <div className="space-y-5">
+      {visibleExtractionWarnings.map(warning => (
+        <Alert
+          key={warning.id}
+          variant={warning.severity === 'critical' ? 'destructive' : 'default'}
+        >
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle className="flex items-center gap-2">
+            <span>{warning.title}</span>
+            {warning.count !== undefined && (
+              <span className="rounded-full bg-foreground/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-foreground/70">
+                {warning.count}
+              </span>
+            )}
+          </AlertTitle>
+          <AlertDescription>{warning.message}</AlertDescription>
+        </Alert>
+      ))}
+
       {error && data && (
         <Alert className="bg-warning/10 border-warning/20">
           <AlertDescription className="text-warning">

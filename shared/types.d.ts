@@ -374,6 +374,7 @@ export interface ExtractionRun {
   tokenUsage?: TokenUsage
   extractedEventCount?: number
   isIncremental?: boolean
+  isReExtract?: boolean
   hasRememberMarker?: boolean
   supersedesMissing?: number
   skipReason?: 'too_short' | 'no_records'

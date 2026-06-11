@@ -137,6 +137,20 @@ describe('extraction run log', () => {
     ])
   })
 
+  it('round-trips the manual re-extract flag', async () => {
+    const { saveExtractionRun, getExtractionRun } = await loadExtractionLog()
+    const collection = `extraction-log-${randomUUID()}`
+    const run = buildRun({
+      runId: 'run-reextract',
+      isReExtract: true
+    })
+
+    saveExtractionRun(run, collection)
+
+    const loaded = getExtractionRun(run.runId, collection)
+    expect(loaded?.isReExtract).toBe(true)
+  })
+
   it('leaves new outcome/count fields undefined for legacy runs', async () => {
     const { getExtractionRun } = await loadExtractionLog()
     const collection = `extractionlog${randomUUID().replace(/-/g, '')}`
@@ -162,6 +176,7 @@ describe('extraction run log', () => {
     const loaded = getExtractionRun(runId, collection)
     expect(loaded?.skippedRecordCount).toBeUndefined()
     expect(loaded?.failedRecordCount).toBeUndefined()
+    expect(loaded?.isReExtract).toBeUndefined()
     expect(loaded?.extractedRecords).toEqual([{
       id: 'record-a',
       type: 'command',

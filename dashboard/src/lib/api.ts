@@ -186,6 +186,49 @@ export interface ExtractionRunResponse {
   records: MemoryRecord[]
 }
 
+export type ExtractionWarningKind =
+  | 'rate_limited'
+  | 'auth'
+  | 'record_store_failures'
+  | 'high_failure_rate'
+  | 'stalled'
+
+export interface ExtractionWarning {
+  id: ExtractionWarningKind
+  severity: 'warning' | 'critical'
+  title: string
+  message: string
+  count?: number
+  latestRunId?: string
+  latestTimestamp?: number
+  details?: Record<string, unknown>
+}
+
+export interface ExtractionWarningsResponse {
+  collection: string
+  generatedAt: number
+  window: {
+    start: number
+    end: number
+    ms: number
+  }
+  thresholds: Record<string, number>
+  summary: {
+    analyzedRuns: number
+    recentRuns: number
+    excludedReExtractRuns: number
+    inProgressCount: number
+    inProgressLocksCollectionScoped: false
+    stalledSuppressedByInProgress: boolean
+    lastSuccessfulRun?: {
+      runId: string
+      timestamp: number
+      status: 'completed' | 'partial'
+    }
+  }
+  warnings: ExtractionWarning[]
+}
+
 export interface MaintenanceRunsListResponse {
   runs: MaintenanceRun[]
   count: number
@@ -521,6 +564,10 @@ export function fetchExtractions(params: {
 
 export function fetchExtractionRun(runId: string): Promise<ExtractionRunResponse> {
   return request(`/extractions/${runId}`)
+}
+
+export function fetchExtractionWarnings(): Promise<ExtractionWarningsResponse> {
+  return request('/extractions/warnings')
 }
 
 export function deleteExtractionRun(runId: string): Promise<ActionResponse> {

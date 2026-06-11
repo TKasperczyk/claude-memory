@@ -1,7 +1,7 @@
 import express from 'express'
 import fs from 'fs'
 import path from 'path'
-import { buildExtractionRecordSummaries, deleteExtractionRun, getExtractionRun, listInProgressExtractions, saveExtractionRun } from '../../../src/lib/extraction-log.js'
+import { buildExtractionRecordSummaries, deleteExtractionRun, getExtractionRun, listExtractionRuns, listInProgressExtractions, saveExtractionRun } from '../../../src/lib/extraction-log.js'
 import { getFirstUserPrompt } from '../../../src/lib/transcript.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
 import { sanitizeExtractionFailure } from '../../../src/lib/extract.js'
@@ -14,6 +14,7 @@ import { isTrueExtractionFailure } from '../../../src/lib/extraction-status.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
+import { buildExtractionWarnings } from '../lib/extraction-warnings.js'
 import { parseNonNegativeInt } from '../utils/params.js'
 import { getRequestConfig } from '../utils/config.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
@@ -43,6 +44,21 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
     } catch (error) {
       logger.error('Failed to check in-progress extractions', error)
       res.json({ inProgress: [] })
+    }
+  })
+
+  router.get('/api/extractions/warnings', (req, res) => {
+    try {
+      const requestConfig = getRequestConfig(req, baseConfig)
+      const runs = listExtractionRuns(requestConfig.lancedb.table)
+      const inProgress = listInProgressExtractions()
+      res.json({
+        collection: requestConfig.lancedb.table,
+        ...buildExtractionWarnings(runs, inProgress.length, Date.now())
+      })
+    } catch (error) {
+      logger.error('Failed to build extraction warnings', error)
+      res.status(500).json({ error: 'Failed to build extraction warnings' })
     }
   })
 
@@ -193,6 +209,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
       saveExtractionRun({
         ...run,
+        isReExtract: true,
         timestamp: Date.now(),
         recordCount: persistedRecordCount,
         parseErrorCount: result.transcript?.parseErrors ?? 0,

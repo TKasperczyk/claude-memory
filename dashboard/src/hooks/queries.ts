@@ -3,6 +3,7 @@ import {
   fetchExtractions,
   fetchExtractionReview,
   fetchExtractionRun,
+  fetchExtractionWarnings,
   fetchInjectionReview,
   fetchHookStatus,
   fetchInProgressExtractions,
@@ -21,6 +22,7 @@ import {
   type ExtractionListResponse,
   type ExtractionRunResponse,
   type ExtractionReview,
+  type ExtractionWarningsResponse,
   type InjectionReview,
   type HookStatusResponse,
   type InstallationStatusResponse,
@@ -127,6 +129,14 @@ export function useExtractions(params: ExtractionsQueryParams) {
       sessionId
     }),
     placeholderData: previousData => previousData,
+    refetchInterval: 30000
+  })
+}
+
+export function useExtractionWarnings() {
+  return useQuery<ExtractionWarningsResponse>({
+    queryKey: ['extraction-warnings'],
+    queryFn: fetchExtractionWarnings,
     refetchInterval: 30000
   })
 }

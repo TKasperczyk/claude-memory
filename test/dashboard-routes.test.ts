@@ -51,7 +51,7 @@ import { mergeNearMisses } from '../src/lib/diagnostics.js'
 import { retrieveContext } from '../src/lib/retrieval.js'
 import { getTokenUsageActivity } from '../src/lib/token-usage-events.js'
 import { reviewInjection, reviewInjectionStreaming } from '../src/lib/injection-review.js'
-import { deleteExtractionRun, getExtractionRun, listExtractionRuns, saveExtractionRun } from '../src/lib/extraction-log.js'
+import { deleteExtractionRun, getExtractionRun, listExtractionRuns, listInProgressExtractions, saveExtractionRun } from '../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../src/lib/extraction-review.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
 import {
@@ -70,6 +70,7 @@ import {
   runMaintenanceOperation
 } from '../src/lib/maintenance-api.js'
 import { executeChatTool } from '../dashboard/server/lib/chat-tools.js'
+import type { ExtractionRun } from '../shared/types.js'
 
 vi.mock('../src/lib/settings.js', () => ({
   getDefaultMaintenanceSettings: vi.fn(),
@@ -235,6 +236,7 @@ const mockedGetInjectionReview = vi.mocked(getInjectionReview)
 const mockedHasInjectionReview = vi.mocked(hasInjectionReview)
 const mockedGetExtractionRun = vi.mocked(getExtractionRun)
 const mockedListExtractionRuns = vi.mocked(listExtractionRuns)
+const mockedListInProgressExtractions = vi.mocked(listInProgressExtractions)
 const mockedSaveExtractionRun = vi.mocked(saveExtractionRun)
 const mockedDeleteExtractionRun = vi.mocked(deleteExtractionRun)
 const mockedReviewExtraction = vi.mocked(reviewExtraction)
@@ -319,6 +321,20 @@ const buildMemoryPayload = (overrides: Record<string, unknown>): Record<string, 
   ...overrides
 })
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+const buildExtractionRun = (overrides: Partial<ExtractionRun> = {}): ExtractionRun => ({
+  runId: 'run-1',
+  sessionId: 'session-1',
+  transcriptPath: '/tmp/session.jsonl',
+  timestamp: Date.now(),
+  recordCount: 0,
+  parseErrorCount: 0,
+  extractedRecordIds: [],
+  duration: 0,
+  ...overrides
+})
+
 const ALL_MEMORY_TYPES = ['command', 'error', 'discovery', 'procedure', 'warning']
 
 beforeEach(() => {
@@ -383,6 +399,7 @@ beforeEach(() => {
   mockedHasInjectionReview.mockResolvedValue(false)
   mockedGetExtractionRun.mockReturnValue(null)
   mockedListExtractionRuns.mockReturnValue([])
+  mockedListInProgressExtractions.mockReturnValue([])
   mockedReviewExtraction.mockResolvedValue({ status: 'ok' })
   mockedReviewExtractionStreaming.mockResolvedValue({ status: 'ok' })
   mockedHandlePostSession.mockResolvedValue({
@@ -1053,6 +1070,272 @@ describe('sessions routes', () => {
 })
 
 describe('extractions routes', () => {
+  it('returns collection-aware extraction warnings', async () => {
+    mockedListExtractionRuns.mockReturnValueOnce([])
+
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/extractions/warnings')
+      .set('X-LanceDB-Table', 'test-collection')
+
+    expect(res.status).toBe(200)
+    expect(res.body.collection).toBe('test-collection')
+    expect(res.body.warnings).toEqual([])
+    expect(mockedListExtractionRuns).toHaveBeenCalledWith('test-collection')
+  })
+
+  it('warns for recent rate-limited extraction runs', async () => {
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({
+        runId: 'rate-code',
+        timestamp: now - 1000,
+        error: { kind: 'api_error', code: 'rate_limit_error', message: 'rate limited' }
+      }),
+      buildExtractionRun({
+        runId: 'rate-status',
+        timestamp: now - 2000,
+        error: { kind: 'api_error', status: 429, message: 'gateway rate limited' }
+      })
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/extractions/warnings')
+
+    expect(res.status).toBe(200)
+    expect(res.body.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'rate_limited',
+        severity: 'warning',
+        count: 2,
+        latestRunId: 'rate-code'
+      })
+    ]))
+  })
+
+  it('warns critically for recent auth extraction failures', async () => {
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({
+        runId: 'no-auth',
+        timestamp: now - 1000,
+        error: { kind: 'no_auth', message: 'No auth' }
+      }),
+      buildExtractionRun({
+        runId: 'forbidden',
+        timestamp: now - 2000,
+        error: { kind: 'api_error', status: 403, message: 'Forbidden' }
+      })
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/extractions/warnings')
+
+    expect(res.status).toBe(200)
+    expect(res.body.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'auth',
+        severity: 'critical',
+        count: 2,
+        latestRunId: 'no-auth'
+      })
+    ]))
+  })
+
+  it('warns for recent record store failures', async () => {
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({
+        runId: 'store-failed',
+        timestamp: now - 1000,
+        failedRecordCount: 3,
+        extractedRecords: [{
+          id: 'failed-record',
+          type: 'discovery',
+          summary: 'Failed record',
+          outcome: 'failed',
+          storeError: 'Embedding request failed'
+        }]
+      })
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/extractions/warnings')
+
+    expect(res.status).toBe(200)
+    expect(res.body.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'record_store_failures',
+        severity: 'warning',
+        count: 3,
+        latestRunId: 'store-failed'
+      })
+    ]))
+  })
+
+  it('uses run status classification for high failure rate math', async () => {
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({
+        runId: 'legacy-failed',
+        timestamp: now - 1000,
+        skipReason: 'no_records',
+        error: { kind: 'api_error', message: 'upstream failed' }
+      }),
+      buildExtractionRun({
+        runId: 'partial-success',
+        timestamp: now - 2000,
+        recordCount: 1,
+        extractedRecordIds: ['record-1'],
+        error: { kind: 'max_tokens', maxTokens: 64000 }
+      }),
+      buildExtractionRun({
+        runId: 'plain-failed',
+        timestamp: now - 3000,
+        error: { kind: 'api_error', status: 500, message: 'Internal error' }
+      }),
+      buildExtractionRun({
+        runId: 'completed',
+        timestamp: now - 4000,
+        recordCount: 1,
+        extractedRecordIds: ['record-2']
+      })
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/extractions/warnings')
+    const warning = res.body.warnings.find((entry: { id: string }) => entry.id === 'high_failure_rate')
+
+    expect(res.status).toBe(200)
+    expect(warning).toMatchObject({
+      severity: 'warning',
+      count: 2,
+      details: {
+        failedRuns: 2,
+        analyzedRecentRuns: 4
+      }
+    })
+  })
+
+  it('escalates high failure rate when all analyzed recent runs failed', async () => {
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({
+        runId: 'failed-1',
+        timestamp: now - 1000,
+        error: { kind: 'api_error', status: 500, message: 'Internal error' }
+      }),
+      buildExtractionRun({
+        runId: 'failed-2',
+        timestamp: now - 2000,
+        error: { kind: 'parse_error', message: 'Missing tool call' }
+      }),
+      buildExtractionRun({
+        runId: 'failed-3',
+        timestamp: now - 3000,
+        error: { kind: 'api_error', status: 529, message: 'Overloaded' }
+      })
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/extractions/warnings')
+
+    expect(res.status).toBe(200)
+    expect(res.body.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'high_failure_rate',
+        severity: 'critical',
+        count: 3
+      })
+    ]))
+  })
+
+  it('does not emit stalled warnings for fresh installs or cold starts', async () => {
+    const { app } = buildApp()
+
+    mockedListExtractionRuns.mockReturnValueOnce([])
+    const fresh = await request(app).get('/api/extractions/warnings')
+    expect(fresh.status).toBe(200)
+    expect(fresh.body.warnings.some((entry: { id: string }) => entry.id === 'stalled')).toBe(false)
+
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({ runId: 'success-1', timestamp: now - 3 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-1'] }),
+      buildExtractionRun({ runId: 'success-2', timestamp: now - 2 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-2'] }),
+      buildExtractionRun({ runId: 'success-3', timestamp: now - DAY_MS, recordCount: 1, extractedRecordIds: ['record-3'] })
+    ])
+    const cold = await request(app).get('/api/extractions/warnings')
+    expect(cold.status).toBe(200)
+    expect(cold.body.warnings.some((entry: { id: string }) => entry.id === 'stalled')).toBe(false)
+  })
+
+  it('warns when successful extraction cadence is stalled', async () => {
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({ runId: 'success-1', timestamp: now - 8 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-1'] }),
+      buildExtractionRun({ runId: 'success-2', timestamp: now - 7 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-2'] }),
+      buildExtractionRun({ runId: 'success-3', timestamp: now - 6 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-3'] }),
+      buildExtractionRun({ runId: 'success-4', timestamp: now - 5 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-4'] })
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/extractions/warnings')
+
+    expect(res.status).toBe(200)
+    expect(res.body.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'stalled',
+        severity: 'warning',
+        latestRunId: 'success-4'
+      })
+    ]))
+  })
+
+  it('suppresses stalled warnings while extraction locks are active', async () => {
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({ runId: 'success-1', timestamp: now - 8 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-1'] }),
+      buildExtractionRun({ runId: 'success-2', timestamp: now - 7 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-2'] }),
+      buildExtractionRun({ runId: 'success-3', timestamp: now - 6 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-3'] }),
+      buildExtractionRun({ runId: 'success-4', timestamp: now - 5 * DAY_MS, recordCount: 1, extractedRecordIds: ['record-4'] })
+    ])
+    mockedListInProgressExtractions.mockReturnValueOnce([
+      { sessionId: 'session-active', pid: 123, startedAt: now - 1000, elapsedMs: 1000 }
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/extractions/warnings')
+
+    expect(res.status).toBe(200)
+    expect(res.body.summary).toMatchObject({
+      inProgressCount: 1,
+      inProgressLocksCollectionScoped: false,
+      stalledSuppressedByInProgress: true
+    })
+    expect(res.body.warnings.some((entry: { id: string }) => entry.id === 'stalled')).toBe(false)
+  })
+
+  it('excludes flagged re-extract runs from warning windows and cadence', async () => {
+    const now = Date.now()
+    mockedListExtractionRuns.mockReturnValueOnce([
+      buildExtractionRun({
+        runId: 'manual-reextract',
+        timestamp: now - 1000,
+        isReExtract: true,
+        failedRecordCount: 5,
+        error: { kind: 'api_error', status: 429, code: 'rate_limit_error', message: 'rate limited' }
+      })
+    ])
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/extractions/warnings')
+
+    expect(res.status).toBe(200)
+    expect(res.body.summary.excludedReExtractRuns).toBe(1)
+    expect(res.body.summary.analyzedRuns).toBe(0)
+    expect(res.body.warnings).toEqual([])
+  })
+
   it('paginates extraction runs', async () => {
     mockedListExtractionRuns.mockReturnValueOnce([
       { runId: 'run-1', timestamp: 1 },
@@ -1202,10 +1485,12 @@ describe('extractions routes', () => {
       expect(mockedDeleteReview).toHaveBeenCalledWith('run-1', DEFAULT_CONFIG.lancedb.table)
       expect(mockedSaveExtractionRun).toHaveBeenCalledTimes(1)
       const saved = mockedSaveExtractionRun.mock.calls[0]?.[0] as {
+        isReExtract?: boolean
         skipReason?: string
         extractedEventCount?: number
         error?: unknown
       }
+      expect(saved.isReExtract).toBe(true)
       expect(saved.skipReason).toBeUndefined()
       expect(saved.extractedEventCount).toBeUndefined()
       expect(saved.error).toMatchObject({
@@ -1312,6 +1597,7 @@ describe('extractions routes', () => {
       expect(mockedDeleteRecord.mock.calls.map(call => call[0])).toEqual(['old-inserted', 'old-updated'])
       expect(mockedSaveExtractionRun).toHaveBeenCalledTimes(1)
       const saved = mockedSaveExtractionRun.mock.calls[0]?.[0] as {
+        isReExtract?: boolean
         recordCount?: number
         skippedRecordCount?: number
         failedRecordCount?: number
@@ -1319,6 +1605,7 @@ describe('extractions routes', () => {
         updatedRecordIds?: string[]
         extractedRecords?: Array<Record<string, unknown>>
       }
+      expect(saved.isReExtract).toBe(true)
       expect(saved.recordCount).toBe(2)
       expect(saved.skippedRecordCount).toBe(1)
       expect(saved.failedRecordCount).toBe(1)
