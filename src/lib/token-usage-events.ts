@@ -23,7 +23,7 @@ const eventsStore = new JsonLinesStore('token-usage-events', { suffix: EVENT_SUF
 
 type TokenUsageFilter = TokenUsageSource | 'all'
 type TokenUsageTotals = TokenUsage & { totalTokens: number }
-type TokenUsageStoreOptions = { collection?: string; baseDir?: string }
+type TokenUsageStoreOptions = { collection?: string; baseDir?: string; now?: number }
 
 function getEventsStore(baseDir?: string): JsonLinesStore {
   if (!baseDir) return eventsStore
@@ -58,7 +58,7 @@ function asTokenUsageSource(value: unknown): TokenUsageSource | null {
 }
 
 function cleanupOldEvents(options: TokenUsageStoreOptions = {}): void {
-  const cutoff = Date.now() - TOKEN_USAGE_RETENTION_DAYS * DAY_MS
+  const cutoff = (options.now ?? Date.now()) - TOKEN_USAGE_RETENTION_DAYS * DAY_MS
   const store = getEventsStore(options.baseDir)
 
   try {
@@ -225,7 +225,7 @@ export function getTokenUsageActivity(
   const now = options.now ?? Date.now()
   const source = options.source ?? 'all'
 
-  cleanupOldEvents({ collection: options.collection, baseDir: options.baseDir })
+  cleanupOldEvents({ collection: options.collection, baseDir: options.baseDir, now })
 
   const dailyTotals = readDailyTotals(source, { collection: options.collection, baseDir: options.baseDir })
   const buckets = buildTimeBuckets(period, safeLimit, now)
