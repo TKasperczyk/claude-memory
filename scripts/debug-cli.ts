@@ -40,6 +40,7 @@ import { getRecordSummary } from '../src/lib/record-summary.js'
 import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../src/lib/session-tracking.js'
 import { listInProgressExtractions } from '../src/lib/extraction-log.js'
 import { paginateExtractionRuns, loadExtractionRunDetail } from '../src/lib/extraction-query.js'
+import { formatExtractionFailureSummary, getRunStatus } from '../src/lib/extraction-status.js'
 import { getInjectionReview, saveInjectionReview, getReview, saveReview } from '../src/lib/review-storage.js'
 import { reviewInjection, reviewInjectionStreaming } from '../src/lib/injection-review.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../src/lib/extraction-review.js'
@@ -1101,16 +1102,24 @@ async function cmdExtractions(): Promise<void> {
     console.log(`  ${c.dim}(no matching runs)${c.reset}\n`)
     return
   }
-  const rows = page.runs.map(r => [
-    truncId(r.runId),
-    truncId(r.sessionId),
-    formatAge(r.timestamp),
-    String(r.recordCount),
-    `${(r.duration / 1000).toFixed(1)}s`,
-    r.isIncremental ? `${c.cyan}inc${c.reset}` : '',
-    r.skipReason ?? '',
-  ])
-  printTable(['Run', 'Session', 'When', 'Recs', 'Dur', 'Inc', 'Skip'], rows)
+  const rows = page.runs.map(r => {
+    const runStatus = getRunStatus(r)
+    const status = runStatus === 'failed' ? `${c.red}failed${c.reset}`
+      : runStatus === 'skipped' ? `${c.yellow}skipped${c.reset}`
+      : runStatus === 'partial' ? `${c.yellow}partial${c.reset}`
+      : `${c.green}done${c.reset}`
+    return [
+      truncId(r.runId),
+      truncId(r.sessionId),
+      formatAge(r.timestamp),
+      String(r.recordCount),
+      `${(r.duration / 1000).toFixed(1)}s`,
+      r.isIncremental ? `${c.cyan}inc${c.reset}` : '',
+      status,
+      formatExtractionFailureSummary(r.error)
+    ]
+  })
+  printTable(['Run', 'Session', 'When', 'Recs', 'Dur', 'Inc', 'Status', 'Error'], rows)
   console.log()
 }
 
@@ -1143,7 +1152,26 @@ async function cmdExtraction(args: string[]): Promise<void> {
   printStat('Updated', (run.updatedRecordIds ?? []).length)
   printStat('Parse errors', run.parseErrorCount)
   printStat('Incremental', run.isIncremental ? `${c.cyan}yes${c.reset}` : 'no')
-  if (run.skipReason) printStat('Skip reason', `${c.yellow}${run.skipReason}${c.reset}`)
+  const runStatus = getRunStatus(run)
+  const failed = runStatus === 'failed'
+  const partial = runStatus === 'partial'
+  if (runStatus === 'skipped' && run.skipReason) printStat('Skip reason', `${c.yellow}${run.skipReason}${c.reset}`)
+  if ((failed || partial) && run.error) {
+    printStat('Run status', failed ? `${c.red}failed${c.reset}` : `${c.yellow}partial${c.reset}`)
+    printStat('Run error', failed
+      ? `${c.red}${formatExtractionFailureSummary(run.error)}${c.reset}`
+      : `${c.yellow}${formatExtractionFailureSummary(run.error)}${c.reset}`)
+    if (run.error.kind === 'api_error') {
+      if (run.error.code) printStat('Error code', run.error.code)
+      if (run.error.status !== undefined) printStat('Error status', run.error.status)
+      if (run.error.requestId) printStat('Request ID', run.error.requestId)
+      printStat('Error message', run.error.message)
+    } else if (run.error.kind === 'max_tokens') {
+      printStat('Max tokens', run.error.maxTokens)
+    } else {
+      printStat('Error message', run.error.message)
+    }
+  }
   if (run.hasRememberMarker) printStat('Remember marker', `${c.cyan}yes${c.reset}`)
   if (run.tokenUsage) {
     printStat('Input tokens', run.tokenUsage.inputTokens ?? 0)

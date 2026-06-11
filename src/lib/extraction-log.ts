@@ -4,6 +4,7 @@ import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPl
 import { getRecordSummary } from './record-summary.js'
 import { RunLog } from './run-log.js'
 import { LOCKS_DIR } from './paths.js'
+import { isTrueExtractionFailure } from './extraction-status.js'
 import type { ExtractionFailure, ExtractionRecordSummary, ExtractionRun, RecordType, TokenUsage } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
@@ -34,7 +35,11 @@ export function deleteExtractionRun(runId: string, collection?: string): boolean
 
 export function getLastExtractionRunForSession(sessionId: string, collection?: string): ExtractionRun | null {
   const runs = extractionLog.list(collection) // sorted by timestamp desc
-  return runs.find(run => run.sessionId === sessionId && run.extractedEventCount != null) ?? null
+  return runs.find(run =>
+    run.sessionId === sessionId
+    && run.extractedEventCount != null
+    && !isTrueExtractionFailure(run.error, run.recordCount)
+  ) ?? null
 }
 
 export interface InProgressExtraction {
@@ -81,10 +86,10 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const sessionId = asString(record.sessionId) ?? 'unknown'
   const transcriptPath = asString(record.transcriptPath) ?? ''
   const timestamp = asInteger(record.timestamp) ?? Date.now()
-  const recordCount = asInteger(record.recordCount) ?? 0
-  const parseErrorCount = asInteger(record.parseErrorCount) ?? 0
   const extractedRecordIds = asStringArray(record.extractedRecordIds)
   const updatedRecordIds = asStringArray(record.updatedRecordIds)
+  const recordCount = asInteger(record.recordCount) ?? new Set([...extractedRecordIds, ...updatedRecordIds]).size
+  const parseErrorCount = asInteger(record.parseErrorCount) ?? 0
   const extractedRecords = coerceRecordSummaries(record.extractedRecords)
   const duration = asInteger(record.duration) ?? 0
   const firstPrompt = asTrimmedString(record.firstPrompt)
@@ -129,10 +134,12 @@ function coerceExtractionFailure(value: unknown): ExtractionFailure | undefined 
     if (message === undefined) return undefined
     const status = asInteger(value.status)
     const code = asString(value.code)
+    const requestId = asString(value.requestId)
     return {
       kind,
       ...(status !== null ? { status } : {}),
       ...(code !== undefined ? { code } : {}),
+      ...(requestId !== undefined ? { requestId } : {}),
       message
     }
   }

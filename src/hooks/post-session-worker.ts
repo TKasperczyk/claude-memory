@@ -6,7 +6,8 @@
 
 import fs, { appendFileSync } from 'fs'
 import { randomUUID } from 'crypto'
-import { join } from 'path'
+import { join, resolve } from 'path'
+import { fileURLToPath } from 'url'
 import { closeLanceDB, flushCollection, initLanceDB, incrementRecordCounters } from '../lib/lancedb.js'
 import { rateInjectedMemories, sanitizeExtractionFailure } from '../lib/extract.js'
 import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
@@ -28,15 +29,15 @@ import { findGitRoot } from '../lib/context.js'
 import { SKIP_EXTRACTION_MARKER } from '../lib/claude-commands.js'
 import { addTokenUsage, emptyTokenUsage, hasTokenUsage } from '../lib/token-usage.js'
 import { CLAUDE_MEMORY_ROOT, LOCKS_DIR } from '../lib/paths.js'
+import { formatExtractionFailureSummary, isTrueExtractionFailure } from '../lib/extraction-status.js'
 
 function auditErrorSuffix(failure?: ExtractionFailure): string {
   if (!failure) return ''
+  const parts = [`error=${formatExtractionFailureSummary(failure)}`]
   if (failure.kind === 'api_error') {
-    if (failure.code) return ` error=api_error:${failure.code}`
-    if (failure.status !== undefined) return ` error=api_error:status_${failure.status}`
-    return ' error=api_error'
+    if (failure.requestId) parts.push(`request_id=${failure.requestId}`)
   }
-  return ` error=${failure.kind}`
+  return ` ${parts.join(' ')}`
 }
 
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
@@ -333,7 +334,7 @@ async function main(): Promise<void> {
   }
 }
 
-function saveRunLog(
+export function saveRunLog(
   payload: ExtractionHookInput,
   result: Awaited<ReturnType<typeof handlePostSession>>,
   duration: number,
@@ -349,18 +350,20 @@ function saveRunLog(
   const updatedIds = Array.from(new Set(result.updatedIds ?? []))
   const uniqueIds = Array.from(new Set([...insertedIds, ...updatedIds]))
   const runId = randomUUID()
+  const persistedRecordCount = uniqueIds.length
   const extractedRecords = result.records
     .map(record => buildRecordSummary(record))
     .filter((record): record is ExtractionRecordSummary => Boolean(record))
   const firstPrompt = result.transcript ? getFirstUserPrompt(result.transcript) : undefined
   const extractionError = sanitizeExtractionFailure(result.extractionError)
+  const trueFailure = isTrueExtractionFailure(extractionError, persistedRecordCount)
 
   saveExtractionRun({
     runId,
     sessionId: payload.session_id,
     transcriptPath: payload.transcript_path,
     timestamp: Date.now(),
-    recordCount: uniqueIds.length,
+    recordCount: persistedRecordCount,
     parseErrorCount: result.transcript?.parseErrors ?? 0,
     extractedRecordIds: insertedIds,
     updatedRecordIds: updatedIds.length > 0 ? updatedIds : undefined,
@@ -368,17 +371,19 @@ function saveRunLog(
     duration,
     firstPrompt,
     tokenUsage: hasTokenUsage(tokenUsage) ? tokenUsage : undefined,
-    extractedEventCount: result.extractedEventCount,
+    extractedEventCount: trueFailure ? undefined : result.extractedEventCount,
     isIncremental: result.isIncremental,
     hasRememberMarker: result.hasRememberMarker,
     supersedesMissing: result.supersedesMissing || undefined,
-    skipReason: result.reason === 'too_short' ? 'too_short'
-      : (result.reason === 'no_records' && uniqueIds.length === 0) ? 'no_records'
+    skipReason: extractionError ? undefined
+      : result.reason === 'too_short' ? 'too_short'
+      : (result.reason === 'no_records' && persistedRecordCount === 0) ? 'no_records'
       : undefined,
     error: extractionError
   }, collection)
 
-  auditLog(`DONE session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}${auditErrorSuffix(extractionError)}`)
+  const auditStatus = trueFailure ? 'FAILED' : 'DONE'
+  auditLog(`${auditStatus} session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}${auditErrorSuffix(extractionError)}`)
 }
 
 function buildRecordSummary(record: MemoryRecord): ExtractionRecordSummary | null {
@@ -681,11 +686,15 @@ function trimToMax(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 3)}...`
 }
 
-main()
-  .then(() => {
-    process.exitCode = 0
-  })
-  .catch(error => {
-    console.error('[claude-memory] post-session-worker failed:', error)
-    process.exitCode = 2
-  })
+const entryPath = process.argv[1] ? resolve(process.argv[1]) : ''
+const isMainModule = fileURLToPath(import.meta.url) === entryPath
+if (isMainModule) {
+  main()
+    .then(() => {
+      process.exitCode = 0
+    })
+    .catch(error => {
+      console.error('[claude-memory] post-session-worker failed:', error)
+      process.exitCode = 2
+    })
+}

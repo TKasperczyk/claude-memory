@@ -11,6 +11,7 @@ import { useExtractionRunDetail, useExtractionReview } from '@/hooks/queries'
 import ExtractionReviewPanel from './ExtractionReviewPanel'
 import { RecordsSkeleton } from './ExtractionSkeletons'
 import { extractProjectFromPath, getAccuracyBadge, truncateSessionId } from './utils'
+import { formatExtractionFailureSummary, getRunStatus } from '../../../../src/lib/extraction-status.js'
 
 export default function ExtractionDetail({
   run,
@@ -74,6 +75,23 @@ export default function ExtractionDetail({
   const tokenTotal = run.tokenUsage
     ? run.tokenUsage.inputTokens + run.tokenUsage.outputTokens
     : null
+  const runStatus = getRunStatus(run)
+  const isFailedRun = runStatus === 'failed'
+  const isPartialRun = runStatus === 'partial'
+  const errorSummary = formatExtractionFailureSummary(run.error)
+  const errorMessage = run.error && 'message' in run.error ? run.error.message : undefined
+  const errorDetails: Array<[string, string | number]> = []
+  if (run.error) {
+    errorDetails.push(['Kind', run.error.kind])
+    if (run.error.kind === 'api_error') {
+      if (run.error.code) errorDetails.push(['Code', run.error.code])
+      if (run.error.status !== undefined) errorDetails.push(['Status', run.error.status])
+      if (run.error.requestId) errorDetails.push(['Request ID', run.error.requestId])
+    }
+    if (run.error.kind === 'max_tokens') {
+      errorDetails.push(['Max tokens', run.error.maxTokens])
+    }
+  }
 
   const handleReExtract = async () => {
     if (reExtracting) return
@@ -122,9 +140,14 @@ export default function ExtractionDetail({
                     Acc {accuracyBadge.label}
                   </span>
                 )}
-                {run.skipReason && (
+                {runStatus === 'skipped' && run.skipReason && (
                   <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-warning/15 text-warning">
                     {run.skipReason === 'too_short' ? 'Skipped: too short' : 'Skipped: no records'}
+                  </span>
+                )}
+                {(isFailedRun || isPartialRun) && run.error && (
+                  <span className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${isFailedRun ? 'bg-destructive/15 text-destructive' : 'bg-warning/15 text-warning'}`}>
+                    {isFailedRun ? `Failed: ${errorSummary}` : `Partial: ${errorSummary}`}
                   </span>
                 )}
                 {run.hasRememberMarker && (
@@ -179,6 +202,11 @@ export default function ExtractionDetail({
               valueClassName={run.parseErrorCount > 0 ? 'text-destructive' : undefined}
             />
             <MetricTile
+              label="Run error"
+              value={isFailedRun ? 'failed' : isPartialRun ? 'partial' : '—'}
+              valueClassName={isFailedRun ? 'text-destructive' : isPartialRun ? 'text-warning' : undefined}
+            />
+            <MetricTile
               label="Reviewed"
               value={review ? formatRelativeTimeShort(review.reviewedAt, { includeAgo: true }) : '—'}
             />
@@ -193,6 +221,24 @@ export default function ExtractionDetail({
           {reExtractResult && (
             <div className={`mt-2 text-xs ${reExtractResult.startsWith('Failed') ? 'text-destructive' : 'text-muted-foreground'}`}>
               {reExtractResult}
+            </div>
+          )}
+          {(isFailedRun || isPartialRun) && run.error && (
+            <div className={`mt-2 rounded-md border px-3 py-2 text-xs ${isFailedRun ? 'border-destructive/20 bg-destructive/10 text-destructive' : 'border-warning/20 bg-warning/10 text-warning'}`}>
+              <div className="font-medium uppercase tracking-wide mb-1">
+                {isFailedRun ? 'Extraction failed' : 'Extraction partial'}
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {errorDetails.map(([label, value]) => (
+                  <span key={label}>
+                    <span className="opacity-70">{label}</span>
+                    <span className="ml-1 font-mono">{value}</span>
+                  </span>
+                ))}
+              </div>
+              {errorMessage && (
+                <div className="mt-1 font-mono break-words">{errorMessage}</div>
+              )}
             </div>
           )}
         </div>

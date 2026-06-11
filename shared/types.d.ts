@@ -346,7 +346,7 @@ export interface TokenUsage {
 }
 
 export type ExtractionFailure =
-  | { kind: 'api_error'; status?: number; code?: string; message: string }
+  | { kind: 'api_error'; status?: number; code?: string; message: string; requestId?: string }
   | { kind: 'parse_error'; message: string }
   | { kind: 'max_tokens'; maxTokens: number }
   | { kind: 'no_auth'; message: string }

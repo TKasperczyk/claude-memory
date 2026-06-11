@@ -51,9 +51,11 @@ import { mergeNearMisses } from '../src/lib/diagnostics.js'
 import { retrieveContext } from '../src/lib/retrieval.js'
 import { getTokenUsageActivity } from '../src/lib/token-usage-events.js'
 import { reviewInjection, reviewInjectionStreaming } from '../src/lib/injection-review.js'
-import { getExtractionRun, listExtractionRuns } from '../src/lib/extraction-log.js'
+import { getExtractionRun, listExtractionRuns, saveExtractionRun } from '../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../src/lib/extraction-review.js'
+import { handlePostSession } from '../src/hooks/post-session.js'
 import {
+  deleteReview,
   getInjectionReview,
   hasInjectionReview,
   getMaintenanceReview,
@@ -141,7 +143,10 @@ vi.mock('../src/lib/injection-review.js', () => ({
 
 vi.mock('../src/lib/extraction-log.js', () => ({
   getExtractionRun: vi.fn(),
-  listExtractionRuns: vi.fn()
+  listExtractionRuns: vi.fn(),
+  listInProgressExtractions: vi.fn(() => []),
+  saveExtractionRun: vi.fn(),
+  deleteExtractionRun: vi.fn()
 }))
 
 vi.mock('../src/lib/extraction-review.js', () => ({
@@ -150,6 +155,7 @@ vi.mock('../src/lib/extraction-review.js', () => ({
 }))
 
 vi.mock('../src/lib/review-storage.js', () => ({
+  deleteReview: vi.fn(),
   getInjectionReview: vi.fn(),
   hasInjectionReview: vi.fn(),
   getReview: vi.fn(),
@@ -179,6 +185,10 @@ vi.mock('../src/lib/maintenance-api.js', () => ({
   ],
   runAllMaintenance: vi.fn(),
   runMaintenanceOperation: vi.fn()
+}))
+
+vi.mock('../src/hooks/post-session.js', () => ({
+  handlePostSession: vi.fn()
 }))
 
 const mockedLoadSettings = vi.mocked(loadSettings)
@@ -221,8 +231,11 @@ const mockedGetInjectionReview = vi.mocked(getInjectionReview)
 const mockedHasInjectionReview = vi.mocked(hasInjectionReview)
 const mockedGetExtractionRun = vi.mocked(getExtractionRun)
 const mockedListExtractionRuns = vi.mocked(listExtractionRuns)
+const mockedSaveExtractionRun = vi.mocked(saveExtractionRun)
 const mockedReviewExtraction = vi.mocked(reviewExtraction)
 const mockedReviewExtractionStreaming = vi.mocked(reviewExtractionStreaming)
+const mockedHandlePostSession = vi.mocked(handlePostSession)
+const mockedDeleteReview = vi.mocked(deleteReview)
 const mockedGetReview = vi.mocked(getReview)
 const mockedSaveReview = vi.mocked(saveReview)
 const mockedGetMaintenanceReview = vi.mocked(getMaintenanceReview)
@@ -367,6 +380,15 @@ beforeEach(() => {
   mockedListExtractionRuns.mockReturnValue([])
   mockedReviewExtraction.mockResolvedValue({ status: 'ok' })
   mockedReviewExtractionStreaming.mockResolvedValue({ status: 'ok' })
+  mockedHandlePostSession.mockResolvedValue({
+    inserted: 0,
+    updated: 0,
+    skipped: 0,
+    failed: 0,
+    records: [],
+    insertedIds: [],
+    updatedIds: []
+  })
   mockedGetReview.mockReturnValue(null)
   mockedSaveReview.mockResolvedValue(undefined)
   mockedGetMaintenanceReview.mockReturnValue(null)
@@ -1122,6 +1144,74 @@ describe('extractions routes', () => {
     expect(res.text).toContain('data: {"thinking":"reviewing"}\n\n')
     expect(res.text).toContain('data: {"result":{"runId":"run-1","status":"ok"}}\n\n')
     expect(res.text).toContain('data: [DONE]\n\n')
+  })
+
+  it('persists re-extraction failures without skipReason or checkpoint', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-reextract-'))
+    const transcriptPath = path.join(tempRoot, 'session.jsonl')
+    await fs.writeFile(transcriptPath, JSON.stringify({
+      type: 'user',
+      timestamp: new Date().toISOString(),
+      cwd: '/tmp/project',
+      message: { role: 'user', content: 'extract this session' }
+    }) + '\n')
+
+    mockedGetExtractionRun.mockReturnValueOnce({
+      runId: 'run-1',
+      sessionId: 'session-1',
+      transcriptPath,
+      timestamp: 0,
+      recordCount: 0,
+      parseErrorCount: 0,
+      extractedRecordIds: [],
+      duration: 0,
+      extractedEventCount: 7
+    })
+    mockedHandlePostSession.mockResolvedValueOnce({
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      records: [],
+      insertedIds: [],
+      updatedIds: [],
+      reason: 'no_records',
+      transcript: { events: [], messages: [], toolCalls: [], toolResults: [], parseErrors: 0 },
+      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+      extractedEventCount: 8,
+      extractionError: {
+        kind: 'api_error',
+        code: 'api_error',
+        message: 'Internal server error',
+        requestId: 'req_route'
+      }
+    })
+
+    try {
+      const { app } = buildApp()
+      const res = await request(app)
+        .post('/api/extractions/run-1/re-extract')
+        .send({})
+
+      expect(res.status).toBe(200)
+      expect(mockedDeleteReview).toHaveBeenCalledWith('run-1', DEFAULT_CONFIG.lancedb.table)
+      expect(mockedSaveExtractionRun).toHaveBeenCalledTimes(1)
+      const saved = mockedSaveExtractionRun.mock.calls[0]?.[0] as {
+        skipReason?: string
+        extractedEventCount?: number
+        error?: unknown
+      }
+      expect(saved.skipReason).toBeUndefined()
+      expect(saved.extractedEventCount).toBeUndefined()
+      expect(saved.error).toMatchObject({
+        kind: 'api_error',
+        code: 'api_error',
+        message: 'Internal server error',
+        requestId: 'req_route'
+      })
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true })
+    }
   })
 })
 

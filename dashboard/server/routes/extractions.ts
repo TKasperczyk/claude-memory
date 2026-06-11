@@ -11,6 +11,7 @@ import { paginateExtractionRuns, loadExtractionRunDetail } from '../../../src/li
 import { handlePostSession } from '../../../src/hooks/post-session.js'
 import { parseTranscript } from '../../../src/lib/transcript.js'
 import { deleteReview, getReview, saveReview } from '../../../src/lib/review-storage.js'
+import { isTrueExtractionFailure } from '../../../src/lib/extraction-status.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
@@ -183,6 +184,8 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       const insertedIds = result.insertedIds ?? []
       const updatedIds = result.updatedIds ?? []
       const allIds = Array.from(new Set([...insertedIds, ...updatedIds]))
+      const extractionError = sanitizeExtractionFailure(result.extractionError)
+      const trueFailure = isTrueExtractionFailure(extractionError, allIds.length)
       const extractedRecords = result.records
         .map(r => {
           const summary = getRecordSummary(r)
@@ -202,12 +205,13 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         duration: 0,
         firstPrompt: result.transcript ? getFirstUserPrompt(result.transcript) : run.firstPrompt,
         tokenUsage: result.tokenUsage,
-        extractedEventCount: result.extractedEventCount,
+        extractedEventCount: trueFailure ? undefined : result.extractedEventCount,
         hasRememberMarker: result.hasRememberMarker,
-        skipReason: result.reason === 'too_short' ? 'too_short'
+        skipReason: extractionError ? undefined
+          : result.reason === 'too_short' ? 'too_short'
           : (result.reason === 'no_records' && allIds.length === 0) ? 'no_records'
           : undefined,
-        error: sanitizeExtractionFailure(result.extractionError)
+        error: extractionError
       }, requestConfig.lancedb.table)
 
       res.json({

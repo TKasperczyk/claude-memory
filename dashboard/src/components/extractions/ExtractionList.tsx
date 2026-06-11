@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import ListItem from '@/components/ListItem'
 import { formatDuration, formatRelativeTimeShort, formatTokenCount, truncateText } from '@/lib/format'
 import type { ExtractionRun } from '@/lib/api'
+import { formatExtractionFailureSummary, getRunStatus } from '../../../../src/lib/extraction-status.js'
 
 function getFirstSentence(text: string | undefined, maxLength = 60): string | undefined {
   if (!text) return undefined
@@ -21,13 +22,22 @@ function ExtractionRunCard({
   selected: boolean
   onSelect: (runId: string) => void
 }) {
-  const hasErrors = run.parseErrorCount > 0
-  const isSkipped = !!run.skipReason
-  const dotClass = isSkipped ? 'bg-warning' : hasErrors ? 'bg-destructive' : 'bg-success'
+  const hasParseErrors = run.parseErrorCount > 0
+  const runStatus = getRunStatus(run)
+  const isFailed = runStatus === 'failed'
+  const isSkipped = runStatus === 'skipped'
+  const isPartial = runStatus === 'partial'
+  const dotClass = isFailed ? 'bg-destructive'
+    : isSkipped ? 'bg-warning'
+    : isPartial ? 'bg-warning'
+    : hasParseErrors ? 'bg-destructive'
+    : 'bg-success'
   const promptPreview = getFirstSentence(run.firstPrompt)
   const tokenTotal = run.tokenUsage
     ? run.tokenUsage.inputTokens + run.tokenUsage.outputTokens
     : null
+  const errorSummary = formatExtractionFailureSummary(run.error)
+  const errorMessage = run.error && 'message' in run.error ? run.error.message : undefined
 
   return (
     <ListItem onClick={() => onSelect(run.runId)} selected={selected}>
@@ -51,12 +61,28 @@ function ExtractionRunCard({
               {run.skipReason === 'too_short' ? 'too short' : 'skipped'}
             </span>
           )}
+          {isFailed && (
+            <span
+              className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive"
+              title={errorMessage}
+            >
+              failed
+            </span>
+          )}
+          {isPartial && run.error && (
+            <span
+              className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-warning/15 text-warning"
+              title={errorMessage}
+            >
+              {errorSummary || 'partial'}
+            </span>
+          )}
           {run.hasRememberMarker && (
             <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-info/15 text-info">
               /remember
             </span>
           )}
-          {hasErrors && (
+          {hasParseErrors && (
             <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive">
               {run.parseErrorCount} err
             </span>

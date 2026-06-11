@@ -45,6 +45,7 @@ export function sanitizeExtractionFailure(failure: ExtractionFailure | undefined
         kind: 'api_error',
         ...(failure.status !== undefined ? { status: failure.status } : {}),
         ...(failure.code !== undefined ? { code: failure.code } : {}),
+        ...(failure.requestId !== undefined ? { requestId: failure.requestId } : {}),
         message: failure.message.split('\n')[0].slice(0, 200)
       }
     case 'parse_error':
@@ -310,10 +311,12 @@ export async function extractRecords(
         ? errorRecord.code
         : undefined
     const message = typeof errorRecord?.message === 'string' ? errorRecord.message : String(error)
+    const requestId = typeof errorRecord?.requestID === 'string' ? errorRecord.requestID : undefined
     const failure: ExtractionFailure = {
       kind: 'api_error',
       ...(status !== undefined ? { status } : {}),
       ...(code !== undefined ? { code } : {}),
+      ...(requestId !== undefined ? { requestId } : {}),
       message
     }
     return { records: [], tokenUsage: emptyTokenUsage(), error: failure }
