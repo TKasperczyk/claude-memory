@@ -331,11 +331,17 @@ export interface ModelSettings {
 
 export type Settings = RetrievalSettings & MaintenanceSettings & ModelSettings
 
+export type ExtractionRecordOutcome = 'inserted' | 'updated' | 'skipped' | 'failed'
+
 export interface ExtractionRecordSummary {
   id: string
   type: RecordType
   summary: string
   timestamp?: number
+  outcome?: ExtractionRecordOutcome
+  storedRecordId?: string
+  dedupSimilarity?: number
+  storeError?: string
 }
 
 export interface TokenUsage {
@@ -358,6 +364,8 @@ export interface ExtractionRun {
   timestamp: number
   recordCount: number
   parseErrorCount: number
+  skippedRecordCount?: number
+  failedRecordCount?: number
   extractedRecordIds: string[]
   updatedRecordIds?: string[]
   extractedRecords?: ExtractionRecordSummary[]

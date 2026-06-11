@@ -13,6 +13,13 @@ import { RecordsSkeleton } from './ExtractionSkeletons'
 import { extractProjectFromPath, getAccuracyBadge, truncateSessionId } from './utils'
 import { formatExtractionFailureSummary, getRunStatus } from '../../../../src/lib/extraction-status.js'
 
+function getOutcomeClass(outcome: string): string {
+  if (outcome === 'failed') return 'bg-destructive/15 text-destructive'
+  if (outcome === 'skipped') return 'bg-warning/15 text-warning'
+  if (outcome === 'updated') return 'bg-info/15 text-info'
+  return 'bg-success/15 text-success'
+}
+
 export default function ExtractionDetail({
   run,
   onSelectMemory,
@@ -41,6 +48,9 @@ export default function ExtractionDetail({
   const { data: review, isLoading: reviewLoadingState, error: reviewQueryError } = useExtractionReview(runId)
 
   const runRecords: MemoryRecord[] = runDetail?.records ?? []
+  const recordsById = new Map(runRecords.map(record => [record.id, record]))
+  const extractedRecordSummaries = run?.extractedRecords ?? []
+  const hasOutcomeRows = extractedRecordSummaries.some(record => record.outcome)
   const runError = runDetailError instanceof Error ? runDetailError.message : undefined
   const reviewError = reviewQueryError instanceof Error ? reviewQueryError.message : undefined
   const hasReviewLoaded = review !== undefined
@@ -202,6 +212,16 @@ export default function ExtractionDetail({
               valueClassName={run.parseErrorCount > 0 ? 'text-destructive' : undefined}
             />
             <MetricTile
+              label="Skipped"
+              value={run.skippedRecordCount ?? '—'}
+              valueClassName={(run.skippedRecordCount ?? 0) > 0 ? 'text-warning' : undefined}
+            />
+            <MetricTile
+              label="Failed"
+              value={run.failedRecordCount ?? '—'}
+              valueClassName={(run.failedRecordCount ?? 0) > 0 ? 'text-destructive' : undefined}
+            />
+            <MetricTile
               label="Run error"
               value={isFailedRun ? 'failed' : isPartialRun ? 'partial' : '—'}
               valueClassName={isFailedRun ? 'text-destructive' : isPartialRun ? 'text-warning' : undefined}
@@ -263,17 +283,61 @@ export default function ExtractionDetail({
           <div className="rounded-lg border border-border bg-background/40 p-3">
             <div className="flex items-center justify-between mb-2">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Records</div>
-              <div className="text-[11px] text-muted-foreground">{run.recordCount}</div>
+              <div className="text-[11px] text-muted-foreground">
+                {hasOutcomeRows ? extractedRecordSummaries.length : run.recordCount}
+              </div>
             </div>
             {isLoadingRecords ? (
               <RecordsSkeleton />
             ) : runError ? (
               <div className="text-xs text-destructive">{runError}</div>
-            ) : runRecords.length === 0 ? (
+            ) : !hasOutcomeRows && runRecords.length === 0 ? (
               <div className="text-xs text-muted-foreground">No records extracted.</div>
             ) : (
               <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                {runRecords.map(record => {
+                {hasOutcomeRows ? extractedRecordSummaries.map(summary => {
+                  const storedRecord = recordsById.get(summary.storedRecordId ?? summary.id)
+                  const type = storedRecord?.type ?? summary.type
+                  const displayId = summary.storedRecordId ?? summary.id
+                  const summaryText = truncateText(storedRecord ? getMemorySummary(storedRecord) : summary.summary, 100)
+                  const excerpt = storedRecord?.sourceExcerpt
+                    ? truncateText(storedRecord.sourceExcerpt, 220)
+                    : summary.storeError
+                      ? truncateText(summary.storeError, 220)
+                      : 'No source excerpt available.'
+                  const selectId = summary.storedRecordId ?? (summary.outcome === 'inserted' ? summary.id : undefined)
+
+                  return (
+                    <ListItem key={summary.id} onClick={selectId ? () => onSelectMemory(selectId) : undefined}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span
+                          className="w-2 h-2 rounded-full"
+                          style={{ backgroundColor: TYPE_COLORS[type] }}
+                        />
+                        <span className="text-[11px] text-muted-foreground uppercase tracking-wide">
+                          {type}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground font-mono truncate">
+                          {displayId}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mb-1">
+                        {summary.outcome && (
+                          <span className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full ${getOutcomeClass(summary.outcome)}`}>
+                            {summary.outcome}
+                          </span>
+                        )}
+                        {typeof summary.dedupSimilarity === 'number' && (
+                          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-foreground/10 text-foreground/70">
+                            {(summary.dedupSimilarity * 100).toFixed(1)}%
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-foreground mb-1 line-clamp-2">{summaryText}</div>
+                      <div className="text-[10px] text-muted-foreground font-mono line-clamp-2">{excerpt}</div>
+                    </ListItem>
+                  )
+                }) : runRecords.map(record => {
                   const summaryText = truncateText(getMemorySummary(record), 100)
                   const excerpt = record.sourceExcerpt
                     ? truncateText(record.sourceExcerpt, 220)

@@ -13,7 +13,7 @@ import { rateInjectedMemories, sanitizeExtractionFailure } from '../lib/extract.
 import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
-import { getLastExtractionRunForSession, saveExtractionRun, type ExtractionRecordSummary } from '../lib/extraction-log.js'
+import { buildExtractionRecordSummaries, getLastExtractionRunForSession, saveExtractionRun } from '../lib/extraction-log.js'
 import { runAllMaintenance } from '../lib/maintenance-api.js'
 import { buildMaintenanceRun, getLastMaintenanceRun, saveMaintenanceRun } from '../lib/maintenance-log.js'
 import { buildMemoryStats } from '../lib/memory-stats.js'
@@ -22,7 +22,6 @@ import { hasStatsSnapshot, saveStatsSnapshotIfNeeded } from '../lib/stats-snapsh
 import { type Config, type ExtractionFailure, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord, type TokenUsage } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
 import { getRecordSearchableTextParts } from '../lib/record-fields.js'
-import { getRecordSummary } from '../lib/record-summary.js'
 import { acquireFileLock } from '../lib/lock.js'
 import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
@@ -346,14 +345,15 @@ export function saveRunLog(
     return
   }
 
+  const recordOutcomes = result.recordOutcomes ?? []
   const insertedIds = Array.from(new Set(result.insertedIds ?? []))
   const updatedIds = Array.from(new Set(result.updatedIds ?? []))
   const uniqueIds = Array.from(new Set([...insertedIds, ...updatedIds]))
   const runId = randomUUID()
   const persistedRecordCount = uniqueIds.length
-  const extractedRecords = result.records
-    .map(record => buildRecordSummary(record))
-    .filter((record): record is ExtractionRecordSummary => Boolean(record))
+  const skippedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'skipped').length
+  const failedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'failed').length
+  const extractedRecords = buildExtractionRecordSummaries(result.records, recordOutcomes)
   const firstPrompt = result.transcript ? getFirstUserPrompt(result.transcript) : undefined
   const extractionError = sanitizeExtractionFailure(result.extractionError)
   const trueFailure = isTrueExtractionFailure(extractionError, persistedRecordCount)
@@ -365,6 +365,8 @@ export function saveRunLog(
     timestamp: Date.now(),
     recordCount: persistedRecordCount,
     parseErrorCount: result.transcript?.parseErrors ?? 0,
+    skippedRecordCount,
+    failedRecordCount,
     extractedRecordIds: insertedIds,
     updatedRecordIds: updatedIds.length > 0 ? updatedIds : undefined,
     extractedRecords,
@@ -384,17 +386,6 @@ export function saveRunLog(
 
   const auditStatus = trueFailure ? 'FAILED' : 'DONE'
   auditLog(`${auditStatus} session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}${auditErrorSuffix(extractionError)}`)
-}
-
-function buildRecordSummary(record: MemoryRecord): ExtractionRecordSummary | null {
-  const summary = getRecordSummary(record)
-  if (!record.id || !summary) return null
-  return {
-    id: record.id,
-    type: record.type,
-    summary,
-    timestamp: record.timestamp
-  }
 }
 
 async function processUsefulnessRating(

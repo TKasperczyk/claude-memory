@@ -1,8 +1,7 @@
 import express from 'express'
 import fs from 'fs'
 import path from 'path'
-import { deleteExtractionRun, getExtractionRun, listInProgressExtractions, saveExtractionRun } from '../../../src/lib/extraction-log.js'
-import { getRecordSummary } from '../../../src/lib/record-summary.js'
+import { buildExtractionRecordSummaries, deleteExtractionRun, getExtractionRun, listInProgressExtractions, saveExtractionRun } from '../../../src/lib/extraction-log.js'
 import { getFirstUserPrompt } from '../../../src/lib/transcript.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
 import { sanitizeExtractionFailure } from '../../../src/lib/extract.js'
@@ -181,24 +180,24 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       }, config, { flush: 'always' })
 
       // Update the existing extraction run with new results
-      const insertedIds = result.insertedIds ?? []
-      const updatedIds = result.updatedIds ?? []
+      const recordOutcomes = result.recordOutcomes ?? []
+      const insertedIds = Array.from(new Set(result.insertedIds ?? []))
+      const updatedIds = Array.from(new Set(result.updatedIds ?? []))
       const allIds = Array.from(new Set([...insertedIds, ...updatedIds]))
+      const persistedRecordCount = allIds.length
+      const skippedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'skipped').length
+      const failedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'failed').length
       const extractionError = sanitizeExtractionFailure(result.extractionError)
-      const trueFailure = isTrueExtractionFailure(extractionError, allIds.length)
-      const extractedRecords = result.records
-        .map(r => {
-          const summary = getRecordSummary(r)
-          if (!r.id || !summary) return null
-          return { id: r.id, type: r.type, summary, timestamp: r.timestamp }
-        })
-        .filter((r): r is NonNullable<typeof r> => r !== null)
+      const trueFailure = isTrueExtractionFailure(extractionError, persistedRecordCount)
+      const extractedRecords = buildExtractionRecordSummaries(result.records, recordOutcomes)
 
       saveExtractionRun({
         ...run,
         timestamp: Date.now(),
-        recordCount: allIds.length,
+        recordCount: persistedRecordCount,
         parseErrorCount: result.transcript?.parseErrors ?? 0,
+        skippedRecordCount,
+        failedRecordCount,
         extractedRecordIds: insertedIds,
         updatedRecordIds: updatedIds.length > 0 ? updatedIds : undefined,
         extractedRecords: extractedRecords.length > 0 ? extractedRecords : undefined,
@@ -209,7 +208,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         hasRememberMarker: result.hasRememberMarker,
         skipReason: extractionError ? undefined
           : result.reason === 'too_short' ? 'too_short'
-          : (result.reason === 'no_records' && allIds.length === 0) ? 'no_records'
+          : (result.reason === 'no_records' && persistedRecordCount === 0) ? 'no_records'
           : undefined,
         error: extractionError
       }, requestConfig.lancedb.table)

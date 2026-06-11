@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ExtractionHookInput, TokenUsage } from '../src/lib/types.js'
+import { createMockDiscoveryRecord } from './helpers.js'
 
 let storageRoot = ''
 const savedRuns: unknown[] = []
@@ -29,13 +30,17 @@ async function loadWorker(): Promise<typeof import('../src/hooks/post-session-wo
     DEBUG_LOG_FILE: path.join(storageRoot, 'debug.log'),
     LOCKS_DIR: path.join(storageRoot, 'locks')
   }))
-  vi.doMock('../src/lib/extraction-log.js', () => ({
-    getLastExtractionRunForSession: vi.fn(),
-    listInProgressExtractions: vi.fn(() => []),
-    saveExtractionRun: vi.fn((run: unknown) => {
-      savedRuns.push(run)
-    })
-  }))
+  vi.doMock('../src/lib/extraction-log.js', async () => {
+    const actual = await vi.importActual<typeof import('../src/lib/extraction-log.js')>('../src/lib/extraction-log.js')
+    return {
+      ...actual,
+      getLastExtractionRunForSession: vi.fn(),
+      listInProgressExtractions: vi.fn(() => []),
+      saveExtractionRun: vi.fn((run: unknown) => {
+        savedRuns.push(run)
+      })
+    }
+  })
   return await import('../src/hooks/post-session-worker.js')
 }
 
@@ -108,6 +113,55 @@ describe('post-session worker run saving', () => {
     const audit = await readAuditLog()
     expect(audit).toContain('DONE session=worker-session')
     expect(audit).toContain('error=max_tokens')
+  })
+
+  it('persists record outcome metadata and keeps updated IDs in the destructive union', async () => {
+    const { saveRunLog } = await loadWorker()
+    const inserted = createMockDiscoveryRecord({ id: 'extracted-insert' })
+    const updated = createMockDiscoveryRecord({ id: 'extracted-update' })
+    const skipped = createMockDiscoveryRecord({ id: 'extracted-skip' })
+    const failed = createMockDiscoveryRecord({ id: 'extracted-failed' })
+
+    saveRunLog(payload, {
+      inserted: 1,
+      updated: 1,
+      skipped: 1,
+      failed: 1,
+      records: [inserted, updated, skipped, failed],
+      recordOutcomes: [
+        { id: inserted.id, outcome: 'inserted', storedRecordId: inserted.id },
+        { id: updated.id, outcome: 'updated', storedRecordId: 'existing-updated', dedupSimilarity: 0.876 },
+        { id: skipped.id, outcome: 'skipped', storedRecordId: 'existing-skipped', dedupSimilarity: 0.765 },
+        { id: failed.id, outcome: 'failed', storeError: 'store failed' }
+      ],
+      insertedIds: [inserted.id],
+      updatedIds: ['existing-updated'],
+      extractedEventCount: 45
+    }, 111, tokenUsage, 'test-collection')
+
+    expect(savedRuns).toHaveLength(1)
+    const saved = savedRuns[0] as {
+      recordCount?: number
+      skippedRecordCount?: number
+      failedRecordCount?: number
+      extractedRecordIds?: string[]
+      updatedRecordIds?: string[]
+      extractedRecords?: Array<Record<string, unknown>>
+    }
+    expect(saved.recordCount).toBe(2)
+    expect(saved.skippedRecordCount).toBe(1)
+    expect(saved.failedRecordCount).toBe(1)
+    expect(saved.extractedRecordIds).toEqual([inserted.id])
+    expect(saved.updatedRecordIds).toEqual(['existing-updated'])
+    const deleteUnion = new Set([...(saved.extractedRecordIds ?? []), ...(saved.updatedRecordIds ?? [])])
+    expect(Array.from(deleteUnion)).toEqual([inserted.id, 'existing-updated'])
+    expect(deleteUnion.has('existing-skipped')).toBe(false)
+    expect(saved.extractedRecords).toMatchObject([
+      { id: inserted.id, outcome: 'inserted', storedRecordId: inserted.id },
+      { id: updated.id, outcome: 'updated', storedRecordId: 'existing-updated', dedupSimilarity: 0.876 },
+      { id: skipped.id, outcome: 'skipped', storedRecordId: 'existing-skipped', dedupSimilarity: 0.765 },
+      { id: failed.id, outcome: 'failed', storeError: 'store failed' }
+    ])
   })
 
   it('preserves clean no_records skipReason and checkpoint behavior', async () => {

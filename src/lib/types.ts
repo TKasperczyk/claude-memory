@@ -17,6 +17,8 @@ export type {
   ErrorRecord,
   ExclusionReason,
   ExtractionFailure,
+  ExtractionRecordOutcome,
+  ExtractionRecordSummary,
   HybridSearchResult,
   InjectedMemoryEntry,
   InjectionPromptEntry,

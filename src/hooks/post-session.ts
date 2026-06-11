@@ -24,6 +24,7 @@ import {
   type ExtractionFailure,
   type MemoryRecord,
   type ExtractionHookInput,
+  type ExtractionRecordOutcome,
   type InjectedMemoryEntry,
   type TokenUsage
 } from '../lib/types.js'
@@ -39,6 +40,7 @@ export interface PostSessionResult {
   failed: number
   supersedesMissing?: number
   records: MemoryRecord[]
+  recordOutcomes?: PostSessionRecordOutcome[]
   insertedIds: string[]
   updatedIds: string[]
   transcript?: Transcript
@@ -48,6 +50,14 @@ export interface PostSessionResult {
   extractedEventCount?: number
   isIncremental?: boolean
   hasRememberMarker?: boolean
+}
+
+export interface PostSessionRecordOutcome {
+  id: string
+  outcome: ExtractionRecordOutcome
+  storedRecordId?: string
+  dedupSimilarity?: number
+  storeError?: string
 }
 
 /**
@@ -222,6 +232,7 @@ export async function handlePostSession(
   let supersedesMissing = 0
   const insertedIds: string[] = []
   const updatedIds: string[] = []
+  const recordOutcomes: PostSessionRecordOutcome[] = []
 
   const flushMode = options.flush ?? 'always'
 
@@ -232,16 +243,38 @@ export async function handlePostSession(
         : undefined
       const matches = await findSimilar(record, settings.extractionDedupThreshold, 1, config, dedupFilter)
       if (matches.length > 0) {
-        const existing = matches[0].record
+        const match = matches[0]
+        const existing = match.record
         const updates = buildUpdates(existing, record)
         if (Object.keys(updates).length > 0) {
-          await updateRecord(existing.id, updates, config, { flush: flushMode })
+          const stored = await updateRecord(existing.id, updates, config, { flush: flushMode })
+          if (!stored) {
+            failed += 1
+            recordOutcomes.push({
+              id: record.id,
+              outcome: 'failed',
+              storeError: 'record disappeared during update'
+            })
+            console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}: record disappeared during update`)
+            continue
+          }
           updated += 1
           updatedIds.push(existing.id)
+          const outcome = buildRecordOutcome(record, 'updated', {
+            storedRecordId: existing.id,
+            dedupSimilarity: match.similarity
+          })
+          recordOutcomes.push(outcome)
+          await applySupersedesWithOutcome(outcome, record, existing.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
         } else {
           skipped += 1
+          const outcome = buildRecordOutcome(record, 'skipped', {
+            storedRecordId: existing.id,
+            dedupSimilarity: match.similarity
+          })
+          recordOutcomes.push(outcome)
+          await applySupersedesWithOutcome(outcome, record, existing.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
         }
-        supersedesMissing += await applySupersedesDeprecation(record, existing.id, config)
         continue
       }
 
@@ -249,20 +282,69 @@ export async function handlePostSession(
       await insertRecord(prepared, config, { flush: flushMode })
       inserted += 1
       insertedIds.push(prepared.id)
-      supersedesMissing += await applySupersedesDeprecation(prepared, prepared.id, config)
+      const outcome = buildRecordOutcome(prepared, 'inserted', { storedRecordId: prepared.id })
+      recordOutcomes.push(outcome)
+      await applySupersedesWithOutcome(outcome, prepared, prepared.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
     } catch (error) {
       failed += 1
+      recordOutcomes.push(buildRecordOutcome(record, 'failed', {
+        storeError: sanitizeStoreError(error)
+      }))
       console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}:`, error)
     }
   }
 
   return {
-    inserted, updated, skipped, failed, supersedesMissing, records, insertedIds, updatedIds,
+    inserted, updated, skipped, failed, supersedesMissing, records, recordOutcomes, insertedIds, updatedIds,
     transcript: fullTranscript, tokenUsage, extractionError: error,
     extractedEventCount: totalEventCount,
     isIncremental: isIncremental || undefined,
     hasRememberMarker: hasRememberMarker || undefined
   }
+}
+
+function buildRecordOutcome(
+  record: MemoryRecord,
+  outcome: ExtractionRecordOutcome,
+  options: {
+    storedRecordId?: string
+    dedupSimilarity?: number
+    storeError?: string
+  } = {}
+): PostSessionRecordOutcome {
+  return {
+    id: record.id,
+    outcome,
+    ...(options.storedRecordId ? { storedRecordId: options.storedRecordId } : {}),
+    ...(typeof options.dedupSimilarity === 'number' ? { dedupSimilarity: roundSimilarity(options.dedupSimilarity) } : {}),
+    ...(options.storeError ? { storeError: options.storeError } : {})
+  }
+}
+
+async function applySupersedesWithOutcome(
+  outcome: PostSessionRecordOutcome,
+  record: MemoryRecord,
+  storedId: string,
+  config: Config,
+  addSupersedesMissing: (count: number) => void,
+  incrementFailed: () => void
+): Promise<void> {
+  try {
+    addSupersedesMissing(await applySupersedesDeprecation(record, storedId, config))
+  } catch (error) {
+    incrementFailed()
+    outcome.storeError = sanitizeStoreError(error)
+    console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}:`, error)
+  }
+}
+
+function sanitizeStoreError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.split('\n')[0].slice(0, 200)
+}
+
+function roundSimilarity(similarity: number): number {
+  return Number(similarity.toFixed(3))
 }
 
 async function applySupersedesDeprecation(

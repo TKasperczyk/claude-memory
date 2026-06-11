@@ -1,13 +1,18 @@
 import fs from 'fs'
 import path from 'path'
-import { asInteger, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
+import { asInteger, asNumber, asRecordType, asString, asStringArray, asTrimmedString, isPlainObject } from './parsing.js'
 import { getRecordSummary } from './record-summary.js'
 import { RunLog } from './run-log.js'
 import { LOCKS_DIR } from './paths.js'
 import { isTrueExtractionFailure } from './extraction-status.js'
-import type { ExtractionFailure, ExtractionRecordSummary, ExtractionRun, RecordType, TokenUsage } from '../../shared/types.js'
+import type { ExtractionFailure, ExtractionRecordOutcome, ExtractionRecordSummary, ExtractionRun, MemoryRecord, RecordType, TokenUsage } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
+
+type ExtractionRecordOutcomeMetadata = Pick<
+  ExtractionRecordSummary,
+  'id' | 'outcome' | 'storedRecordId' | 'dedupSimilarity' | 'storeError'
+>
 
 class ExtractionRunLog extends RunLog<ExtractionRun> {
   protected coerce(data: unknown, runId: string): ExtractionRun | null {
@@ -33,6 +38,16 @@ export function deleteExtractionRun(runId: string, collection?: string): boolean
   return extractionLog.delete(runId, collection)
 }
 
+export function buildExtractionRecordSummaries(
+  records: MemoryRecord[],
+  outcomes: ExtractionRecordOutcomeMetadata[] = []
+): ExtractionRecordSummary[] {
+  const outcomesById = new Map(outcomes.map(outcome => [outcome.id, outcome]))
+  return records
+    .map(record => buildExtractionRecordSummary(record, outcomesById.get(record.id)))
+    .filter((record): record is ExtractionRecordSummary => Boolean(record))
+}
+
 export function getLastExtractionRunForSession(sessionId: string, collection?: string): ExtractionRun | null {
   const runs = extractionLog.list(collection) // sorted by timestamp desc
   return runs.find(run =>
@@ -40,6 +55,24 @@ export function getLastExtractionRunForSession(sessionId: string, collection?: s
     && run.extractedEventCount != null
     && !isTrueExtractionFailure(run.error, run.recordCount)
   ) ?? null
+}
+
+function buildExtractionRecordSummary(
+  record: MemoryRecord,
+  outcome: ExtractionRecordOutcomeMetadata | undefined
+): ExtractionRecordSummary | null {
+  const summary = getRecordSummary(record)
+  if (!record.id || !summary) return null
+  return {
+    id: record.id,
+    type: record.type,
+    summary,
+    timestamp: record.timestamp,
+    ...(outcome?.outcome ? { outcome: outcome.outcome } : {}),
+    ...(outcome?.storedRecordId ? { storedRecordId: outcome.storedRecordId } : {}),
+    ...(typeof outcome?.dedupSimilarity === 'number' ? { dedupSimilarity: outcome.dedupSimilarity } : {}),
+    ...(outcome?.storeError ? { storeError: outcome.storeError } : {})
+  }
 }
 
 export interface InProgressExtraction {
@@ -90,6 +123,8 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const updatedRecordIds = asStringArray(record.updatedRecordIds)
   const recordCount = asInteger(record.recordCount) ?? new Set([...extractedRecordIds, ...updatedRecordIds]).size
   const parseErrorCount = asInteger(record.parseErrorCount) ?? 0
+  const skippedRecordCount = asInteger(record.skippedRecordCount) ?? undefined
+  const failedRecordCount = asInteger(record.failedRecordCount) ?? undefined
   const extractedRecords = coerceRecordSummaries(record.extractedRecords)
   const duration = asInteger(record.duration) ?? 0
   const firstPrompt = asTrimmedString(record.firstPrompt)
@@ -110,6 +145,8 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     timestamp,
     recordCount,
     parseErrorCount,
+    skippedRecordCount,
+    failedRecordCount,
     extractedRecordIds,
     updatedRecordIds: updatedRecordIds.length > 0 ? updatedRecordIds : undefined,
     extractedRecords,
@@ -188,6 +225,10 @@ function coerceRecordSummary(value: unknown): ExtractionRecordSummary | null {
   const id = asString(record.id)
   const type = asRecordType(record.type)
   const timestamp = asInteger(record.timestamp) ?? undefined
+  const outcome = coerceExtractionRecordOutcome(record.outcome)
+  const storedRecordId = asString(record.storedRecordId)
+  const dedupSimilarity = coerceSimilarity(record.dedupSimilarity)
+  const storeError = asTrimmedString(record.storeError)
   const summary = asTrimmedString(record.summary)
     ?? asTrimmedString(record.snippet)
     ?? deriveSummaryFromRecord(type, record)
@@ -198,8 +239,23 @@ function coerceRecordSummary(value: unknown): ExtractionRecordSummary | null {
     id,
     type,
     summary,
-    timestamp
+    timestamp,
+    outcome,
+    storedRecordId,
+    dedupSimilarity,
+    storeError
   }
+}
+
+function coerceExtractionRecordOutcome(value: unknown): ExtractionRecordOutcome | undefined {
+  return value === 'inserted' || value === 'updated' || value === 'skipped' || value === 'failed'
+    ? value
+    : undefined
+}
+
+function coerceSimilarity(value: unknown): number | undefined {
+  const parsed = asNumber(value)
+  return parsed === null ? undefined : Number(parsed.toFixed(3))
 }
 
 function deriveSummaryFromRecord(type: RecordType | undefined, record: Record<string, unknown>): string | undefined {

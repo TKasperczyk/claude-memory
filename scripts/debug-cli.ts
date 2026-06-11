@@ -44,7 +44,7 @@ import { formatExtractionFailureSummary, getRunStatus } from '../src/lib/extract
 import { getInjectionReview, saveInjectionReview, getReview, saveReview } from '../src/lib/review-storage.js'
 import { reviewInjection, reviewInjectionStreaming } from '../src/lib/injection-review.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../src/lib/extraction-review.js'
-import type { ExtractionReview, InjectionReview } from '../shared/types.js'
+import type { ExtractionRecordSummary, ExtractionReview, InjectionReview } from '../shared/types.js'
 
 // ---------------------------------------------------------------------------
 // ANSI color codes (same pattern as gemini-audit.ts)
@@ -199,6 +199,21 @@ function typeBadge(type: string): string {
     warning: `${c.yellow}WRN${c.reset}`,
   }
   return badges[type] ?? type
+}
+
+function outcomeBadge(outcome: string | undefined): string {
+  if (outcome === 'failed') return `${c.red}${outcome}${c.reset}`
+  if (outcome === 'skipped') return `${c.yellow}${outcome}${c.reset}`
+  if (outcome === 'updated') return `${c.cyan}${outcome}${c.reset}`
+  if (outcome === 'inserted') return `${c.green}${outcome}${c.reset}`
+  return ''
+}
+
+function formatExtractionRecordIds(record: ExtractionRecordSummary): string {
+  if (record.storedRecordId && record.storedRecordId !== record.id) {
+    return `${truncId(record.id)} -> ${truncId(record.storedRecordId)}`
+  }
+  return truncId(record.storedRecordId ?? record.id)
 }
 
 function printRecordLine(record: MemoryRecord, prefix: string = '  '): void {
@@ -1150,6 +1165,8 @@ async function cmdExtraction(args: string[]): Promise<void> {
   printStat('Records', run.recordCount)
   printStat('Inserted', (run.extractedRecordIds ?? []).length)
   printStat('Updated', (run.updatedRecordIds ?? []).length)
+  printStat('Skipped records', run.skippedRecordCount ?? '-')
+  printStat('Failed records', run.failedRecordCount ?? '-')
   printStat('Parse errors', run.parseErrorCount)
   printStat('Incremental', run.isIncremental ? `${c.cyan}yes${c.reset}` : 'no')
   const runStatus = getRunStatus(run)
@@ -1179,7 +1196,24 @@ async function cmdExtraction(args: string[]): Promise<void> {
   }
   console.log()
 
-  if (records.length > 0) {
+  const outcomeRows = (run.extractedRecords ?? []).filter(record => record.outcome)
+  if (outcomeRows.length > 0) {
+    const recordsById = new Map(records.map(record => [record.id, record]))
+    printSection(`Records (${outcomeRows.length})`)
+    for (const row of outcomeRows) {
+      const rec = recordsById.get(row.storedRecordId ?? row.id)
+      const type = rec?.type ?? row.type
+      const summary = rec ? getRecordSummary(rec) ?? row.summary : row.summary
+      const idText = formatExtractionRecordIds(row)
+      const meta = [
+        outcomeBadge(row.outcome),
+        typeof row.dedupSimilarity === 'number' ? `sim=${row.dedupSimilarity.toFixed(3)}` : '',
+        row.storeError ? `${c.red}error=${truncStr(row.storeError, 60)}${c.reset}` : ''
+      ].filter(Boolean).join(' ')
+      console.log(`  ${typeBadge(type)} ${idText} ${meta} ${truncStr(summary, 70)}`)
+    }
+    console.log()
+  } else if (records.length > 0) {
     printSection(`Records (${records.length})`)
     for (const rec of records) {
       const summary = getRecordSummary(rec) ?? '(no summary)'

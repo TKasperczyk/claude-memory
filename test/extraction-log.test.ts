@@ -69,6 +69,111 @@ describe('extraction run log', () => {
     })
   })
 
+  it('round-trips extraction record outcomes and persisted skipped/failed counts', async () => {
+    const { saveExtractionRun, getExtractionRun } = await loadExtractionLog()
+    const collection = `extraction-log-${randomUUID()}`
+    const run = buildRun({
+      runId: 'run-outcomes',
+      recordCount: 1,
+      skippedRecordCount: 1,
+      failedRecordCount: 1,
+      extractedRecordIds: ['inserted-record'],
+      extractedRecords: [
+        {
+          id: 'extracted-insert',
+          type: 'discovery',
+          summary: 'Inserted summary',
+          timestamp: 123,
+          outcome: 'inserted',
+          storedRecordId: 'inserted-record'
+        },
+        {
+          id: 'extracted-skip',
+          type: 'command',
+          summary: 'Skipped summary',
+          outcome: 'skipped',
+          storedRecordId: 'existing-record',
+          dedupSimilarity: 0.87654
+        },
+        {
+          id: 'extracted-failed',
+          type: 'error',
+          summary: 'Failed summary',
+          outcome: 'failed',
+          storeError: 'store failed'
+        }
+      ]
+    })
+
+    saveExtractionRun(run, collection)
+
+    const loaded = getExtractionRun(run.runId, collection)
+    expect(loaded?.skippedRecordCount).toBe(1)
+    expect(loaded?.failedRecordCount).toBe(1)
+    expect(loaded?.extractedRecords).toEqual([
+      {
+        id: 'extracted-insert',
+        type: 'discovery',
+        summary: 'Inserted summary',
+        timestamp: 123,
+        outcome: 'inserted',
+        storedRecordId: 'inserted-record'
+      },
+      {
+        id: 'extracted-skip',
+        type: 'command',
+        summary: 'Skipped summary',
+        outcome: 'skipped',
+        storedRecordId: 'existing-record',
+        dedupSimilarity: 0.877
+      },
+      {
+        id: 'extracted-failed',
+        type: 'error',
+        summary: 'Failed summary',
+        outcome: 'failed',
+        storeError: 'store failed'
+      }
+    ])
+  })
+
+  it('leaves new outcome/count fields undefined for legacy runs', async () => {
+    const { getExtractionRun } = await loadExtractionLog()
+    const collection = `extractionlog${randomUUID().replace(/-/g, '')}`
+    const runId = 'legacy-no-outcomes'
+    const collectionDir = path.join(storageRoot, 'extractions', collection)
+    await fs.mkdir(collectionDir, { recursive: true })
+    await fs.writeFile(path.join(collectionDir, `${runId}.json`), JSON.stringify({
+      runId,
+      sessionId: 'legacy-session',
+      transcriptPath: '/tmp/transcript.jsonl',
+      timestamp: Date.now(),
+      recordCount: 1,
+      parseErrorCount: 0,
+      extractedRecordIds: ['record-a'],
+      extractedRecords: [{
+        id: 'record-a',
+        type: 'command',
+        summary: 'Legacy summary'
+      }],
+      duration: 0
+    }))
+
+    const loaded = getExtractionRun(runId, collection)
+    expect(loaded?.skippedRecordCount).toBeUndefined()
+    expect(loaded?.failedRecordCount).toBeUndefined()
+    expect(loaded?.extractedRecords).toEqual([{
+      id: 'record-a',
+      type: 'command',
+      summary: 'Legacy summary',
+      timestamp: undefined,
+      outcome: undefined,
+      storedRecordId: undefined,
+      dedupSimilarity: undefined,
+      storeError: undefined
+    }])
+  })
+
   it('uses clean no_records and partial-success runs as checkpoints but skips true failures', async () => {
     const { saveExtractionRun, getLastExtractionRunForSession } = await loadExtractionLog()
     const collection = `extraction-log-${randomUUID()}`
