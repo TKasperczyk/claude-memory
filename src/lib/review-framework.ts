@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from './anthropic-stream.js'
+import { clampModelMaxTokens, getModelCapabilities } from './model-capabilities.js'
 import { isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { type Config } from './types.js'
 
@@ -28,7 +29,6 @@ export interface ReviewResult<TPayload> {
 export type ThinkingCallback = (chunk: string) => void
 
 const THINKING_BUDGET_TOKENS = 8000
-const MIN_THINKING_BUDGET = 2000
 
 export async function executeReview<TInput, TPayload>(
   input: TInput,
@@ -50,8 +50,10 @@ export async function executeReview<TInput, TPayload>(
   const prompt = frameworkConfig.buildPrompt(input)
   const response = await client.messages.create({
     model: frameworkConfig.model,
-    max_tokens: Math.min(frameworkConfig.maxTokens, config.extraction.maxTokens),
-    temperature: 0,
+    max_tokens: clampModelMaxTokens(
+      frameworkConfig.model,
+      Math.min(frameworkConfig.maxTokens, config.extraction.maxTokens)
+    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: frameworkConfig.systemPrompt }
@@ -104,13 +106,21 @@ export async function executeReviewStreaming<TInput, TPayload>(
   }
 
   const prompt = frameworkConfig.buildPrompt(input)
-  // For streaming with thinking, we need more tokens than normal
-  // The config limit applies to tool output; thinking is additional
-  const baseMaxTokens = frameworkConfig.maxTokens
+  const capabilities = getModelCapabilities(frameworkConfig.model)
+  const baseMaxTokens = Math.min(frameworkConfig.maxTokens, config.extraction.maxTokens)
   const thinkingBudget = THINKING_BUDGET_TOKENS
-  const maxTokens = baseMaxTokens + thinkingBudget
-  // Extended thinking requires tool_choice: 'auto' - forced tool_choice is not compatible
-  // The system prompt must strongly instruct the model to use the tool
+  const requestedMaxTokens = capabilities.thinkingStyle === 'budget'
+    ? baseMaxTokens + thinkingBudget
+    : baseMaxTokens
+  const maxTokens = clampModelMaxTokens(frameworkConfig.model, requestedMaxTokens)
+  const thinkingParam = capabilities.thinkingStyle === 'budget'
+    ? { thinking: { type: 'enabled' as const, budget_tokens: thinkingBudget } }
+    : capabilities.thinkingStyle === 'adaptive'
+      ? { thinking: { type: 'adaptive' } as unknown as Anthropic.ThinkingConfigParam }
+      : {}
+  // Streaming reviews use auto tool choice so budget/adaptive thinking can be sent
+  // for models that support explicit thinking controls. Fable thinking is always on
+  // and rejects an explicit thinking param, so that style omits the field entirely.
   const systemPromptWithToolInstruction = `${frameworkConfig.systemPrompt}
 
 IMPORTANT: You MUST call the ${frameworkConfig.toolName} tool to submit your review. Do not respond with text - always use the tool.`
@@ -118,8 +128,6 @@ IMPORTANT: You MUST call the ${frameworkConfig.toolName} tool to submit your rev
   const stream = await client.messages.create({
     model: frameworkConfig.model,
     max_tokens: maxTokens,
-    // Extended thinking requires temperature: 1
-    temperature: 1,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: systemPromptWithToolInstruction }
@@ -127,7 +135,7 @@ IMPORTANT: You MUST call the ${frameworkConfig.toolName} tool to submit your rev
     messages: [{ role: 'user', content: prompt }],
     tools: [tool],
     tool_choice: { type: 'auto' },
-    thinking: { type: 'enabled', budget_tokens: thinkingBudget },
+    ...thinkingParam,
     stream: true
   }, abortSignal ? { signal: abortSignal } : undefined)
 

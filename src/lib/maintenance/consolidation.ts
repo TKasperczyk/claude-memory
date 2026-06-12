@@ -9,6 +9,7 @@ import { buildFilter, queryRecords, updateRecord, vectorSearchSimilar } from '..
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildRecordSnippet, escapeFilterValue } from '../shared.js'
+import { clampModelMaxTokens } from '../model-capabilities.js'
 import {
   CONSOLIDATION_VERIFICATION_MAX_TOKENS,
   CONSOLIDATION_VERIFICATION_PROMPT,
@@ -537,8 +538,10 @@ export async function llmVerifyConsolidation(
 
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: Math.min(CONSOLIDATION_VERIFICATION_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
+    max_tokens: clampModelMaxTokens(
+      config.extraction.model,
+      Math.min(CONSOLIDATION_VERIFICATION_MAX_TOKENS, config.extraction.maxTokens)
+    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: CONSOLIDATION_VERIFICATION_PROMPT }

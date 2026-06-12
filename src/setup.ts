@@ -266,8 +266,8 @@ async function stepAnthropic(state: WizardState): Promise<void> {
   try {
     const { default: Anthropic } = await import('@anthropic-ai/sdk')
     const client = new Anthropic({ apiKey: key })
-    // Use haiku (cheapest), fall back to sonnet if haiku unavailable
-    for (const testModel of ['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929']) {
+    // Use haiku (cheapest), fall back to the default extraction model if haiku is unavailable.
+    for (const testModel of ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6']) {
       try {
         await client.messages.create({
           model: testModel,

@@ -24,6 +24,7 @@ export type SettingsFieldDefinition<K extends keyof Settings = keyof Settings> =
   default: Settings[K]
   group: SettingsGroupMeta
   options?: TextOption[]
+  allowCustom?: boolean
 }
 
 export type SettingsGroupDefinition = SettingsGroupMeta & {
@@ -32,7 +33,7 @@ export type SettingsGroupDefinition = SettingsGroupMeta & {
 
 export type NumericSettingRule = { kind: 'int' | 'float'; min?: number; max?: number }
 export type BooleanSettingRule = { kind: 'bool' }
-export type TextSettingRule = { kind: 'text'; options?: string[] }
+export type TextSettingRule = { kind: 'text'; options?: string[]; allowCustom?: boolean }
 export type SettingRule = NumericSettingRule | BooleanSettingRule | TextSettingRule
 
 const RETRIEVAL_GROUPS = {
@@ -831,10 +832,14 @@ const MODEL_GROUPS_META = {
 } as const satisfies Record<string, SettingsGroupMeta>
 
 export const MODEL_OPTIONS: TextOption[] = [
-  { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5' },
-  { value: 'claude-opus-4-5-20251101', label: 'Opus 4.5' },
+  { value: 'claude-fable-5', label: 'Fable 5' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+  { value: 'claude-opus-4-7', label: 'Opus 4.7' },
   { value: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' }
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+  { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5 (legacy)' },
+  { value: 'claude-opus-4-5-20251101', label: 'Opus 4.5 (legacy)' }
 ]
 
 export const MODEL_FIELDS: SettingsFieldDefinition<keyof ModelSettings>[] = [
@@ -843,27 +848,30 @@ export const MODEL_FIELDS: SettingsFieldDefinition<keyof ModelSettings>[] = [
     label: 'Extraction model',
     description: 'Model used for extraction, query generation, and maintenance operations.',
     kind: 'text',
-    default: 'claude-sonnet-4-5-20250929',
+    default: 'claude-sonnet-4-6',
     group: MODEL_GROUPS_META.models,
-    options: MODEL_OPTIONS
+    options: MODEL_OPTIONS,
+    allowCustom: true
   },
   {
     key: 'reviewModel',
     label: 'Review model',
     description: 'Model used for injection, extraction, and maintenance reviews.',
     kind: 'text',
-    default: 'claude-opus-4-5-20251101',
+    default: 'claude-opus-4-8',
     group: MODEL_GROUPS_META.models,
-    options: MODEL_OPTIONS
+    options: MODEL_OPTIONS,
+    allowCustom: true
   },
   {
     key: 'chatModel',
     label: 'Chat model',
     description: 'Model used for the dashboard chat assistant.',
     kind: 'text',
-    default: 'claude-opus-4-5-20251101',
+    default: 'claude-opus-4-8',
     group: MODEL_GROUPS_META.models,
-    options: MODEL_OPTIONS
+    options: MODEL_OPTIONS,
+    allowCustom: true
   }
 ]
 
@@ -903,7 +911,11 @@ export const SETTING_RULES = ALL_SETTINGS_FIELDS.reduce((acc, field) => {
   if (field.kind === 'bool') {
     acc[field.key] = { kind: 'bool' }
   } else if (field.kind === 'text') {
-    acc[field.key] = { kind: 'text', options: field.options?.map(option => option.value) }
+    acc[field.key] = {
+      kind: 'text',
+      options: field.allowCustom ? undefined : field.options?.map(option => option.value),
+      allowCustom: field.allowCustom
+    }
   } else {
     acc[field.key] = { kind: field.kind, min: field.min, max: field.max }
   }

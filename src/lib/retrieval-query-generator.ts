@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import fs from 'fs'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import { clampModelMaxTokens } from './model-capabilities.js'
 import { asStringArray, asTrimmedString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { truncateText, withTimeout } from './shared.js'
 import { parseTranscriptTurns, type TranscriptTurn } from './transcript.js'
@@ -149,8 +150,7 @@ export async function generateRetrievalQueryPlan(
 
       const response = await client.messages.create({
         model: HAIKU_MODEL,
-        max_tokens: QUERY_MAX_TOKENS,
-        temperature: 0,
+        max_tokens: clampModelMaxTokens(HAIKU_MODEL, QUERY_MAX_TOKENS),
         system: [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
           { type: 'text', text: SYSTEM_PROMPT }

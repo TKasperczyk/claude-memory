@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import path from 'path'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { queryRecords } from './lancedb.js'
+import { clampModelMaxTokens } from './model-capabilities.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { looksLikeCommand, normalizeStep, readFileIfExists, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
@@ -766,8 +767,10 @@ async function requestPromotionDecisions(
 ): Promise<PromotionDecision[]> {
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: Math.min(PROMOTION_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
+    max_tokens: clampModelMaxTokens(
+      config.extraction.model,
+      Math.min(PROMOTION_MAX_TOKENS, config.extraction.maxTokens)
+    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: PROMOTION_SYSTEM_PROMPT }

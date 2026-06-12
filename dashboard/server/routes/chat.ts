@@ -9,6 +9,7 @@ import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from '../../../src/l
 import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from '../../../src/lib/anthropic-stream.js'
 import { CHAT_TOOLS, executeChatTool, type ChatToolName } from '../lib/chat-tools.js'
 import { loadSettings } from '../../../src/lib/settings.js'
+import { clampModelMaxTokens } from '../../../src/lib/model-capabilities.js'
 import type { Settings } from '../../../src/lib/settings.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
 import type { Config } from '../../../src/lib/types.js'
@@ -21,7 +22,6 @@ const STATIC_PROMPT = readFileSync(
 )
 
 const CHAT_MAX_TOKENS = 10000
-const CHAT_TEMPERATURE = 0.2
 const MAX_TOOL_ROUNDS = 50
 const EFFORT_MODELS = ['claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-6']
 
@@ -151,8 +151,7 @@ export function createChatRouter(context: ServerContext): express.Router {
         logger.info(`Using chat model: ${chatModel}`)
         const createParams: Record<string, unknown> = {
           model: chatModel,
-          max_tokens: CHAT_MAX_TOKENS,
-          temperature: CHAT_TEMPERATURE,
+          max_tokens: clampModelMaxTokens(chatModel, CHAT_MAX_TOKENS),
           system: [
             { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
             { type: 'text', text: systemPrompt }

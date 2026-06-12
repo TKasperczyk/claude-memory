@@ -98,7 +98,7 @@ Configuration is loaded in this order (later overrides earlier):
     "insecure": false
   },
   "extraction": {
-    "model": "claude-sonnet-4-5-20250929"
+    "model": "claude-sonnet-4-6"
   }
 }
 ```
@@ -113,7 +113,7 @@ Configuration is loaded in this order (later overrides earlier):
 | `CC_EMBEDDINGS_MODEL` | `text-embedding-qwen3-embedding-8b` | Embedding model name |
 | `CC_EMBEDDINGS_API_KEY` | -- | Bearer token for authenticated endpoints |
 | `CC_EMBEDDINGS_INSECURE` | `false` | Set `true` to skip TLS certificate verification |
-| `CC_EXTRACTION_MODEL` | `claude-sonnet-4-5-20250929` | Claude model for extraction |
+| `CC_EXTRACTION_MODEL` | `claude-sonnet-4-6` | Claude model for extraction |
 | `ANTHROPIC_API_KEY` | -- | Anthropic API key |
 | `ANTHROPIC_AUTH_TOKEN` | -- | OAuth token (alternative to API key) |
 | `ANTHROPIC_BASE_URL` | -- | Custom Anthropic endpoint (e.g. for proxies) |
@@ -164,9 +164,9 @@ Tuning knobs for retrieval, maintenance, and models. Editable through the dashbo
 | `extractionContextOverlapTurns` | `3` | Overlap when re-extracting a resumed session |
 | `consolidationThreshold` | `0.80` | Similarity threshold for merging records |
 | `autoMaintenanceIntervalHours` | `24` | Run maintenance automatically after extraction if it's been this long (0 disables) |
-| `extractionModel` | `claude-sonnet-4-5-20250929` | Model for knowledge extraction |
-| `chatModel` | (= extraction model) | Model used by the dashboard chat |
-| `reviewModel` | (= extraction model) | Model used by injection / extraction reviews |
+| `extractionModel` | `claude-sonnet-4-6` | Model for knowledge extraction |
+| `chatModel` | `claude-opus-4-8` | Model used by the dashboard chat |
+| `reviewModel` | `claude-opus-4-8` | Model used by injection / extraction reviews |
 
 Any setting can be overridden via `CC_MEMORIES_SETTING_<SCREAMING_SNAKE_CASE>`.
 

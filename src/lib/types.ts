@@ -169,7 +169,7 @@ export const DEFAULT_CONFIG: Config = {
     insecure: process.env.CC_EMBEDDINGS_INSECURE === 'true' || undefined
   },
   extraction: {
-    model: process.env.CC_EXTRACTION_MODEL ?? 'claude-sonnet-4-5-20250929',
+    model: process.env.CC_EXTRACTION_MODEL ?? 'claude-sonnet-4-6',
     maxTokens: 128000
   },
   injection: {

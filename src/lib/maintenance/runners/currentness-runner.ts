@@ -2,6 +2,7 @@ import { CLAUDE_CODE_SYSTEM_PROMPT } from '../../anthropic.js'
 import { batchUpdateRecords, buildFilter, vectorSearchSimilar } from '../../lancedb.js'
 import { createLogger } from '../../logger.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../../parsing.js'
+import { clampModelMaxTokens } from '../../model-capabilities.js'
 import { buildCandidateRecord, buildRecordSnippet, escapeFilterValue } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord } from '../../types.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
@@ -316,8 +317,10 @@ async function checkCurrentnessCluster(
   const payload = JSON.stringify(buildCurrentnessInput(records), null, 2)
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: Math.min(CURRENTNESS_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
+    max_tokens: clampModelMaxTokens(
+      config.extraction.model,
+      Math.min(CURRENTNESS_MAX_TOKENS, config.extraction.maxTokens)
+    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: CURRENTNESS_PROMPT }

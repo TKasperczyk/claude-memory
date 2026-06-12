@@ -121,7 +121,7 @@ export function validateSettingValue(setting: keyof Settings, value: unknown): S
   if (rule.kind === 'text') {
     const str = typeof value === 'string' ? value.trim() : ''
     if (!str) return { ok: false, error: 'value must be a non-empty string' }
-    if (rule.options && !rule.options.includes(str)) {
+    if (!rule.allowCustom && rule.options && !rule.options.includes(str)) {
       return { ok: false, error: `value must be one of: ${rule.options.join(', ')}` }
     }
     return { ok: true, normalized: str }

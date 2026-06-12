@@ -22,6 +22,7 @@ import { getRecordSchemaOneOf } from './record-schema.js'
 import { asConfidence, asOutcome, asScope, asSeverity, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { emptyTokenUsage, extractTokenUsage } from './token-usage.js'
 import { recordTokenUsageEventsAsync } from './token-usage-events.js'
+import { clampModelMaxTokens } from './model-capabilities.js'
 
 export interface ExtractionContext {
   sessionId: string
@@ -71,18 +72,6 @@ export function sanitizeExtractionFailure(failure: ExtractionFailure | undefined
     case 'max_tokens':
       return failure
   }
-}
-
-const MODEL_MAX_OUTPUT_TOKENS: Record<string, number> = {
-  'claude-sonnet-4-5-20250929': 64000,
-  'claude-opus-4-5-20251101': 64000,
-  'claude-opus-4-6': 128000,
-  'claude-haiku-4-5-20251001': 64000
-}
-const DEFAULT_MAX_OUTPUT_TOKENS = 64000
-
-function getModelMaxOutputTokens(model: string): number {
-  return MODEL_MAX_OUTPUT_TOKENS[model] ?? DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 const TOOL_NAME = 'emit_records'
@@ -265,11 +254,10 @@ export async function extractRecords(
 
     const userPrompt = buildUserPrompt(transcript, resolvedContext)
 
-    const maxTokens = getModelMaxOutputTokens(config.extraction.model)
+    const maxTokens = clampModelMaxTokens(config.extraction.model, config.extraction.maxTokens)
     const response = await client.messages.stream({
       model: config.extraction.model,
       max_tokens: maxTokens,
-      temperature: 0,
       system: [
         { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
         { type: 'text', text: SYSTEM_PROMPT }
@@ -284,6 +272,17 @@ export async function extractRecords(
       sessionId: context.sessionId,
       runId: context.runId
     })
+    if (response.stop_reason === 'refusal') {
+      return {
+        records: [],
+        tokenUsage,
+        error: {
+          kind: 'api_error',
+          code: 'refusal',
+          message: 'Anthropic refused to perform extraction.'
+        }
+      }
+    }
     const extractionError: ExtractionFailure | undefined = response.stop_reason === 'max_tokens'
       ? { kind: 'max_tokens', maxTokens }
       : undefined
@@ -352,11 +351,14 @@ export async function rateInjectedMemories(
   }
 
   const userPrompt = buildUsefulnessPrompt(transcript, injectedMemories)
+  const maxTokens = clampModelMaxTokens(
+    config.extraction.model,
+    Math.min(USEFULNESS_MAX_TOKENS, config.extraction.maxTokens)
+  )
 
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: Math.min(USEFULNESS_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
+    max_tokens: maxTokens,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: USEFULNESS_SYSTEM_PROMPT }
@@ -368,6 +370,10 @@ export async function rateInjectedMemories(
 
   const tokenUsage = extractTokenUsage(response)
   recordTokenUsageEvent('usefulness-rating', config.extraction.model, tokenUsage, config.lancedb.table, attribution)
+  if (response.stop_reason === 'refusal') {
+    console.warn('[claude-memory] Usefulness rating was refused; treating as no helpful memories.')
+    return { helpfulIds: [], tokenUsage }
+  }
   const toolInput = response.content.find((block): block is ToolUseBlock =>
     isToolUseBlock(block) && block.name === USEFULNESS_TOOL_NAME
   )?.input

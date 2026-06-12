@@ -17,6 +17,7 @@ import { batchUpdateRecords, buildEmbeddingInput, buildFilter, getRecord, update
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../shared.js'
+import { clampModelMaxTokens } from '../model-capabilities.js'
 import { upsertRelation } from '../relations.js'
 import {
   GENERALIZATION_MAX_TOKENS,
@@ -110,8 +111,10 @@ async function checkGeneralization(
 
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: Math.min(GENERALIZATION_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
+    max_tokens: clampModelMaxTokens(
+      config.extraction.model,
+      Math.min(GENERALIZATION_MAX_TOKENS, config.extraction.maxTokens)
+    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: GENERALIZATION_PROMPT }
@@ -172,8 +175,10 @@ export async function checkGlobalPromotion(
 
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: Math.min(GLOBAL_PROMOTION_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
+    max_tokens: clampModelMaxTokens(
+      config.extraction.model,
+      Math.min(GLOBAL_PROMOTION_MAX_TOKENS, config.extraction.maxTokens)
+    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: GLOBAL_PROMOTION_PROMPT }
@@ -354,8 +359,10 @@ async function synthesizeWarning(
 
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: Math.min(WARNING_SYNTHESIS_MAX_TOKENS, config.extraction.maxTokens),
-    temperature: 0,
+    max_tokens: clampModelMaxTokens(
+      config.extraction.model,
+      Math.min(WARNING_SYNTHESIS_MAX_TOKENS, config.extraction.maxTokens)
+    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: WARNING_SYNTHESIS_PROMPT }

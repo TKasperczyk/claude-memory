@@ -29,6 +29,35 @@ const minimalTranscript: Transcript = {
   parseErrors: 0
 }
 
+function configWithExtractionModel(model: string, maxTokens = DEFAULT_CONFIG.extraction.maxTokens) {
+  return {
+    ...DEFAULT_CONFIG,
+    extraction: {
+      ...DEFAULT_CONFIG.extraction,
+      model,
+      maxTokens
+    }
+  }
+}
+
+function extractionToolResponse() {
+  return {
+    stop_reason: 'tool_use',
+    usage: {
+      input_tokens: 11,
+      output_tokens: 4,
+      cache_creation_input_tokens: 1,
+      cache_read_input_tokens: 2
+    },
+    content: [{
+      type: 'tool_use',
+      id: 'tool-1',
+      name: 'emit_records',
+      input: { records: [] }
+    }]
+  }
+}
+
 beforeEach(() => {
   mockedCreateAnthropicClient.mockReset()
   mockedRecordTokenUsageEventsAsync.mockReset()
@@ -46,21 +75,7 @@ beforeEach(() => {
 
 describe('extractRecords', () => {
   it('records extraction token usage with session and planned run ids', async () => {
-    mockedFinalMessage.mockResolvedValueOnce({
-      stop_reason: 'tool_use',
-      usage: {
-        input_tokens: 11,
-        output_tokens: 4,
-        cache_creation_input_tokens: 1,
-        cache_read_input_tokens: 2
-      },
-      content: [{
-        type: 'tool_use',
-        id: 'tool-1',
-        name: 'emit_records',
-        input: { records: [] }
-      }]
-    })
+    mockedFinalMessage.mockResolvedValueOnce(extractionToolResponse())
 
     const result = await extractRecords(minimalTranscript, {
       sessionId: 'session-1',
@@ -81,6 +96,63 @@ describe('extractRecords', () => {
         cacheReadInputTokens: 2
       })
     ], { collection: DEFAULT_CONFIG.lancedb.table })
+  })
+
+  it('classifies refusal stop reasons as api_error failures', async () => {
+    mockedFinalMessage.mockResolvedValueOnce({
+      stop_reason: 'refusal',
+      usage: {
+        input_tokens: 8,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0
+      },
+      content: []
+    })
+
+    const result = await extractRecords(minimalTranscript, {
+      sessionId: 'session-refusal',
+      cwd: '/tmp/project',
+      project: '/tmp/project'
+    }, configWithExtractionModel('claude-fable-5'))
+
+    expect(result.records).toEqual([])
+    expect(result.tokenUsage.inputTokens).toBe(8)
+    expect(result.error).toEqual({
+      kind: 'api_error',
+      code: 'refusal',
+      message: 'Anthropic refused to perform extraction.'
+    })
+  })
+
+  it('omits temperature for extraction requests', async () => {
+    mockedFinalMessage.mockResolvedValueOnce(extractionToolResponse())
+
+    await extractRecords(minimalTranscript, {
+      sessionId: 'session-opus',
+      cwd: '/tmp/project',
+      project: '/tmp/project'
+    }, configWithExtractionModel('claude-opus-4-8'))
+
+    const request = mockedStream.mock.calls[0][0]
+    expect(request.model).toBe('claude-opus-4-8')
+    expect(request.max_tokens).toBe(128000)
+    expect(request).not.toHaveProperty('temperature')
+  })
+
+  it('also omits temperature for Sonnet extraction requests', async () => {
+    mockedFinalMessage.mockResolvedValueOnce(extractionToolResponse())
+
+    await extractRecords(minimalTranscript, {
+      sessionId: 'session-sonnet',
+      cwd: '/tmp/project',
+      project: '/tmp/project'
+    }, configWithExtractionModel('claude-sonnet-4-6'))
+
+    const request = mockedStream.mock.calls[0][0]
+    expect(request.model).toBe('claude-sonnet-4-6')
+    expect(request.max_tokens).toBe(64000)
+    expect(request).not.toHaveProperty('temperature')
   })
 
   it('classifies Anthropic rate limits as api_error failures', async () => {
@@ -190,6 +262,7 @@ describe('rateInjectedMemories', () => {
     )
 
     expect(result.helpfulIds).toEqual(['mem-1'])
+    expect(mockedCreate.mock.calls[0][0]).not.toHaveProperty('temperature')
     expect(mockedRecordTokenUsageEventsAsync).toHaveBeenCalledWith([
       expect.objectContaining({
         source: 'usefulness-rating',
@@ -200,5 +273,33 @@ describe('rateInjectedMemories', () => {
         cacheReadInputTokens: 1
       })
     ], { collection: DEFAULT_CONFIG.lancedb.table })
+  })
+
+  it('treats refusal as no helpful memories for usefulness rating', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockedCreate.mockResolvedValueOnce({
+      stop_reason: 'refusal',
+      usage: {
+        input_tokens: 7,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0
+      },
+      content: []
+    })
+
+    try {
+      const result = await rateInjectedMemories(
+        minimalTranscript,
+        [{ id: 'mem-1', snippet: 'useful memory', injectedAt: Date.now() }],
+        configWithExtractionModel('claude-fable-5'),
+        { sessionId: 'session-1', runId: 'run-1' }
+      )
+
+      expect(result.helpfulIds).toEqual([])
+      expect(result.tokenUsage.inputTokens).toBe(7)
+    } finally {
+      consoleWarn.mockRestore()
+    }
   })
 })
