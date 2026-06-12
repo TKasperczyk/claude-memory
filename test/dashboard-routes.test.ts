@@ -1484,25 +1484,31 @@ describe('extractions routes', () => {
       expect(res.status).toBe(200)
       expect(mockedDeleteReview).toHaveBeenCalledWith('run-1', DEFAULT_CONFIG.lancedb.table)
       expect(mockedSaveExtractionRun).toHaveBeenCalledTimes(1)
-      const saved = mockedSaveExtractionRun.mock.calls[0]?.[0] as {
-        isReExtract?: boolean
-        skipReason?: string
-        extractedEventCount?: number
-        error?: unknown
-      }
-      expect(saved.isReExtract).toBe(true)
-      expect(saved.skipReason).toBeUndefined()
-      expect(saved.extractedEventCount).toBeUndefined()
+    const saved = mockedSaveExtractionRun.mock.calls[0]?.[0] as {
+      isReExtract?: boolean
+      skipReason?: string
+      extractedEventCount?: number
+      duration?: number
+      error?: unknown
+    }
+    expect(saved.isReExtract).toBe(true)
+    expect(saved.skipReason).toBeUndefined()
+    expect(saved.extractedEventCount).toBeUndefined()
       expect(saved.error).toMatchObject({
         kind: 'api_error',
         code: 'api_error',
-        message: 'Internal server error',
-        requestId: 'req_route'
-      })
-    } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true })
-    }
-  })
+      message: 'Internal server error',
+      requestId: 'req_route'
+    })
+    expect(mockedHandlePostSession).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: 'session-1' }),
+      DEFAULT_CONFIG,
+      expect.objectContaining({ flush: 'always', plannedRunId: 'run-1' })
+    )
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true })
+  }
+})
 
   it('overwrites stale re-extraction outcome fields and keeps updated IDs in destructive arrays', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-reextract-outcomes-'))
@@ -1584,7 +1590,8 @@ describe('extractions routes', () => {
       updatedIds: ['existing-updated'],
       transcript: { events: [], messages: [], toolCalls: [], toolResults: [], parseErrors: 0 },
       tokenUsage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
-      extractedEventCount: 8
+      extractedEventCount: 8,
+      timings: { parse: 1, slice: 2, llm: 3, embed: 4, store: 5 }
     })
 
     try {
@@ -1598,6 +1605,7 @@ describe('extractions routes', () => {
       expect(mockedSaveExtractionRun).toHaveBeenCalledTimes(1)
       const saved = mockedSaveExtractionRun.mock.calls[0]?.[0] as {
         isReExtract?: boolean
+        duration?: number
         recordCount?: number
         skippedRecordCount?: number
         failedRecordCount?: number
@@ -1606,6 +1614,7 @@ describe('extractions routes', () => {
         extractedRecords?: Array<Record<string, unknown>>
       }
       expect(saved.isReExtract).toBe(true)
+      expect(saved.duration).toBe(15)
       expect(saved.recordCount).toBe(2)
       expect(saved.skippedRecordCount).toBe(1)
       expect(saved.failedRecordCount).toBe(1)

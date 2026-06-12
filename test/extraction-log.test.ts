@@ -69,6 +69,33 @@ describe('extraction run log', () => {
     })
   })
 
+  it('round-trips internal_error and skips it as an incremental checkpoint', async () => {
+    const { saveExtractionRun, getExtractionRun, getLastExtractionRunForSession } = await loadExtractionLog()
+    const collection = `extraction-log-${randomUUID()}`
+    const sessionId = 'internal-error-session'
+    const clean = buildRun({
+      runId: 'clean-checkpoint',
+      sessionId,
+      timestamp: Date.now(),
+      skipReason: 'no_records',
+      extractedEventCount: 10
+    })
+    const crashed = buildRun({
+      runId: 'internal-crash',
+      sessionId,
+      timestamp: clean.timestamp + 1,
+      error: { kind: 'internal_error', message: 'database unavailable' }
+    })
+
+    saveExtractionRun(clean, collection)
+    saveExtractionRun(crashed, collection)
+
+    const loaded = getExtractionRun(crashed.runId, collection)
+    expect(loaded?.error).toEqual({ kind: 'internal_error', message: 'database unavailable' })
+    expect(loaded?.extractedEventCount).toBeUndefined()
+    expect(getLastExtractionRunForSession(sessionId, collection)?.runId).toBe('clean-checkpoint')
+  })
+
   it('round-trips extraction record outcomes and persisted skipped/failed counts', async () => {
     const { saveExtractionRun, getExtractionRun } = await loadExtractionLog()
     const collection = `extraction-log-${randomUUID()}`

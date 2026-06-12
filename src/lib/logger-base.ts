@@ -44,12 +44,10 @@ class BaseLogger {
     let line = this.formatLine(level, this.context, message)
     line = appendMeta(line, meta)
 
-    if (level === 'error') {
-      console.error(line)
-    } else if (level === 'warn') {
+    if (level === 'warn') {
       console.warn(line)
     } else {
-      console.log(line)
+      console.error(line)
     }
   }
 

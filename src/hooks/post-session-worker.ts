@@ -27,8 +27,9 @@ import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
 import { SKIP_EXTRACTION_MARKER } from '../lib/claude-commands.js'
 import { addTokenUsage, emptyTokenUsage, hasTokenUsage } from '../lib/token-usage.js'
-import { CLAUDE_MEMORY_ROOT, LOCKS_DIR } from '../lib/paths.js'
+import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE, LOCKS_DIR } from '../lib/paths.js'
 import { formatExtractionFailureSummary, isTrueExtractionFailure } from '../lib/extraction-status.js'
+import { formatStageTimings } from '../lib/extraction-timings.js'
 
 function auditErrorSuffix(failure?: ExtractionFailure): string {
   if (!failure) return ''
@@ -42,7 +43,64 @@ function auditErrorSuffix(failure?: ExtractionFailure): string {
 const DEBUG = process.env.CLAUDE_MEMORY_DEBUG === '1'
 const AUDIT_LOG_FILE = join(CLAUDE_MEMORY_ROOT, 'extraction-audit.log')
 const LOCK_STALE_MS = 5 * 60 * 1000
+const LOG_MAX_BYTES = 5 * 1024 * 1024
+const LOG_KEEP_BYTES = 2 * 1024 * 1024
 const workerStartTime = Date.now()
+let logsTrimmed = false
+let debugSessionId: string | undefined
+
+type WorkerResult = Awaited<ReturnType<typeof handlePostSession>>
+type NoRunSaveReason = Extract<NonNullable<WorkerResult['reason']>, 'clear' | 'no_transcript' | 'wrong_event' | 'no_new_events'>
+
+const NO_RUN_SAVE_REASONS = new Set<NoRunSaveReason>(['clear', 'no_transcript', 'wrong_event', 'no_new_events'])
+const WORKER_EXTRA_TIMING_STAGES = ['usefulness'] as const
+
+function sanitizeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.split('\n')[0].slice(0, 200)
+}
+
+function quoteLogValue(value: string): string {
+  return JSON.stringify(value)
+}
+
+function shortSessionId(sessionId: string | undefined): string {
+  if (!sessionId) return '?'
+  return sessionId.length <= 8 ? sessionId : sessionId.slice(0, 8)
+}
+
+export function trimLogFile(filePath: string): void {
+  try {
+    if (!fs.existsSync(filePath)) return
+    const stat = fs.statSync(filePath)
+    if (stat.size <= LOG_MAX_BYTES) return
+
+    const bytesToRead = Math.min(LOG_KEEP_BYTES, stat.size)
+    const buffer = Buffer.alloc(bytesToRead)
+    const fd = fs.openSync(filePath, 'r')
+    let bytesRead = 0
+    try {
+      bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, stat.size - bytesToRead)
+    } finally {
+      fs.closeSync(fd)
+    }
+    if (bytesRead <= 0) return
+
+    const readBuffer = buffer.subarray(0, bytesRead)
+    const firstNewline = readBuffer.indexOf(0x0a)
+    const tail = firstNewline >= 0 ? readBuffer.subarray(firstNewline + 1) : readBuffer
+    fs.writeFileSync(filePath, tail)
+  } catch {
+    // ignore retention failures; logging must never block extraction
+  }
+}
+
+export function trimLogsOnce(): void {
+  if (logsTrimmed) return
+  logsTrimmed = true
+  trimLogFile(DEBUG_LOG_FILE)
+  trimLogFile(AUDIT_LOG_FILE)
+}
 
 function acquireWorkerLock(sessionId: string): ReturnType<typeof acquireFileLock> {
   const lockFile = `${LOCKS_DIR}/${sessionId}.lock`
@@ -62,18 +120,84 @@ function debugLog(msg: string): void {
   if (!DEBUG) return
   const ts = new Date().toISOString()
   const elapsed = Date.now() - workerStartTime
-  const line = `[worker] ${ts} +${elapsed}ms ${msg}\n`
+  const line = `[worker pid=${process.pid} session=${shortSessionId(debugSessionId)}] ${ts} +${elapsed}ms ${msg}\n`
   console.error(line.trim())
 }
 
 /** Always-on audit log for debugging extraction issues */
 function auditLog(msg: string): void {
+  trimLogsOnce()
   const ts = new Date().toISOString()
   const line = `${ts} [pid=${process.pid}] ${msg}\n`
   try {
     appendFileSync(AUDIT_LOG_FILE, line)
   } catch {
     // ignore
+  }
+}
+
+function shouldPersistRunForResult(result: WorkerResult | null): boolean {
+  if (!result) return true
+  return !result.reason || !NO_RUN_SAVE_REASONS.has(result.reason as NoRunSaveReason)
+}
+
+export function getUsefulnessRunId(result: WorkerResult | null, plannedRunId: string): string | undefined {
+  return shouldPersistRunForResult(result) ? plannedRunId : undefined
+}
+
+function auditDiagnostics(
+  payload: ExtractionHookInput,
+  runId: string,
+  diagnostics: Awaited<ReturnType<typeof handlePostSession>>['diagnostics']
+): void {
+  if (!diagnostics || diagnostics.length === 0) return
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.level !== 'warn') continue
+    const records = typeof diagnostic.records === 'number' ? ` records=${diagnostic.records}` : ''
+    auditLog(`WARN session=${payload.session_id} runId=${runId} stage=${diagnostic.stage}${records} cause=${quoteLogValue(diagnostic.cause)}`)
+  }
+}
+
+export function saveCrashRun(
+  payload: ExtractionHookInput,
+  runId: string,
+  duration: number,
+  error: unknown,
+  collection?: string
+): void {
+  const extractionError = sanitizeExtractionFailure({
+    kind: 'internal_error',
+    message: sanitizeErrorMessage(error)
+  })
+  if (!extractionError) return
+
+  saveExtractionRun({
+    runId,
+    sessionId: payload.session_id,
+    transcriptPath: payload.transcript_path ?? '',
+    timestamp: Date.now(),
+    recordCount: 0,
+    parseErrorCount: 0,
+    extractedRecordIds: [],
+    duration,
+    error: extractionError
+  }, collection)
+
+  auditLog(`FAILED session=${payload.session_id} runId=${runId} inserted=0 updated=0 skipped=0 failed=0 supersedesMissing=0 duration=${duration}ms events=?${auditErrorSuffix(extractionError)}`)
+}
+
+export function handleWorkerCrash(
+  payload: ExtractionHookInput,
+  runId: string,
+  duration: number,
+  error: unknown,
+  collection: string | undefined,
+  runPersisted: boolean
+): void {
+  if (runPersisted) {
+    auditLog(`WARN session=${payload.session_id} runId=${runId} stage=post_save cause=${quoteLogValue(sanitizeErrorMessage(error))}`)
+  } else {
+    saveCrashRun(payload, runId, duration, error, collection)
   }
 }
 
@@ -143,6 +267,7 @@ async function maybeCaptureStatsSnapshot(config: Config): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  trimLogsOnce()
   debugLog(`START pid=${process.pid}`)
   try {
     const inputFile = process.argv[2]
@@ -180,149 +305,190 @@ async function main(): Promise<void> {
     }
 
     const payload = basePayload as ExtractionHookInput
+    debugSessionId = payload.session_id
+    const plannedRunId = randomUUID()
+    const runStart = Date.now()
+    let collection: string | undefined
+    let config: Config | undefined
+    let runSaved = false
     debugLog(`Parsed payload: event=${payload.hook_event_name}, session=${payload.session_id}`)
     auditLog(`START event=${payload.hook_event_name} session=${payload.session_id} transcript=${payload.transcript_path}`)
-    const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
-    const config = loadConfig(configRoot)
-    const collection = config.lancedb.table
-
-    // Try to acquire lock - prevents duplicate extractions when hook fires multiple times
-    const lockHandle = acquireWorkerLock(payload.session_id)
-    if (!lockHandle) {
-      debugLog('Skipping: lock already held by another process')
-      auditLog(`SKIP reason=locked session=${payload.session_id}`)
-      return
-    }
-
     try {
-      // Skip extraction if session was cleared
-      if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
-        debugLog('Skipping: reason=clear')
-        auditLog(`SKIP reason=clear session=${payload.session_id}`)
-        console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
-        removeSessionTracking(payload.session_id, collection)
+      const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
+      config = loadConfig(configRoot)
+      collection = config.lancedb.table
+
+      // Try to acquire lock - prevents duplicate extractions when hook fires multiple times
+      const lockHandle = acquireWorkerLock(payload.session_id)
+      if (!lockHandle) {
+        debugLog('Skipping: lock already held by another process')
+        auditLog(`SKIP reason=locked session=${payload.session_id}`)
         return
       }
 
-      if (!payload.transcript_path) {
-        debugLog('Skipping: no transcript_path')
-        auditLog(`SKIP reason=no_transcript session=${payload.session_id}`)
-        console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
-        if (payload.hook_event_name === 'SessionEnd') {
-          removeSessionTracking(payload.session_id, collection)
-        }
-        return
-      }
-
-      // Check for skip-extraction marker in transcript
-      if (fs.existsSync(payload.transcript_path)) {
-        const transcriptRaw = fs.readFileSync(payload.transcript_path, 'utf-8')
-        if (transcriptRaw.includes(SKIP_EXTRACTION_MARKER)) {
-          debugLog('Skipping: skip-extraction marker found in transcript')
-          auditLog(`SKIP reason=skip_requested session=${payload.session_id}`)
-          console.error('[claude-memory] Skip-extraction marker found; skipping extraction.')
+      try {
+        // Skip extraction if session was cleared
+        if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
+          debugLog('Skipping: reason=clear')
+          auditLog(`SKIP reason=clear session=${payload.session_id}`)
+          console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
           removeSessionTracking(payload.session_id, collection)
           return
         }
-      }
 
-      debugLog('Initializing LanceDB...')
-      await initLanceDB(config)
-      debugLog('LanceDB initialized')
-
-      // Load session tracking to get injected memories for change detection
-      const session = loadSessionTracking(payload.session_id, collection)
-      const injectedMemories = session ? dedupeInjectedMemories(session.memories) : []
-      debugLog(`Loaded ${injectedMemories.length} injected memories for change detection`)
-
-      // Check for prior extraction of this session (incremental extraction)
-      const priorRun = getLastExtractionRunForSession(payload.session_id, collection)
-      const previousEventCount = priorRun?.extractedEventCount
-      if (previousEventCount) {
-        debugLog(`Found prior extraction run ${priorRun.runId} with ${previousEventCount} events`)
-        auditLog(`INCREMENTAL prior_run=${priorRun.runId} prior_events=${previousEventCount} session=${payload.session_id}`)
-      }
-
-      let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
-      let shouldFlush = false
-      const extractionStart = Date.now()
-      let extractionDuration = 0
-      let runTokenUsage = emptyTokenUsage()
-      try {
-        debugLog('Running extraction...')
-        result = await handlePostSession(payload, config, {
-          flush: 'end-of-batch',
-          injectedMemories,
-          previousExtractionEventCount: previousEventCount,
-          recordAugmenter: (record, transcript) => ({
-            ...record,
-            sourceSessionId: payload.session_id,
-            // Prefer LLM-provided sourceExcerpt, fall back to heuristic search
-            sourceExcerpt: record.sourceExcerpt ?? buildSourceExcerpt(record, transcript)
-          })
-        })
-        debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${result.isIncremental ? ' (incremental)' : ''}`)
-        shouldFlush = (result.inserted + result.updated) > 0
-        extractionDuration = Date.now() - extractionStart
-        if (result.tokenUsage) {
-          runTokenUsage = addTokenUsage(runTokenUsage, result.tokenUsage)
+        if (!payload.transcript_path) {
+          debugLog('Skipping: no transcript_path')
+          auditLog(`SKIP reason=no_transcript session=${payload.session_id}`)
+          console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
+          if (payload.hook_event_name === 'SessionEnd') {
+            removeSessionTracking(payload.session_id, collection)
+          }
+          return
         }
+
+        // Check for skip-extraction marker in transcript
+        if (fs.existsSync(payload.transcript_path)) {
+          const transcriptRaw = fs.readFileSync(payload.transcript_path, 'utf-8')
+          if (transcriptRaw.includes(SKIP_EXTRACTION_MARKER)) {
+            debugLog('Skipping: skip-extraction marker found in transcript')
+            auditLog(`SKIP reason=skip_requested session=${payload.session_id}`)
+            console.error('[claude-memory] Skip-extraction marker found; skipping extraction.')
+            removeSessionTracking(payload.session_id, collection)
+            return
+          }
+        }
+
+        debugLog('Initializing LanceDB...')
+        await initLanceDB(config)
+        debugLog('LanceDB initialized')
+
+        // Load session tracking to get injected memories for change detection
+        const session = loadSessionTracking(payload.session_id, collection)
+        const injectedMemories = session ? dedupeInjectedMemories(session.memories) : []
+        debugLog(`Loaded ${injectedMemories.length} injected memories for change detection`)
+
+        // Check for prior extraction of this session (incremental extraction)
+        const priorRun = getLastExtractionRunForSession(payload.session_id, collection)
+        const previousEventCount = priorRun?.extractedEventCount
+        if (previousEventCount) {
+          debugLog(`Found prior extraction run ${priorRun.runId} with ${previousEventCount} events`)
+          auditLog(`INCREMENTAL prior_run=${priorRun.runId} prior_events=${previousEventCount} session=${payload.session_id}`)
+        }
+
+        let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
+        let shouldFlush = false
+        const extractionStart = Date.now()
+        let extractionDuration = 0
+        let runTokenUsage = emptyTokenUsage()
+        let usefulnessDuration: number | undefined
+        let extractionThrown: unknown
+        let extractionDidThrow = false
+        try {
+          debugLog('Running extraction...')
+          result = await handlePostSession(payload, config, {
+            flush: 'end-of-batch',
+            injectedMemories,
+            previousExtractionEventCount: previousEventCount,
+            plannedRunId,
+            recordAugmenter: (record, transcript) => ({
+              ...record,
+              sourceSessionId: payload.session_id,
+              // Prefer LLM-provided sourceExcerpt, fall back to heuristic search
+              sourceExcerpt: record.sourceExcerpt ?? buildSourceExcerpt(record, transcript)
+            })
+          })
+          debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${result.isIncremental ? ' (incremental)' : ''}`)
+          shouldFlush = (result.inserted + result.updated) > 0
+          extractionDuration = Date.now() - extractionStart
+          if (result.tokenUsage) {
+            runTokenUsage = addTokenUsage(runTokenUsage, result.tokenUsage)
+          }
+        } catch (error) {
+          extractionThrown = error
+          extractionDidThrow = true
+        } finally {
+          debugLog('Running usefulness rating...')
+          const usefulnessStart = Date.now()
+          let usefulness: Awaited<ReturnType<typeof processUsefulnessRating>>
+          try {
+            usefulness = await processUsefulnessRating(payload, config, result?.transcript, getUsefulnessRunId(result, plannedRunId))
+          } catch (error) {
+            usefulness = {
+              updated: false,
+              tokenUsage: emptyTokenUsage(),
+              ran: true,
+              error: sanitizeErrorMessage(error)
+            }
+          }
+          if (usefulness.ran) {
+            usefulnessDuration = Date.now() - usefulnessStart
+          }
+          shouldFlush = usefulness.updated || shouldFlush
+          runTokenUsage = addTokenUsage(runTokenUsage, usefulness.tokenUsage)
+          if (usefulness.error) {
+            auditLog(`WARN session=${payload.session_id} runId=${plannedRunId} stage=usefulness_rating${usefulnessDuration !== undefined ? ` duration=${usefulnessDuration}ms` : ''} cause=${quoteLogValue(usefulness.error)}`)
+          }
+          debugLog('Usefulness rating done')
+        }
+
+        if (extractionDidThrow) throw extractionThrown
+
+        if (result) {
+          auditDiagnostics(payload, plannedRunId, result.diagnostics)
+          const stageTimings = usefulnessDuration !== undefined
+            ? { ...result.timings, usefulness: usefulnessDuration }
+            : result.timings
+          runSaved = saveRunLog(payload, result, plannedRunId, extractionDuration, runTokenUsage, collection, stageTimings)
+        }
+
+        if (shouldFlush) {
+          debugLog('Flushing writes (no-op for LanceDB)...')
+          await flushCollection(config)
+        }
+
+        if (!result) return
+
+        if (result.reason === 'no_transcript') {
+          console.warn(`[claude-memory] Transcript not found; skipping extraction. path=${payload.transcript_path}`)
+          return
+        }
+
+        if (result.reason === 'no_new_events') {
+          debugLog('Skipping: no new events since last extraction')
+          auditLog(`SKIP reason=no_new_events session=${payload.session_id} events=${result.extractedEventCount}`)
+          console.error('[claude-memory] No new events since last extraction; skipping.')
+          return
+        }
+
+        if (result.reason === 'no_records') {
+          console.error('[claude-memory] No records extracted.')
+          return
+        }
+
+        const incrementalLabel = result.isIncremental ? ' (incremental)' : ''
+        const supersedesMissingLabel = result.supersedesMissing ? `, supersedesMissing=${result.supersedesMissing}` : ''
+        console.error(
+          `[claude-memory] Extraction complete${incrementalLabel}: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${supersedesMissingLabel}`
+        )
+        debugLog('COMPLETE')
       } finally {
-        debugLog('Running usefulness rating...')
-        const usefulness = await processUsefulnessRating(payload, config, result?.transcript)
-        shouldFlush = usefulness.updated || shouldFlush
-        runTokenUsage = addTokenUsage(runTokenUsage, usefulness.tokenUsage)
-        debugLog('Usefulness rating done')
+        lockHandle.release()
       }
 
-      if (result) {
-        saveRunLog(payload, result, extractionDuration, runTokenUsage, collection)
+      try {
+        await maybeRunAutoMaintenance(config)
+      } catch (error) {
+        console.error('[claude-memory] Auto-maintenance failed:', error)
       }
 
-      if (shouldFlush) {
-        debugLog('Flushing writes (no-op for LanceDB)...')
-        await flushCollection(config)
+      try {
+        await maybeCaptureStatsSnapshot(config)
+      } catch (error) {
+        console.error('[claude-memory] Stats snapshot capture failed:', error)
       }
-
-      if (!result) return
-
-      if (result.reason === 'no_transcript') {
-        console.warn(`[claude-memory] Transcript not found; skipping extraction. path=${payload.transcript_path}`)
-        return
-      }
-
-      if (result.reason === 'no_new_events') {
-        debugLog('Skipping: no new events since last extraction')
-        auditLog(`SKIP reason=no_new_events session=${payload.session_id} events=${result.extractedEventCount}`)
-        console.error('[claude-memory] No new events since last extraction; skipping.')
-        return
-      }
-
-      if (result.reason === 'no_records') {
-        console.error('[claude-memory] No records extracted.')
-        return
-      }
-
-      const incrementalLabel = result.isIncremental ? ' (incremental)' : ''
-      const supersedesMissingLabel = result.supersedesMissing ? `, supersedesMissing=${result.supersedesMissing}` : ''
-      console.error(
-        `[claude-memory] Extraction complete${incrementalLabel}: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${supersedesMissingLabel}`
-      )
-      debugLog('COMPLETE')
-    } finally {
-      lockHandle.release()
-    }
-
-    try {
-      await maybeRunAutoMaintenance(config)
     } catch (error) {
-      console.error('[claude-memory] Auto-maintenance failed:', error)
-    }
-
-    try {
-      await maybeCaptureStatsSnapshot(config)
-    } catch (error) {
-      console.error('[claude-memory] Stats snapshot capture failed:', error)
+      const duration = Date.now() - runStart
+      handleWorkerCrash(payload, plannedRunId, duration, error, collection, runSaved)
     }
   } finally {
     try {
@@ -336,20 +502,21 @@ async function main(): Promise<void> {
 export function saveRunLog(
   payload: ExtractionHookInput,
   result: Awaited<ReturnType<typeof handlePostSession>>,
+  runId: string,
   duration: number,
   tokenUsage: TokenUsage,
-  collection?: string
-): void {
-  if (result.reason === 'no_transcript' || result.reason === 'clear' || result.reason === 'wrong_event' || result.reason === 'no_new_events') {
+  collection?: string,
+  stageTimings?: Partial<Record<string, number>>
+): boolean {
+  if (!shouldPersistRunForResult(result)) {
     auditLog(`DONE session=${payload.session_id} reason=${result.reason} (no run saved)`)
-    return
+    return false
   }
 
   const recordOutcomes = result.recordOutcomes ?? []
   const insertedIds = Array.from(new Set(result.insertedIds ?? []))
   const updatedIds = Array.from(new Set(result.updatedIds ?? []))
   const uniqueIds = Array.from(new Set([...insertedIds, ...updatedIds]))
-  const runId = randomUUID()
   const persistedRecordCount = uniqueIds.length
   const skippedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'skipped').length
   const failedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'failed').length
@@ -385,33 +552,36 @@ export function saveRunLog(
   }, collection)
 
   const auditStatus = trueFailure ? 'FAILED' : 'DONE'
-  auditLog(`${auditStatus} session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}${auditErrorSuffix(extractionError)}`)
+  auditLog(`${auditStatus} session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}${formatStageTimings(stageTimings ?? result.timings, { extraStages: WORKER_EXTRA_TIMING_STAGES, leadingSpace: true })}${auditErrorSuffix(extractionError)}`)
+  return true
 }
 
-async function processUsefulnessRating(
+export async function processUsefulnessRating(
   payload: ExtractionHookInput,
   config: Config,
-  transcript?: Transcript
-): Promise<{ updated: boolean; tokenUsage: TokenUsage }> {
+  transcript?: Transcript,
+  runId?: string
+): Promise<{ updated: boolean; tokenUsage: TokenUsage; ran: boolean; error?: string }> {
   if (payload.hook_event_name !== 'SessionEnd') {
-    return { updated: false, tokenUsage: emptyTokenUsage() }
+    return { updated: false, tokenUsage: emptyTokenUsage(), ran: false }
   }
 
   const collection = config.lancedb.table
   const session = loadSessionTracking(payload.session_id, collection)
   if (!session || session.memories.length === 0) {
     removeSessionTracking(payload.session_id, collection)
-    return { updated: false, tokenUsage: emptyTokenUsage() }
+    return { updated: false, tokenUsage: emptyTokenUsage(), ran: false }
   }
 
   const memories = session.memories
   if (memories.length === 0) {
     removeSessionTracking(payload.session_id, collection)
-    return { updated: false, tokenUsage: emptyTokenUsage() }
+    return { updated: false, tokenUsage: emptyTokenUsage(), ran: false }
   }
 
   let updated = false
   let tokenUsage = emptyTokenUsage()
+  let failure: string | undefined
   try {
     const retrievalDeltas = countRetrievalDeltas(memories)
     if (retrievalDeltas.size > 0) {
@@ -429,7 +599,7 @@ async function processUsefulnessRating(
   const deduped = dedupeInjectedMemories(memories)
   if (deduped.length === 0) {
     removeSessionTracking(payload.session_id, collection)
-    return { updated, tokenUsage }
+    return { updated, tokenUsage, ran: false }
   }
 
   let shouldRemove = false
@@ -439,12 +609,15 @@ async function processUsefulnessRating(
     if (!resolvedTranscript) {
       if (!payload.transcript_path || !fs.existsSync(payload.transcript_path)) {
         console.error('[claude-memory] Transcript missing for usefulness rating; keeping session tracking file.')
-        return { updated, tokenUsage }
+        return { updated, tokenUsage, ran: true, error: 'transcript missing for usefulness rating' }
       }
       resolvedTranscript = await parseTranscript(payload.transcript_path)
     }
 
-    const rating = await rateInjectedMemories(resolvedTranscript, deduped, config)
+    const rating = await rateInjectedMemories(resolvedTranscript, deduped, config, {
+      sessionId: payload.session_id,
+      runId
+    })
     tokenUsage = addTokenUsage(tokenUsage, rating.tokenUsage)
     const helpfulIds = rating.helpfulIds
 
@@ -459,13 +632,14 @@ async function processUsefulnessRating(
     shouldRemove = true
   } catch (error) {
     console.error('[claude-memory] Usefulness rating failed:', error)
+    failure = sanitizeErrorMessage(error)
   } finally {
     if (shouldRemove) {
       removeSessionTracking(payload.session_id, collection)
     }
   }
 
-  return { updated, tokenUsage }
+  return { updated, tokenUsage, ran: true, ...(failure ? { error: failure } : {}) }
 }
 
 function countRetrievalDeltas(memories: InjectedMemoryEntry[]): Map<string, number> {

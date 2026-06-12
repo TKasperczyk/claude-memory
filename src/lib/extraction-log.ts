@@ -193,6 +193,11 @@ function coerceExtractionFailure(value: unknown): ExtractionFailure | undefined 
     return message === undefined ? undefined : { kind, message }
   }
 
+  if (kind === 'internal_error') {
+    const message = asString(value.message)
+    return message === undefined ? undefined : { kind, message }
+  }
+
   if (kind === 'max_tokens') {
     const maxTokens = asInteger(value.maxTokens)
     return maxTokens === null ? undefined : { kind, maxTokens }

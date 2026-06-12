@@ -25,6 +25,7 @@ import { recordTokenUsageEventsAsync } from './token-usage-events.js'
 
 export interface ExtractionContext {
   sessionId: string
+  runId?: string
   cwd: string
   project?: string
   transcriptPath?: string
@@ -37,6 +38,10 @@ export interface ExtractionContext {
   maxTranscriptChars?: number
 }
 
+function sanitizeFailureMessage(message: string): string {
+  return message.split('\n')[0].slice(0, 200)
+}
+
 export function sanitizeExtractionFailure(failure: ExtractionFailure | undefined): ExtractionFailure | undefined {
   if (!failure) return undefined
   switch (failure.kind) {
@@ -46,17 +51,22 @@ export function sanitizeExtractionFailure(failure: ExtractionFailure | undefined
         ...(failure.status !== undefined ? { status: failure.status } : {}),
         ...(failure.code !== undefined ? { code: failure.code } : {}),
         ...(failure.requestId !== undefined ? { requestId: failure.requestId } : {}),
-        message: failure.message.split('\n')[0].slice(0, 200)
+        message: sanitizeFailureMessage(failure.message)
       }
     case 'parse_error':
       return {
         kind: 'parse_error',
-        message: failure.message.split('\n')[0].slice(0, 200)
+        message: sanitizeFailureMessage(failure.message)
       }
     case 'no_auth':
       return {
         kind: 'no_auth',
-        message: failure.message.split('\n')[0].slice(0, 200)
+        message: sanitizeFailureMessage(failure.message)
+      }
+    case 'internal_error':
+      return {
+        kind: 'internal_error',
+        message: sanitizeFailureMessage(failure.message)
       }
     case 'max_tokens':
       return failure
@@ -270,7 +280,10 @@ export async function extractRecords(
     }).finalMessage()
 
     const tokenUsage = extractTokenUsage(response)
-    recordTokenUsageEvent('extraction', config.extraction.model, tokenUsage, config.lancedb.table)
+    recordTokenUsageEvent('extraction', config.extraction.model, tokenUsage, config.lancedb.table, {
+      sessionId: context.sessionId,
+      runId: context.runId
+    })
     const extractionError: ExtractionFailure | undefined = response.stop_reason === 'max_tokens'
       ? { kind: 'max_tokens', maxTokens }
       : undefined
@@ -326,7 +339,8 @@ export async function extractRecords(
 export async function rateInjectedMemories(
   transcript: Transcript,
   injectedMemories: InjectedMemoryEntry[],
-  config: Config = DEFAULT_CONFIG
+  config: Config = DEFAULT_CONFIG,
+  attribution: { sessionId?: string; runId?: string } = {}
 ): Promise<{ helpfulIds: string[]; tokenUsage: TokenUsage }> {
   if (injectedMemories.length === 0) {
     return { helpfulIds: [], tokenUsage: emptyTokenUsage() }
@@ -353,7 +367,7 @@ export async function rateInjectedMemories(
   })
 
   const tokenUsage = extractTokenUsage(response)
-  recordTokenUsageEvent('usefulness-rating', config.extraction.model, tokenUsage, config.lancedb.table)
+  recordTokenUsageEvent('usefulness-rating', config.extraction.model, tokenUsage, config.lancedb.table, attribution)
   const toolInput = response.content.find((block): block is ToolUseBlock =>
     isToolUseBlock(block) && block.name === USEFULNESS_TOOL_NAME
   )?.input
@@ -373,12 +387,15 @@ function recordTokenUsageEvent(
   source: TokenUsageSource,
   model: string,
   tokenUsage: TokenUsage,
-  collection?: string
+  collection?: string,
+  attribution: { sessionId?: string; runId?: string } = {}
 ): void {
   recordTokenUsageEventsAsync([{
     timestamp: Date.now(),
     source,
     model,
+    ...(attribution.sessionId ? { sessionId: attribution.sessionId } : {}),
+    ...(attribution.runId ? { runId: attribution.runId } : {}),
     inputTokens: tokenUsage.inputTokens,
     outputTokens: tokenUsage.outputTokens,
     cacheCreationInputTokens: tokenUsage.cacheCreationInputTokens,

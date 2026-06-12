@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EMBEDDING_DIM, type DiscoveryRecord, type TokenUsage } from '../src/lib/types.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
 import { extractRecords } from '../src/lib/extract.js'
+import { embedBatch } from '../src/lib/embed.js'
 import { findSimilar, insertRecord, updateRecord } from '../src/lib/lancedb.js'
 import { markDeprecated } from '../src/lib/maintenance/operations.js'
 import { DEFAULT_CONFIG } from '../src/lib/types.js'
@@ -18,6 +19,10 @@ vi.mock('../src/lib/extract.js', async () => {
   }
 })
 
+vi.mock('../src/lib/embed.js', () => ({
+  embedBatch: vi.fn()
+}))
+
 vi.mock('../src/lib/lancedb.js', () => ({
   buildEmbeddingInput: vi.fn(() => ''),
   escapeFilterValue: vi.fn((value: string) => value.replace(/'/g, "''")),
@@ -31,6 +36,7 @@ vi.mock('../src/lib/maintenance/operations.js', () => ({
 }))
 
 const mockedExtractRecords = vi.mocked(extractRecords)
+const mockedEmbedBatch = vi.mocked(embedBatch)
 const mockedFindSimilar = vi.mocked(findSimilar)
 const mockedInsertRecord = vi.mocked(insertRecord)
 const mockedUpdateRecord = vi.mocked(updateRecord)
@@ -71,11 +77,13 @@ function extractionInput(transcript_path: string) {
 describe('handlePostSession store outcomes', () => {
   beforeEach(() => {
     mockedExtractRecords.mockReset()
+    mockedEmbedBatch.mockReset()
     mockedFindSimilar.mockReset()
     mockedInsertRecord.mockReset()
     mockedUpdateRecord.mockReset()
     mockedMarkDeprecated.mockReset()
     mockedFindSimilar.mockResolvedValue([])
+    mockedEmbedBatch.mockResolvedValue([])
     mockedInsertRecord.mockResolvedValue(undefined)
     mockedUpdateRecord.mockResolvedValue(true)
     mockedMarkDeprecated.mockResolvedValue(true)
@@ -149,6 +157,29 @@ describe('handlePostSession store outcomes', () => {
         storeError: 'insert failed'
       }
     ])
+    expect(result.timings?.parse).toEqual(expect.any(Number))
+    expect(result.timings?.llm).toEqual(expect.any(Number))
+    expect(result.timings?.store).toEqual(expect.any(Number))
+    expect(result.timings?.parse).toBeGreaterThanOrEqual(0)
+    expect(result.timings?.llm).toBeGreaterThanOrEqual(0)
+    expect(result.timings?.store).toBeGreaterThanOrEqual(0)
+  })
+
+  it('reports embedding precompute diagnostics when batch embedding fails', async () => {
+    const incoming = createMockDiscoveryRecord({ id: 'needs-embedding' })
+    mockedExtractRecords.mockResolvedValueOnce({ records: [incoming], tokenUsage: emptyUsage() })
+    mockedEmbedBatch.mockRejectedValueOnce(new Error('embedding service unavailable\nstack details'))
+    mockedFindSimilar.mockResolvedValueOnce([])
+
+    const result = await handlePostSession(extractionInput(transcriptPath()), DEFAULT_CONFIG)
+
+    expect(result.diagnostics).toEqual([{
+      level: 'warn',
+      stage: 'embedding',
+      records: 1,
+      cause: 'embedding service unavailable'
+    }])
+    expect(result.inserted).toBe(1)
   })
 
   it('treats updateRecord false as a failed non-persisted record', async () => {

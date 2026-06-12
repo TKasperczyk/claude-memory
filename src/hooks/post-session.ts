@@ -29,9 +29,21 @@ import {
   type TokenUsage
 } from '../lib/types.js'
 import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE } from '../lib/paths.js'
+import type { ExtractionTimingStage } from '../lib/extraction-timings.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+
+export type PostSessionTimingStage = ExtractionTimingStage
+
+export type PostSessionTimings = Partial<Record<PostSessionTimingStage, number>>
+
+export interface PostSessionDiagnostic {
+  level: 'warn'
+  stage: 'embedding'
+  records?: number
+  cause: string
+}
 
 export interface PostSessionResult {
   inserted: number
@@ -50,6 +62,8 @@ export interface PostSessionResult {
   extractedEventCount?: number
   isIncremental?: boolean
   hasRememberMarker?: boolean
+  timings?: PostSessionTimings
+  diagnostics?: PostSessionDiagnostic[]
 }
 
 export interface PostSessionRecordOutcome {
@@ -77,8 +91,12 @@ export async function handlePostSession(
     previousExtractionEventCount?: number
     /** How many user turns to overlap for context (default: from settings) */
     contextOverlapTurns?: number
+    /** Planned run ID for token-attribution correlation. */
+    plannedRunId?: string
   } = {}
 ): Promise<PostSessionResult> {
+  const timings: PostSessionTimings = {}
+
   // Accept both SessionEnd and PreCompact events
   if (input.hook_event_name !== 'SessionEnd' && input.hook_event_name !== 'PreCompact') {
     return {
@@ -120,7 +138,9 @@ export async function handlePostSession(
     }
   }
 
+  const parseStart = Date.now()
   const fullTranscript = await parseTranscript(input.transcript_path)
+  timings.parse = Date.now() - parseStart
   if (fullTranscript.parseErrors > 0) {
     console.error(`[claude-memory] Transcript parse warnings: ${fullTranscript.parseErrors}`)
   }
@@ -145,13 +165,16 @@ export async function handlePostSession(
         updatedIds: [],
         reason: 'no_new_events',
         transcript: fullTranscript,
-        extractedEventCount: totalEventCount
+        extractedEventCount: totalEventCount,
+        timings
       }
     }
 
+    const sliceStart = Date.now()
     const overlapTurns = options.contextOverlapTurns ?? settings.extractionContextOverlapTurns
     const startIndex = computeIncrementalStartIndex(fullTranscript.events, priorEventCount, overlapTurns)
     extractionTranscript = sliceTranscript(fullTranscript, startIndex)
+    timings.slice = Date.now() - sliceStart
     isIncremental = true
     console.error(
       `[claude-memory] Incremental extraction: ${totalEventCount - priorEventCount} new events, ` +
@@ -182,15 +205,18 @@ export async function handlePostSession(
           insertedIds: [],
           updatedIds: [],
           reason: 'too_short',
-          transcript: fullTranscript
+          transcript: fullTranscript,
+          timings
         }
       }
     }
   }
 
   const projectRoot = findGitRoot(input.cwd) ?? input.cwd
+  const llmStart = Date.now()
   const { records: extractedRecords, tokenUsage, error } = await extractRecords(transcript, {
     sessionId: input.session_id,
+    runId: options.plannedRunId,
     cwd: input.cwd,
     project: projectRoot,
     transcriptPath: input.transcript_path,
@@ -198,6 +224,7 @@ export async function handlePostSession(
     isIncremental,
     maxTranscriptChars: settings.maxTranscriptChars
   }, config)
+  timings.llm = Date.now() - llmStart
 
   // Use fullTranscript for recordAugmenter (e.g. sourceExcerpt matching) -- it has more context
   const records = options.recordAugmenter
@@ -219,11 +246,22 @@ export async function handlePostSession(
       isIncremental: isIncremental || undefined,
       hasRememberMarker: hasRememberMarker || undefined,
       tokenUsage,
-      extractionError: error
+      extractionError: error,
+      timings
     }
   }
 
-  await precomputeEmbeddings(records, config)
+  const embedStart = Date.now()
+  const embeddingResult = await precomputeEmbeddings(records, config)
+  timings.embed = Date.now() - embedStart
+  const diagnostics: PostSessionDiagnostic[] = embeddingResult.error
+    ? [{
+        level: 'warn',
+        stage: 'embedding',
+        records: embeddingResult.targetCount,
+        cause: embeddingResult.error
+      }]
+    : []
 
   let inserted = 0
   let updated = 0
@@ -236,6 +274,7 @@ export async function handlePostSession(
 
   const flushMode = options.flush ?? 'always'
 
+  const storeStart = Date.now()
   for (const record of records) {
     try {
       const dedupFilter = record.supersedes
@@ -294,12 +333,16 @@ export async function handlePostSession(
     }
   }
 
+  timings.store = Date.now() - storeStart
+
   return {
     inserted, updated, skipped, failed, supersedesMissing, records, recordOutcomes, insertedIds, updatedIds,
     transcript: fullTranscript, tokenUsage, extractionError: error,
     extractedEventCount: totalEventCount,
     isIncremental: isIncremental || undefined,
-    hasRememberMarker: hasRememberMarker || undefined
+    hasRememberMarker: hasRememberMarker || undefined,
+    timings,
+    diagnostics: diagnostics.length > 0 ? diagnostics : undefined
   }
 }
 
@@ -364,7 +407,10 @@ async function applySupersedesDeprecation(
   return 1
 }
 
-async function precomputeEmbeddings(records: MemoryRecord[], config: Config): Promise<void> {
+async function precomputeEmbeddings(
+  records: MemoryRecord[],
+  config: Config
+): Promise<{ targetCount: number; error?: string }> {
   const inputs: string[] = []
   const targets: MemoryRecord[] = []
 
@@ -374,7 +420,7 @@ async function precomputeEmbeddings(records: MemoryRecord[], config: Config): Pr
     targets.push(record)
   }
 
-  if (inputs.length === 0) return
+  if (inputs.length === 0) return { targetCount: 0 }
 
   try {
     const embeddings = await embedBatch(inputs, config)
@@ -384,8 +430,10 @@ async function precomputeEmbeddings(records: MemoryRecord[], config: Config): Pr
     embeddings.forEach((embedding, index) => {
       targets[index].embedding = embedding
     })
+    return { targetCount: targets.length }
   } catch (error) {
     console.error('[claude-memory] Failed to precompute embeddings:', error)
+    return { targetCount: targets.length, error: sanitizeStoreError(error) }
   }
 }
 

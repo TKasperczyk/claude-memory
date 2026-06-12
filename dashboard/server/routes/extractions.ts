@@ -18,6 +18,7 @@ import { buildExtractionWarnings } from '../lib/extraction-warnings.js'
 import { parseNonNegativeInt } from '../utils/params.js'
 import { getRequestConfig } from '../utils/config.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
+import { formatStageTimings, sumStageTimings } from '../../../src/lib/extraction-timings.js'
 
 const logger = createLogger('extractions')
 
@@ -193,7 +194,18 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         session_id: run.sessionId,
         transcript_path: run.transcriptPath,
         cwd
-      }, config, { flush: 'always' })
+      }, config, { flush: 'always', plannedRunId: run.runId })
+
+      const stages = formatStageTimings(result.timings)
+      if (stages) {
+        logger.info(`Re-extraction timings runId=${run.runId} ${stages}`)
+      }
+      for (const diagnostic of result.diagnostics ?? []) {
+        if (diagnostic.level === 'warn') {
+          const records = typeof diagnostic.records === 'number' ? ` records=${diagnostic.records}` : ''
+          logger.warn(`Re-extraction diagnostic runId=${run.runId} stage=${diagnostic.stage}${records} cause=${diagnostic.cause}`)
+        }
+      }
 
       // Update the existing extraction run with new results
       const recordOutcomes = result.recordOutcomes ?? []
@@ -218,7 +230,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         extractedRecordIds: insertedIds,
         updatedRecordIds: updatedIds.length > 0 ? updatedIds : undefined,
         extractedRecords: extractedRecords.length > 0 ? extractedRecords : undefined,
-        duration: 0,
+        duration: sumStageTimings(result.timings),
         firstPrompt: result.transcript ? getFirstUserPrompt(result.transcript) : run.firstPrompt,
         tokenUsage: result.tokenUsage,
         extractedEventCount: trueFailure ? undefined : result.extractedEventCount,

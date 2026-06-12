@@ -189,6 +189,7 @@ export interface ExtractionRunResponse {
 export type ExtractionWarningKind =
   | 'rate_limited'
   | 'auth'
+  | 'internal_error'
   | 'record_store_failures'
   | 'high_failure_rate'
   | 'stalled'

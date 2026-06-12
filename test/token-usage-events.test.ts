@@ -206,6 +206,56 @@ describe('token usage events', () => {
     })
   })
 
+  it('preserves optional session and run ids on write and read', async () => {
+    const now = Date.UTC(2026, 1, 16, 12, 0, 0)
+
+    recordTokenUsageEvents([{
+      timestamp: now,
+      source: 'extraction',
+      model: 'model-a',
+      sessionId: 'session-1',
+      runId: 'run-1',
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0
+    }], { collection, baseDir: storageRoot })
+
+    const raw = await fs.readFile(path.join(collectionDir, `${toDateKey(now)}.jsonl`), 'utf8')
+    expect(JSON.parse(raw.trim())).toMatchObject({
+      sessionId: 'session-1',
+      runId: 'run-1'
+    })
+
+    const activity = getTokenUsageActivity('day', { collection, limit: 1, now, baseDir: storageRoot })
+    expect(activity.buckets[0]).toMatchObject({
+      totalTokens: 12,
+      inputTokens: 10,
+      outputTokens: 2
+    })
+  })
+
+  it('coerces legacy token events without attribution ids', async () => {
+    const now = Date.UTC(2026, 1, 16, 12, 0, 0)
+    await fs.mkdir(collectionDir, { recursive: true })
+    await fs.writeFile(path.join(collectionDir, `${toDateKey(now)}.jsonl`), `${JSON.stringify({
+      timestamp: now,
+      source: 'extraction',
+      model: 'legacy-model',
+      inputTokens: 4,
+      outputTokens: 3,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0
+    })}\n`)
+
+    const activity = getTokenUsageActivity('day', { collection, limit: 1, now, baseDir: storageRoot })
+    expect(activity.buckets[0]).toMatchObject({
+      totalTokens: 7,
+      inputTokens: 4,
+      outputTokens: 3
+    })
+  })
+
   it('cleans up events older than retention window', async () => {
     vi.useFakeTimers()
     const now = Date.UTC(2026, 1, 16, 12, 0, 0)

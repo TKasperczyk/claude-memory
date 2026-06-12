@@ -17,6 +17,7 @@ export const EXTRACTION_WARNING_THRESHOLDS = {
 export type ExtractionWarningKind =
   | 'rate_limited'
   | 'auth'
+  | 'internal_error'
   | 'record_store_failures'
   | 'high_failure_rate'
   | 'stalled'
@@ -83,6 +84,7 @@ export function buildExtractionWarnings(
   const warnings: ExtractionWarning[] = []
   addRateLimitWarning(warnings, recentRuns)
   addAuthWarning(warnings, recentRuns)
+  addInternalErrorWarning(warnings, recentRuns)
   addRecordStoreWarning(warnings, recentWithStatus)
   addHighFailureRateWarning(warnings, recentWithStatus)
   addStalledWarning(warnings, runs.length, successfulRuns, inProgressCount, now)
@@ -146,6 +148,24 @@ function addAuthWarning(warnings: ExtractionWarning[], recentRuns: ExtractionRun
     severity: 'critical',
     title: 'Extraction authentication failing',
     message: `${matches.length} recent extraction ${plural(matches.length, 'run')} could not authenticate. Check Anthropic credentials.`,
+    count: matches.length,
+    latestRunId: latest?.runId,
+    latestTimestamp: latest?.timestamp,
+    details: {
+      windowMs: EXTRACTION_WARNING_THRESHOLDS.recentWindowMs
+    }
+  })
+}
+
+function addInternalErrorWarning(warnings: ExtractionWarning[], recentRuns: ExtractionRun[]): void {
+  const matches = recentRuns.filter(run => run.error?.kind === 'internal_error')
+  if (matches.length === 0) return
+  const latest = latestRun(matches)
+  warnings.push({
+    id: 'internal_error',
+    severity: 'critical',
+    title: 'Extraction worker failed internally',
+    message: `${matches.length} recent extraction ${plural(matches.length, 'run')} crashed before completing. Check the failed run details and debug log.`,
     count: matches.length,
     latestRunId: latest?.runId,
     latestTimestamp: latest?.timestamp,

@@ -201,6 +201,21 @@ describe('buildExtractionWarnings', () => {
     expect(warningIds(result.warnings)).toEqual(['auth'])
   })
 
+  it('warns critically for recent internal extraction errors', () => {
+    const result = buildExtractionWarnings([
+      run({
+        runId: 'internal-crash',
+        timestamp: NOW - HOUR_MS,
+        error: { kind: 'internal_error', message: 'database unavailable' }
+      })
+    ], 0, NOW)
+
+    expect(warningIds(result.warnings)).toEqual(['internal_error'])
+    const warning = findWarning(result.warnings, 'internal_error')
+    expect(warning.severity).toBe('critical')
+    expect(warning.latestRunId).toBe('internal-crash')
+  })
+
   it('does not double-fire store warnings for true failed runs with failedRecordCount', () => {
     const result = buildExtractionWarnings([
       failed('failed-store-1', NOW - HOUR_MS, { failedRecordCount: 3 }),

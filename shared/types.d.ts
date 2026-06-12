@@ -151,6 +151,8 @@ export interface TokenUsageEvent {
   timestamp: number
   source: TokenUsageSource
   model: string
+  sessionId?: string
+  runId?: string
   inputTokens: number
   outputTokens: number
   cacheCreationInputTokens: number
@@ -356,6 +358,7 @@ export type ExtractionFailure =
   | { kind: 'parse_error'; message: string }
   | { kind: 'max_tokens'; maxTokens: number }
   | { kind: 'no_auth'; message: string }
+  | { kind: 'internal_error'; message: string }
 
 export interface ExtractionRun {
   runId: string

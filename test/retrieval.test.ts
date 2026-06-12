@@ -634,7 +634,7 @@ describe('Haiku query planning', () => {
     mockedHybridSearch.mockResolvedValue([])
 
     await retrieveContext(
-      { prompt: 'How do I build it?', cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl' },
+      { prompt: 'How do I build it?', cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl', sessionId: 'session-haiku' },
       DEFAULT_CONFIG,
       { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true, haikuExpansionCount: 1 } }
     )
@@ -649,6 +649,12 @@ describe('Haiku query planning', () => {
     expect(semanticCalls).toHaveLength(1)
     const keywordCall = mockedHybridSearch.mock.calls.find(([params]) => params.vectorWeight === 0)
     expect(keywordCall?.[0].query).toBe('docker build')
+    expect(mockedRecordTokenUsageEventsAsync).toHaveBeenCalledWith([
+      expect.objectContaining({
+        source: 'haiku-query',
+        sessionId: 'session-haiku'
+      })
+    ], expect.any(Object))
   })
 
   it('embeds all Haiku semantic variants when expansion count is 3', async () => {

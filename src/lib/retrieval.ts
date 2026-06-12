@@ -269,6 +269,7 @@ async function searchMemories(
       timestamp: Date.now(),
       source: 'haiku-query',
       model: queryPlanResult.model,
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
       inputTokens: queryPlanTokenUsage.inputTokens,
       outputTokens: queryPlanTokenUsage.outputTokens,
       cacheCreationInputTokens: queryPlanTokenUsage.cacheCreationInputTokens,

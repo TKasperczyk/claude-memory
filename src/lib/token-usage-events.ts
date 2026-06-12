@@ -50,6 +50,10 @@ function normalizeModel(value: unknown): string {
   return asTrimmedString(value) ?? 'unknown'
 }
 
+function normalizeOptionalId(value: unknown): string | undefined {
+  return asTrimmedString(value)
+}
+
 function asTokenUsageSource(value: unknown): TokenUsageSource | null {
   if (value === 'extraction' || value === 'haiku-query' || value === 'usefulness-rating') {
     return value
@@ -77,11 +81,15 @@ function coerceTokenUsageEvent(value: unknown): TokenUsageEvent | null {
   const timestamp = asInteger(value.timestamp)
   const source = asTokenUsageSource(value.source)
   if (timestamp === null || !source) return null
+  const sessionId = normalizeOptionalId(value.sessionId)
+  const runId = normalizeOptionalId(value.runId)
 
   return {
     timestamp,
     source,
     model: normalizeModel(value.model),
+    ...(sessionId ? { sessionId } : {}),
+    ...(runId ? { runId } : {}),
     inputTokens: normalizeTokenCount(value.inputTokens),
     outputTokens: normalizeTokenCount(value.outputTokens),
     cacheCreationInputTokens: normalizeTokenCount(value.cacheCreationInputTokens),
@@ -178,10 +186,14 @@ export function recordTokenUsageEvents(
         ? Math.trunc(event.timestamp)
         : now
       const dateKey = toDateKeyUtc(timestamp)
+      const sessionId = normalizeOptionalId(event.sessionId)
+      const runId = normalizeOptionalId(event.runId)
       const entry: TokenUsageEvent = {
         timestamp,
         source,
         model: normalizeModel(event.model),
+        ...(sessionId ? { sessionId } : {}),
+        ...(runId ? { runId } : {}),
         inputTokens: normalizeTokenCount(event.inputTokens),
         outputTokens: normalizeTokenCount(event.outputTokens),
         cacheCreationInputTokens: normalizeTokenCount(event.cacheCreationInputTokens),
@@ -252,6 +264,8 @@ export function backfillFromExtractionRuns(collection?: string, options: { baseD
       timestamp: run.timestamp,
       source: 'extraction',
       model: 'unknown',
+      sessionId: run.sessionId,
+      runId: run.runId,
       inputTokens: run.tokenUsage.inputTokens,
       outputTokens: run.tokenUsage.outputTokens,
       cacheCreationInputTokens: run.tokenUsage.cacheCreationInputTokens,
