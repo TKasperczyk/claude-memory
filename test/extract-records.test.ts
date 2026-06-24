@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAnthropicClient } from '../src/lib/anthropic.js'
-import { extractRecords, rateInjectedMemories } from '../src/lib/extract.js'
+import { extractRecords, formatTranscript, parsePromptTooLong, rateInjectedMemories } from '../src/lib/extract.js'
 import { emptyTokenUsage } from '../src/lib/token-usage.js'
 import { recordTokenUsageEventsAsync } from '../src/lib/token-usage-events.js'
 import { DEFAULT_CONFIG } from '../src/lib/types.js'
@@ -301,5 +301,96 @@ describe('rateInjectedMemories', () => {
     } finally {
       consoleWarn.mockRestore()
     }
+  })
+})
+
+function promptTooLongError(actual: number, limit: number) {
+  return Object.assign(
+    new Error(`400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: ${actual} tokens > ${limit} maximum"}}`),
+    { status: 400 }
+  )
+}
+
+function manyEventsTranscript(blocks: number, charsPerBlock: number): Transcript {
+  const events = Array.from({ length: blocks }, (_, i) => ({
+    type: 'assistant' as const,
+    text: `assistant message ${i} ${'x'.repeat(charsPerBlock)}`
+  }))
+  return { messages: [], events, toolCalls: [], toolResults: [], parseErrors: 0 }
+}
+
+function userContentLength(call: number): number {
+  const request = mockedStream.mock.calls[call][0] as { messages: Array<{ content: string }> }
+  return request.messages[0].content.length
+}
+
+describe('parsePromptTooLong', () => {
+  it('parses token counts from the API rejection message', () => {
+    expect(parsePromptTooLong(promptTooLongError(1498981, 1000000))).toEqual({ actual: 1498981, limit: 1000000 })
+  })
+
+  it('returns null for unrelated errors and when actual does not exceed limit', () => {
+    expect(parsePromptTooLong(new Error('Request timed out.'))).toBeNull()
+    expect(parsePromptTooLong(promptTooLongError(900000, 1000000))).toBeNull()
+    expect(parsePromptTooLong(undefined)).toBeNull()
+  })
+})
+
+describe('extractRecords prompt-too-long recovery', () => {
+  it('shrinks the transcript and retries when the prompt exceeds the token limit', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mockedFinalMessage
+        .mockRejectedValueOnce(promptTooLongError(20000, 10000))
+        .mockResolvedValueOnce(extractionToolResponse())
+
+      const result = await extractRecords(manyEventsTranscript(60, 1000), {
+        sessionId: 'session-toolong',
+        cwd: '/tmp/project',
+        project: '/tmp/project'
+      }, configWithExtractionModel('claude-opus-4-8'))
+
+      expect(result.error).toBeUndefined()
+      expect(mockedFinalMessage).toHaveBeenCalledTimes(2)
+      // retry rebuilt the prompt with a smaller transcript
+      expect(userContentLength(1)).toBeLessThan(userContentLength(0))
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('gives up as an api_error after exhausting retries', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mockedFinalMessage.mockRejectedValue(promptTooLongError(20000, 10000))
+
+      const result = await extractRecords(manyEventsTranscript(60, 1000), {
+        sessionId: 'session-toolong-giveup',
+        cwd: '/tmp/project',
+        project: '/tmp/project'
+      }, configWithExtractionModel('claude-opus-4-8'))
+
+      expect(result.records).toEqual([])
+      expect(result.error?.kind).toBe('api_error')
+      expect(result.error?.status).toBe(400)
+      // initial attempt + MAX_PROMPT_TOO_LONG_RETRIES
+      expect(mockedFinalMessage).toHaveBeenCalledTimes(3)
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})
+
+describe('formatTranscript', () => {
+  it('truncates oversized tool_result output but keeps head and tail', () => {
+    const output = `HEAD${'y'.repeat(50000)}TAIL`
+    const out = formatTranscript([
+      { type: 'tool_result', name: 'Bash', toolUseId: 't1', outputText: output } as never
+    ], 3200000)
+
+    expect(out).toContain('...[truncated]...')
+    expect(out).toContain('HEAD')
+    expect(out).toContain('TAIL')
+    expect(out.length).toBeLessThan(20000)
   })
 })

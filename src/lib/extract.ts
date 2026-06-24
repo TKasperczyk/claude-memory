@@ -76,12 +76,22 @@ export function sanitizeExtractionFailure(failure: ExtractionFailure | undefined
 
 const TOOL_NAME = 'emit_records'
 const USEFULNESS_TOOL_NAME = 'emit_usefulness'
-const MAX_TRANSCRIPT_CHARS = 3200000  // ~800k tokens, fallback when setting not provided
+// Coarse first-pass cap on transcript chars. The char->token ratio varies widely
+// (~4 chars/token for prose, but ~2 for code/JSON/non-English), so this can still
+// exceed a model's token limit. extractRecords re-truncates and retries when the API
+// rejects the prompt as too long, so this stays generous rather than pessimistic.
+const MAX_TRANSCRIPT_CHARS = 3200000
 const MAX_USEFULNESS_TRANSCRIPT_CHARS = 300000
 const MAX_INTENT_CHARS = 400
 const MAX_TRUNCATED_OUTPUT_CHARS = 20000
 const MAX_TOOL_INPUT_CHARS = 12000
+const MAX_TOOL_RESULT_CHARS = 16000
 const USEFULNESS_MAX_TOKENS = 800
+// Recovery when a transcript still exceeds the model's input token limit: shrink the
+// transcript proportionally to the overage (with margin) and retry a bounded number of times.
+const MAX_PROMPT_TOO_LONG_RETRIES = 2
+const PROMPT_RETRY_SAFETY = 0.85
+const MIN_RETRY_TRANSCRIPT_CHARS = 2000
 const NO_AUTH_EXTRACTION_MESSAGE = 'No authentication available for extraction. Set ANTHROPIC_API_KEY or run kira login.'
 const SYSTEM_PROMPT = `You extract durable technical knowledge from Claude Code transcripts.
 
@@ -230,6 +240,61 @@ const EMIT_USEFULNESS_TOOL: Anthropic.Tool = {
   }
 }
 
+/**
+ * Parse Anthropic's "prompt is too long: N tokens > M maximum" 400 so we can shrink
+ * the transcript to fit. The token counts let us re-truncate precisely regardless of
+ * the transcript's char->token density. Returns null for any other error.
+ */
+export function parsePromptTooLong(error: unknown): { actual: number; limit: number } | null {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : undefined
+  const message = typeof record?.message === 'string' ? record.message : ''
+  const match = /prompt is too long:\s*(\d+)\s*tokens?\s*>\s*(\d+)\s*maximum/i.exec(message)
+  if (!match) return null
+  const actual = Number(match[1])
+  const limit = Number(match[2])
+  if (!Number.isFinite(actual) || !Number.isFinite(limit) || actual <= limit) return null
+  return { actual, limit }
+}
+
+/**
+ * Stream the extraction request, retrying with a smaller transcript when the API rejects
+ * the prompt as too long. The new cap scales the current prompt length by limit/actual with
+ * a safety margin, so it converges in one step for typical (linear) overages.
+ */
+async function streamExtractionWithRetry(
+  client: Anthropic,
+  transcript: Transcript,
+  context: ExtractionContext,
+  config: Config,
+  maxTokens: number
+): Promise<Anthropic.Messages.Message> {
+  let transcriptCap = context.maxTranscriptChars ?? MAX_TRANSCRIPT_CHARS
+  let userPrompt = buildUserPrompt(transcript, { ...context, maxTranscriptChars: transcriptCap })
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.messages.stream({
+        model: config.extraction.model,
+        max_tokens: maxTokens,
+        system: [
+          { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+          { type: 'text', text: SYSTEM_PROMPT }
+        ],
+        messages: [{ role: 'user', content: userPrompt }],
+        tools: [EMIT_RECORDS_TOOL],
+        tool_choice: { type: 'tool', name: TOOL_NAME }
+      }).finalMessage()
+    } catch (error) {
+      const tooLong = parsePromptTooLong(error)
+      if (!tooLong || attempt >= MAX_PROMPT_TOO_LONG_RETRIES) throw error
+      const reducedCap = Math.floor(userPrompt.length * (tooLong.limit / tooLong.actual) * PROMPT_RETRY_SAFETY)
+      if (reducedCap < MIN_RETRY_TRANSCRIPT_CHARS || reducedCap >= transcriptCap) throw error
+      console.error(`[claude-memory] Extraction prompt too long (${tooLong.actual} tokens > ${tooLong.limit} max); retrying with transcript truncated ${transcriptCap} -> ${reducedCap} chars`)
+      transcriptCap = reducedCap
+      userPrompt = buildUserPrompt(transcript, { ...context, maxTranscriptChars: transcriptCap })
+    }
+  }
+}
+
 export async function extractRecords(
   transcript: Transcript,
   context: ExtractionContext,
@@ -252,20 +317,8 @@ export async function extractRecords(
       }
     }
 
-    const userPrompt = buildUserPrompt(transcript, resolvedContext)
-
     const maxTokens = clampModelMaxTokens(config.extraction.model, config.extraction.maxTokens)
-    const response = await client.messages.stream({
-      model: config.extraction.model,
-      max_tokens: maxTokens,
-      system: [
-        { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-        { type: 'text', text: SYSTEM_PROMPT }
-      ],
-      messages: [{ role: 'user', content: userPrompt }],
-      tools: [EMIT_RECORDS_TOOL],
-      tool_choice: { type: 'tool', name: TOOL_NAME }
-    }).finalMessage()
+    const response = await streamExtractionWithRetry(client, transcript, resolvedContext, config, maxTokens)
 
     const tokenUsage = extractTokenUsage(response)
     recordTokenUsageEvent('extraction', config.extraction.model, tokenUsage, config.lancedb.table, {
@@ -561,7 +614,7 @@ function formatEvent(event: TranscriptEvent): string | null {
       const output = event.outputText?.trim()
       const parts = [header]
       if (meta) parts.push(`meta: ${meta}`)
-      if (output) parts.push(`output:\n${output}`)
+      if (output) parts.push(`output:\n${truncateBlock(output, MAX_TOOL_RESULT_CHARS)}`)
       return parts.join('\n')
     }
     default:
