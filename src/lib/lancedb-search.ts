@@ -110,18 +110,63 @@ export async function hybridSearch(
       if (abortSignal?.aborted) {
         throw new Error('Search aborted')
       }
-      const keywordFilter = buildKeywordFilter(effectiveKeywordQueries, baseFilter)
-      const query = table
-        .query()
-        .where(keywordFilter)
-        .select(outputFields)
-        .limit(keywordLimit)
-      const keywordRows = await query.toArray()
-
-      for (const row of keywordRows ?? []) {
-        const record = parseRecordFromRow(row as Record<string, unknown>)
-        if (!record) continue
+      const addKeywordRecord = (record: MemoryRecord): boolean => {
+        if (combined.has(record.id)) return false
         combined.set(record.id, { record, similarity: 0, keywordMatch: true })
+        return true
+      }
+
+      const addKeywordRows = (rows: unknown[] | undefined): void => {
+        for (const row of rows ?? []) {
+          const record = parseRecordFromRow(row as Record<string, unknown>)
+          if (!record) continue
+          addKeywordRecord(record)
+        }
+      }
+
+      const addInterleavedKeywordRows = (rowBatches: unknown[][], aggregateLimit: number): void => {
+        let added = 0
+        const maxBatchLength = Math.max(...rowBatches.map(rows => rows.length), 0)
+        for (let rowIndex = 0; rowIndex < maxBatchLength && added < aggregateLimit; rowIndex++) {
+          for (const rows of rowBatches) {
+            if (added >= aggregateLimit) return
+            const row = rows[rowIndex]
+            if (!row) continue
+            const record = parseRecordFromRow(row as Record<string, unknown>)
+            if (!record) continue
+            if (addKeywordRecord(record)) added++
+          }
+        }
+      }
+
+      if (effectiveKeywordQueries.length === 1) {
+        const keywordFilter = buildKeywordFilter(effectiveKeywordQueries, baseFilter)
+        const query = table
+          .query()
+          .where(keywordFilter)
+          .select(outputFields)
+          .limit(keywordLimit)
+        const keywordRows = await query.toArray()
+        addKeywordRows(keywordRows)
+      } else {
+        const keywordRowBatches: unknown[][] = []
+        // Fetch a per-needle window, then spend the aggregate keywordLimit by
+        // interleaving unique rows so broad needles cannot starve rare ones.
+        const perNeedleLimit = Math.max(1, Math.ceil(keywordLimit / effectiveKeywordQueries.length))
+        for (const keywordQuery of effectiveKeywordQueries) {
+          if (abortSignal?.aborted) {
+            throw new Error('Search aborted')
+          }
+          const keywordFilter = buildKeywordFilter(keywordQuery, baseFilter)
+          const query = table
+            .query()
+            .where(keywordFilter)
+            .select(outputFields)
+            .limit(perNeedleLimit)
+          const keywordRows = await query.toArray()
+          keywordRowBatches.push(keywordRows ?? [])
+        }
+        addInterleavedKeywordRows(keywordRowBatches, keywordLimit)
       }
     }
 
@@ -361,7 +406,7 @@ export function buildKeywordFilter(query: string | string[], baseFilter?: string
     .filter(q => q.trim().length > 0)
     .map(q => {
       const escaped = escapeLikeValue(q)
-      return `exact_text LIKE '%${escaped}%' ESCAPE '\\'`
+      return `lower(exact_text) LIKE lower('%${escaped}%') ESCAPE '\\'`
     })
   if (likeClauses.length === 0) {
     return baseFilter ?? '1=1'

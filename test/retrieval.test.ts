@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import { DEFAULT_CONFIG, type HybridSearchResult, type InjectionSessionRecord, type MemoryRecord, type NearMissRecord, type RetrievalSettings } from '../src/lib/types.js'
-import { expandViaRelations, retrieveContext } from '../src/lib/retrieval.js'
+import { expandViaRelations, extractFallbackKeywords, retrieveContext } from '../src/lib/retrieval.js'
 import { createMockCommandRecord } from './helpers.js'
 import { loadSettings } from '../src/lib/settings.js'
+import { DEFAULT_SETTINGS } from '../src/lib/settings-schema.js'
 import { closeLanceDB, fetchRecordsByIds, hybridSearch, initLanceDB } from '../src/lib/lancedb.js'
 import { embed } from '../src/lib/embed.js'
 import { generateRetrievalQueryPlan } from '../src/lib/retrieval-query-generator.js'
@@ -88,6 +92,7 @@ const BASE_SETTINGS: RetrievalSettings = {
   minScore: 0.45,
   minExpandedScore: 0.45,
   minSemanticOnlyScore: 0.65,
+  semanticAnchorThreshold: 0.7,
   maxRecords: 5,
   maxTokens: 2000,
   mmrLambda: 0.7,
@@ -189,6 +194,44 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe('Fallback keyword extraction', () => {
+  it('extracts discrete conservative needles from natural-language meta questions', () => {
+    const prompt = 'Does the skill tell you how our miconet network is set up, e.g. the two mikrotiks (arda and arda2), where the firewall is'
+
+    const keywords = extractFallbackKeywords(prompt, DEFAULT_SETTINGS.maxKeywordQueries)
+
+    expect(keywords).toEqual(['miconet', 'network', 'mikrotiks', 'arda', 'arda2', 'firewall'])
+    expect(keywords).not.toContain(prompt)
+  })
+
+  it('drops single-letter titlecase and acronym tokens', () => {
+    expect(extractFallbackKeywords('C R X', 10)).toEqual([])
+  })
+
+  it('keeps allowlisted short technical tokens', () => {
+    expect(extractFallbackKeywords('ssh dns sql api tcp udp jq ip k8s', 20)).toEqual([
+      'ssh',
+      'dns',
+      'sql',
+      'api',
+      'tcp',
+      'udp',
+      'jq',
+      'ip',
+      'k8s'
+    ])
+  })
+
+  it('keeps unicode lowercase tokens intact', () => {
+    expect(extractFallbackKeywords('café error', 10)).toEqual(['café'])
+  })
+
+  it('does not emit broad whole-prompt needles for filler prompts', () => {
+    expect(extractFallbackKeywords('ok continue', 10)).toEqual([])
+    expect(extractFallbackKeywords('whats the status of things', 10)).toEqual([])
+  })
 })
 
 describe('Relation expansion', () => {
@@ -765,7 +808,37 @@ describe('Haiku query planning', () => {
     )
 
     const keywordCall = mockedHybridSearch.mock.calls.find(([params]) => params.vectorWeight === 0)
-    expect(keywordCall?.[0].query).toBe(prompt)
+    expect(keywordCall?.[0].query).toBe('deployment')
+    expect(keywordCall?.[0].keywordQueries).toEqual(['deployment'])
+  })
+
+  it('uses discrete fallback keywords when Haiku emits no keyword queries', async () => {
+    const prompt = 'Does the skill tell you how our miconet network is set up, e.g. the two mikrotiks (arda and arda2), where the firewall is'
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: prompt,
+        keywordQueries: [],
+        semanticQueries: ['miconet network setup']
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+
+    await retrieveContext(
+      { prompt, cwd: PROJECT_ROOT, transcriptPath: '/tmp/fake-transcript.jsonl' },
+      DEFAULT_CONFIG,
+      { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
+    )
+
+    const keywordCall = mockedHybridSearch.mock.calls.find(([params]) => params.vectorWeight === 0)
+    expect(keywordCall?.[0].query).toBe('miconet')
+    expect(keywordCall?.[0].keywordQueries).toEqual(['miconet', 'network', 'mikrotiks', 'arda'])
+    expect(keywordCall?.[0].keywordQueries).not.toContain(prompt)
   })
 
   it('skips token usage recording when query plan omits token usage', async () => {
@@ -967,6 +1040,57 @@ describe('Unified scoring', () => {
     expect(result.results).toHaveLength(1)
     expect(result.results[0].record.id).toBe('kw')
     expect(result.results[0].score).toBeGreaterThanOrEqual(1.0)
+  })
+})
+
+describe('Semantic anchor gate', () => {
+  it('keeps same-project and ancestor-project keyword survivors while suppressing low-similarity semantic filler', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-memory-ancestor-'))
+    const ancestorProject = path.join(tempRoot, 'parent')
+    const projectRoot = path.join(ancestorProject, 'child')
+    fs.mkdirSync(path.join(ancestorProject, '.git'), { recursive: true })
+    fs.mkdirSync(projectRoot, { recursive: true })
+
+    const keywordSurvivor = makeResult('keyword-survivor', [0.6, 0.4], 0.6, 0.6, true)
+    keywordSurvivor.record.project = projectRoot
+    const ancestorKeyword = makeResult('ancestor-keyword', [0.6, 0.4], 0.6, 0.6, true)
+    ancestorKeyword.record.project = ancestorProject
+    const semanticOnly = makeResult('semantic-only', [0.6, 0.4], 0.6, 0.6, false)
+    semanticOnly.record.project = projectRoot
+    const otherProjectKeyword = makeResult('other-project-keyword', [0.6, 0.4], 0.6, 0.6, true)
+    otherProjectKeyword.record.project = '/other/project'
+
+    mockedHybridSearch.mockImplementation(async params => {
+      const qualified = params.vectorWeight === 0
+        ? [keywordSurvivor, ancestorKeyword, otherProjectKeyword]
+        : [semanticOnly]
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'miconet firewall', cwd: projectRoot },
+      DEFAULT_CONFIG,
+      {
+        projectRoot,
+        diagnostic: true,
+        settingsOverride: { semanticAnchorThreshold: 0.7, minScore: 0.45 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['keyword-survivor', 'ancestor-keyword'])
+
+    const nearMissReasons = new Map(
+      result.diagnostics?.search.nearMisses.map(entry => [
+        entry.record.record.id,
+        entry.exclusionReasons[0]?.reason
+      ])
+    )
+    expect(nearMissReasons.get('semantic-only')).toBe('semantic_anchor_gate')
+    expect(nearMissReasons.get('other-project-keyword')).toBe('semantic_anchor_gate')
+    expect(nearMissReasons.has('keyword-survivor')).toBe(false)
+    expect(nearMissReasons.has('ancestor-keyword')).toBe(false)
+
+    fs.rmSync(tempRoot, { recursive: true, force: true })
   })
 })
 

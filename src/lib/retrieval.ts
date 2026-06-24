@@ -22,6 +22,125 @@ import {
   type SuppressionMode
 } from './types.js'
 
+const FALLBACK_KEYWORD_STOPWORDS = new Set([
+  'a',
+  'about',
+  'advice',
+  'an',
+  'and',
+  'anything',
+  'are',
+  'as',
+  'at',
+  'be',
+  'but',
+  'by',
+  'can',
+  'check',
+  'code',
+  'command',
+  'config',
+  'continue',
+  'could',
+  'data',
+  'did',
+  'do',
+  'does',
+  'e.g',
+  'error',
+  'explain',
+  'file',
+  'find',
+  'for',
+  'from',
+  'get',
+  'got',
+  'had',
+  'has',
+  'have',
+  'help',
+  'how',
+  'i',
+  'i.e',
+  'if',
+  'in',
+  'into',
+  'is',
+  'it',
+  'issue',
+  'know',
+  'make',
+  'me',
+  'my',
+  'need',
+  'needs',
+  'no',
+  'of',
+  'ok',
+  'okay',
+  'on',
+  'or',
+  'our',
+  'output',
+  'please',
+  'problem',
+  'project',
+  'remember',
+  'run',
+  'save',
+  'should',
+  'skill',
+  'status',
+  'stuff',
+  'tell',
+  'that',
+  'the',
+  'their',
+  'them',
+  'then',
+  'there',
+  'these',
+  'they',
+  'thing',
+  'things',
+  'this',
+  'those',
+  'to',
+  'use',
+  'used',
+  'using',
+  'was',
+  'we',
+  'were',
+  'what',
+  'whats',
+  'when',
+  'where',
+  'which',
+  'who',
+  'why',
+  'with',
+  'without',
+  'would',
+  'yes',
+  'you',
+  'your'
+])
+
+const FALLBACK_SHORT_TECH_KEYWORDS = new Set([
+  'api',
+  'dns',
+  'ip',
+  'jq',
+  'k8s',
+  'sql',
+  'ssh',
+  'tcp',
+  'udp'
+])
+
+const FALLBACK_TOKEN_PATTERN = /[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}._:/@+-]*[\p{L}\p{N}\p{M}])?/gu
+
 /**
  * Fixed weight for semantic similarity in the unified scoring formula.
  * Not user-configurable because changing it would shift the meaning of
@@ -293,6 +412,7 @@ async function searchMemories(
     : normalizeSemanticQueries([buildSemanticQuery(cleanPrompt, signals, settings)], signals, settings)
   const semanticQuery = semanticQueries.join('\n')
   const project = signals.projectRoot ?? cwd
+  const ancestorProjects = project ? findAncestorProjects(project) : []
 
   // Pre-compute embeddings once to avoid duplicate API calls on retry.
   let embeddings: number[][] = []
@@ -326,6 +446,7 @@ async function searchMemories(
     config,
     settings,
     project,
+    ancestorProjects,
     embeddings,
     signal,
     { diagnostic }
@@ -354,16 +475,31 @@ async function searchMemories(
   if (embeddings.length > 0 && results.length > 0 && settings.semanticAnchorThreshold > 0) {
     const maxSim = results.reduce((acc, r) => Math.max(acc, r.similarity), 0)
     if (maxSim < settings.semanticAnchorThreshold) {
-      console.error(`[claude-memory] Semantic anchor gate: max similarity ${maxSim.toFixed(3)} < threshold ${settings.semanticAnchorThreshold.toFixed(3)}; injecting nothing (${results.length} candidate${results.length === 1 ? '' : 's'} suppressed)`)
+      const survivors = results.filter(result =>
+        result.keywordMatch === true &&
+        result.score >= settings.minScore &&
+        (
+          result.record.project === project ||
+          (result.record.project ? ancestorProjects.includes(result.record.project) : false) ||
+          result.record.scope === 'global'
+        )
+      )
+      const suppressed = results.filter(result => !survivors.includes(result))
+      const suppressedCount = suppressed.length
+      const survivorCount = survivors.length
+      const outcome = survivorCount > 0
+        ? `keeping ${survivorCount} keyword survivor${survivorCount === 1 ? '' : 's'}; ${suppressedCount} candidate${suppressedCount === 1 ? '' : 's'} suppressed`
+        : `injecting nothing (${suppressedCount} candidate${suppressedCount === 1 ? '' : 's'} suppressed)`
+      console.error(`[claude-memory] Semantic anchor gate: max similarity ${maxSim.toFixed(3)} < threshold ${settings.semanticAnchorThreshold.toFixed(3)}; ${outcome}`)
       if (diagnostic && searchNearMisses) {
-        for (const result of results) {
+        for (const result of suppressed) {
           searchNearMisses.set(result.record.id, {
             record: result,
             exclusionReasons: [buildExclusionReason('semantic_anchor_gate', settings.semanticAnchorThreshold, result.similarity)]
           })
         }
       }
-      results = []
+      results = survivors
     }
   }
 
@@ -588,6 +724,7 @@ async function searchWithScope(
   config: Config,
   settings: RetrievalSettings,
   project: string | undefined,
+  ancestorProjects: string[],
   precomputedEmbeddings: number[][] = [],
   signal?: AbortSignal,
   options: { diagnostic?: boolean } = {}
@@ -598,7 +735,6 @@ async function searchWithScope(
   const diagnostic = options.diagnostic === true
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
-  const ancestorProjects = project ? findAncestorProjects(project) : []
   console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${project ?? 'none'}${ancestorProjects.length ? `, ancestors=${ancestorProjects.join(',')}` : ''}`)
 
   const upsertResult = (item: HybridSearchResult): void => {
@@ -1067,6 +1203,43 @@ function maxCosineSimilarity(queries: number[][], candidate: number[]): number {
   return maxSimilarity
 }
 
+export function extractFallbackKeywords(cleanPrompt: string, maxKeywords = Number.POSITIVE_INFINITY): string[] {
+  const normalizedPrompt = stripNoiseWords(cleanPrompt).normalize('NFC')
+  const tokens = normalizedPrompt.match(FALLBACK_TOKEN_PATTERN) ?? []
+  const seenLower = new Set<string>()
+  const keywords: string[] = []
+
+  for (const token of tokens) {
+    const lower = token.toLowerCase()
+    if (seenLower.has(lower) || FALLBACK_KEYWORD_STOPWORDS.has(lower)) continue
+
+    const tokenLength = Array.from(token).length
+    const isShortTechKeyword = FALLBACK_SHORT_TECH_KEYWORDS.has(lower)
+    const isAcronym = tokenLength >= 3 && /^\p{Lu}[\p{Lu}\p{N}_+-]+$/u.test(token)
+    const isProperNoun = tokenLength >= 3 && /^\p{Lu}/u.test(token)
+    const isVersionish = /^v?\d+(?:\.\d+)+(?:[-+][A-Za-z0-9.]+)?$/i.test(token)
+    const isPathish = /[/:\\]/.test(token) || /\.[A-Za-z0-9]+/.test(token)
+    const hasDigit = /\d/.test(token)
+    const isPlainLowercase = /^[\p{Ll}\p{M}]+$/u.test(token)
+    const keep = (
+      isShortTechKeyword ||
+      isProperNoun ||
+      isAcronym ||
+      hasDigit ||
+      isVersionish ||
+      isPathish ||
+      (isPlainLowercase && tokenLength >= 4)
+    )
+    if (!keep) continue
+
+    keywords.push(lower)
+    seenLower.add(lower)
+    if (keywords.length >= maxKeywords) break
+  }
+
+  return keywords
+}
+
 function normalizeKeywordQueries(
   queries: string[],
   fallback: string,
@@ -1111,7 +1284,7 @@ function normalizeKeywordQueries(
   }
 
   if (result.length === 0 && fallback.trim()) {
-    result.push(fallback.trim())
+    result.push(...extractFallbackKeywords(fallback, settings.maxKeywordQueries))
   }
 
   if (result.length <= settings.maxKeywordQueries) return result
@@ -1161,9 +1334,9 @@ function buildKeywordQueries(
   const commandQueries = signals.commands.slice(0, settings.maxKeywordCommands)
   const queries = [...errorQueries, ...commandQueries]
 
-  // Fallback: if no specific signals, use the prompt itself for keyword matching.
+  // Fallback: if no specific signals, use conservative discrete needles.
   if (queries.length === 0 && cleanPrompt.trim()) {
-    queries.push(cleanPrompt.trim())
+    queries.push(...extractFallbackKeywords(cleanPrompt, settings.maxKeywordQueries))
   }
 
   if (queries.length <= settings.maxKeywordQueries) return queries

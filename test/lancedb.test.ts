@@ -170,9 +170,14 @@ describe('LanceDB core API', () => {
 
     const escaped = escapeLikeValue("café_%")
     const keyword = buildKeywordFilter("café_%")
-    expect(keyword).toContain('exact_text LIKE')
+    expect(keyword).toContain('lower(exact_text) LIKE lower')
     expect(keyword).toContain("ESCAPE '\\'")
     expect(keyword).toContain(escaped)
+
+    const multiKeyword = buildKeywordFilter(['MikroTik', 'fire_wall'], "project = '/proj'")
+    expect(multiKeyword).toBe(
+      "project = '/proj' AND (lower(exact_text) LIKE lower('%MikroTik%') ESCAPE '\\' OR lower(exact_text) LIKE lower('%fire\\_wall%') ESCAPE '\\')"
+    )
   })
 
   it('escapes SQL string literals', () => {

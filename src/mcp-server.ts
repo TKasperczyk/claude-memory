@@ -7,11 +7,15 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { z } from 'zod'
 import { loadConfig } from './lib/config.js'
 import { initLanceDB, closeLanceDB, hybridSearch } from './lib/lancedb.js'
 import { findAncestorProjects, formatRecordSnippet } from './lib/context.js'
 import { embed } from './lib/embed.js'
+import { extractFallbackKeywords } from './lib/retrieval.js'
 import { loadSettings } from './lib/settings.js'
 import type { Config, HybridSearchResult, MemoryRecord, RecordType } from './lib/types.js'
 
@@ -85,6 +89,58 @@ function formatSearchResult(result: HybridSearchResult): Record<string, unknown>
   }
 }
 
+type SearchMemoriesToolInput = {
+  query: string
+  project?: string
+  type?: RecordType
+  limit: number
+}
+
+export async function runSearchMemoriesTool({ query, project, type, limit }: SearchMemoriesToolInput): Promise<{
+  content: Array<{ type: 'text'; text: string }>
+}> {
+  await ensureInitialized()
+
+  const settings = loadSettings()
+  const projectPath = project ?? process.cwd()
+  const ancestorProjects = findAncestorProjects(projectPath)
+  const keywordQueries = extractFallbackKeywords(query, settings.maxKeywordQueries)
+
+  let embedding: number[] | undefined
+  try {
+    embedding = await embed(query, config)
+  } catch {
+    // Fall back to keyword-only search
+  }
+
+  const results = await hybridSearch({
+    query,
+    keywordQueries: keywordQueries.length > 0 ? keywordQueries : undefined,
+    limit,
+    project: projectPath,
+    ancestorProjects,
+    type,
+    excludeDeprecated: true,
+    embedding,
+    vectorWeight: embedding ? 1 : 0,
+    keywordWeight: 1,
+    minSimilarity: settings.minSemanticSimilarity,
+    usageRatioWeight: settings.usageRatioWeight,
+    includeEmbeddings: false
+  }, config) as HybridSearchResult[]
+
+  if (results.length === 0) {
+    return {
+      content: [{ type: 'text', text: 'No matching memories found.' }]
+    }
+  }
+
+  const formatted = results.map(formatSearchResult)
+  return {
+    content: [{ type: 'text', text: JSON.stringify(formatted, null, 2) }]
+  }
+}
+
 const server = new McpServer({
   name: 'claude-memory',
   version: '0.1.0'
@@ -100,44 +156,7 @@ server.tool(
     limit: z.number().int().min(1).max(50).default(10).describe('Maximum number of results')
   },
   async ({ query, project, type, limit }) => {
-    await ensureInitialized()
-
-    const settings = loadSettings()
-    const projectPath = project ?? process.cwd()
-    const ancestorProjects = findAncestorProjects(projectPath)
-
-    let embedding: number[] | undefined
-    try {
-      embedding = await embed(query, config)
-    } catch {
-      // Fall back to keyword-only search
-    }
-
-    const results = await hybridSearch({
-      query,
-      limit,
-      project: projectPath,
-      ancestorProjects,
-      type: type as RecordType | undefined,
-      excludeDeprecated: true,
-      embedding,
-      vectorWeight: embedding ? 1 : 0,
-      keywordWeight: 1,
-      minSimilarity: settings.minSemanticSimilarity,
-      usageRatioWeight: settings.usageRatioWeight,
-      includeEmbeddings: false
-    }, config) as HybridSearchResult[]
-
-    if (results.length === 0) {
-      return {
-        content: [{ type: 'text' as const, text: 'No matching memories found.' }]
-      }
-    }
-
-    const formatted = results.map(formatSearchResult)
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(formatted, null, 2) }]
-    }
+    return runSearchMemoriesTool({ query, project, type: type as RecordType | undefined, limit })
   }
 )
 
@@ -155,7 +174,21 @@ async function main(): Promise<void> {
   })
 }
 
-main().catch((error) => {
-  console.error('[claude-memory-mcp] Fatal error:', error)
-  process.exit(1)
-})
+function isMainModule(): boolean {
+  const entryPoint = process.argv[1]
+  if (!entryPoint) return false
+  const modulePath = fileURLToPath(import.meta.url)
+  const entryPath = path.resolve(entryPoint)
+  try {
+    return fs.realpathSync(modulePath) === fs.realpathSync(entryPath)
+  } catch {
+    return modulePath === entryPath
+  }
+}
+
+if (isMainModule()) {
+  main().catch((error) => {
+    console.error('[claude-memory-mcp] Fatal error:', error)
+    process.exit(1)
+  })
+}
