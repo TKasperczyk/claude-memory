@@ -85,8 +85,11 @@ export async function findLowUsageHighRetrieval(
 }
 
 /**
- * Find records older than staleUnusedDays with zero usage.
- * These are memories that were extracted but never proved useful.
+ * Find records older than staleUnusedDays with zero usage AND zero retrievals.
+ * These are memories that were extracted but never surfaced anywhere.
+ * Records that were retrieved but never rated useful are left to the
+ * low-usage runners, since zero usage on a retrieved record can also mean
+ * retrieval surfaced it in sessions that never rated injections.
  */
 export async function findStaleUnusedRecords(
   config: Config = DEFAULT_CONFIG,
@@ -96,7 +99,9 @@ export async function findStaleUnusedRecords(
   const cutoff = Date.now() - maintenance.staleUnusedDays * 24 * 60 * 60 * 1000
   const filter = ['deprecated = false', `timestamp < ${Math.trunc(cutoff)}`].join(' AND ')
   const records = await fetchRecords(filter, config, false)
-  return records.filter(record => (record.usageCount ?? 0) === 0)
+  return records.filter(
+    record => (record.usageCount ?? 0) === 0 && (record.retrievalCount ?? 0) === 0
+  )
 }
 
 export async function checkValidity(record: MemoryRecord, settings?: MaintenanceSettings): Promise<ValidityResult> {

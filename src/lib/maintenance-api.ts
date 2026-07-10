@@ -35,8 +35,8 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
   {
     key: 'stale-unused-deprecation',
     label: 'Stale Unused Deprecation',
-    description: 'Deprecate old records that have never been used',
-    allowExecute: false
+    description: 'Deprecate old records that were never retrieved nor used',
+    allowExecute: true
   },
   {
     key: 'low-usage-deprecation',
@@ -123,7 +123,8 @@ export const AUTO_MAINTENANCE_OPERATIONS: MaintenanceOperation[] = [
   'relation-discovery',
   'warning-synthesis',
   'global-promotion',
-  'stale-check'
+  'stale-check',
+  'stale-unused-deprecation'
 ]
 
 export type MaintenanceProgressCallback = (progress: MaintenanceProgress) => void
