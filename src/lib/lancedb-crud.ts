@@ -191,7 +191,15 @@ export async function resetCollection(
 function clearFilesystemStorage(table?: string): void {
   const baseDir = CLAUDE_MEMORY_ROOT
   const collectionKey = getCollectionKey(table)
-  const dirsToClean = ['sessions', 'extractions', 'reviews', 'retrieval-events', 'token-usage-events', 'stats-snapshots']
+  const dirsToClean = [
+    'sessions',
+    'extractions',
+    'reviews',
+    'retrieval-events',
+    'token-usage-events',
+    'stats-snapshots',
+    'consolidation-verdicts'
+  ]
 
   for (const dir of dirsToClean) {
     const dirPath = path.join(baseDir, dir, collectionKey)

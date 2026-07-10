@@ -10,6 +10,7 @@ import { resolveMaintenanceSettings, type MaintenanceSettings } from '../setting
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildRecordSnippet, escapeFilterValue } from '../shared.js'
 import { clampModelMaxTokens } from '../model-capabilities.js'
+import { recordTokenUsageFromResponse } from '../token-usage-events.js'
 import {
   CONSOLIDATION_VERIFICATION_MAX_TOKENS,
   CONSOLIDATION_VERIFICATION_PROMPT,
@@ -549,6 +550,9 @@ export async function llmVerifyConsolidation(
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CONSOLIDATION_VERIFICATION_TOOL],
     tool_choice: { type: 'tool', name: CONSOLIDATION_VERIFICATION_TOOL_NAME }
+  })
+  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+    collection: config.lancedb.table
   })
 
   const toolInput = response.content.find((block): block is ToolUseBlock =>

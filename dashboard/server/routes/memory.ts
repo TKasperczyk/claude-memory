@@ -545,6 +545,7 @@ function parseTokenUsageSource(
       || normalized === 'extraction'
       || normalized === 'haiku-query'
       || normalized === 'usefulness-rating'
+      || normalized === 'maintenance'
     ) {
       return normalized
     }

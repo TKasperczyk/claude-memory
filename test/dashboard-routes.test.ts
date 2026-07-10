@@ -833,6 +833,25 @@ describe('memory routes', () => {
     })
   })
 
+  it('accepts maintenance as a token usage source', async () => {
+    mockedGetTokenUsageActivity.mockReturnValueOnce({
+      period: 'day',
+      source: 'maintenance',
+      buckets: []
+    })
+
+    const { app } = buildApp()
+    const res = await request(app).get('/api/token-usage?source=maintenance')
+
+    expect(res.status).toBe(200)
+    expect(res.body.source).toBe('maintenance')
+    expect(mockedGetTokenUsageActivity).toHaveBeenLastCalledWith('day', {
+      limit: 30,
+      source: 'maintenance',
+      collection: DEFAULT_CONFIG.lancedb.table
+    })
+  })
+
   it('honors collection override header for search', async () => {
     const { app } = buildApp()
     const res = await request(app)

@@ -153,7 +153,7 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     min: 0,
     max: 1,
     kind: 'float',
-    default: 0.70,
+    default: 0.65,
     group: RETRIEVAL_GROUPS.similarity
   },
   {
@@ -192,12 +192,12 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'semanticAnchorThreshold',
     label: 'Semantic anchor threshold',
-    description: 'Require at least one candidate with semantic similarity at or above this value before injecting anything. If no anchor is found (and the embedding succeeded), injection is skipped entirely -- better to inject nothing than noise. Set to 0 to disable.',
+    description: 'Require at least one candidate to reach this cosine similarity against the cleaned raw prompt before planned semantic matches are injected. If the raw anchor fails, only qualified raw-keyword matches survive. Set to 0 to disable.',
     step: 0.01,
     min: 0,
     max: 1,
     kind: 'float',
-    default: 0.70,
+    default: 0.65,
     group: RETRIEVAL_GROUPS.similarity
   },
   {
@@ -584,6 +584,16 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     min: 1,
     kind: 'int',
     default: 7,
+    group: MAINTENANCE_GROUPS_META.consolidation
+  },
+  {
+    key: 'consolidationNoMergeBackoffDays',
+    label: 'No-merge backoff (days)',
+    description: 'Days before re-verifying an unchanged consolidation cluster that the LLM rejected.',
+    step: 1,
+    min: 1,
+    kind: 'int',
+    default: 90,
     group: MAINTENANCE_GROUPS_META.consolidation
   },
   {

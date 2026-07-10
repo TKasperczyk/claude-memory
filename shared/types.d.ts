@@ -145,7 +145,7 @@ export interface RetrievalActivity {
   buckets: RetrievalActivityBucket[]
 }
 
-export type TokenUsageSource = 'extraction' | 'haiku-query' | 'usefulness-rating'
+export type TokenUsageSource = 'extraction' | 'haiku-query' | 'usefulness-rating' | 'maintenance'
 
 export interface TokenUsageEvent {
   timestamp: number
@@ -298,6 +298,7 @@ export interface MaintenanceSettings {
   consolidationMaxClusterSize: number
   consolidationThreshold: number
   consolidationRecheckDays: number
+  consolidationNoMergeBackoffDays: number
   currentnessRecheckDays: number
   crossTypeConsolidationThreshold: number
   enableConsolidationLlmVerification: boolean

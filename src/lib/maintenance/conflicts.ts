@@ -9,6 +9,7 @@ import { batchUpdateRecords, findSimilar } from '../lancedb.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { clampModelMaxTokens } from '../model-capabilities.js'
+import { recordTokenUsageFromResponse } from '../token-usage-events.js'
 import {
   buildCandidateRecord,
   buildRecordSnippet,
@@ -97,6 +98,9 @@ async function resolveConflictWithLLM(
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CONFLICT_ADJUDICATION_TOOL],
     tool_choice: { type: 'tool', name: CONFLICT_ADJUDICATION_TOOL_NAME }
+  })
+  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+    collection: config.lancedb.table
   })
 
   const toolInput = response.content.find((block): block is ToolUseBlock =>

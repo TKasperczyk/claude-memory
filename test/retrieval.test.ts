@@ -88,11 +88,11 @@ vi.mock('../src/lib/context.js', async () => {
 })
 
 const BASE_SETTINGS: RetrievalSettings = {
-  minSemanticSimilarity: 0.7,
+  minSemanticSimilarity: 0.65,
   minScore: 0.45,
   minExpandedScore: 0.45,
   minSemanticOnlyScore: 0.65,
-  semanticAnchorThreshold: 0.7,
+  semanticAnchorThreshold: 0.65,
   maxRecords: 5,
   maxTokens: 2000,
   mmrLambda: 0.7,
@@ -584,6 +584,7 @@ describe('Topic suppression', () => {
 
 describe('MMR re-ranking', () => {
   it('diversifies results with low lambda', async () => {
+    mockedEmbed.mockResolvedValue([1, 0])
     const candidates = [
       makeResult('a', [1, 0], 0.9),
       makeResult('b', [0.99, 0.01], 0.85),
@@ -605,6 +606,7 @@ describe('MMR re-ranking', () => {
   })
 
   it('follows relevance when lambda is high', async () => {
+    mockedEmbed.mockResolvedValue([1, 0])
     const candidates = [
       makeResult('a', [1, 0], 0.9),
       makeResult('b', [0.99, 0.01], 0.85),
@@ -655,6 +657,28 @@ describe('MMR re-ranking', () => {
     expect(one.results).toHaveLength(1)
     expect(one.results[0].record.id).toBe('solo')
   })
+
+  it('caps keyword-only candidates when result embeddings are unavailable', async () => {
+    mockedEmbed.mockRejectedValue(new Error('Embedding service down'))
+    const candidates = [
+      makeResult('a', [], 0.9),
+      makeResult('b', [], 0.8),
+      makeResult('c', [], 0.7)
+    ]
+    mockedHybridSearch.mockImplementation(async params => params.vectorWeight === 0 ? candidates : [])
+
+    const result = await retrieveContext(
+      { prompt: 'keyword fallback cap', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        settingsOverride: { maxRecords: 2, minScore: 0.05 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['a', 'b'])
+    expect(result.injectedRecords).toHaveLength(2)
+  })
 })
 
 describe('Haiku query planning', () => {
@@ -687,10 +711,15 @@ describe('Haiku query planning', () => {
       '/tmp/fake-transcript.jsonl',
       expect.objectContaining({ expansionCount: 1 })
     )
-    expect(mockedEmbed.mock.calls.map(([query]) => query)).toEqual(['Build a Docker image for this project.'])
+    expect(mockedEmbed.mock.calls.map(([query]) => query)).toEqual([
+      'How do I build it?',
+      'Build a Docker image for this project.'
+    ])
     const semanticCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 1)
     expect(semanticCalls).toHaveLength(1)
-    const keywordCall = mockedHybridSearch.mock.calls.find(([params]) => params.vectorWeight === 0)
+    const keywordCall = mockedHybridSearch.mock.calls.find(([params]) =>
+      params.vectorWeight === 0 && params.keywordQueries?.includes('docker build')
+    )
     expect(keywordCall?.[0].query).toBe('docker build')
     expect(mockedRecordTokenUsageEventsAsync).toHaveBeenCalledWith([
       expect.objectContaining({
@@ -733,8 +762,11 @@ describe('Haiku query planning', () => {
       undefined,
       expect.objectContaining({ expansionCount: 3 })
     )
-    expect(mockedEmbed.mock.calls.map(([query]) => query)).toEqual(semanticQueries)
-    expect(new Set(mockedEmbed.mock.calls.map(([query]) => query)).size).toBe(3)
+    expect(mockedEmbed.mock.calls.map(([query]) => query)).toEqual([
+      'Do you remember our ubiquiti gateway docker setup?',
+      ...semanticQueries
+    ])
+    expect(new Set(mockedEmbed.mock.calls.map(([query]) => query)).size).toBe(4)
     const semanticCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 1)
     expect(semanticCalls).toHaveLength(3)
   })
@@ -794,6 +826,60 @@ describe('Haiku query planning', () => {
     expect(sharedResults).toHaveLength(1)
     expect(sharedResults[0].similarity).toBe(0.82)
     expect(result.results.map(item => item.record.id)).toContain('only-third')
+  })
+
+  it('keeps the full multi-variant pool only in diagnostics and globally caps actual results', async () => {
+    const semanticQueries = ['variant one', 'variant two', 'variant three']
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'cap retrieval candidates',
+        keywordQueries: [],
+        semanticQueries
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedEmbed.mockImplementation(async query => {
+      if (query === semanticQueries[0]) return [1, 0]
+      if (query === semanticQueries[1]) return [2, 0]
+      if (query === semanticQueries[2]) return [3, 0]
+      return [9, 0]
+    })
+    mockedHybridSearch.mockImplementation(async params => {
+      if (params.vectorWeight === 0) return params.diagnostic ? { qualified: [], nearMisses: [] } : []
+      const variant = params.embedding?.[0] ?? 0
+      const qualified = [
+        makeResult(`variant-${variant}-a`, [1, variant], 0.9, 0.9, false),
+        makeResult(`variant-${variant}-b`, [variant, 1], 0.85, 0.85, false)
+      ]
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'cap retrieval candidates', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        diagnostic: true,
+        settingsOverride: {
+          enableHaikuRetrieval: true,
+          haikuExpansionCount: 3,
+          enableRelationExpansion: false,
+          maxRecords: 2,
+          minScore: 0.05,
+          semanticAnchorThreshold: 0
+        }
+      }
+    )
+
+    expect(result.diagnostics?.search.qualified).toHaveLength(6)
+    expect(result.results).toHaveLength(2)
+    expect(result.injectedRecords).toHaveLength(2)
   })
 
   it('falls back to prompt-based queries when Haiku is unavailable', async () => {
@@ -1051,14 +1137,15 @@ describe('Semantic anchor gate', () => {
     fs.mkdirSync(path.join(ancestorProject, '.git'), { recursive: true })
     fs.mkdirSync(projectRoot, { recursive: true })
 
-    const keywordSurvivor = makeResult('keyword-survivor', [0.6, 0.4], 0.6, 0.6, true)
+    const keywordSurvivor = makeResult('keyword-survivor', [0.25, 1], 0.6, 0.6, true)
     keywordSurvivor.record.project = projectRoot
-    const ancestorKeyword = makeResult('ancestor-keyword', [0.6, 0.4], 0.6, 0.6, true)
+    const ancestorKeyword = makeResult('ancestor-keyword', [0.25, 1], 0.6, 0.6, true)
     ancestorKeyword.record.project = ancestorProject
-    const semanticOnly = makeResult('semantic-only', [0.6, 0.4], 0.6, 0.6, false)
+    const semanticOnly = makeResult('semantic-only', [0.25, 1], 0.6, 0.6, false)
     semanticOnly.record.project = projectRoot
-    const otherProjectKeyword = makeResult('other-project-keyword', [0.6, 0.4], 0.6, 0.6, true)
+    const otherProjectKeyword = makeResult('other-project-keyword', [0.25, 1], 0.6, 0.6, true)
     otherProjectKeyword.record.project = '/other/project'
+    mockedEmbed.mockResolvedValue([-0.4, 0.6])
 
     mockedHybridSearch.mockImplementation(async params => {
       const qualified = params.vectorWeight === 0
@@ -1092,6 +1179,182 @@ describe('Semantic anchor gate', () => {
 
     fs.rmSync(tempRoot, { recursive: true, force: true })
   })
+
+  it('does not let a topicalized Haiku query open the raw-prompt anchor gate', async () => {
+    const plannedOnly = makeResult('planned-only', [1, 0], 0.82, 0.82, true)
+    plannedOnly.record.project = PROJECT_ROOT
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'Continue discussing the retrieval pipeline',
+        keywordQueries: ['retrieval pipeline'],
+        semanticQueries: ['Technical details of the retrieval pipeline']
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedEmbed.mockImplementation(async query => query === 'u there?' ? [0, 1] : [1, 0])
+    mockedHybridSearch.mockImplementation(async params => {
+      const qualified = [plannedOnly]
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'u there?', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        diagnostic: true,
+        settingsOverride: { enableHaikuRetrieval: true, haikuExpansionCount: 1 }
+      }
+    )
+
+    expect(result.results).toEqual([])
+    expect(result.injectedRecords).toEqual([])
+    expect(result.diagnostics?.search.nearMisses[0]).toMatchObject({
+      record: { record: { id: 'planned-only' } },
+      exclusionReasons: [{ reason: 'semantic_anchor_gate', actual: 0 }]
+    })
+  })
+
+  it('preserves a raw-needle match with low Haiku similarity and gates it on raw cosine', async () => {
+    const rawKeyword = makeResult('raw-keyword', [0, 1], 1, 0, true)
+    rawKeyword.record.project = PROJECT_ROOT
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'General firewall implementation details',
+        keywordQueries: ['implementation details'],
+        semanticQueries: ['General firewall implementation details']
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedEmbed.mockImplementation(async query => query === 'miconet firewall' ? [0, 1] : [1, 0])
+    mockedHybridSearch.mockImplementation(async params => {
+      const qualified = params.vectorWeight === 0 && params.keywordQueries?.includes('miconet')
+        ? [rawKeyword]
+        : []
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'miconet firewall', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        diagnostic: true,
+        settingsOverride: { enableHaikuRetrieval: true, haikuExpansionCount: 1 }
+      }
+    )
+
+    expect(result.diagnostics?.search.qualified.map(item => item.record.id)).toEqual(['raw-keyword'])
+    expect(result.results.map(item => item.record.id)).toEqual(['raw-keyword'])
+    expect(result.results[0].similarity).toBe(1)
+  })
+
+  it('retains only raw-keyword survivors when the raw anchor fails', async () => {
+    const rawKeyword = makeResult('raw-keyword', [0.8, 0.6], 0.8, 0.8, true)
+    rawKeyword.record.project = PROJECT_ROOT
+    const plannedKeyword = makeResult('planned-keyword', [1, 0], 0.8, 0.8, true)
+    plannedKeyword.record.project = PROJECT_ROOT
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'Miconet firewall implementation details',
+        keywordQueries: ['implementation details'],
+        semanticQueries: ['Miconet firewall implementation details']
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedEmbed.mockImplementation(async query => query === 'miconet firewall' ? [0, 1] : [1, 0])
+    mockedHybridSearch.mockImplementation(async params => {
+      let qualified: HybridSearchResult[]
+      if (params.vectorWeight === 0 && params.keywordQueries?.includes('miconet')) {
+        qualified = [rawKeyword]
+      } else if (params.vectorWeight === 0) {
+        qualified = [plannedKeyword]
+      } else {
+        qualified = [rawKeyword, plannedKeyword]
+      }
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'miconet firewall', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        diagnostic: true,
+        settingsOverride: { enableHaikuRetrieval: true, haikuExpansionCount: 1 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['raw-keyword'])
+    expect(result.diagnostics?.search.nearMisses.some(entry => entry.record.record.id === 'planned-keyword')).toBe(true)
+  })
+
+  it('falls back to raw-keyword survivors when only the raw embedding fails', async () => {
+    const rawKeyword = makeResult('raw-keyword', [0, 1], 1, 0, true)
+    rawKeyword.record.project = PROJECT_ROOT
+    const plannedKeyword = makeResult('planned-keyword', [1, 0], 0.8, 0.8, true)
+    plannedKeyword.record.project = PROJECT_ROOT
+    mockedGenerateRetrievalQueryPlan.mockResolvedValue({
+      plan: {
+        resolvedQuery: 'Miconet firewall implementation details',
+        keywordQueries: ['implementation details'],
+        semanticQueries: ['Miconet firewall implementation details']
+      },
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+      },
+      model: 'claude-haiku-4-5-20251001'
+    })
+    mockedEmbed.mockImplementation(async query => {
+      if (query === 'miconet firewall') throw new Error('raw embedding failed')
+      return [1, 0]
+    })
+    mockedHybridSearch.mockImplementation(async params => {
+      let qualified: HybridSearchResult[]
+      if (params.vectorWeight === 0 && params.keywordQueries?.includes('miconet')) {
+        qualified = [rawKeyword]
+      } else if (params.vectorWeight === 0) {
+        qualified = [plannedKeyword]
+      } else {
+        qualified = [plannedKeyword]
+      }
+      return params.diagnostic ? { qualified, nearMisses: [] } : qualified
+    })
+
+    const result = await retrieveContext(
+      { prompt: 'miconet firewall', cwd: PROJECT_ROOT },
+      DEFAULT_CONFIG,
+      {
+        projectRoot: PROJECT_ROOT,
+        diagnostic: true,
+        settingsOverride: { enableHaikuRetrieval: true, haikuExpansionCount: 1 }
+      }
+    )
+
+    expect(result.results.map(item => item.record.id)).toEqual(['raw-keyword'])
+    expect(result.diagnostics?.search.nearMisses.some(entry => entry.record.record.id === 'planned-keyword')).toBe(true)
+  })
 })
 
 describe('Keyword query normalization', () => {
@@ -1118,10 +1381,11 @@ describe('Keyword query normalization', () => {
       { projectRoot: PROJECT_ROOT, settingsOverride: { enableHaikuRetrieval: true } }
     )
 
-    // All 3 keywords should be searched in a single batched call
+    // Raw and planned keywords use separate provenance-preserving searches,
+    // but the union must retain all planner queries.
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    expect(keywordCalls).toHaveLength(1)
-    const keywordQueries = keywordCalls[0][0].keywordQueries
+    expect(keywordCalls).toHaveLength(2)
+    const keywordQueries = keywordCalls.flatMap(([params]) => params.keywordQueries ?? [])
     expect(keywordQueries).toContain('p4 brain')
     expect(keywordQueries).toContain('p4')
     expect(keywordQueries).toContain('brain')
@@ -1146,8 +1410,8 @@ describe('Keyword query normalization', () => {
     )
 
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    expect(keywordCalls).toHaveLength(1)
-    const keywordQueries = keywordCalls[0][0].keywordQueries
+    expect(keywordCalls).toHaveLength(2)
+    const keywordQueries = keywordCalls.flatMap(([params]) => params.keywordQueries ?? [])
     // "jira" and "grafana" extracted as proper nouns from compounds
     expect(keywordQueries).toContain('jira issue')
     expect(keywordQueries).toContain('jira')
@@ -1174,8 +1438,8 @@ describe('Keyword query normalization', () => {
     )
 
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    expect(keywordCalls).toHaveLength(1)
-    const keywordQueries = keywordCalls[0][0].keywordQueries
+    expect(keywordCalls).toHaveLength(2)
+    const keywordQueries = keywordCalls.flatMap(([params]) => params.keywordQueries ?? [])
     // "redis" already present (case-insensitive), should not be duplicated
     const redisCount = keywordQueries.filter((q: string) => q.toLowerCase() === 'redis').length
     expect(redisCount).toBe(1)
@@ -1200,8 +1464,8 @@ describe('Keyword query normalization', () => {
     )
 
     const keywordCalls = mockedHybridSearch.mock.calls.filter(([params]) => params.vectorWeight === 0)
-    expect(keywordCalls).toHaveLength(1)
-    const keywordQueries = keywordCalls[0][0].keywordQueries
+    expect(keywordCalls).toHaveLength(2)
+    const keywordQueries = keywordCalls.flatMap(([params]) => params.keywordQueries ?? [])
     expect(keywordQueries).toContain('aws')
     expect(keywordQueries).toContain('s3')
   })

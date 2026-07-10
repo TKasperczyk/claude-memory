@@ -5,7 +5,7 @@ import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getCollectionKey } from '../src/lib/file-store.js'
 import { DAY_MS, startOfWeekUtc } from '../src/lib/time-buckets.js'
-import { getTokenUsageActivity, recordTokenUsageEvents } from '../src/lib/token-usage-events.js'
+import { getTokenUsageActivity, recordTokenUsageEvents, recordTokenUsageFromResponse } from '../src/lib/token-usage-events.js'
 import type { TokenUsageActivity, TokenUsageBucket } from '../shared/types.js'
 
 function toDateKey(timestamp: number): string {
@@ -203,6 +203,35 @@ describe('token usage events', () => {
       outputTokens: 3,
       cacheCreationInputTokens: 1,
       cacheReadInputTokens: 2
+    })
+  })
+
+  it('records maintenance response usage before response payload validation', async () => {
+    const now = Date.UTC(2026, 1, 16, 12, 0, 0)
+    recordTokenUsageFromResponse('maintenance', 'maintenance-model', {
+      usage: {
+        input_tokens: 13,
+        output_tokens: 5,
+        cache_creation_input_tokens: 2,
+        cache_read_input_tokens: 3
+      }
+    }, { collection, baseDir: storageRoot, now })
+    await new Promise<void>(resolve => setImmediate(resolve))
+
+    const activity = getTokenUsageActivity('day', {
+      collection,
+      limit: 1,
+      now,
+      source: 'maintenance',
+      baseDir: storageRoot
+    })
+    expect(activity.source).toBe('maintenance')
+    expect(activity.buckets[0]).toMatchObject({
+      totalTokens: 18,
+      inputTokens: 13,
+      outputTokens: 5,
+      cacheCreationInputTokens: 2,
+      cacheReadInputTokens: 3
     })
   })
 

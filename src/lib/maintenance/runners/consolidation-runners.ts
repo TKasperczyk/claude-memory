@@ -4,6 +4,7 @@ import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../sett
 import { buildCandidateRecord, buildRecordSnippet, escapeFilterValue, truncateSnippet } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from '../../types.js'
 import { consolidateCluster, findCrossTypeClusters, findSimilarClusters, llmVerifyConsolidation, pickConsolidationFallback, resolveMergeGroups } from '../consolidation.js'
+import { cleanupConsolidationNoMergeVerdicts, loadConsolidationNoMergeVerdict, saveConsolidationNoMergeVerdict, type ConsolidationVerdictMode } from '../consolidation-verdicts.js'
 import type { MaintenanceAction, MaintenanceCandidateGroup } from '../../../../shared/types.js'
 import { buildAction, buildDeprecatedRecordsById, buildErrorResult, buildResult, toErrorMessage } from './shared.js'
 import type { MaintenanceRunResult, ProgressCallback } from './types.js'
@@ -308,6 +309,112 @@ function buildKeeperSnippet(clusterRecords: MemoryRecord[], keptId: string): str
   return keeperRecord ? truncateSnippet(buildRecordSnippet(keeperRecord)) : 'cluster'
 }
 
+type ConsolidationVerification = Awaited<ReturnType<typeof llmVerifyConsolidation>>
+
+type ConsolidationVerificationOutcome = {
+  verification: ConsolidationVerification | null
+  verificationError?: string
+  rejected: boolean
+  checkedAt: number | null
+}
+
+type ConsolidationRunCounters = {
+  rejected: number
+  rejectedFromCache: number
+  errors: number
+}
+
+async function verifyConsolidationWithCache(args: {
+  mode: ConsolidationVerdictMode
+  records: MemoryRecord[]
+  dryRun: boolean
+  config: Config
+  maintenance: MaintenanceSettings
+  counters: ConsolidationRunCounters
+}): Promise<ConsolidationVerificationOutcome> {
+  const { mode, records, dryRun, config, maintenance, counters } = args
+  const cachedVerdict = loadConsolidationNoMergeVerdict(mode, records, {
+    collection: config.lancedb.table,
+    backoffDays: maintenance.consolidationNoMergeBackoffDays,
+    deleteInvalid: !dryRun
+  })
+  if (cachedVerdict) {
+    counters.rejected += 1
+    counters.rejectedFromCache += 1
+    logger.info(`  -> Rejected from cache: ${cachedVerdict.reason}`)
+    return {
+      verification: null,
+      rejected: true,
+      checkedAt: Date.now()
+    }
+  }
+
+  let verification: ConsolidationVerification
+  let verificationError: string | undefined
+  let explicitLlmVerdict = false
+  try {
+    verification = await llmVerifyConsolidation(records, config, { crossType: mode === 'cross-type' })
+    explicitLlmVerdict = true
+  } catch (error) {
+    const message = toErrorMessage(error)
+    if (message.includes('No authentication available')) throw error
+    verificationError = message
+    logger.warn(`LLM verification failed, using fallback: ${message}`)
+    verification = pickConsolidationFallback(records)
+    counters.errors += 1
+  }
+
+  if (verification.shouldMerge) {
+    return {
+      verification,
+      verificationError,
+      rejected: false,
+      checkedAt: null
+    }
+  }
+
+  const checkedAt = Date.now()
+  counters.rejected += 1
+  if (!dryRun && explicitLlmVerdict) {
+    const saved = saveConsolidationNoMergeVerdict(
+      mode,
+      records,
+      verification.reason,
+      config.extraction.model,
+      { collection: config.lancedb.table, now: checkedAt }
+    )
+    if (!saved) {
+      counters.errors += 1
+      logger.warn(`  -> Failed to persist ${mode === 'cross-type' ? 'cross-type ' : ''}consolidation no-merge verdict`)
+    }
+  }
+  logger.info(`  -> Rejected: ${verification.reason}`)
+  return {
+    verification: null,
+    verificationError,
+    rejected: true,
+    checkedAt
+  }
+}
+
+function cleanupVerdictsForRun(
+  dryRun: boolean,
+  config: Config,
+  maintenance: MaintenanceSettings
+): number {
+  if (dryRun || !maintenance.enableConsolidationLlmVerification) return 0
+  try {
+    cleanupConsolidationNoMergeVerdicts({
+      collection: config.lancedb.table,
+      backoffDays: maintenance.consolidationNoMergeBackoffDays
+    })
+    return 0
+  } catch (error) {
+    logger.warn(`Failed to clean up consolidation verdicts: ${toErrorMessage(error)}`)
+    return 1
+  }
+}
+
 export async function runConsolidation(
   dryRun: boolean,
   config: Config = DEFAULT_CONFIG,
@@ -319,11 +426,11 @@ export async function runConsolidation(
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let clustersFound = 0
   let clustersMerged = 0
-  let clustersRejected = 0
+  const counters: ConsolidationRunCounters = { rejected: 0, rejectedFromCache: 0, errors: 0 }
   let deprecated = 0
-  let errors = 0
 
   try {
+    counters.errors += cleanupVerdictsForRun(dryRun, config, maintenance)
     const clusters = await findSimilarClusters(maintenance.consolidationThreshold, config, maintenance)
     clustersFound = clusters.length
     const thresholdPercent = Math.round(maintenance.consolidationThreshold * 100)
@@ -361,23 +468,18 @@ export async function runConsolidation(
         let verificationError: string | undefined
 
         if (maintenance.enableConsolidationLlmVerification) {
-          try {
-            verification = await llmVerifyConsolidation(clusterRecords, config, { crossType: false })
-          } catch (error) {
-            const message = toErrorMessage(error)
-            if (message.includes('No authentication available')) {
-              throw error
-            }
-            verificationError = message
-            logger.warn(`LLM verification failed, using fallback: ${message}`)
-            verification = pickConsolidationFallback(clusterRecords)
-            errors += 1
-          }
-
-          if (verification && !verification.shouldMerge) {
-            clustersRejected += 1
-            checkedAt = Date.now()
-            logger.info(`  -> Rejected: ${verification.reason}`)
+          const outcome = await verifyConsolidationWithCache({
+            mode: 'same-type',
+            records: clusterRecords,
+            dryRun,
+            config,
+            maintenance,
+            counters
+          })
+          verification = outcome.verification
+          verificationError = outcome.verificationError
+          if (outcome.rejected) {
+            checkedAt = outcome.checkedAt
             continue
           }
         }
@@ -452,13 +554,13 @@ export async function runConsolidation(
 
         if (mergedIds.size > 0) clustersMerged += 1
       } catch (error) {
-        errors += 1
+        counters.errors += 1
         logger.warn(`  -> Error processing cluster: ${toErrorMessage(error)}`)
       } finally {
         if (!dryRun && checkedAt) {
           const failed = await markConsolidationChecked(clusterRecords, checkedAt, config)
           if (failed > 0) {
-            errors += failed
+            counters.errors += failed
             logger.warn(`  -> Failed to mark ${failed}/${clusterRecords.length} records as consolidation-checked`)
           }
         }
@@ -468,16 +570,16 @@ export async function runConsolidation(
     logger.error(`Consolidation failed: ${toErrorMessage(error)}`)
     return buildErrorResult(
       actions,
-      { clusters: clustersFound, merged: clustersMerged, rejected: clustersRejected, deprecated, errors },
+      { clusters: clustersFound, merged: clustersMerged, rejected: counters.rejected, clustersRejectedFromCache: counters.rejectedFromCache, deprecated, errors: counters.errors },
       candidateGroups,
       error
     )
   }
 
-  logger.info(`Consolidation complete: ${clustersMerged} merged, ${clustersRejected} rejected, ${deprecated} deprecated, ${errors} errors`)
+  logger.info(`Consolidation complete: ${clustersMerged} merged, ${counters.rejected} rejected, ${deprecated} deprecated, ${counters.errors} errors`)
   return buildResult(
     actions,
-    { clusters: clustersFound, merged: clustersMerged, rejected: clustersRejected, deprecated, errors },
+    { clusters: clustersFound, merged: clustersMerged, rejected: counters.rejected, clustersRejectedFromCache: counters.rejectedFromCache, deprecated, errors: counters.errors },
     candidateGroups
   )
 }
@@ -493,11 +595,11 @@ export async function runCrossTypeConsolidation(
   const candidateGroups: MaintenanceCandidateGroup[] = []
   let clustersFound = 0
   let clustersMerged = 0
-  let clustersRejected = 0
+  const counters: ConsolidationRunCounters = { rejected: 0, rejectedFromCache: 0, errors: 0 }
   let deprecated = 0
-  let errors = 0
 
   try {
+    counters.errors += cleanupVerdictsForRun(dryRun, config, maintenance)
     const clusters = await findCrossTypeClusters(maintenance.crossTypeConsolidationThreshold, config, maintenance)
     clustersFound = clusters.length
     const thresholdPercent = Math.round(maintenance.crossTypeConsolidationThreshold * 100)
@@ -535,23 +637,18 @@ export async function runCrossTypeConsolidation(
         let verificationError: string | undefined
 
         if (maintenance.enableConsolidationLlmVerification) {
-          try {
-            verification = await llmVerifyConsolidation(clusterRecords, config, { crossType: true })
-          } catch (error) {
-            const message = toErrorMessage(error)
-            if (message.includes('No authentication available')) {
-              throw error
-            }
-            verificationError = message
-            logger.warn(`LLM verification failed, using fallback: ${message}`)
-            verification = pickConsolidationFallback(clusterRecords)
-            errors += 1
-          }
-
-          if (verification && !verification.shouldMerge) {
-            clustersRejected += 1
-            checkedAt = Date.now()
-            logger.info(`  -> Rejected: ${verification.reason}`)
+          const outcome = await verifyConsolidationWithCache({
+            mode: 'cross-type',
+            records: clusterRecords,
+            dryRun,
+            config,
+            maintenance,
+            counters
+          })
+          verification = outcome.verification
+          verificationError = outcome.verificationError
+          if (outcome.rejected) {
+            checkedAt = outcome.checkedAt
             continue
           }
         } else {
@@ -631,13 +728,13 @@ export async function runCrossTypeConsolidation(
 
         if (mergedIds.size > 0) clustersMerged += 1
       } catch (error) {
-        errors += 1
+        counters.errors += 1
         logger.warn(`  -> Error processing cluster: ${toErrorMessage(error)}`)
       } finally {
         if (!dryRun && checkedAt) {
           const failed = await markConsolidationChecked(clusterRecords, checkedAt, config)
           if (failed > 0) {
-            errors += failed
+            counters.errors += failed
             logger.warn(`  -> Failed to mark ${failed}/${clusterRecords.length} records as consolidation-checked`)
           }
         }
@@ -647,16 +744,16 @@ export async function runCrossTypeConsolidation(
     logger.error(`Cross-type consolidation failed: ${toErrorMessage(error)}`)
     return buildErrorResult(
       actions,
-      { clusters: clustersFound, merged: clustersMerged, rejected: clustersRejected, deprecated, errors },
+      { clusters: clustersFound, merged: clustersMerged, rejected: counters.rejected, clustersRejectedFromCache: counters.rejectedFromCache, deprecated, errors: counters.errors },
       candidateGroups,
       error
     )
   }
 
-  logger.info(`Cross-type consolidation complete: ${clustersMerged} merged, ${clustersRejected} rejected, ${deprecated} deprecated, ${errors} errors`)
+  logger.info(`Cross-type consolidation complete: ${clustersMerged} merged, ${counters.rejected} rejected, ${deprecated} deprecated, ${counters.errors} errors`)
   return buildResult(
     actions,
-    { clusters: clustersFound, merged: clustersMerged, rejected: clustersRejected, deprecated, errors },
+    { clusters: clustersFound, merged: clustersMerged, rejected: counters.rejected, clustersRejectedFromCache: counters.rejectedFromCache, deprecated, errors: counters.errors },
     candidateGroups
   )
 }

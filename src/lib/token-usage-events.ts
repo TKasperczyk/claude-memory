@@ -1,6 +1,7 @@
 import { JsonLinesStore } from './file-store.js'
 import { listExtractionRuns } from './extraction-log.js'
 import { asInteger, asTrimmedString, isPlainObject } from './parsing.js'
+import { extractTokenUsage, hasTokenUsage } from './token-usage.js'
 import {
   buildTimeBuckets,
   parseDateKeyUtc,
@@ -55,7 +56,7 @@ function normalizeOptionalId(value: unknown): string | undefined {
 }
 
 function asTokenUsageSource(value: unknown): TokenUsageSource | null {
-  if (value === 'extraction' || value === 'haiku-query' || value === 'usefulness-rating') {
+  if (value === 'extraction' || value === 'haiku-query' || value === 'usefulness-rating' || value === 'maintenance') {
     return value
   }
   return null
@@ -226,6 +227,25 @@ export function recordTokenUsageEventsAsync(
   setImmediate(() => {
     recordTokenUsageEvents(events, options)
   })
+}
+
+export function recordTokenUsageFromResponse(
+  source: TokenUsageSource,
+  model: string,
+  response: Parameters<typeof extractTokenUsage>[0],
+  options: TokenUsageStoreOptions = {}
+): void {
+  const usage = extractTokenUsage(response)
+  if (!hasTokenUsage(usage)) return
+  recordTokenUsageEventsAsync([{
+    timestamp: options.now ?? Date.now(),
+    source,
+    model,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    cacheReadInputTokens: usage.cacheReadInputTokens
+  }], options)
 }
 
 export function getTokenUsageActivity(

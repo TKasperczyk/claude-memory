@@ -6,6 +6,7 @@ import path from 'path'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { queryRecords } from './lancedb.js'
 import { clampModelMaxTokens } from './model-capabilities.js'
+import { recordTokenUsageFromResponse } from './token-usage-events.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { looksLikeCommand, normalizeStep, readFileIfExists, truncateWithTail } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord, type ProcedureRecord } from './types.js'
@@ -778,6 +779,9 @@ async function requestPromotionDecisions(
     messages: [{ role: 'user', content: prompt }],
     tools: [PROMOTION_TOOL],
     tool_choice: { type: 'tool', name: PROMOTION_TOOL_NAME }
+  })
+  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+    collection: config.lancedb.table
   })
 
   const toolInput = response.content.find((block): block is ToolUseBlock =>

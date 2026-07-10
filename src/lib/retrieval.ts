@@ -357,6 +357,8 @@ type SearchMemoriesResult = {
 type SearchWithScopeResult = {
   results: HybridSearchResult[]
   nearMisses: NearMissRecord[]
+  rawKeywordMatchIds?: Set<string>
+  rawKeywordQualificationScores?: Map<string, number>
 }
 
 async function searchMemories(
@@ -403,36 +405,58 @@ async function searchMemories(
     ? stripNoiseWords(queryPlan.resolvedQuery)
     : cleanPrompt
   const effectivePrompt = resolvedPrompt || cleanPrompt
-  const keywordQueries = queryPlan
+  const rawKeywordQueries = buildKeywordQueries(signals, cleanPrompt, settings)
+  const plannedKeywordQueries = queryPlan
     ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings, queryPlan.resolvedQuery)
-    : buildKeywordQueries(signals, cleanPrompt, settings)
+      .filter(query => !rawKeywordQueries.some(rawQuery => rawQuery.toLowerCase() === query.toLowerCase()))
+    : []
+  const keywordQueries = [...rawKeywordQueries, ...plannedKeywordQueries]
 
   const semanticQueries = queryPlan
     ? normalizeSemanticQueries(queryPlan.semanticQueries, signals, settings)
     : normalizeSemanticQueries([buildSemanticQuery(cleanPrompt, signals, settings)], signals, settings)
   const semanticQuery = semanticQueries.join('\n')
+  const rawSemanticQuery = buildSemanticQuery(cleanPrompt, signals, settings)
   const project = signals.projectRoot ?? cwd
   const ancestorProjects = project ? findAncestorProjects(project) : []
 
-  // Pre-compute embeddings once to avoid duplicate API calls on retry.
-  let embeddings: number[][] = []
-  if (semanticQueries.length > 0) {
+  // Embed the raw prompt independently from Haiku variants. Haiku embeddings
+  // improve recall/ranking, but only the raw embedding may open the anchor gate.
+  const embeddingQueries = Array.from(new Set([
+    ...(rawSemanticQuery ? [rawSemanticQuery] : []),
+    ...semanticQueries
+  ]))
+  const embeddingResults = await Promise.all(embeddingQueries.map(async query => {
     try {
-      embeddings = await Promise.all(
-        semanticQueries.map(query => embed(query, config, { signal }))
-      )
+      return { query, embedding: await embed(query, config, { signal }) }
     } catch (error) {
-      if (signal?.aborted) {
-        throw error
-      }
-      console.error('[claude-memory] Embedding failed; falling back to keyword-only search:', error)
+      if (signal?.aborted) throw error
+      return { query, error }
+    }
+  }))
+  const embeddingsByQuery = new Map<string, number[]>()
+  const embeddingErrors: unknown[] = []
+  for (const result of embeddingResults) {
+    if ('embedding' in result && result.embedding) {
+      embeddingsByQuery.set(result.query, result.embedding)
+    } else if ('error' in result) {
+      embeddingErrors.push(result.error)
     }
   }
+  if (embeddingErrors.length > 0) {
+    const outcome = embeddingsByQuery.size > 0 ? 'continuing with successful embeddings' : 'falling back to keyword-only search'
+    console.error(`[claude-memory] ${embeddingErrors.length}/${embeddingQueries.length} embedding request(s) failed; ${outcome}:`, embeddingErrors[0])
+  }
+  const rawPromptEmbedding = rawSemanticQuery ? embeddingsByQuery.get(rawSemanticQuery) : undefined
+  const embeddings = semanticQueries
+    .map(query => embeddingsByQuery.get(query))
+    .filter((embedding): embedding is number[] => Boolean(embedding))
+  const suppressionEmbedding = embeddings[0] ?? rawPromptEmbedding
 
   const suppressionResolution = resolveSuppressedIds({
     sessionId: options.sessionId,
     session,
-    embedding: embeddings[0],
+    embedding: suppressionEmbedding,
     settings,
     collection: config.lancedb.table,
     skipWriteback: options.skipSuppressionWriteback === true,
@@ -442,12 +466,14 @@ async function searchMemories(
   suppressionStateVersion = suppressionResolution.stateVersion
 
   let searchQualifiedResult = await searchWithScope(
-    keywordQueries,
+    rawKeywordQueries,
+    plannedKeywordQueries,
     config,
     settings,
     project,
     ancestorProjects,
     embeddings,
+    rawPromptEmbedding,
     signal,
     { diagnostic }
   )
@@ -467,17 +493,32 @@ async function searchMemories(
     }
   }
 
-  // Semantic anchor gate: if the embedding succeeded but no candidate cleared
-  // the anchor threshold, inject nothing. Opus injection reviews repeatedly
-  // flag "all keyword-matched low-similarity" injections as worse than
-  // silence; requiring at least one strong semantic hit filters out those
-  // cases. Skipped when embedding failed so keyword-only fallback still works.
-  if (embeddings.length > 0 && results.length > 0 && settings.semanticAnchorThreshold > 0) {
-    const maxSim = results.reduce((acc, r) => Math.max(acc, r.similarity), 0)
-    if (maxSim < settings.semanticAnchorThreshold) {
+  // Semantic anchor gate: if any embedding succeeded but no candidate cleared
+  // the raw-prompt anchor threshold, retain only raw-derived keyword matches.
+  // Skipped when all embeddings failed so keyword-only fallback still works.
+  if ((rawPromptEmbedding || embeddings.length > 0) && results.length > 0 && settings.semanticAnchorThreshold > 0) {
+    const rawSimilarities = new Map<string, number>()
+    let maxRawSimilarity = 0
+    if (rawPromptEmbedding) {
+      for (const result of results) {
+        const candidateEmbedding = result.record.embedding
+        const similarity = candidateEmbedding && candidateEmbedding.length > 0
+          ? cosineSimilarity(rawPromptEmbedding, candidateEmbedding)
+          : 0
+        rawSimilarities.set(result.record.id, similarity)
+        maxRawSimilarity = Math.max(maxRawSimilarity, similarity)
+      }
+    }
+
+    // If only Haiku embeddings succeeded, fail the semantic gate closed and
+    // retain only raw-keyword matches. Haiku-only keywords must not rescue the
+    // topicalized candidates.
+    if (!rawPromptEmbedding || maxRawSimilarity < settings.semanticAnchorThreshold) {
+      const rawKeywordMatchIds = searchQualifiedResult.rawKeywordMatchIds ?? new Set<string>()
+      const rawKeywordQualificationScores = searchQualifiedResult.rawKeywordQualificationScores ?? new Map<string, number>()
       const survivors = results.filter(result =>
-        result.keywordMatch === true &&
-        result.score >= settings.minScore &&
+        rawKeywordMatchIds.has(result.record.id) &&
+        (rawKeywordQualificationScores.get(result.record.id) ?? 0) >= settings.minScore &&
         (
           result.record.project === project ||
           (result.record.project ? ancestorProjects.includes(result.record.project) : false) ||
@@ -490,12 +531,19 @@ async function searchMemories(
       const outcome = survivorCount > 0
         ? `keeping ${survivorCount} keyword survivor${survivorCount === 1 ? '' : 's'}; ${suppressedCount} candidate${suppressedCount === 1 ? '' : 's'} suppressed`
         : `injecting nothing (${suppressedCount} candidate${suppressedCount === 1 ? '' : 's'} suppressed)`
-      console.error(`[claude-memory] Semantic anchor gate: max similarity ${maxSim.toFixed(3)} < threshold ${settings.semanticAnchorThreshold.toFixed(3)}; ${outcome}`)
+      const anchorDetail = rawPromptEmbedding
+        ? `max raw-prompt similarity ${maxRawSimilarity.toFixed(3)} < threshold ${settings.semanticAnchorThreshold.toFixed(3)}`
+        : 'raw-prompt embedding unavailable while expanded embeddings succeeded'
+      console.error(`[claude-memory] Semantic anchor gate: ${anchorDetail}; ${outcome}`)
       if (diagnostic && searchNearMisses) {
         for (const result of suppressed) {
           searchNearMisses.set(result.record.id, {
             record: result,
-            exclusionReasons: [buildExclusionReason('semantic_anchor_gate', settings.semanticAnchorThreshold, result.similarity)]
+            exclusionReasons: [buildExclusionReason(
+              'semantic_anchor_gate',
+              settings.semanticAnchorThreshold,
+              rawSimilarities.get(result.record.id) ?? 0
+            )]
           })
         }
       }
@@ -558,7 +606,7 @@ async function searchMemories(
       if (mmrResult.selected.length !== results.length) {
         console.error(`[claude-memory] MMR reranked ${results.length} -> ${mmrResult.selected.length} results`)
       }
-      finalResults = mmrResult.ordered
+      finalResults = mmrResult.selected
       mmrExclusions = mmrResult.exclusions
     } else {
       const diverseResults = applyMMR(results, settings.mmrLambda, config.injection.maxRecords)
@@ -571,7 +619,7 @@ async function searchMemories(
 
   return {
     results: finalResults,
-    promptEmbedding: embeddings[0],
+    promptEmbedding: suppressionEmbedding,
     suppressionStateVersion,
     diagnostics: diagnostic
       ? {
@@ -720,22 +768,27 @@ async function runHybridSearch(
 }
 
 async function searchWithScope(
-  keywordQueries: string[],
+  rawKeywordQueries: string[],
+  plannedKeywordQueries: string[],
   config: Config,
   settings: RetrievalSettings,
   project: string | undefined,
   ancestorProjects: string[],
   precomputedEmbeddings: number[][] = [],
+  rawPromptEmbedding?: number[],
   signal?: AbortSignal,
   options: { diagnostic?: boolean } = {}
 ): Promise<SearchWithScopeResult> {
   const maxRecords = config.injection.maxRecords
   const candidateLimit = Math.max(maxRecords * 3, maxRecords)
   const resultsById = new Map<string, HybridSearchResult>()
+  const rawKeywordMatchIds = new Set<string>()
+  const rawKeywordScores = new Map<string, number>()
+  const rawKeywordQualificationScores = new Map<string, number>()
   const diagnostic = options.diagnostic === true
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
-  console.error(`[claude-memory] Search scope: keywords=${keywordQueries.length}, project=${project ?? 'none'}${ancestorProjects.length ? `, ancestors=${ancestorProjects.join(',')}` : ''}`)
+  console.error(`[claude-memory] Search scope: keywords=${rawKeywordQueries.length + plannedKeywordQueries.length}, project=${project ?? 'none'}${ancestorProjects.length ? `, ancestors=${ancestorProjects.join(',')}` : ''}`)
 
   const upsertResult = (item: HybridSearchResult): void => {
     const existing = resultsById.get(item.record.id)
@@ -748,32 +801,46 @@ async function searchWithScope(
     }
   }
 
-  if (keywordQueries.length > 0) {
-    const keywordResults = await runHybridSearch({
-      query: keywordQueries[0],
-      keywordQueries,
+  const keywordSearches = [
+    { queries: rawKeywordQueries, raw: true },
+    { queries: plannedKeywordQueries, raw: false }
+  ].filter(search => search.queries.length > 0)
+  const keywordResultSets = await Promise.all(keywordSearches.map(async search => ({
+    ...search,
+    result: await runHybridSearch({
+      query: search.queries[0],
+      keywordQueries: search.queries,
       limit: candidateLimit,
       project,
       ancestorProjects,
       excludeDeprecated: true,
       vectorWeight: 0,
       keywordWeight: 1,
-      keywordLimit: candidateLimit * keywordQueries.length,
+      keywordLimit: candidateLimit * search.queries.length,
       usageRatioWeight: settings.usageRatioWeight,
       includeEmbeddings: true,
       signal
     }, config, diagnostic)
-    for (const item of keywordResults.results) {
+  })))
+  for (const keywordResults of keywordResultSets) {
+    for (const item of keywordResults.result.results) {
+      if (keywordResults.raw) {
+        rawKeywordScores.set(
+          item.record.id,
+          Math.max(rawKeywordScores.get(item.record.id) ?? Number.NEGATIVE_INFINITY, item.score)
+        )
+      }
       upsertResult(item)
+      if (keywordResults.raw) rawKeywordMatchIds.add(item.record.id)
     }
     if (diagnostic && nearMisses) {
-      mergeNearMisses(nearMisses, keywordResults.nearMisses)
+      mergeNearMisses(nearMisses, keywordResults.result.nearMisses)
     }
   }
 
   if (precomputedEmbeddings.length > 0) {
     // Semantic search runs WITHOUT project filter. Embedding similarity
-    // (minSemanticSimilarity=0.70) already gates relevance, and the
+    // minSemanticSimilarity already gates relevance, and the
     // projectMatchBonus in unified re-scoring ranks same-project memories
     // higher. Hard project filtering here excluded relevant memories from
     // sibling repos (e.g., aura-billing-agent invisible when searching
@@ -816,25 +883,51 @@ async function searchWithScope(
   // where keywordBonus is a small boost (~0.08) instead of the old effective 1.0.
   const allCandidates = Array.from(resultsById.values())
 
-  if (precomputedEmbeddings.length > 0) {
+  if (precomputedEmbeddings.length > 0 || rawPromptEmbedding) {
     for (const item of allCandidates) {
-      // Compute real cosine similarity for keyword-only matches that came in with similarity=0
-      if (item.similarity === 0 && item.keywordMatch) {
-        const candidateEmbedding = item.record.embedding
-        if (candidateEmbedding && candidateEmbedding.length > 0) {
+      const candidateEmbedding = item.record.embedding
+      let rankingScore = item.score
+
+      if (precomputedEmbeddings.length > 0) {
+        // Compute real cosine similarity for keyword-only matches that came in with similarity=0.
+        if (item.similarity === 0 && item.keywordMatch && candidateEmbedding && candidateEmbedding.length > 0) {
           item.similarity = maxCosineSimilarity(precomputedEmbeddings, candidateEmbedding)
         }
+        const usageRatio = computeUsageRatio(item.record)
+        // Scale keyword bonus by similarity: low-similarity keyword matches get proportionally
+        // less boost, preventing broad substring matches from rescuing irrelevant results.
+        rankingScore = computeUnifiedScore({
+          similarity: item.similarity,
+          keywordMatch: item.keywordMatch,
+          usageRatio,
+          projectMatch: Boolean(project && item.record.project === project),
+          settings
+        }).total
       }
-      const usageRatio = computeUsageRatio(item.record)
-      // Scale keyword bonus by similarity: low-similarity keyword matches get proportionally
-      // less boost, preventing broad substring matches from rescuing irrelevant results.
-      item.score = computeUnifiedScore({
-        similarity: item.similarity,
-        keywordMatch: item.keywordMatch,
-        usageRatio,
-        projectMatch: Boolean(project && item.record.project === project),
-        settings
-      }).total
+
+      if (!rawKeywordMatchIds.has(item.record.id)) {
+        item.score = rankingScore
+        continue
+      }
+
+      // Raw-keyword candidates must reach the raw anchor gate even when Haiku
+      // topicalized away from them. Qualify those candidates against the raw
+      // prompt when possible; if the raw embedding is unavailable, retain the
+      // keyword search's original score for the fail-closed survivor path.
+      let qualificationScore = rawKeywordScores.get(item.record.id) ?? item.score
+      if (rawPromptEmbedding && candidateEmbedding && candidateEmbedding.length > 0) {
+        const rawSimilarity = cosineSimilarity(rawPromptEmbedding, candidateEmbedding)
+        qualificationScore = computeUnifiedScore({
+          similarity: rawSimilarity,
+          keywordMatch: true,
+          usageRatio: computeUsageRatio(item.record),
+          projectMatch: Boolean(project && item.record.project === project),
+          settings
+        }).total
+        item.similarity = Math.max(item.similarity, rawSimilarity)
+      }
+      rawKeywordQualificationScores.set(item.record.id, qualificationScore)
+      item.score = Math.max(rankingScore, qualificationScore)
     }
   }
   // When no embeddings are available (embedding generation failed),
@@ -861,7 +954,12 @@ async function searchWithScope(
       nearMisses.delete(result.record.id)
     }
   }
-  return { results: rankedResults, nearMisses: Array.from(nearMisses?.values() ?? []) }
+  return {
+    results: rankedResults,
+    nearMisses: Array.from(nearMisses?.values() ?? []),
+    rawKeywordMatchIds,
+    rawKeywordQualificationScores
+  }
 }
 
 type RelationExpansionCandidate = {
@@ -1134,9 +1232,12 @@ function applyMMR(
   const withEmbeddings = candidates.filter(hasEmbedding)
   const withoutEmbeddings = candidates.filter(candidate => !hasEmbedding(candidate))
 
-  // If no embeddings available, return original order
+  // If no embeddings are available, preserve score ordering and enforce the
+  // same global limit as the embedding-backed MMR branch.
   if (withEmbeddings.length === 0) {
-    return diagnostic ? { selected: candidates, ordered: candidates, exclusions: [] } : candidates
+    const ordered = sortByScore(candidates)
+    const selected = ordered.slice(0, limit)
+    return diagnostic ? { selected, ordered, exclusions: [] } : selected
   }
 
   const selection = selectWithMMR(withEmbeddings, lambda, limit)

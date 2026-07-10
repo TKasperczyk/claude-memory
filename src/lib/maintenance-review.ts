@@ -50,13 +50,15 @@ const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
     'consolidationThreshold',
     'consolidationSearchLimit',
     'consolidationMaxClusterSize',
-    'consolidationRecheckDays'
+    'consolidationRecheckDays',
+    'consolidationNoMergeBackoffDays'
   ],
   'cross-type-consolidation': [
     'crossTypeConsolidationThreshold',
     'consolidationSearchLimit',
     'consolidationMaxClusterSize',
-    'consolidationRecheckDays'
+    'consolidationRecheckDays',
+    'consolidationNoMergeBackoffDays'
   ],
   'conflict-resolution': ['conflictSimilarityThreshold', 'conflictCheckBatchSize'],
   'currentness-check': ['currentnessRecheckDays'],

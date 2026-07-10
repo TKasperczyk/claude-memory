@@ -6,6 +6,7 @@ import { runCurrentnessCheck } from '../src/lib/maintenance/runners/currentness-
 import { batchUpdateRecords, vectorSearchSimilar } from '../src/lib/lancedb.js'
 import { fetchRecords } from '../src/lib/maintenance/scans.js'
 import { markDeprecated } from '../src/lib/maintenance/operations.js'
+import { recordTokenUsageFromResponse } from '../src/lib/token-usage-events.js'
 import { createMockDiscoveryRecord } from './helpers.js'
 
 const mockState = vi.hoisted(() => ({
@@ -47,6 +48,10 @@ vi.mock('../src/lib/maintenance/scans.js', () => ({
 
 vi.mock('../src/lib/maintenance/operations.js', () => ({
   markDeprecated: vi.fn(async () => true)
+}))
+
+vi.mock('../src/lib/token-usage-events.js', () => ({
+  recordTokenUsageFromResponse: vi.fn()
 }))
 
 vi.mock('../src/lib/maintenance/prompts.js', async () => {
@@ -101,6 +106,7 @@ describe('currentness runner', () => {
     vi.mocked(vectorSearchSimilar).mockClear()
     vi.mocked(batchUpdateRecords).mockClear()
     vi.mocked(markDeprecated).mockClear()
+    vi.mocked(recordTokenUsageFromResponse).mockClear()
   })
 
   it('uses embedding clusters instead of English currentness keywords', async () => {
@@ -163,6 +169,12 @@ describe('currentness runner', () => {
       [oldTools, currentTools],
       { lastCurrentnessCheck: expect.any(Number) },
       DEFAULT_CONFIG
+    )
+    expect(recordTokenUsageFromResponse).toHaveBeenCalledWith(
+      'maintenance',
+      DEFAULT_CONFIG.extraction.model,
+      expect.any(Object),
+      { collection: DEFAULT_CONFIG.lancedb.table }
     )
   })
 

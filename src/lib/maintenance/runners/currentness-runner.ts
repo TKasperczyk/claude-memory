@@ -3,6 +3,7 @@ import { batchUpdateRecords, buildFilter, vectorSearchSimilar } from '../../lanc
 import { createLogger } from '../../logger.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../../parsing.js'
 import { clampModelMaxTokens } from '../../model-capabilities.js'
+import { recordTokenUsageFromResponse } from '../../token-usage-events.js'
 import { buildCandidateRecord, buildRecordSnippet, escapeFilterValue } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord } from '../../types.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
@@ -328,6 +329,9 @@ async function checkCurrentnessCluster(
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CURRENTNESS_TOOL],
     tool_choice: { type: 'tool', name: CURRENTNESS_TOOL_NAME }
+  })
+  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+    collection: config.lancedb.table
   })
 
   const toolInput = response.content.find((block): block is ToolUseBlock =>

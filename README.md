@@ -142,8 +142,8 @@ Tuning knobs for retrieval, maintenance, and models. Editable through the dashbo
 
 | Setting | Default | Description |
 |---|---|---|
-| `minSemanticSimilarity` | `0.70` | Minimum cosine similarity for vector results |
-| `semanticAnchorThreshold` | `0.70` | At least one result must clear this before any memories are injected (gates noisy injections) |
+| `minSemanticSimilarity` | `0.65` | Minimum cosine similarity for vector results |
+| `semanticAnchorThreshold` | `0.65` | At least one raw-prompt result must clear this before planned semantic matches are injected |
 | `minScore` | `0.45` | Minimum hybrid score to include a result |
 | `minExpandedScore` | `0.45` | Minimum score for memories added through relation expansion |
 | `maxRecords` | `8` | Max memories injected per prompt |
@@ -163,6 +163,7 @@ Tuning knobs for retrieval, maintenance, and models. Editable through the dashbo
 | `extractionDedupThreshold` | `0.85` | Similarity threshold for update-vs-insert during extraction |
 | `extractionContextOverlapTurns` | `3` | Overlap when re-extracting a resumed session |
 | `consolidationThreshold` | `0.80` | Similarity threshold for merging records |
+| `consolidationNoMergeBackoffDays` | `90` | Recheck delay for unchanged clusters rejected by the consolidation verifier |
 | `autoMaintenanceIntervalHours` | `24` | Run maintenance automatically after extraction if it's been this long (0 disables) |
 | `extractionModel` | `claude-sonnet-4-6` | Model for knowledge extraction |
 | `chatModel` | `claude-opus-4-8` | Model used by the dashboard chat |
@@ -281,7 +282,7 @@ Hybrid scoring combines:
 2. **Keyword** -- DataFusion `LIKE` substring matching on `exact_text`.
 3. **MMR reranking** -- maximal marginal relevance for diversity.
 4. **Usage boost** -- previously-helpful records score higher; recently-deprecated ones score lower.
-5. **Semantic anchor gate** -- nothing is injected unless at least one result clears `semanticAnchorThreshold`, which prevents low-confidence keyword-only injections.
+5. **Semantic anchor gate** -- planned semantic matches require a candidate that clears `semanticAnchorThreshold` against the raw prompt; raw keyword matches may survive independently.
 
 ### Maintenance
 

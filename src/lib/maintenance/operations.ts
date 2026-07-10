@@ -18,6 +18,7 @@ import { resolveMaintenanceSettings, type MaintenanceSettings } from '../setting
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../shared.js'
 import { clampModelMaxTokens } from '../model-capabilities.js'
+import { recordTokenUsageFromResponse } from '../token-usage-events.js'
 import { upsertRelation } from '../relations.js'
 import {
   GENERALIZATION_MAX_TOKENS,
@@ -121,6 +122,9 @@ async function checkGeneralization(
     ],
     messages: [{ role: 'user', content: `Record:\n${payload}` }]
   })
+  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+    collection: config.lancedb.table
+  })
 
   const rawText = extractResponseText(response.content)
   const parsed = parseGeneralizationResponse(rawText)
@@ -184,6 +188,9 @@ export async function checkGlobalPromotion(
       { type: 'text', text: GLOBAL_PROMOTION_PROMPT }
     ],
     messages: [{ role: 'user', content: `Record:\n${payload}` }]
+  })
+  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+    collection: config.lancedb.table
   })
 
   const rawText = extractResponseText(response.content)
@@ -370,6 +377,9 @@ async function synthesizeWarning(
     messages: [{ role: 'user', content: `Failure records:\n${payload}` }],
     tools: [WARNING_SYNTHESIS_TOOL],
     tool_choice: { type: 'tool', name: WARNING_SYNTHESIS_TOOL_NAME }
+  })
+  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+    collection: config.lancedb.table
   })
 
   const toolInput = response.content.find((block): block is ToolUseBlock =>
