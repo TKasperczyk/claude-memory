@@ -433,11 +433,11 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'prePromptTimeoutMs',
     label: 'Pre-prompt timeout (ms)',
-    description: 'Timeout for the entire pre-prompt hook. Must exceed haikuQueryTimeoutMs with enough headroom for embedding, LanceDB search, and MMR ranking (typically ~1s combined).',
+    description: 'Timeout for the entire pre-prompt hook. Must exceed haikuQueryTimeoutMs with enough headroom for embedding, LanceDB search, and MMR ranking (measured ~3-4s combined with per-needle keyword scans). The Claude Code hook ceiling is 15s.',
     step: 100,
     min: 1,
     kind: 'int',
-    default: 8000,
+    default: 10000,
     group: RETRIEVAL_GROUPS.timeouts
   },
   {
