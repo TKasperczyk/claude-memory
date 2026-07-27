@@ -146,6 +146,13 @@ export interface Config {
     model: string
     apiKey?: string
     insecure?: boolean
+    /**
+     * Optional provider-routing hint passed through verbatim in the request body.
+     * Ignored by servers that do not understand it (LM Studio, vLLM); used by
+     * OpenRouter to pin or exclude upstream providers, e.g.
+     * { order: ['SiliconFlow', 'Nebius'], allow_fallbacks: false }
+     */
+    provider?: Record<string, unknown>
   }
   extraction: {
     model: string

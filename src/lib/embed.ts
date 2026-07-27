@@ -49,7 +49,8 @@ async function requestEmbeddings(
       headers,
       body: JSON.stringify({
         input,
-        model: cfg.embeddings.model
+        model: cfg.embeddings.model,
+        ...(cfg.embeddings.provider ? { provider: cfg.embeddings.provider } : {})
       }),
       signal: timeoutSignal
     })
