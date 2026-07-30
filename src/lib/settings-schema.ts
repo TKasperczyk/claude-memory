@@ -141,6 +141,12 @@ const MAINTENANCE_GROUPS_META = {
     label: 'Similarity thresholds',
     description: 'Tune matching sensitivity across the system.',
     section: 'maintenance'
+  },
+  selfUpdate: {
+    id: 'self-update',
+    label: 'Self-update',
+    description: 'Keep the compiled hooks current and optionally fast-forward this checkout.',
+    section: 'maintenance'
   }
 } as const satisfies Record<string, SettingsGroupMeta>
 
@@ -505,6 +511,25 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.extraction
   },
   {
+    key: 'autoUpdateIntervalHours',
+    label: 'Auto-update interval (hours)',
+    description: 'Hours between git fetch attempts. Set to 0 to disable automatic pulls.',
+    step: 1,
+    min: 0,
+    max: 720,
+    kind: 'int',
+    default: 0,
+    group: MAINTENANCE_GROUPS_META.selfUpdate
+  },
+  {
+    key: 'autoRebuildEnabled',
+    label: 'Auto-rebuild compiled hooks',
+    description: 'Rebuild dist when source or dependency inputs differ from the last successful build. Pulling is refused while this is disabled.',
+    kind: 'bool',
+    default: true,
+    group: MAINTENANCE_GROUPS_META.selfUpdate
+  },
+  {
     key: 'lowUsageMinRetrievals',
     label: 'Min retrievals for ratio',
     description: 'Min retrievals before evaluating usage ratio.',
@@ -818,6 +843,7 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
 
 const MAINTENANCE_GROUP_ORDER = [
   MAINTENANCE_GROUPS_META.extraction,
+  MAINTENANCE_GROUPS_META.selfUpdate,
   MAINTENANCE_GROUPS_META.staleAge,
   MAINTENANCE_GROUPS_META.lowUsage,
   MAINTENANCE_GROUPS_META.consolidation,

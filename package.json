@@ -7,6 +7,7 @@
     "claude-memory-mcp": "./dist/mcp-server.js"
   },
   "scripts": {
+    "prebuild": "tsx -e \"import fs from 'node:fs'; import { getBuildStampPath } from './src/lib/runtime-artifacts.ts'; fs.rmSync(getBuildStampPath(process.cwd()), { force: true })\"",
     "build": "tsc && pnpm run -C dashboard build",
     "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/",
@@ -16,6 +17,7 @@
     "dashboard:prod": "NODE_ENV=production pnpm run -C dashboard server",
     "wizard": "tsx src/setup.ts",
     "maintenance": "tsx src/maintenance.ts",
+    "self-update": "tsx src/self-update.ts",
     "audit": "tsx scripts/gemini-audit.ts",
     "audit:auto": "tsx scripts/gemini-audit.ts --auto",
     "apply-audit": "tsx scripts/apply-audit.ts",

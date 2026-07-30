@@ -15,30 +15,30 @@ const logger = createLogger('installation')
 
 export function createInstallationRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { claudeSettingsPath, claudeConfigPath, configRoot } = context
+  const { claudeSettingsPath, claudeConfigPath, installationRoot } = context
 
   router.get('/api/installation/status', (_req, res) => {
-    handleInstallationStatus(res, claudeSettingsPath, configRoot, claudeConfigPath, 'Failed to load installation status')
+    handleInstallationStatus(res, claudeSettingsPath, installationRoot, claudeConfigPath, 'Failed to load installation status')
   })
 
   router.post('/api/installation/install', (_req, res) => {
-    handleInstallationMutation(res, claudeSettingsPath, configRoot, claudeConfigPath, 'install', 'Failed to install hooks and commands')
+    handleInstallationMutation(res, claudeSettingsPath, installationRoot, claudeConfigPath, 'install', 'Failed to install hooks and commands')
   })
 
   router.post('/api/installation/uninstall', (_req, res) => {
-    handleInstallationMutation(res, claudeSettingsPath, configRoot, claudeConfigPath, 'uninstall', 'Failed to uninstall hooks and commands')
+    handleInstallationMutation(res, claudeSettingsPath, installationRoot, claudeConfigPath, 'uninstall', 'Failed to uninstall hooks and commands')
   })
 
   router.get('/api/hooks/status', (_req, res) => {
-    handleHookStatus(res, claudeSettingsPath, configRoot, 'Failed to load hook status')
+    handleHookStatus(res, claudeSettingsPath, installationRoot, 'Failed to load hook status')
   })
 
   router.post('/api/hooks/install', (_req, res) => {
-    handleHookMutation(res, claudeSettingsPath, configRoot, 'install', 'Failed to install hooks')
+    handleHookMutation(res, claudeSettingsPath, installationRoot, 'install', 'Failed to install hooks')
   })
 
   router.post('/api/hooks/uninstall', (_req, res) => {
-    handleHookMutation(res, claudeSettingsPath, configRoot, 'uninstall', 'Failed to uninstall hooks')
+    handleHookMutation(res, claudeSettingsPath, installationRoot, 'uninstall', 'Failed to uninstall hooks')
   })
 
   return router
@@ -47,12 +47,12 @@ export function createInstallationRouter(context: ServerContext): express.Router
 function handleInstallationStatus(
   res: Response,
   claudeSettingsPath: string,
-  configRoot: string,
+  installationRoot: string,
   claudeConfigPath: string,
   fallbackMessage: string
 ): void {
   try {
-    const status = getInstallationStatus(claudeSettingsPath, configRoot, claudeConfigPath)
+    const status = getInstallationStatus(claudeSettingsPath, installationRoot, claudeConfigPath)
     res.json({ hooks: status.hooks, commands: status.commands, mcp: status.mcp })
   } catch (error) {
     handleClaudeSettingsError(res, error, fallbackMessage)
@@ -62,11 +62,11 @@ function handleInstallationStatus(
 function handleHookStatus(
   res: Response,
   claudeSettingsPath: string,
-  configRoot: string,
+  installationRoot: string,
   fallbackMessage: string
 ): void {
   try {
-    const hooks = getHookStatus(claudeSettingsPath, configRoot)
+    const hooks = getHookStatus(claudeSettingsPath, installationRoot)
     res.json({ hooks })
   } catch (error) {
     handleClaudeSettingsError(res, error, fallbackMessage)
@@ -76,15 +76,15 @@ function handleHookStatus(
 function handleInstallationMutation(
   res: Response,
   claudeSettingsPath: string,
-  configRoot: string,
+  installationRoot: string,
   claudeConfigPath: string,
   action: 'install' | 'uninstall',
   fallbackMessage: string
 ): void {
   try {
     const status = action === 'install'
-      ? installAll(claudeSettingsPath, configRoot, claudeConfigPath)
-      : uninstallAll(claudeSettingsPath, configRoot, claudeConfigPath)
+      ? installAll(claudeSettingsPath, installationRoot, claudeConfigPath)
+      : uninstallAll(claudeSettingsPath, installationRoot, claudeConfigPath)
     res.json({ success: true, hooks: status.hooks, commands: status.commands, mcp: status.mcp })
   } catch (error) {
     handleClaudeSettingsError(res, error, fallbackMessage)
@@ -94,14 +94,14 @@ function handleInstallationMutation(
 function handleHookMutation(
   res: Response,
   claudeSettingsPath: string,
-  configRoot: string,
+  installationRoot: string,
   action: 'install' | 'uninstall',
   fallbackMessage: string
 ): void {
   try {
     const hooks = action === 'install'
-      ? installHooks(claudeSettingsPath, configRoot)
-      : uninstallHooks(claudeSettingsPath, configRoot)
+      ? installHooks(claudeSettingsPath, installationRoot)
+      : uninstallHooks(claudeSettingsPath, installationRoot)
     res.json({ success: true, hooks })
   } catch (error) {
     handleClaudeSettingsError(res, error, fallbackMessage)

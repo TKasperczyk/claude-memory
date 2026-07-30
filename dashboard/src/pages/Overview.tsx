@@ -20,6 +20,10 @@ import { RetrievalActivityChart, MemoryGrowthChart, TokenUsageChart } from '@/co
 import { useExtractionWarnings, useInstallationStatus, useRetrievalActivity, useStats, useStatsHistory, useTokenUsage } from '@/hooks/queries'
 import { installAll, resetCollection, uninstallAll, type HookEvent, type RecordType } from '@/lib/api'
 import { TYPE_COLORS } from '@/lib/memory-ui'
+import {
+  HOOK_SCRIPTS,
+  MCP_SERVER_SCRIPT
+} from '../../../src/lib/runtime-artifact-manifest.ts'
 
 const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   command: { label: 'Commands', color: TYPE_COLORS.command },
@@ -29,11 +33,9 @@ const TYPE_CONFIG: Record<RecordType, { label: string; color: string }> = {
   warning: { label: 'Warnings', color: TYPE_COLORS.warning },
 }
 
-const HOOK_ITEMS: { key: HookEvent; label: string; script: string }[] = [
-  { key: 'UserPromptSubmit', label: 'UserPromptSubmit', script: 'pre-prompt.js' },
-  { key: 'SessionEnd', label: 'SessionEnd', script: 'post-session.js' },
-  { key: 'PreCompact', label: 'PreCompact', script: 'post-session.js' },
-]
+const HOOK_ITEMS: { key: HookEvent; label: string; script: string }[] = (
+  Object.entries(HOOK_SCRIPTS) as [HookEvent, string][]
+).map(([key, script]) => ({ key, label: key, script }))
 
 function formatNumber(value: number, decimals = 0): string {
   return new Intl.NumberFormat('en', {
@@ -608,7 +610,7 @@ export default function Overview() {
                         <X className="w-4 h-4 text-destructive" />
                       )}
                       <span className="font-medium">search_memories</span>
-                      <span className="text-xs text-muted-foreground">(mcp-server.js)</span>
+                      <span className="text-xs text-muted-foreground">({MCP_SERVER_SCRIPT})</span>
                     </div>
                   </div>
                 </div>

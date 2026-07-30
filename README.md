@@ -165,6 +165,8 @@ Tuning knobs for retrieval, maintenance, and models. Editable through the dashbo
 | `consolidationThreshold` | `0.80` | Similarity threshold for merging records |
 | `consolidationNoMergeBackoffDays` | `90` | Recheck delay for unchanged clusters rejected by the consolidation verifier |
 | `autoMaintenanceIntervalHours` | `24` | Run maintenance automatically after extraction if it's been this long (0 disables) |
+| `autoUpdateIntervalHours` | `0` | Hours between automatic git fetch attempts; `0` disables pulling |
+| `autoRebuildEnabled` | `true` | Rebuild `dist/` when source or dependency inputs differ from the last successful build; pulling is refused when disabled |
 | `extractionModel` | `claude-sonnet-4-6` | Model for knowledge extraction |
 | `chatModel` | `claude-opus-4-8` | Model used by the dashboard chat |
 | `reviewModel` | `claude-opus-4-8` | Model used by injection / extraction reviews |
@@ -185,6 +187,13 @@ pnpm test:ui                  # vitest UI
 pnpm wizard                   # interactive setup (recommended)
 pnpm maintenance              # run the safe auto-maintenance pipeline
 pnpm maintenance --dry-run    # preview without writing
+pnpm run self-update              # reconcile registrations, optionally pull, and rebuild stale dist
+pnpm run self-update --dry-run    # inspect without fetching/building (crash recovery still runs)
+pnpm run self-update --pull       # fetch now, still honoring all git safety guards
+pnpm run self-update --force      # force only the dist rebuild
+pnpm run self-update --rollback   # restore dist.prev and hold rebuilds until source changes
+pnpm run self-update --clear-hold # explicitly clear a rollback hold
+pnpm run self-update --dashboard  # also run the existing dashboard build script
 
 # Dashboard
 pnpm dashboard                # API (3001) + Vite (5000)
@@ -197,6 +206,24 @@ pnpm audit                    # full-corpus Gemini audit (interactive)
 pnpm audit:auto               # Gemini audit, no prompts
 pnpm apply-audit              # apply audit findings
 ```
+
+The detached post-session worker checks `dist/` freshness on every run and rebuilds it
+when enabled. Fetching is separately interval-gated and opt-in. A pull requires a clean
+tree, no local commits ahead of the configured upstream, and a fast-forward; neither
+`--pull` nor `--force` bypasses those guards. `--pull` only bypasses the fetch interval,
+while `--force` requests a rebuild regardless of freshness or the auto-rebuild setting.
+`--rebuild-only` disables pulling for that invocation and cannot be combined with
+`--pull`. Rollback and clear-hold are exclusive operations. `--force` does not bypass
+a rollback hold;
+`--clear-hold` is the explicit override. An unchanged rollback hold blocks pulling
+as well as rebuilding, so every successful pull always rebuilds. A pending build is
+retried after the hold is cleared or source inputs change. Dashboard compilation is
+never automatic.
+
+Dependency installation happens in the live checkout before compilation. If
+installation succeeds but the later build or directory swap fails, the previous
+`dist/` remains active against the newly installed dependency tree until the next
+self-update retry succeeds. This is a known limitation of updating in place.
 
 ## Dashboard
 
@@ -247,7 +274,7 @@ It's wired into Claude Code automatically by the wizard. The tool is intentional
 
 - **`pre-prompt.ts`** (`UserPromptSubmit`) -- hybrid retrieval + MMR diversity, optional Haiku query planning, semantic-anchor gate, injects context on stdout. Tracks injected IDs per session for downstream usefulness rating.
 - **`post-session.ts`** (`SessionEnd`, `PreCompact`) -- thin launcher; spawns a detached worker so the hook returns instantly.
-- **`post-session-worker.ts`** -- extracts knowledge from the transcript via Claude, deduplicates against existing records (update-vs-insert via `extractionDedupThreshold`), rates the previously-injected memories' usefulness, and triggers auto-maintenance if it's been more than `autoMaintenanceIntervalHours` since the last run.
+- **`post-session-worker.ts`** -- extracts knowledge from the transcript via Claude, deduplicates against existing records (update-vs-insert via `extractionDedupThreshold`), rates the previously-injected memories' usefulness, triggers periodic maintenance, and finally checks registrations, source freshness, and the optional pull interval.
 
 ### Core library (`src/lib/`)
 
@@ -261,6 +288,7 @@ It's wired into Claude Code automatically by the wizard. The tool is intentional
 - **Settings** (`settings.ts`, `settings-schema.ts`) -- custom validation (no Zod). Three sections: retrieval, maintenance, models.
 - **Config** (`config.ts`) -- merge order: defaults (env vars lowest) -> global -> project -> settings overrides.
 - **Installer** (`installer.ts`) -- the wizard's hook / command / MCP installer. Used by `pnpm wizard` and the dashboard.
+- **Self-update** (`self-update.ts`) -- reconciles missing hooks and unmodified slash commands, safely fast-forwards an eligible checkout, and stages/switches compiled hook builds.
 
 ### Record types
 
@@ -321,5 +349,5 @@ Weak usage-based deprecators are preview-only in the dashboard and are excluded 
 ## Data storage
 
 - **LanceDB** -- vectors + record metadata. Default location: `~/.claude-memory/lancedb`, table `cc_memories`.
-- **`~/.claude-memory/`** -- `config.json`, `settings.json`, sessions, extraction logs, token-usage events, stats snapshots, installer state.
+- **`~/.claude-memory/`** -- `config.json`, `settings.json`, `self-update-state.json`, sessions, extraction logs, token-usage events, stats snapshots, installer state.
 - **`~/.claude-memory/debug.log`** and **`~/.claude-memory/extraction-audit.log`** -- worker diagnostics; trimmed on worker startup when they exceed the built-in size cap.

@@ -323,6 +323,8 @@ export interface MaintenanceSettings {
   extractionLogRetentionDays: number
   maintenanceRunRetentionDays: number
   autoMaintenanceIntervalHours: number
+  autoUpdateIntervalHours: number
+  autoRebuildEnabled: boolean
   extractionContextOverlapTurns: number
 }
 

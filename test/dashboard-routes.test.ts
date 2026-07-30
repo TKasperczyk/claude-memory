@@ -265,17 +265,21 @@ const makeAsyncIterable = <T,>(items: T[]): AsyncIterable<T> => ({
 
 const buildApp = (overrides: Partial<{
   configRoot: string
+  installationRoot: string
   config: typeof DEFAULT_CONFIG
   memoryTypes: string[]
   suggestionAllowedRoots: string[]
   claudeSettingsPath: string
+  claudeConfigPath: string
 }> = {}) => {
   const context = {
     configRoot: overrides.configRoot ?? '/tmp',
+    installationRoot: overrides.installationRoot ?? '/claude-memory',
     config: overrides.config ?? DEFAULT_CONFIG,
     memoryTypes: overrides.memoryTypes ?? ['command', 'error'],
     suggestionAllowedRoots: overrides.suggestionAllowedRoots ?? ['/tmp'],
-    claudeSettingsPath: overrides.claudeSettingsPath ?? '/tmp/settings.json'
+    claudeSettingsPath: overrides.claudeSettingsPath ?? '/tmp/settings.json',
+    claudeConfigPath: overrides.claudeConfigPath ?? '/tmp/.claude.json'
   }
 
   const app = express()
@@ -468,6 +472,28 @@ describe('settings routes', () => {
 })
 
 describe('installation routes', () => {
+  it('uses the canonical installation root instead of the project config root', async () => {
+    const { app } = buildApp({
+      configRoot: '/memory-project',
+      installationRoot: '/canonical/claude-memory'
+    })
+
+    const status = await request(app).get('/api/installation/status')
+    const install = await request(app).post('/api/hooks/install')
+
+    expect(status.status).toBe(200)
+    expect(install.status).toBe(200)
+    expect(mockedGetInstallationStatus).toHaveBeenCalledWith(
+      '/tmp/settings.json',
+      '/canonical/claude-memory',
+      '/tmp/.claude.json'
+    )
+    expect(mockedInstallHooks).toHaveBeenCalledWith(
+      '/tmp/settings.json',
+      '/canonical/claude-memory'
+    )
+  })
+
   it('returns permission errors with 403', async () => {
     const error = new Error('nope') as NodeJS.ErrnoException
     error.code = 'EACCES'

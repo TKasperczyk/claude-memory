@@ -30,6 +30,7 @@ import { addTokenUsage, emptyTokenUsage, hasTokenUsage } from '../lib/token-usag
 import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE, LOCKS_DIR } from '../lib/paths.js'
 import { formatExtractionFailureSummary, isTrueExtractionFailure } from '../lib/extraction-status.js'
 import { formatStageTimings } from '../lib/extraction-timings.js'
+import { runSelfUpdate } from '../lib/self-update.js'
 
 function auditErrorSuffix(failure?: ExtractionFailure): string {
   if (!failure) return ''
@@ -266,11 +267,10 @@ async function maybeCaptureStatsSnapshot(config: Config): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
+export async function runPostSessionWorker(inputFile: string | undefined): Promise<void> {
   trimLogsOnce()
   debugLog(`START pid=${process.pid}`)
   try {
-    const inputFile = process.argv[2]
     if (!inputFile) {
       debugLog('No input file argument provided')
       console.error('[claude-memory] No input file argument.')
@@ -495,6 +495,17 @@ async function main(): Promise<void> {
       await closeLanceDB()
     } catch (error) {
       console.error('[claude-memory] Failed to close LanceDB connection:', error)
+    }
+    try {
+      const update = runSelfUpdate({ trigger: 'auto' })
+      debugLog(
+        `Self-update complete: status=${update.status} pull=${update.pull.status} build=${update.build.status}`
+      )
+      if (update.status === 'failed') {
+        console.error('[claude-memory] Self-update failed:', update.error ?? 'unknown error')
+      }
+    } catch (error) {
+      console.error('[claude-memory] Self-update failed:', error)
     }
   }
 }
@@ -854,7 +865,7 @@ function trimToMax(value: string, maxLength: number): string {
 const entryPath = process.argv[1] ? resolve(process.argv[1]) : ''
 const isMainModule = fileURLToPath(import.meta.url) === entryPath
 if (isMainModule) {
-  main()
+  runPostSessionWorker(process.argv[2])
     .then(() => {
       process.exitCode = 0
     })

@@ -30,6 +30,7 @@ import {
 } from '../lib/types.js'
 import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE } from '../lib/paths.js'
 import type { ExtractionTimingStage } from '../lib/extraction-timings.js'
+import { POST_SESSION_WORKER_SCRIPT } from '../lib/runtime-artifacts.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -603,7 +604,7 @@ function launcherMain(): void {
   // Determine worker path
   const workerPath = __filename.endsWith('.ts')
     ? join(__dirname, 'post-session-worker.ts')
-    : join(__dirname, 'post-session-worker.js')
+    : join(__dirname, POST_SESSION_WORKER_SCRIPT)
   const usesTsWorker = workerPath.endsWith('.ts')
 
   debugLog(`Spawning worker: ${workerPath}`)

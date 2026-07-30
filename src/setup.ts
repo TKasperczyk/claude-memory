@@ -4,14 +4,22 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import readline from 'readline'
-import { fileURLToPath } from 'url'
 import { readJsonFileSafe, writeJsonFile } from './lib/json.js'
 import { loadSettings, saveSettings } from './lib/settings.js'
 import { MODEL_OPTIONS } from './lib/settings-schema.js'
 import { installAll } from './lib/installer.js'
+import {
+  getDistArtifactRelativePath,
+  getMissingDistArtifacts
+} from './lib/runtime-artifacts.js'
 import { loadCredentials } from './lib/anthropic.js'
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config } from './lib/types.js'
-import { CLAUDE_MEMORY_ROOT } from './lib/paths.js'
+import {
+  CLAUDE_CONFIG_PATH,
+  CLAUDE_MEMORY_ROOT,
+  CLAUDE_SETTINGS_PATH,
+  PROJECT_ROOT
+} from './lib/paths.js'
 
 // ---------------------------------------------------------------------------
 // ANSI helpers (zero dependencies)
@@ -86,11 +94,8 @@ async function choose(prompt: string, options: { value: string; label: string }[
 // Paths
 // ---------------------------------------------------------------------------
 
-const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const MEMORY_DIR = CLAUDE_MEMORY_ROOT
 const CONFIG_PATH = path.join(MEMORY_DIR, 'config.json')
-const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
-const CLAUDE_CONFIG_PATH = path.join(os.homedir(), '.claude.json')
 
 // ---------------------------------------------------------------------------
 // Wizard state
@@ -379,12 +384,8 @@ function stepInstall(): void {
   console.log(`  ${bold('Installing hooks & MCP server...')}`)
 
   // Check if all required dist artifacts exist
-  const requiredArtifacts = [
-    'dist/hooks/pre-prompt.js',
-    'dist/hooks/post-session.js',
-    'dist/mcp-server.js'
-  ]
-  const missing = requiredArtifacts.filter(f => !fs.existsSync(path.join(PROJECT_ROOT, f)))
+  const missing = getMissingDistArtifacts(PROJECT_ROOT)
+    .map(getDistArtifactRelativePath)
   if (missing.length > 0) {
     console.log(`  ${yellow('WARN')} -- missing build artifacts: ${missing.join(', ')}`)
     console.log(`  ${dim('Run')} ${cyan('pnpm build')} ${dim('after setup for hooks to work.')}`)

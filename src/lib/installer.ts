@@ -3,6 +3,14 @@ import path from 'path'
 import { SKIP_MARKER, SKIP_EXTRACTION_MARKER, REMEMBER_MARKER, getCommandFilePath } from './claude-commands.js'
 import { readFileIfExists } from './shared.js'
 import { isPlainObject } from './parsing.js'
+import { canonicalizePath } from './paths.js'
+import {
+  getDistArtifactRelativePath,
+  getHookArtifactRelativePath,
+  getHookScriptPath,
+  getMcpServerPath,
+  HOOK_SCRIPTS
+} from './runtime-artifacts.js'
 import type { CommandStatus, HookEvent, HookStatus, InstallationStatus, McpStatus } from '../../shared/types.js'
 
 export type { CommandStatus, HookEvent, HookStatus, InstallationStatus, McpStatus } from '../../shared/types.js'
@@ -32,12 +40,13 @@ export class ClaudeSettingsError extends Error {
 
 const CLAUDE_HOOK_TIMEOUT_SECONDS = 15
 const MCP_SERVER_NAME = 'claude-memory'
-
-const HOOK_SCRIPTS: Record<HookEvent, string> = {
-  UserPromptSubmit: 'pre-prompt.js',
-  SessionEnd: 'post-session.js',
-  PreCompact: 'post-session.js'
-}
+const CLAUDE_MEMORY_HOOK_PATH_SUFFIXES = [
+  ...new Set(
+    Object.values(HOOK_SCRIPTS).map(script =>
+      `/${getDistArtifactRelativePath(getHookArtifactRelativePath(script))}`
+    )
+  )
+]
 
 const MEMORY_COMMAND_CONTENT = `---
 description: Show injected prior knowledge from this session
@@ -99,6 +108,21 @@ export function getHookStatus(claudeSettingsPath: string, configRoot: string): R
   return buildHookStatus(settings, configRoot, hookDefinitions)
 }
 
+export function getRegisteredClaudeMemoryHookRoots(claudeSettingsPath: string): string[] {
+  const settings = readClaudeSettingsFile(claudeSettingsPath)
+  if (!settings || !isPlainObject(settings.hooks)) return []
+
+  const roots = new Set<string>()
+  for (const eventConfig of Object.values(settings.hooks)) {
+    for (const command of collectHookCommands(eventConfig)) {
+      for (const root of extractClaudeMemoryHookRoots(command)) {
+        roots.add(canonicalizePath(root))
+      }
+    }
+  }
+  return [...roots].sort()
+}
+
 export function installAll(claudeSettingsPath: string, configRoot: string, claudeConfigPath?: string): InstallationStatus {
   const hooks = installHooks(claudeSettingsPath, configRoot)
   const commands = installCommands(claudeSettingsPath)
@@ -115,7 +139,11 @@ export function uninstallAll(claudeSettingsPath: string, configRoot: string, cla
   return { hooks, commands, mcp }
 }
 
-export function installHooks(claudeSettingsPath: string, configRoot: string): Record<HookEvent, HookStatus> {
+export function installHooks(
+  claudeSettingsPath: string,
+  configRoot: string,
+  events?: readonly HookEvent[]
+): Record<HookEvent, HookStatus> {
   const hookDefinitions = buildHookDefinitions(configRoot)
   const settings = (readClaudeSettingsFile(claudeSettingsPath) ?? {}) as Record<string, unknown>
   const hooksConfig = isPlainObject(settings.hooks)
@@ -123,7 +151,13 @@ export function installHooks(claudeSettingsPath: string, configRoot: string): Re
     : {}
   settings.hooks = hooksConfig
 
-  updateHooksConfig(hooksConfig, hookDefinitions, configRoot, 'install')
+  updateHooksConfig(
+    hooksConfig,
+    hookDefinitions,
+    configRoot,
+    'install',
+    events ? new Set(events) : undefined
+  )
   writeClaudeSettingsFile(claudeSettingsPath, settings)
 
   return buildHookStatus(settings, configRoot, hookDefinitions)
@@ -146,9 +180,14 @@ export function uninstallHooks(claudeSettingsPath: string, configRoot: string): 
   return buildHookStatus(settings, configRoot, hookDefinitions)
 }
 
-export function installCommands(claudeSettingsPath: string): Record<string, CommandStatus> {
+export function installCommands(
+  claudeSettingsPath: string,
+  commandNames?: readonly string[]
+): Record<string, CommandStatus> {
   const entries = getCommandEntries(claudeSettingsPath)
+  const selectedNames = commandNames ? new Set(commandNames) : null
   for (const entry of entries) {
+    if (selectedNames && !selectedNames.has(entry.key)) continue
     fs.mkdirSync(path.dirname(entry.path), { recursive: true })
     const existing = readFileIfExists(entry.path)
     if (existing === null || existing === entry.content) {
@@ -171,13 +210,12 @@ export function uninstallCommands(claudeSettingsPath: string): Record<string, Co
 }
 
 function buildHookDefinitions(configRoot: string): Record<HookEvent, HookDefinition> {
-  const hooksRoot = path.resolve(configRoot, 'dist', 'hooks')
   const definitions = {} as Record<HookEvent, HookDefinition>
   const entries = Object.entries(HOOK_SCRIPTS) as [HookEvent, string][]
   for (const [eventName, script] of entries) {
     definitions[eventName] = {
       script,
-      command: `node "${path.join(hooksRoot, script)}"`
+      command: `node "${getHookScriptPath(configRoot, script)}"`
     }
   }
   return definitions
@@ -187,10 +225,12 @@ function updateHooksConfig(
   hooksConfig: Record<string, unknown>,
   hookDefinitions: Record<HookEvent, HookDefinition>,
   configRoot: string,
-  action: 'install' | 'uninstall'
+  action: 'install' | 'uninstall',
+  selectedEvents?: ReadonlySet<HookEvent>
 ): void {
   const entries = Object.entries(hookDefinitions) as [HookEvent, HookDefinition][]
   for (const [eventName, hookDefinition] of entries) {
+    if (selectedEvents && !selectedEvents.has(eventName)) continue
     if (action === 'install') {
       hooksConfig[eventName] = ensureHookInstalled(hooksConfig[eventName], hookDefinition, configRoot)
       continue
@@ -315,12 +355,38 @@ function normalizeHookCommand(value: string): string {
   return value.replace(/\\/g, '/')
 }
 
+function extractClaudeMemoryHookRoots(command: string): string[] {
+  const normalizedCommand = normalizeHookCommand(command)
+  const roots: string[] = []
+  for (const suffix of CLAUDE_MEMORY_HOOK_PATH_SUFFIXES) {
+    const escapedSuffix = escapeRegExp(suffix)
+    const quotedPath = new RegExp(`(["'])([^"']*${escapedSuffix})\\1`, 'g')
+    const unquotedPath = new RegExp(`(?:^|\\s)(\\S*${escapedSuffix})(?=\\s|$)`, 'g')
+    for (const match of normalizedCommand.matchAll(quotedPath)) {
+      addHookRoot(roots, match[2], suffix)
+    }
+    for (const match of normalizedCommand.matchAll(unquotedPath)) {
+      addHookRoot(roots, match[1], suffix)
+    }
+  }
+  return roots
+}
+
+function addHookRoot(roots: string[], scriptPath: string, suffix: string): void {
+  const root = scriptPath.slice(0, -suffix.length)
+  if (root) roots.push(root)
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function matchesClaudeHook(command: string, configRoot: string, scriptName: string): boolean {
   const normalizedCommand = normalizeHookCommand(command)
   const resolvedConfigRoot = path.resolve(configRoot)
   const normalizedConfigRoot = normalizeHookCommand(resolvedConfigRoot)
   if (!normalizedCommand.includes(normalizedConfigRoot)) return false
-  const scriptPath = normalizeHookCommand(path.join(resolvedConfigRoot, 'dist', 'hooks', scriptName))
+  const scriptPath = normalizeHookCommand(getHookScriptPath(resolvedConfigRoot, scriptName))
   return normalizedCommand.includes(scriptPath)
 }
 
@@ -353,7 +419,55 @@ function readClaudeSettingsFile(settingsPath: string): Record<string, unknown> |
 
 function writeClaudeSettingsFile(settingsPath: string, settings: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
-  fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
+  let destinationPath = settingsPath
+  try {
+    if (fs.lstatSync(settingsPath).isSymbolicLink()) {
+      try {
+        destinationPath = fs.realpathSync(settingsPath)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        // Dangling symlink (dotfiles link created before its target exists):
+        // resolve the link text so we write through to the intended target
+        // instead of replacing the link with a regular file.
+        destinationPath = path.resolve(path.dirname(settingsPath), fs.readlinkSync(settingsPath))
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true })
+  const temporaryPath = path.join(
+    path.dirname(destinationPath),
+    `.${path.basename(destinationPath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+  )
+  try {
+    let mode: number | undefined
+    try {
+      const stats = fs.statSync(destinationPath)
+      fs.accessSync(destinationPath, fs.constants.W_OK)
+      mode = stats.mode & 0o777
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    fs.writeFileSync(
+      temporaryPath,
+      `${JSON.stringify(settings, null, 2)}\n`,
+      { encoding: 'utf-8', flag: 'wx', ...(mode !== undefined ? { mode } : {}) }
+    )
+    if (mode !== undefined) {
+      fs.chmodSync(temporaryPath, mode)
+    }
+    fs.renameSync(temporaryPath, destinationPath)
+  } catch (error) {
+    try {
+      fs.unlinkSync(temporaryPath)
+    } catch (cleanupError) {
+      if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') {
+        // Preserve the original settings-write failure.
+      }
+    }
+    throw error
+  }
 }
 
 function getCommandEntries(claudeSettingsPath: string): CommandEntry[] {
@@ -390,8 +504,7 @@ function removeFileIfExists(filePath: string): void {
 // --- MCP server installation ---
 
 function buildMcpCommand(configRoot: string): string {
-  const serverPath = path.resolve(configRoot, 'dist', 'mcp-server.js')
-  return `node "${serverPath}"`
+  return `node "${getMcpServerPath(configRoot)}"`
 }
 
 function getMcpServerConfig(settings: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -411,7 +524,7 @@ function getMcpStatus(settings: Record<string, unknown> | null, configRoot: stri
   const args = Array.isArray(entry.args) ? entry.args as string[] : []
   const command = typeof entry.command === 'string' ? entry.command : ''
   const configured = [command, ...args].join(' ')
-  const serverPath = path.resolve(configRoot, 'dist', 'mcp-server.js')
+  const serverPath = getMcpServerPath(configRoot)
   const installed = configured.includes(serverPath)
   return { installed, configured, expected }
 }
@@ -423,7 +536,7 @@ function installMcp(claudeSettingsPath: string, configRoot: string): McpStatus {
     : {}
   settings.mcpServers = servers
 
-  const serverPath = path.resolve(configRoot, 'dist', 'mcp-server.js')
+  const serverPath = getMcpServerPath(configRoot)
   servers[MCP_SERVER_NAME] = {
     type: 'stdio',
     command: 'node',
