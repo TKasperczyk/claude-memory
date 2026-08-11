@@ -569,7 +569,11 @@ async function runUpdateTool(
   if (severity) updates.severity = severity
 
   if (Object.keys(updates).length === 0 && !shouldDeprecate) {
-    return { result: { id, success: false, updates, error: 'No updates provided.' }, isError: true }
+    const ignoredFields = Object.keys(record).filter(key => key !== 'id')
+    const error = ignoredFields.length > 0
+      ? `No valid updates parsed from provided fields: ${ignoredFields.join(', ')}. Check field types against the tool schema.`
+      : 'No updates provided.'
+    return { result: { id, success: false, updates, error }, isError: true }
   }
 
   let success = true
