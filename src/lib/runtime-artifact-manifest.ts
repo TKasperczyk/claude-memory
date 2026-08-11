@@ -9,8 +9,13 @@ export const POST_SESSION_WORKER_SCRIPT = 'post-session-worker.js'
 export const HOOK_SCRIPTS = {
   UserPromptSubmit: 'pre-prompt.js',
   SessionEnd: 'post-session.js',
-  PreCompact: 'post-session.js'
+  PreCompact: 'post-session.js',
+  PostToolUse: 'memory-write-hint.js'
 } as const satisfies Record<HookEvent, string>
+
+export const HOOK_MATCHERS = {
+  PostToolUse: 'memory_write'
+} as const satisfies Partial<Record<HookEvent, string>>
 
 export function getHookArtifactRelativePath(script: string): string {
   return `${HOOKS_DIRECTORY}/${script}`

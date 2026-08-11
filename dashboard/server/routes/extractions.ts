@@ -189,12 +189,17 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       // Clear stale review
       deleteReview(runId, requestConfig.lancedb.table)
 
+      const memoryWriteHints = run.memoryWriteHints ?? []
       const result = await handlePostSession({
         hook_event_name: 'SessionEnd',
         session_id: run.sessionId,
         transcript_path: run.transcriptPath,
         cwd
-      }, config, { flush: 'always', plannedRunId: run.runId })
+      }, config, {
+        flush: 'always',
+        plannedRunId: run.runId,
+        memoryWriteHints
+      })
 
       const stages = formatStageTimings(result.timings)
       if (stages) {
@@ -235,6 +240,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         tokenUsage: result.tokenUsage,
         extractedEventCount: trueFailure ? undefined : result.extractedEventCount,
         hasRememberMarker: result.hasRememberMarker,
+        memoryWriteHints: memoryWriteHints.length > 0 ? memoryWriteHints : undefined,
         skipReason: extractionError ? undefined
           : result.reason === 'too_short' ? 'too_short'
           : (result.reason === 'no_records' && persistedRecordCount === 0) ? 'no_records'

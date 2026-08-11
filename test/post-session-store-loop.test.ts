@@ -182,6 +182,37 @@ describe('handlePostSession store outcomes', () => {
     expect(result.inserted).toBe(1)
   })
 
+  it('uses unprocessed memory_write hints to bypass no-new-events and short-conversation gates', async () => {
+    const previousMinTokens = process.env.CC_MEMORIES_SETTING_EXTRACTION_MIN_TOKENS
+    const previousHintsEnabled = process.env.CC_MEMORIES_SETTING_ENABLE_MEMORY_WRITE_HINTS
+    process.env.CC_MEMORIES_SETTING_EXTRACTION_MIN_TOKENS = '100'
+    process.env.CC_MEMORIES_SETTING_ENABLE_MEMORY_WRITE_HINTS = 'true'
+    mockedExtractRecords.mockResolvedValueOnce({ records: [], tokenUsage: emptyUsage() })
+    const path = transcriptPath()
+
+    try {
+      const result = await handlePostSession(extractionInput(path), DEFAULT_CONFIG, {
+        previousExtractionEventCount: 999,
+        memoryWriteHints: [{
+          sessionId: 'store-loop-session',
+          timestamp: 100,
+          name: 'Priority fact',
+          content: 'The durable fact is only present in memory_write input.'
+        }]
+      })
+
+      expect(result.reason).toBe('no_records')
+      expect(mockedExtractRecords).toHaveBeenCalledTimes(1)
+      expect(mockedExtractRecords.mock.calls[0][1].memoryWriteHints).toHaveLength(1)
+      expect(mockedInsertRecord).not.toHaveBeenCalled()
+    } finally {
+      if (previousMinTokens === undefined) delete process.env.CC_MEMORIES_SETTING_EXTRACTION_MIN_TOKENS
+      else process.env.CC_MEMORIES_SETTING_EXTRACTION_MIN_TOKENS = previousMinTokens
+      if (previousHintsEnabled === undefined) delete process.env.CC_MEMORIES_SETTING_ENABLE_MEMORY_WRITE_HINTS
+      else process.env.CC_MEMORIES_SETTING_ENABLE_MEMORY_WRITE_HINTS = previousHintsEnabled
+    }
+  })
+
   it('treats updateRecord false as a failed non-persisted record', async () => {
     const incoming = createMockDiscoveryRecord({ id: 'extracted-update-false', evidence: 'new evidence', embedding: makeEmbedding(6) })
     const existing = createMockDiscoveryRecord({ id: 'existing-vanished', evidence: '', embedding: makeEmbedding(7) })

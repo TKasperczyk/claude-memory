@@ -3,7 +3,7 @@ import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_CONFIG, type ExtractionHookInput, type TokenUsage } from '../src/lib/types.js'
+import { DEFAULT_CONFIG, type ExtractionHookInput, type MemoryWriteHintEvent, type TokenUsage } from '../src/lib/types.js'
 import { SKIP_EXTRACTION_MARKER } from '../src/lib/claude-commands.js'
 import { createMockDiscoveryRecord } from './helpers.js'
 
@@ -31,6 +31,17 @@ async function loadWorker(options: {
   workerResult?: unknown
   runPeriodicJobs?: boolean
   onSelfUpdate?: () => void
+  memoryWriteHints?: MemoryWriteHintEvent[]
+  hintCalls?: { loaded: string[]; deleted: string[]; cleanupCutoffs: number[] }
+  hintsEnabled?: boolean
+  handleCalls?: unknown[][]
+  priorRun?: {
+    runId: string
+    timestamp: number
+    extractedEventCount?: number
+    memoryWriteHints?: MemoryWriteHintEvent[]
+  }
+  saveRunSucceeds?: boolean
 } = {}): Promise<typeof import('../src/hooks/post-session-worker.js')> {
   vi.resetModules()
   savedRuns.length = 0
@@ -58,6 +69,21 @@ async function loadWorker(options: {
       }
     })
   }))
+  vi.doMock('../src/lib/memory-write-hints.js', () => ({
+    MEMORY_WRITE_HINT_RETENTION_DAYS: 90,
+    coerceMemoryWriteHintEvent: vi.fn((value: unknown) => value),
+    loadMemoryWriteHints: vi.fn((sessionId: string) => {
+      options.hintCalls?.loaded.push(sessionId)
+      return options.memoryWriteHints ?? []
+    }),
+    deleteMemoryWriteHints: vi.fn((sessionId: string) => {
+      options.hintCalls?.deleted.push(sessionId)
+      return true
+    }),
+    cleanupMemoryWriteHints: vi.fn((cutoffMs: number) => {
+      options.hintCalls?.cleanupCutoffs.push(cutoffMs)
+    })
+  }))
   if (options.lifecycle) {
     vi.doMock('../src/lib/lancedb.js', async () => {
       const actual = await vi.importActual<typeof import('../src/lib/lancedb.js')>('../src/lib/lancedb.js')
@@ -73,13 +99,26 @@ async function loadWorker(options: {
   }
   if (Object.prototype.hasOwnProperty.call(options, 'workerResult')) {
     vi.doMock('../src/hooks/post-session.js', () => ({
-      handlePostSession: vi.fn(async () => options.workerResult)
+      handlePostSession: vi.fn(async (...args: unknown[]) => {
+        options.handleCalls?.push(args)
+        return options.workerResult
+      })
     }))
   }
+  if (options.runPeriodicJobs || options.hintsEnabled !== undefined) {
+    vi.doMock('../src/lib/settings.js', async () => {
+      const actual = await vi.importActual<typeof import('../src/lib/settings.js')>('../src/lib/settings.js')
+      return {
+        ...actual,
+        loadSettings: vi.fn(() => ({
+          ...actual.getDefaultSettings(),
+          autoMaintenanceIntervalHours: options.runPeriodicJobs ? 1 : 0,
+          enableMemoryWriteHints: options.hintsEnabled ?? true
+        }))
+      }
+    })
+  }
   if (options.runPeriodicJobs) {
-    vi.doMock('../src/lib/settings.js', () => ({
-      loadSettings: vi.fn(() => ({ autoMaintenanceIntervalHours: 1 }))
-    }))
     vi.doMock('../src/lib/maintenance-log.js', () => ({
       getLastMaintenanceRun: vi.fn(() => undefined),
       buildMaintenanceRun: vi.fn(() => ({
@@ -108,10 +147,11 @@ async function loadWorker(options: {
     const actual = await vi.importActual<typeof import('../src/lib/extraction-log.js')>('../src/lib/extraction-log.js')
     return {
       ...actual,
-      getLastExtractionRunForSession: vi.fn(),
+      getLastExtractionRunForSession: vi.fn(() => options.priorRun),
       listInProgressExtractions: vi.fn(() => []),
       saveExtractionRun: vi.fn((run: unknown) => {
         savedRuns.push(run)
+        return options.saveRunSucceeds ?? true
       })
     }
   })
@@ -183,6 +223,7 @@ afterEach(async () => {
   vi.doUnmock('../src/lib/maintenance-api.js')
   vi.doUnmock('../src/lib/stats-snapshots.js')
   vi.doUnmock('../src/lib/memory-stats.js')
+  vi.doUnmock('../src/lib/memory-write-hints.js')
   vi.resetModules()
   await fs.rm(storageRoot, { recursive: true, force: true })
 })
@@ -397,6 +438,25 @@ describe('post-session worker run saving', () => {
     expect(await readAuditLog()).toContain('DONE session=worker-session reason=no_new_events (no run saved)')
   })
 
+  it('returns false when extraction-run persistence is not confirmed', async () => {
+    const { saveRunLog } = await loadWorker({ saveRunSucceeds: false })
+
+    const persisted = saveRunLog(payload, {
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      records: [],
+      insertedIds: [],
+      updatedIds: [],
+      reason: 'no_records',
+      extractedEventCount: 44
+    }, 'planned-write-failure', 789, tokenUsage, 'test-collection')
+
+    expect(persisted).toBe(false)
+    expect(savedRuns).toHaveLength(1)
+  })
+
   it('trims debug and audit logs to recent whole-line tails once before appending', async () => {
     const { saveRunLog } = await loadWorker()
     const debugPath = path.join(storageRoot, 'debug.log')
@@ -521,6 +581,266 @@ describe('post-session worker run saving', () => {
     expect(attributions[0]).toMatchObject({ sessionId: 'worker-session' })
     expect(attributions[0].runId).toBeUndefined()
     expect(attributions[1]).toMatchObject({ sessionId: 'worker-session', runId: 'planned-save' })
+  })
+})
+
+describe('post-session worker memory_write hint lifecycle', () => {
+  function calls() {
+    return { loaded: [] as string[], deleted: [] as string[], cleanupCutoffs: [] as number[] }
+  }
+
+  function hint(sessionId: string, timestamp: number, toolUseId: string): MemoryWriteHintEvent {
+    return {
+      sessionId,
+      timestamp,
+      name: `hint-${toolUseId}`,
+      toolUseId,
+      content: `content-${toolUseId}`
+    }
+  }
+
+  it('loads by exact session id and excludes only hints recorded on the prior run', async () => {
+    const sessionId = 'exact-hint-session'
+    const transcriptPath = path.join(storageRoot, 'hint-transcript.jsonl')
+    await fs.writeFile(transcriptPath, '{"type":"user","message":"hello"}\n')
+    const hintCalls = calls()
+    const handleCalls: unknown[][] = []
+    const before = Date.now()
+    const processedById = hint(sessionId, 100, 'processed-by-id')
+    const appendedDuringPriorRun = hint(sessionId, 150, 'appended-during-prior-run')
+    const processedByFallback: MemoryWriteHintEvent = {
+      sessionId,
+      timestamp: 175,
+      name: 'processed-by-fallback',
+      content: 'current content'
+    }
+    const unprocessedByFallback: MemoryWriteHintEvent = {
+      sessionId,
+      timestamp: 180,
+      name: 'unprocessed-by-fallback',
+      content: 'new content'
+    }
+    const { runPostSessionWorker } = await loadWorker({
+      lifecycle: [],
+      hintCalls,
+      handleCalls,
+      memoryWriteHints: [
+        processedById,
+        appendedDuringPriorRun,
+        processedByFallback,
+        unprocessedByFallback
+      ],
+      priorRun: {
+        runId: 'prior',
+        timestamp: 500,
+        extractedEventCount: 1,
+        memoryWriteHints: [
+          { ...processedById, timestamp: 450, name: 'renamed-on-prior-run' },
+          { ...processedByFallback, content: 'persisted prior content' }
+        ]
+      },
+      workerResult: workerResult('no_records')
+    })
+
+    await runPostSessionWorker(writeWorkerInput('hint-pass-through', {
+      hook_event_name: 'SessionEnd',
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      cwd: storageRoot
+    }))
+
+    expect(hintCalls.loaded).toEqual([sessionId])
+    expect(hintCalls.cleanupCutoffs).toHaveLength(1)
+    const retentionMs = 90 * 24 * 60 * 60 * 1000
+    expect(hintCalls.cleanupCutoffs[0]).toBeGreaterThanOrEqual(before - retentionMs)
+    expect(hintCalls.cleanupCutoffs[0]).toBeLessThanOrEqual(Date.now() - retentionMs)
+    expect(handleCalls).toHaveLength(1)
+    expect((handleCalls[0][2] as { memoryWriteHints?: MemoryWriteHintEvent[] }).memoryWriteHints)
+      .toEqual([appendedDuringPriorRun, unprocessedByFallback])
+    expect(hintCalls.deleted).toEqual([sessionId])
+    expect(savedRuns[0]).toMatchObject({
+      memoryWriteHints: [appendedDuringPriorRun, unprocessedByFallback]
+    })
+  })
+
+  it('keeps hints through PreCompact, partial extraction errors, and record failures', async () => {
+    const sessionId = 'retained-hint-session'
+    const transcriptPath = path.join(storageRoot, 'retained-transcript.jsonl')
+    await fs.writeFile(transcriptPath, '{"type":"user","message":"hello"}\n')
+
+    const preCompactCalls = calls()
+    const preCompactWorker = await loadWorker({
+      lifecycle: [],
+      hintCalls: preCompactCalls,
+      memoryWriteHints: [hint(sessionId, 100, 'precompact')],
+      workerResult: workerResult('no_records')
+    })
+    await preCompactWorker.runPostSessionWorker(writeWorkerInput('precompact-hints', {
+      hook_event_name: 'PreCompact',
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      cwd: storageRoot,
+      trigger: 'auto'
+    }))
+    expect(preCompactCalls.deleted).toEqual([])
+
+    const failureCalls = calls()
+    const failureWorker = await loadWorker({
+      lifecycle: [],
+      hintCalls: failureCalls,
+      memoryWriteHints: [hint(sessionId, 200, 'failure')],
+      workerResult: {
+        ...workerResult(),
+        inserted: 1,
+        insertedIds: ['partial-record'],
+        extractionError: { kind: 'max_tokens', maxTokens: 64_000 }
+      }
+    })
+    await failureWorker.runPostSessionWorker(writeWorkerInput('failed-hints', {
+      hook_event_name: 'SessionEnd',
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      cwd: storageRoot
+    }))
+    expect(failureCalls.deleted).toEqual([])
+
+    const recordFailureCalls = calls()
+    const recordFailureWorker = await loadWorker({
+      lifecycle: [],
+      hintCalls: recordFailureCalls,
+      memoryWriteHints: [hint(sessionId, 300, 'record-failure')],
+      workerResult: {
+        ...workerResult('no_records'),
+        failed: 1
+      }
+    })
+    await recordFailureWorker.runPostSessionWorker(writeWorkerInput('record-failed-hints', {
+      hook_event_name: 'SessionEnd',
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      cwd: storageRoot
+    }))
+    expect(recordFailureCalls.deleted).toEqual([])
+  })
+
+  it('retains hints when the extraction run log cannot be persisted', async () => {
+    const sessionId = 'unsaved-hint-session'
+    const transcriptPath = path.join(storageRoot, 'unsaved-hint-transcript.jsonl')
+    await fs.writeFile(transcriptPath, '{"type":"user","message":"hello"}\n')
+    const hintCalls = calls()
+    const { runPostSessionWorker } = await loadWorker({
+      lifecycle: [],
+      hintCalls,
+      memoryWriteHints: [hint(sessionId, 100, 'unsaved')],
+      workerResult: workerResult('no_records'),
+      saveRunSucceeds: false
+    })
+
+    await runPostSessionWorker(writeWorkerInput('unsaved-hints', {
+      hook_event_name: 'SessionEnd',
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      cwd: storageRoot
+    }))
+
+    expect(savedRuns).toHaveLength(1)
+    expect(hintCalls.deleted).toEqual([])
+  })
+
+  it('deletes on terminal clear and explicit skip but retains on missing transcript or lock contention', async () => {
+    const transcriptPath = path.join(storageRoot, 'skip-hint-transcript.jsonl')
+    await fs.writeFile(transcriptPath, `${SKIP_EXTRACTION_MARKER}\n`)
+
+    const clearCalls = calls()
+    const clearWorker = await loadWorker({
+      lifecycle: [],
+      hintCalls: clearCalls,
+      memoryWriteHints: [hint('clear-hints', 100, 'clear')],
+      workerResult: workerResult('no_records')
+    })
+    await clearWorker.runPostSessionWorker(writeWorkerInput('clear-hints', {
+      hook_event_name: 'SessionEnd',
+      session_id: 'clear-hints',
+      transcript_path: transcriptPath,
+      cwd: storageRoot,
+      reason: 'clear'
+    }))
+    expect(clearCalls.deleted).toEqual(['clear-hints'])
+
+    const skipCalls = calls()
+    const skipWorker = await loadWorker({
+      lifecycle: [],
+      hintCalls: skipCalls,
+      memoryWriteHints: [hint('skip-hints', 100, 'skip')],
+      workerResult: workerResult('no_records')
+    })
+    await skipWorker.runPostSessionWorker(writeWorkerInput('skip-hints', {
+      hook_event_name: 'SessionEnd',
+      session_id: 'skip-hints',
+      transcript_path: transcriptPath,
+      cwd: storageRoot
+    }))
+    expect(skipCalls.deleted).toEqual(['skip-hints'])
+
+    const missingCalls = calls()
+    const missingWorker = await loadWorker({
+      lifecycle: [],
+      hintCalls: missingCalls,
+      memoryWriteHints: [hint('missing-hints', 100, 'missing')],
+      workerResult: workerResult('no_records')
+    })
+    await missingWorker.runPostSessionWorker(writeWorkerInput('missing-hints', {
+      hook_event_name: 'SessionEnd',
+      session_id: 'missing-hints',
+      cwd: storageRoot
+    }))
+    expect(missingCalls.deleted).toEqual([])
+
+    const lockedSession = 'locked-hints'
+    const lockPath = path.join(storageRoot, 'locks', `${lockedSession}.lock`)
+    nodeFs.mkdirSync(path.dirname(lockPath), { recursive: true })
+    nodeFs.writeFileSync(lockPath, `${process.pid}\n${Date.now()}`)
+    const lockCalls = calls()
+    const lockWorker = await loadWorker({
+      lifecycle: [],
+      hintCalls: lockCalls,
+      memoryWriteHints: [hint(lockedSession, 100, 'locked')],
+      workerResult: workerResult('no_records')
+    })
+    await lockWorker.runPostSessionWorker(writeWorkerInput('locked-hints', {
+      hook_event_name: 'SessionEnd',
+      session_id: lockedSession,
+      transcript_path: path.join(storageRoot, 'unused-transcript.jsonl'),
+      cwd: storageRoot
+    }))
+    expect(lockCalls.deleted).toEqual([])
+  })
+
+  it('does not pass stored hints when the setting is disabled', async () => {
+    const sessionId = 'disabled-hints'
+    const transcriptPath = path.join(storageRoot, 'disabled-hints-transcript.jsonl')
+    await fs.writeFile(transcriptPath, '{"type":"user","message":"hello"}\n')
+    const hintCalls = calls()
+    const handleCalls: unknown[][] = []
+    const { runPostSessionWorker } = await loadWorker({
+      lifecycle: [],
+      hintCalls,
+      handleCalls,
+      hintsEnabled: false,
+      memoryWriteHints: [hint(sessionId, 100, 'disabled')],
+      workerResult: workerResult('no_records')
+    })
+
+    await runPostSessionWorker(writeWorkerInput('disabled-hints', {
+      hook_event_name: 'SessionEnd',
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      cwd: storageRoot
+    }))
+
+    expect((handleCalls[0][2] as { memoryWriteHints?: MemoryWriteHintEvent[] }).memoryWriteHints)
+      .toEqual([])
+    expect(hintCalls.deleted).toEqual([sessionId])
   })
 })
 

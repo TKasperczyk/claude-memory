@@ -7,7 +7,7 @@
 
 import fs, { appendFileSync } from 'fs'
 import { spawn } from 'child_process'
-import { dirname, join, resolve } from 'path'
+import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { randomUUID } from 'crypto'
 import { extractRecords } from '../lib/extract.js'
@@ -17,6 +17,7 @@ import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, escapeFilterValue, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/lancedb.js'
 import { markDeprecated } from '../lib/maintenance/operations.js'
 import { loadSettings } from '../lib/settings.js'
+import { isProcessEntrypoint } from '../lib/shared.js'
 import { parseTranscript, computeIncrementalStartIndex, sliceTranscript, type Transcript } from '../lib/transcript.js'
 import {
   DEFAULT_CONFIG,
@@ -26,6 +27,7 @@ import {
   type ExtractionHookInput,
   type ExtractionRecordOutcome,
   type InjectedMemoryEntry,
+  type MemoryWriteHintEvent,
   type TokenUsage
 } from '../lib/types.js'
 import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE } from '../lib/paths.js'
@@ -94,6 +96,8 @@ export async function handlePostSession(
     contextOverlapTurns?: number
     /** Planned run ID for token-attribution correlation. */
     plannedRunId?: string
+    /** Native memory_write calls captured outside the transcript. */
+    memoryWriteHints?: MemoryWriteHintEvent[]
   } = {}
 ): Promise<PostSessionResult> {
   const timings: PostSessionTimings = {}
@@ -148,6 +152,10 @@ export async function handlePostSession(
 
   const totalEventCount = fullTranscript.events.length
   const settings = loadSettings()
+  const memoryWriteHints = settings.enableMemoryWriteHints
+    ? options.memoryWriteHints?.filter(Boolean) ?? []
+    : []
+  const hasMemoryWriteHints = memoryWriteHints.length > 0
 
   // Incremental extraction: skip if no new events since last extraction
   const priorEventCount = options.previousExtractionEventCount
@@ -155,7 +163,7 @@ export async function handlePostSession(
   let extractionTranscript = fullTranscript
 
   if (priorEventCount !== undefined && priorEventCount > 0) {
-    if (totalEventCount <= priorEventCount) {
+    if (totalEventCount <= priorEventCount && !hasMemoryWriteHints) {
       return {
         inserted: 0,
         updated: 0,
@@ -173,12 +181,14 @@ export async function handlePostSession(
 
     const sliceStart = Date.now()
     const overlapTurns = options.contextOverlapTurns ?? settings.extractionContextOverlapTurns
-    const startIndex = computeIncrementalStartIndex(fullTranscript.events, priorEventCount, overlapTurns)
+    const extractionBoundary = Math.min(priorEventCount, totalEventCount)
+    const startIndex = computeIncrementalStartIndex(fullTranscript.events, extractionBoundary, overlapTurns)
     extractionTranscript = sliceTranscript(fullTranscript, startIndex)
     timings.slice = Date.now() - sliceStart
     isIncremental = true
     console.error(
-      `[claude-memory] Incremental extraction: ${totalEventCount - priorEventCount} new events, ` +
+      `[claude-memory] Incremental extraction: ${Math.max(0, totalEventCount - priorEventCount)} new events` +
+      `${hasMemoryWriteHints ? `, ${memoryWriteHints.length} memory_write hint(s)` : ''}, ` +
       `starting from event ${startIndex} (${overlapTurns}-turn overlap)`
     )
   }
@@ -192,7 +202,7 @@ export async function handlePostSession(
 
   // Skip extraction for very short conversations (~4 chars per token)
   // unless user explicitly flagged content with /remember
-  if (!hasRememberMarker) {
+  if (!hasRememberMarker && !hasMemoryWriteHints) {
     const minChars = settings.extractionMinTokens * 4
     if (minChars > 0) {
       const conversationChars = transcript.messages.reduce((sum, m) => sum + m.text.length, 0)
@@ -222,6 +232,7 @@ export async function handlePostSession(
     project: projectRoot,
     transcriptPath: input.transcript_path,
     injectedMemories: options.injectedMemories,
+    memoryWriteHints,
     isIncremental,
     maxTranscriptChars: settings.maxTranscriptChars
   }, config)
@@ -657,9 +668,7 @@ function launcherMain(): void {
 }
 
 // Only run launcher when executed directly (not imported)
-const entryPath = process.argv[1] ? resolve(process.argv[1]) : ''
-const isMainModule = fileURLToPath(import.meta.url) === entryPath
-if (isMainModule) {
+if (isProcessEntrypoint(import.meta.url)) {
   try {
     launcherMain()
     process.exitCode = 0

@@ -1,4 +1,6 @@
 import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { getRecordExactTextParts } from './record-fields.js'
 import { getRecordSummary, type RecordSummarySource } from './record-summary.js'
 import { type MemoryRecord, type RecordType } from './types.js'
@@ -51,6 +53,26 @@ export function readFileIfExists(filePath: string): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Whether the module at `importMetaUrl` is the process entrypoint.
+ * Compares realpaths on both sides: Node resolves symlinks when building
+ * `import.meta.url` (default --preserve-symlinks off) while `process.argv[1]`
+ * keeps the path as invoked, so a naive equality check silently fails when a
+ * hook is invoked through a symlinked directory.
+ */
+export function isProcessEntrypoint(importMetaUrl: string): boolean {
+  if (!process.argv[1]) return false
+  const entryPath = path.resolve(process.argv[1])
+  let realEntryPath = entryPath
+  try {
+    realEntryPath = fs.realpathSync(entryPath)
+  } catch {
+    // Keep the unresolved path; comparison below still covers the direct case.
+  }
+  const modulePath = fileURLToPath(importMetaUrl)
+  return modulePath === realEntryPath || modulePath === entryPath
 }
 
 export function sanitizeRunId(runId: string): string {

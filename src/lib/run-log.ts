@@ -14,7 +14,7 @@ export abstract class RunLog<T extends { runId: string; timestamp: number }> {
 
   protected abstract coerce(data: unknown, runId: string): T | null
 
-  save(run: T, collection?: string): void {
+  save(run: T, collection?: string): boolean {
     try {
       this.cleanup(collection)
       this.store.write(run.runId, run, {
@@ -22,8 +22,10 @@ export abstract class RunLog<T extends { runId: string; timestamp: number }> {
         ensureDir: true,
         pretty: 2
       })
+      return true
     } catch (error) {
       console.error(`[claude-memory] Failed to write ${this.feature} log:`, error)
+      return false
     }
   }
 

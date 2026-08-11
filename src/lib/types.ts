@@ -25,6 +25,7 @@ export type {
   InjectionSessionRecord,
   InjectionStatus,
   MemoryRecord,
+  MemoryWriteHintEvent,
   MemoryStats,
   MemoryStatsSummary,
   NearMissRecord,
@@ -130,6 +131,17 @@ export interface SessionEndInput extends HookInput {
 export interface PreCompactInput extends HookInput {
   hook_event_name: 'PreCompact'
   trigger: 'manual' | 'auto'
+}
+
+export interface PostToolUseInput extends HookInput {
+  hook_event_name: 'PostToolUse'
+  prompt_id: string
+  effort: string
+  tool_name: string
+  tool_input: unknown
+  tool_response: unknown
+  tool_use_id: string
+  duration_ms: number
 }
 
 /** Input for extraction hooks - either SessionEnd or PreCompact */

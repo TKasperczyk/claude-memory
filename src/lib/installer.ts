@@ -9,6 +9,7 @@ import {
   getHookArtifactRelativePath,
   getHookScriptPath,
   getMcpServerPath,
+  HOOK_MATCHERS,
   HOOK_SCRIPTS
 } from './runtime-artifacts.js'
 import type { CommandStatus, HookEvent, HookStatus, InstallationStatus, McpStatus } from '../../shared/types.js'
@@ -18,6 +19,8 @@ export type { CommandStatus, HookEvent, HookStatus, InstallationStatus, McpStatu
 type HookDefinition = {
   script: string
   command: string
+  matcher?: string
+  timeout?: number
 }
 
 type CommandDefinition = {
@@ -39,6 +42,7 @@ export class ClaudeSettingsError extends Error {
 }
 
 const CLAUDE_HOOK_TIMEOUT_SECONDS = 15
+const MEMORY_WRITE_HOOK_TIMEOUT_SECONDS = 5
 const MCP_SERVER_NAME = 'claude-memory'
 const CLAUDE_MEMORY_HOOK_PATH_SUFFIXES = [
   ...new Set(
@@ -215,7 +219,9 @@ function buildHookDefinitions(configRoot: string): Record<HookEvent, HookDefinit
   for (const [eventName, script] of entries) {
     definitions[eventName] = {
       script,
-      command: `node "${getHookScriptPath(configRoot, script)}"`
+      command: `node "${getHookScriptPath(configRoot, script)}"`,
+      matcher: (HOOK_MATCHERS as Partial<Record<HookEvent, string>>)[eventName],
+      timeout: eventName === 'PostToolUse' ? MEMORY_WRITE_HOOK_TIMEOUT_SECONDS : undefined
     }
   }
   return definitions
@@ -236,7 +242,12 @@ function updateHooksConfig(
       continue
     }
     if (!Object.prototype.hasOwnProperty.call(hooksConfig, eventName)) continue
-    hooksConfig[eventName] = removeHookEntries(hooksConfig[eventName], hookDefinition, configRoot)
+    const updated = removeHookEntries(hooksConfig[eventName], hookDefinition, configRoot)
+    if (Array.isArray(updated) && updated.length === 0) {
+      delete hooksConfig[eventName]
+    } else {
+      hooksConfig[eventName] = updated
+    }
   }
 }
 
@@ -251,8 +262,7 @@ function buildHookStatus(
   const status = {} as Record<HookEvent, HookStatus>
   const entries = Object.entries(hookDefinitions) as [HookEvent, HookDefinition][]
   for (const [eventName, hook] of entries) {
-    const commands = collectHookCommands(hooksConfig[eventName])
-    const configured = commands.find(command => matchesClaudeHook(command, configRoot, hook.script)) ?? null
+    const configured = findConfiguredHookCommand(hooksConfig[eventName], hook, configRoot)
     status[eventName] = {
       installed: Boolean(configured),
       configured,
@@ -260,6 +270,23 @@ function buildHookStatus(
     }
   }
   return status
+}
+
+function findConfiguredHookCommand(
+  eventConfig: unknown,
+  hook: HookDefinition,
+  configRoot: string
+): string | null {
+  if (!Array.isArray(eventConfig)) return null
+  for (const entry of eventConfig) {
+    if (!isPlainObject(entry) || !hookEntryHasMatcher(entry, hook.matcher)) continue
+    if (!Array.isArray(entry.hooks)) continue
+    for (const item of entry.hooks) {
+      if (!isPlainObject(item) || typeof item.command !== 'string') continue
+      if (matchesClaudeHook(item.command, configRoot, hook.script)) return item.command
+    }
+  }
+  return null
 }
 
 function collectHookCommands(eventConfig: unknown): string[] {
@@ -280,32 +307,61 @@ function collectHookCommands(eventConfig: unknown): string[] {
 }
 
 function ensureHookInstalled(eventConfig: unknown, hook: HookDefinition, configRoot: string): unknown[] {
-  const entries = Array.isArray(eventConfig) ? eventConfig.slice() : []
+  const sourceEntries = Array.isArray(eventConfig) ? eventConfig : []
+  const entries: unknown[] = []
   let found = false
 
-  for (const entry of entries) {
-    if (!isPlainObject(entry)) continue
+  for (const entry of sourceEntries) {
+    if (!isPlainObject(entry)) {
+      entries.push(entry)
+      continue
+    }
     const hooks = Array.isArray(entry.hooks) ? entry.hooks : null
-    if (!hooks) continue
+    if (!hooks) {
+      entries.push(entry)
+      continue
+    }
+    const retainedHooks: unknown[] = []
+    let removedOwnedHook = false
     for (const item of hooks) {
-      if (!isPlainObject(item)) continue
+      if (!isPlainObject(item)) {
+        retainedHooks.push(item)
+        continue
+      }
       const command = typeof item.command === 'string' ? item.command : ''
       if (command && matchesClaudeHook(command, configRoot, hook.script)) {
-        item.type = 'command'
-        item.command = hook.command
-        item.timeout = CLAUDE_HOOK_TIMEOUT_SECONDS
-        found = true
+        removedOwnedHook = true
+        if (!found && hookEntryHasMatcher(entry, hook.matcher)) {
+          retainedHooks.push({
+            ...item,
+            type: 'command',
+            command: hook.command,
+            timeout: hook.timeout ?? CLAUDE_HOOK_TIMEOUT_SECONDS
+          })
+          found = true
+        }
+        continue
       }
+      retainedHooks.push(item)
+    }
+
+    if (retainedHooks.length > 0 || !removedOwnedHook) {
+      entries.push(retainedHooks.length === hooks.length
+        ? entry
+        : { ...entry, hooks: retainedHooks })
+    } else if (hasUnrelatedHookEntryMetadata(entry)) {
+      entries.push({ ...entry, hooks: [] })
     }
   }
 
   if (!found) {
     entries.push({
+      ...(hook.matcher ? { matcher: hook.matcher } : {}),
       hooks: [
         {
           type: 'command',
           command: hook.command,
-          timeout: CLAUDE_HOOK_TIMEOUT_SECONDS
+          timeout: hook.timeout ?? CLAUDE_HOOK_TIMEOUT_SECONDS
         }
       ]
     })
@@ -342,13 +398,22 @@ function removeHookEntries(eventConfig: unknown, hook: HookDefinition, configRoo
       entries.push({ ...entry, hooks: retainedHooks })
       continue
     }
-    const hasMetadata = Object.keys(entry).some(key => key !== 'hooks')
-    if (hasMetadata) {
+    if (hasUnrelatedHookEntryMetadata(entry)) {
       entries.push({ ...entry, hooks: [] })
     }
   }
 
   return entries
+}
+
+function hookEntryHasMatcher(entry: Record<string, unknown>, matcher?: string): boolean {
+  return matcher === undefined
+    ? entry.matcher === undefined
+    : entry.matcher === matcher
+}
+
+function hasUnrelatedHookEntryMetadata(entry: Record<string, unknown>): boolean {
+  return Object.keys(entry).some(key => key !== 'hooks' && key !== 'matcher')
 }
 
 function normalizeHookCommand(value: string): string {

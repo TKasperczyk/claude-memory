@@ -57,7 +57,7 @@ describe('extraction run log', () => {
       }
     })
 
-    saveExtractionRun(run, collection)
+    expect(saveExtractionRun(run, collection)).toBe(true)
 
     const loaded = getExtractionRun(run.runId, collection)
     expect(loaded?.error).toEqual({
@@ -67,6 +67,22 @@ describe('extraction run log', () => {
       message: 'Internal server error',
       requestId: 'req_round_trip'
     })
+  })
+
+  it('returns false when the run log cannot be written', async () => {
+    const { saveExtractionRun } = await loadExtractionLog()
+    await fs.writeFile(path.join(storageRoot, 'extractions'), 'not-a-directory')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      expect(saveExtractionRun(buildRun({ runId: 'unwritable-run' }), 'test-collection')).toBe(false)
+      expect(consoleError).toHaveBeenCalledWith(
+        '[claude-memory] Failed to write extractions log:',
+        expect.anything()
+      )
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   it('round-trips internal_error and skips it as an incremental checkpoint', async () => {

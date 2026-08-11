@@ -38,7 +38,7 @@ What it asks (in order):
 3. **Vector storage** -- LanceDB directory (default `~/.claude-memory/lancedb`) and table name (default `cc_memories`).
 4. **Extraction model** -- pick from a short list (Sonnet 4.5 by default).
 5. **Install** -- writes `~/.claude-memory/config.json` and updates `~/.claude/settings.json` with:
-   - **Hooks**: `UserPromptSubmit` -> `pre-prompt.js`, `SessionEnd` and `PreCompact` -> `post-session.js`
+   - **Hooks**: `UserPromptSubmit` -> `pre-prompt.js`, `SessionEnd` and `PreCompact` -> `post-session.js`, and matcher-qualified `PostToolUse` (`memory_write`) -> `memory-write-hint.js`
    - **Slash commands**: `/prior-knowledge` (show injected memories), `/remember` (mark conversation for extraction), `/skip-extraction` (skip extraction for this session)
    - **MCP server**: `claude-memory` (read-only `search_memories` tool)
 
@@ -61,6 +61,10 @@ Skip the wizard if you'd rather wire things up yourself. Add to `~/.claude/setti
     }],
     "PreCompact": [{
       "hooks": [{ "type": "command", "command": "node \"/path/to/claude-memory/dist/hooks/post-session.js\"", "timeout": 15 }]
+    }],
+    "PostToolUse": [{
+      "matcher": "memory_write",
+      "hooks": [{ "type": "command", "command": "node \"/path/to/claude-memory/dist/hooks/memory-write-hint.js\"", "timeout": 5 }]
     }]
   },
   "mcpServers": {
@@ -160,6 +164,7 @@ Tuning knobs for retrieval, maintenance, and models. Editable through the dashbo
 | `relationHopDecay` | `0.6` | Score decay applied per relation hop |
 | `maxRelationsPerRecord` | `50` | Max `relates_to` edges retained per memory; `supersedes` edges are preserved |
 | `enableHaikuRetrieval` | `false` | Use Haiku to plan / expand retrieval queries |
+| `enableMemoryWriteHints` | `true` | Capture native `memory_write` calls as priority anchors for post-session extraction |
 | `extractionDedupThreshold` | `0.85` | Similarity threshold for update-vs-insert during extraction |
 | `extractionContextOverlapTurns` | `3` | Overlap when re-extracting a resumed session |
 | `consolidationThreshold` | `0.80` | Similarity threshold for merging records |
@@ -273,6 +278,7 @@ It's wired into Claude Code automatically by the wizard. The tool is intentional
 ### Hooks (`src/hooks/`)
 
 - **`pre-prompt.ts`** (`UserPromptSubmit`) -- hybrid retrieval + MMR diversity, optional Haiku query planning, semantic-anchor gate, injects context on stdout. Tracks injected IDs per session for downstream usefulness rating.
+- **`memory-write-hint.ts`** (`PostToolUse`, matcher `memory_write`) -- synchronously captures a bounded, deduplicated per-session hint. Hints only direct the normal extraction pass; they never write records to LanceDB directly.
 - **`post-session.ts`** (`SessionEnd`, `PreCompact`) -- thin launcher; spawns a detached worker so the hook returns instantly.
 - **`post-session-worker.ts`** -- extracts knowledge from the transcript via Claude, deduplicates against existing records (update-vs-insert via `extractionDedupThreshold`), rates the previously-injected memories' usefulness, triggers periodic maintenance, and finally checks registrations, source freshness, and the optional pull interval.
 
@@ -349,5 +355,5 @@ Weak usage-based deprecators are preview-only in the dashboard and are excluded 
 ## Data storage
 
 - **LanceDB** -- vectors + record metadata. Default location: `~/.claude-memory/lancedb`, table `cc_memories`.
-- **`~/.claude-memory/`** -- `config.json`, `settings.json`, `self-update-state.json`, sessions, extraction logs, token-usage events, stats snapshots, installer state.
+- **`~/.claude-memory/`** -- `config.json`, `settings.json`, `self-update-state.json`, sessions, extraction logs, token-usage events, stats snapshots, installer state, and transient `memory-write-hints/sessions/*.jsonl` priority anchors.
 - **`~/.claude-memory/debug.log`** and **`~/.claude-memory/extraction-audit.log`** -- worker diagnostics; trimmed on worker startup when they exceed the built-in size cap.

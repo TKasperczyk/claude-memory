@@ -1482,6 +1482,13 @@ describe('extractions routes', () => {
   it('persists re-extraction failures without skipReason or checkpoint', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-reextract-'))
     const transcriptPath = path.join(tempRoot, 'session.jsonl')
+    const memoryWriteHints = [{
+      sessionId: 'session-1',
+      timestamp: 123,
+      name: 'Persisted re-extraction evidence',
+      toolUseId: 'memory-write-1',
+      content: 'Use the run-scoped hint evidence.'
+    }]
     await fs.writeFile(transcriptPath, JSON.stringify({
       type: 'user',
       timestamp: new Date().toISOString(),
@@ -1498,7 +1505,8 @@ describe('extractions routes', () => {
       parseErrorCount: 0,
       extractedRecordIds: [],
       duration: 0,
-      extractedEventCount: 7
+      extractedEventCount: 7,
+      memoryWriteHints
     })
     mockedHandlePostSession.mockResolvedValueOnce({
       inserted: 0,
@@ -1535,10 +1543,12 @@ describe('extractions routes', () => {
       extractedEventCount?: number
       duration?: number
       error?: unknown
+      memoryWriteHints?: unknown[]
     }
     expect(saved.isReExtract).toBe(true)
     expect(saved.skipReason).toBeUndefined()
     expect(saved.extractedEventCount).toBeUndefined()
+      expect(saved.memoryWriteHints).toEqual(memoryWriteHints)
       expect(saved.error).toMatchObject({
         kind: 'api_error',
         code: 'api_error',
@@ -1548,7 +1558,11 @@ describe('extractions routes', () => {
     expect(mockedHandlePostSession).toHaveBeenCalledWith(
       expect.objectContaining({ session_id: 'session-1' }),
       DEFAULT_CONFIG,
-      expect.objectContaining({ flush: 'always', plannedRunId: 'run-1' })
+      expect.objectContaining({
+        flush: 'always',
+        plannedRunId: 'run-1',
+        memoryWriteHints
+      })
     )
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true })

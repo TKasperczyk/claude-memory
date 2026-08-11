@@ -22,4 +22,20 @@ describe('retrieval and maintenance setting defaults', () => {
       error: 'value must be >= 1'
     })
   })
+
+  it('enables memory_write hints by default and validates boolean overrides', () => {
+    expect(DEFAULT_MAINTENANCE_SETTINGS.enableMemoryWriteHints).toBe(true)
+    expect(validateSettingValue('enableMemoryWriteHints', false)).toEqual({
+      ok: true,
+      normalized: false
+    })
+    expect(validateSettingValue('enableMemoryWriteHints', 'true')).toEqual({
+      ok: true,
+      normalized: true
+    })
+    expect(validateSettingValue('enableMemoryWriteHints', 'yes')).toEqual({
+      ok: false,
+      error: 'value must be a boolean'
+    })
+  })
 })

@@ -13,6 +13,7 @@ import {
   getDistPath,
   getHookArtifactRelativePath,
   getHookScriptPath,
+  HOOK_MATCHERS,
   HOOK_SCRIPTS,
   MCP_SERVER_SCRIPT,
   POST_SESSION_WORKER_SCRIPT,
@@ -386,6 +387,10 @@ describe('self-update freshness and build swapping', () => {
     }
     expect(REQUIRED_DIST_ARTIFACTS).toContain(POST_SESSION_WORKER_ARTIFACT)
     expect(REQUIRED_DIST_ARTIFACTS).toContain(MCP_SERVER_SCRIPT)
+    expect(REQUIRED_DIST_ARTIFACTS).toContain(
+      getHookArtifactRelativePath(HOOK_SCRIPTS.PostToolUse)
+    )
+    expect(HOOK_MATCHERS.PostToolUse).toBe('memory_write')
   })
 
   it('detects a deleted source file from its persisted source fingerprint', async () => {
@@ -1011,6 +1016,32 @@ describe('self-update state, reconciliation, and explicit operations', () => {
       hooks: Record<string, Array<{ hooks?: Array<{ timeout?: number }> }>>
     }
     expect(repairedSettings.hooks.UserPromptSubmit?.[0]?.hooks?.[0]?.timeout).toBe(99)
+  })
+
+  it('reconciles PostToolUse onto the exact memory_write matcher', async () => {
+    const selfUpdate = await loadSelfUpdate()
+    const initialRunner = createRunner(selfUpdate)
+    selfUpdate.runSelfUpdate({ root: fixture.root, runner: initialRunner.runner })
+
+    const settings = JSON.parse(fs.readFileSync(fixture.settingsPath, 'utf-8')) as {
+      hooks: Record<string, Array<{ matcher?: string; hooks?: Array<{ timeout?: number }> }>>
+    }
+    const postToolUse = settings.hooks.PostToolUse?.[0]
+    if (!postToolUse) throw new Error('fixture is missing PostToolUse hook')
+    postToolUse.matcher = 'Bash'
+    writeFile(fixture.settingsPath, JSON.stringify(settings, null, 2))
+
+    const repairRunner = createRunner(selfUpdate)
+    const result = selfUpdate.runSelfUpdate({ root: fixture.root, runner: repairRunner.runner })
+
+    expect(result.reconciliation.status).toBe('success')
+    expect(result.reconciliation.installedHooks).toContain('PostToolUse')
+    const repaired = JSON.parse(fs.readFileSync(fixture.settingsPath, 'utf-8')) as {
+      hooks: { PostToolUse: Array<{ matcher?: string; hooks?: Array<{ timeout?: number }> }> }
+    }
+    const ownedEntry = repaired.hooks.PostToolUse.find(entry => entry.matcher === 'memory_write')
+    expect(ownedEntry?.hooks?.[0]?.timeout).toBe(5)
+    expect(repaired.hooks.PostToolUse.some(entry => entry.matcher === 'Bash')).toBe(false)
   })
 
   it('writes Claude settings through a same-directory atomic rename', async () => {

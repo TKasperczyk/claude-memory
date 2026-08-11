@@ -6,8 +6,8 @@
 
 import fs, { appendFileSync } from 'fs'
 import { randomUUID } from 'crypto'
-import { join, resolve } from 'path'
-import { fileURLToPath } from 'url'
+import { join } from 'path'
+import { isProcessEntrypoint } from '../lib/shared.js'
 import { closeLanceDB, flushCollection, initLanceDB, incrementRecordCounters } from '../lib/lancedb.js'
 import { rateInjectedMemories, sanitizeExtractionFailure } from '../lib/extract.js'
 import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
@@ -19,7 +19,7 @@ import { buildMaintenanceRun, getLastMaintenanceRun, saveMaintenanceRun } from '
 import { buildMemoryStats } from '../lib/memory-stats.js'
 import { loadSettings } from '../lib/settings.js'
 import { hasStatsSnapshot, saveStatsSnapshotIfNeeded } from '../lib/stats-snapshots.js'
-import { type Config, type ExtractionFailure, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord, type TokenUsage } from '../lib/types.js'
+import { type Config, type ExtractionFailure, type ExtractionHookInput, type HookInput, type InjectedMemoryEntry, type MemoryRecord, type MemoryWriteHintEvent, type TokenUsage } from '../lib/types.js'
 import { safeJsonStringifyCompact } from '../lib/json.js'
 import { getRecordSearchableTextParts } from '../lib/record-fields.js'
 import { acquireFileLock } from '../lib/lock.js'
@@ -31,6 +31,12 @@ import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE, LOCKS_DIR } from '../lib/paths.js'
 import { formatExtractionFailureSummary, isTrueExtractionFailure } from '../lib/extraction-status.js'
 import { formatStageTimings } from '../lib/extraction-timings.js'
 import { runSelfUpdate } from '../lib/self-update.js'
+import {
+  cleanupMemoryWriteHints,
+  deleteMemoryWriteHints,
+  loadMemoryWriteHints,
+  MEMORY_WRITE_HINT_RETENTION_DAYS
+} from '../lib/memory-write-hints.js'
 
 function auditErrorSuffix(failure?: ExtractionFailure): string {
   if (!failure) return ''
@@ -140,6 +146,32 @@ function auditLog(msg: string): void {
 function shouldPersistRunForResult(result: WorkerResult | null): boolean {
   if (!result) return true
   return !result.reason || !NO_RUN_SAVE_REASONS.has(result.reason as NoRunSaveReason)
+}
+
+function deleteMemoryWriteHintsSafely(sessionId: string): void {
+  try {
+    deleteMemoryWriteHints(sessionId)
+  } catch (error) {
+    console.error('[claude-memory] Failed to delete memory_write hints:', error)
+  }
+}
+
+export function shouldDeleteMemoryWriteHints(
+  payload: ExtractionHookInput,
+  result: WorkerResult,
+  runSaved: boolean
+): boolean {
+  if (payload.hook_event_name !== 'SessionEnd') return false
+  if (result.reason === 'no_transcript' || result.reason === 'wrong_event') return false
+  if (result.extractionError || result.failed > 0) return false
+  if (result.reason === 'no_new_events') return true
+  return runSaved
+}
+
+function memoryWriteHintIdentity(hint: MemoryWriteHintEvent): string {
+  return hint.toolUseId
+    ? `tool-use:${hint.toolUseId}`
+    : `timestamp-name:${hint.timestamp}:${hint.name}`
 }
 
 export function getUsefulnessRunId(result: WorkerResult | null, plannedRunId: string): string | undefined {
@@ -313,6 +345,14 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
     let runSaved = false
     debugLog(`Parsed payload: event=${payload.hook_event_name}, session=${payload.session_id}`)
     auditLog(`START event=${payload.hook_event_name} session=${payload.session_id} transcript=${payload.transcript_path}`)
+    const hintSettings = loadSettings()
+    const storedMemoryWriteHints = loadMemoryWriteHints(payload.session_id)
+    try {
+      const retentionMs = MEMORY_WRITE_HINT_RETENTION_DAYS * 24 * 60 * 60 * 1000
+      cleanupMemoryWriteHints(Date.now() - retentionMs)
+    } catch (error) {
+      console.error('[claude-memory] Failed to clean up memory_write hints:', error)
+    }
     try {
       const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
       config = loadConfig(configRoot)
@@ -333,6 +373,7 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
           auditLog(`SKIP reason=clear session=${payload.session_id}`)
           console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
           removeSessionTracking(payload.session_id, collection)
+          deleteMemoryWriteHintsSafely(payload.session_id)
           return
         }
 
@@ -354,6 +395,9 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
             auditLog(`SKIP reason=skip_requested session=${payload.session_id}`)
             console.error('[claude-memory] Skip-extraction marker found; skipping extraction.')
             removeSessionTracking(payload.session_id, collection)
+            if (payload.hook_event_name === 'SessionEnd') {
+              deleteMemoryWriteHintsSafely(payload.session_id)
+            }
             return
           }
         }
@@ -370,6 +414,13 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
         // Check for prior extraction of this session (incremental extraction)
         const priorRun = getLastExtractionRunForSession(payload.session_id, collection)
         const previousEventCount = priorRun?.extractedEventCount
+        const priorHintIdentities = new Set(
+          (priorRun?.memoryWriteHints ?? []).map(memoryWriteHintIdentity)
+        )
+        const memoryWriteHints = hintSettings.enableMemoryWriteHints
+          ? storedMemoryWriteHints.filter(hint => !priorHintIdentities.has(memoryWriteHintIdentity(hint)))
+          : []
+        debugLog(`Loaded ${memoryWriteHints.length} unprocessed memory_write hints`)
         if (previousEventCount) {
           debugLog(`Found prior extraction run ${priorRun.runId} with ${previousEventCount} events`)
           auditLog(`INCREMENTAL prior_run=${priorRun.runId} prior_events=${previousEventCount} session=${payload.session_id}`)
@@ -390,6 +441,7 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
             injectedMemories,
             previousExtractionEventCount: previousEventCount,
             plannedRunId,
+            memoryWriteHints,
             recordAugmenter: (record, transcript) => ({
               ...record,
               sourceSessionId: payload.session_id,
@@ -438,7 +490,16 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
           const stageTimings = usefulnessDuration !== undefined
             ? { ...result.timings, usefulness: usefulnessDuration }
             : result.timings
-          runSaved = saveRunLog(payload, result, plannedRunId, extractionDuration, runTokenUsage, collection, stageTimings)
+          runSaved = saveRunLog(
+            payload,
+            result,
+            plannedRunId,
+            extractionDuration,
+            runTokenUsage,
+            collection,
+            stageTimings,
+            memoryWriteHints
+          )
         }
 
         if (shouldFlush) {
@@ -447,6 +508,10 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
         }
 
         if (!result) return
+
+        if (shouldDeleteMemoryWriteHints(payload, result, runSaved)) {
+          deleteMemoryWriteHintsSafely(payload.session_id)
+        }
 
         if (result.reason === 'no_transcript') {
           console.warn(`[claude-memory] Transcript not found; skipping extraction. path=${payload.transcript_path}`)
@@ -517,7 +582,8 @@ export function saveRunLog(
   duration: number,
   tokenUsage: TokenUsage,
   collection?: string,
-  stageTimings?: Partial<Record<string, number>>
+  stageTimings?: Partial<Record<string, number>>,
+  memoryWriteHints?: MemoryWriteHintEvent[]
 ): boolean {
   if (!shouldPersistRunForResult(result)) {
     auditLog(`DONE session=${payload.session_id} reason=${result.reason} (no run saved)`)
@@ -536,7 +602,7 @@ export function saveRunLog(
   const extractionError = sanitizeExtractionFailure(result.extractionError)
   const trueFailure = isTrueExtractionFailure(extractionError, persistedRecordCount)
 
-  saveExtractionRun({
+  const runSaved = saveExtractionRun({
     runId,
     sessionId: payload.session_id,
     transcriptPath: payload.transcript_path,
@@ -554,6 +620,9 @@ export function saveRunLog(
     extractedEventCount: trueFailure ? undefined : result.extractedEventCount,
     isIncremental: result.isIncremental,
     hasRememberMarker: result.hasRememberMarker,
+    memoryWriteHints: memoryWriteHints && memoryWriteHints.length > 0
+      ? memoryWriteHints
+      : undefined,
     supersedesMissing: result.supersedesMissing || undefined,
     skipReason: extractionError ? undefined
       : result.reason === 'too_short' ? 'too_short'
@@ -564,7 +633,7 @@ export function saveRunLog(
 
   const auditStatus = trueFailure ? 'FAILED' : 'DONE'
   auditLog(`${auditStatus} session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}${formatStageTimings(stageTimings ?? result.timings, { extraStages: WORKER_EXTRA_TIMING_STAGES, leadingSpace: true })}${auditErrorSuffix(extractionError)}`)
-  return true
+  return runSaved
 }
 
 export async function processUsefulnessRating(
@@ -862,9 +931,7 @@ function trimToMax(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 3)}...`
 }
 
-const entryPath = process.argv[1] ? resolve(process.argv[1]) : ''
-const isMainModule = fileURLToPath(import.meta.url) === entryPath
-if (isMainModule) {
+if (isProcessEntrypoint(import.meta.url)) {
   runPostSessionWorker(process.argv[2])
     .then(() => {
       process.exitCode = 0

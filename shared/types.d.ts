@@ -214,6 +214,17 @@ export interface InjectionSessionRecord {
   retrievalStateVersion?: number
 }
 
+export interface MemoryWriteHintEvent {
+  sessionId: string
+  timestamp: number
+  name: string
+  description?: string
+  nativeMemoryType?: string
+  toolUseId?: string
+  content?: string
+  contentTruncated?: boolean
+}
+
 export type SuppressionMode = 'hard' | 'soft'
 
 export interface SuppressionDiagnostic {
@@ -315,6 +326,7 @@ export interface MaintenanceSettings {
   warningSynthesisBatchSize: number
   warningSynthesisRecheckDays: number
   procedureStepCheckCount: number
+  enableMemoryWriteHints: boolean
   extractionMinTokens: number
   maxTranscriptChars: number
   extractionDedupThreshold: number
@@ -382,6 +394,7 @@ export interface ExtractionRun {
   isIncremental?: boolean
   isReExtract?: boolean
   hasRememberMarker?: boolean
+  memoryWriteHints?: MemoryWriteHintEvent[]
   supersedesMissing?: number
   skipReason?: 'too_short' | 'no_records'
   error?: ExtractionFailure
@@ -567,7 +580,7 @@ export interface MaintenanceRun {
   hasErrors: boolean
 }
 
-export type HookEvent = 'UserPromptSubmit' | 'SessionEnd' | 'PreCompact'
+export type HookEvent = 'UserPromptSubmit' | 'SessionEnd' | 'PreCompact' | 'PostToolUse'
 
 export interface HookStatus {
   installed: boolean

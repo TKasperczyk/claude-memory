@@ -774,6 +774,14 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.warningSynthesis
   },
   {
+    key: 'enableMemoryWriteHints',
+    label: 'Native memory_write hints',
+    description: 'Use captured native memory_write calls as priority anchors during session extraction.',
+    kind: 'bool',
+    default: true,
+    group: MAINTENANCE_GROUPS_META.extraction
+  },
+  {
     key: 'extractionMinTokens',
     label: 'Min conversation tokens',
     description: 'Skip extraction for conversations shorter than this (estimated tokens).',

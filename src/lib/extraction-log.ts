@@ -5,7 +5,8 @@ import { getRecordSummary } from './record-summary.js'
 import { RunLog } from './run-log.js'
 import { LOCKS_DIR } from './paths.js'
 import { isTrueExtractionFailure } from './extraction-status.js'
-import type { ExtractionFailure, ExtractionRecordOutcome, ExtractionRecordSummary, ExtractionRun, MemoryRecord, RecordType, TokenUsage } from '../../shared/types.js'
+import { coerceMemoryWriteHintEvent } from './memory-write-hints.js'
+import type { ExtractionFailure, ExtractionRecordOutcome, ExtractionRecordSummary, ExtractionRun, MemoryRecord, MemoryWriteHintEvent, RecordType, TokenUsage } from '../../shared/types.js'
 
 export type { ExtractionRecordSummary, ExtractionRun } from '../../shared/types.js'
 
@@ -22,8 +23,8 @@ class ExtractionRunLog extends RunLog<ExtractionRun> {
 
 const extractionLog = new ExtractionRunLog('extractions', 'extractionLogRetentionDays')
 
-export function saveExtractionRun(run: ExtractionRun, collection?: string): void {
-  extractionLog.save(run, collection)
+export function saveExtractionRun(run: ExtractionRun, collection?: string): boolean {
+  return extractionLog.save(run, collection)
 }
 
 export function listExtractionRuns(collection?: string): ExtractionRun[] {
@@ -133,6 +134,7 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
   const isIncremental = record.isIncremental === true ? true : undefined
   const isReExtract = record.isReExtract === true ? true : undefined
   const hasRememberMarker = record.hasRememberMarker === true ? true : undefined
+  const memoryWriteHints = coerceMemoryWriteHints(record.memoryWriteHints)
   const supersedesMissing = asInteger(record.supersedesMissing) ?? undefined
   const skipReason = record.skipReason === 'too_short' ? 'too_short' as const
     : record.skipReason === 'no_records' ? 'no_records' as const
@@ -158,10 +160,19 @@ function coerceExtractionRun(value: unknown, runId: string): ExtractionRun | nul
     isIncremental,
     isReExtract,
     hasRememberMarker,
+    memoryWriteHints,
     supersedesMissing,
     skipReason,
     error
   }
+}
+
+function coerceMemoryWriteHints(value: unknown): MemoryWriteHintEvent[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const hints = value
+    .map(entry => coerceMemoryWriteHintEvent(entry))
+    .filter((entry): entry is MemoryWriteHintEvent => Boolean(entry))
+  return hints.length > 0 ? hints : undefined
 }
 
 function coerceExtractionFailure(value: unknown): ExtractionFailure | undefined {

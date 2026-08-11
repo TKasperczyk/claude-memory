@@ -1,10 +1,8 @@
 #!/usr/bin/env -S npx tsx
 
-import path from 'path'
 import { randomUUID } from 'crypto'
-import { fileURLToPath } from 'url'
 import { SKIP_MARKER, getCommandFilePath } from '../lib/claude-commands.js'
-import { readFileIfExists } from '../lib/shared.js'
+import { isProcessEntrypoint, readFileIfExists } from '../lib/shared.js'
 import { closeLanceDB } from '../lib/lancedb.js'
 import { findGitRoot, formatRecordSnippet, stripNoiseWords } from '../lib/context.js'
 import { loadConfig } from '../lib/config.js'
@@ -211,9 +209,7 @@ function scheduleHardExit(exitCode?: number): void {
   hardExitTimer = setTimeout(() => process.exit(code), 50)
   hardExitTimer.unref()
 }
-const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : ''
-const isMainModule = fileURLToPath(import.meta.url) === entryPath
-if (isMainModule) {
+if (isProcessEntrypoint(import.meta.url)) {
   main()
     .then(() => {
       process.exitCode = 0

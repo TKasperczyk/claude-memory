@@ -107,12 +107,119 @@ describe('installer hook management', () => {
     expect(installed.UserPromptSubmit.installed).toBe(true)
     expect(installed.SessionEnd.installed).toBe(true)
     expect(installed.PreCompact.installed).toBe(true)
+    expect(installed.PostToolUse.installed).toBe(true)
     expect(installed.UserPromptSubmit.configured).toBe(installed.UserPromptSubmit.expected)
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as {
+      hooks?: { PostToolUse?: Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }> }
+    }
+    const memoryWriteEntries = (settings.hooks?.PostToolUse ?? [])
+      .filter(entry => entry.matcher === 'memory_write')
+    expect(memoryWriteEntries).toHaveLength(1)
+    expect(memoryWriteEntries[0].hooks).toEqual([{
+      type: 'command',
+      command: installed.PostToolUse.expected,
+      timeout: 5
+    }])
 
     const uninstalled = uninstallHooks(settingsPath, configRoot)
     expect(uninstalled.UserPromptSubmit.installed).toBe(false)
     expect(uninstalled.SessionEnd.installed).toBe(false)
     expect(uninstalled.PreCompact.installed).toBe(false)
+    expect(uninstalled.PostToolUse.installed).toBe(false)
+  })
+
+  it('installs all hooks idempotently with the exact memory_write matcher', () => {
+    const configRoot = path.join(tempDir, 'config-root')
+    installHooks(settingsPath, configRoot)
+    const first = fs.readFileSync(settingsPath, 'utf-8')
+
+    const status = installHooks(settingsPath, configRoot)
+    const second = fs.readFileSync(settingsPath, 'utf-8')
+
+    expect(second).toBe(first)
+    expect(status.PostToolUse.installed).toBe(true)
+    const settings = JSON.parse(second) as {
+      hooks: { PostToolUse: Array<{ matcher?: string; hooks?: Array<{ command?: string }> }> }
+    }
+    expect(settings.hooks.PostToolUse).toEqual([
+      {
+        matcher: 'memory_write',
+        hooks: [{ type: 'command', command: status.PostToolUse.expected, timeout: 5 }]
+      }
+    ])
+  })
+
+  it('moves an owned PostToolUse command from a wrong matcher and preserves unrelated hooks', () => {
+    const configRoot = path.join(tempDir, 'config-root')
+    const installed = installHooks(settingsPath, configRoot)
+    const customCommand = 'node "/tmp/custom-post-tool-use.js"'
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as {
+      hooks: { PostToolUse: Array<Record<string, unknown>> }
+    }
+    settings.hooks.PostToolUse = [{
+      matcher: 'Bash',
+      hooks: [
+        { type: 'command', command: installed.PostToolUse.expected, timeout: 99 },
+        { type: 'command', command: customCommand, timeout: 10 }
+      ]
+    }]
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), 'utf-8')
+
+    expect(getHookStatus(settingsPath, configRoot).PostToolUse.installed).toBe(false)
+    const repaired = installHooks(settingsPath, configRoot)
+    expect(repaired.PostToolUse.installed).toBe(true)
+
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as {
+      hooks: { PostToolUse: Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }> }
+    }
+    const bashEntry = after.hooks.PostToolUse.find(entry => entry.matcher === 'Bash')
+    const memoryEntry = after.hooks.PostToolUse.find(entry => entry.matcher === 'memory_write')
+    expect(bashEntry?.hooks).toEqual([{ type: 'command', command: customCommand, timeout: 10 }])
+    expect(memoryEntry?.hooks).toEqual([{
+      type: 'command',
+      command: repaired.PostToolUse.expected,
+      timeout: 5
+    }])
+  })
+
+  it('uninstalls only the owned PostToolUse hook and leaves no empty owned matcher entry', () => {
+    const configRoot = path.join(tempDir, 'config-root')
+    const customBashCommand = 'node "/tmp/custom-bash.js"'
+    const customMemoryCommand = 'node "/tmp/custom-memory-write.js"'
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        PostToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: customBashCommand, timeout: 10 }]
+          },
+          {
+            matcher: 'memory_write',
+            hooks: [{ type: 'command', command: customMemoryCommand, timeout: 7 }]
+          }
+        ]
+      }
+    }), 'utf-8')
+
+    installHooks(settingsPath, configRoot)
+    const status = uninstallHooks(settingsPath, configRoot)
+    expect(status.PostToolUse.installed).toBe(false)
+
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as {
+      hooks: { PostToolUse: Array<{ matcher?: string; hooks?: Array<{ command?: string }> }> }
+    }
+    expect(after.hooks.PostToolUse).toEqual([
+      {
+        matcher: 'Bash',
+        hooks: [{ type: 'command', command: customBashCommand, timeout: 10 }]
+      },
+      {
+        matcher: 'memory_write',
+        hooks: [{ type: 'command', command: customMemoryCommand, timeout: 7 }]
+      }
+    ])
+    expect(after.hooks.PostToolUse.some(entry => (entry.hooks ?? []).length === 0)).toBe(false)
   })
 
   it('uninstallHooks preserves unrelated hook commands', () => {
