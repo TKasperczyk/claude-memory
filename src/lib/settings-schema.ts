@@ -518,7 +518,7 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     min: 0,
     max: 720,
     kind: 'int',
-    default: 0,
+    default: 24,
     group: MAINTENANCE_GROUPS_META.selfUpdate
   },
   {
