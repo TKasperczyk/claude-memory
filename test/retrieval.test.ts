@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { DEFAULT_CONFIG, type HybridSearchResult, type InjectionSessionRecord, type MemoryRecord, type NearMissRecord, type RetrievalSettings } from '../src/lib/types.js'
-import { expandViaRelations, extractFallbackKeywords, retrieveContext } from '../src/lib/retrieval.js'
+import { DEFAULT_CONFIG, type HybridSearchResult, type InjectionSessionRecord, type MemoryRecord, type NearMissRecord, type RelationKind, type RetrievalSettings } from '../src/lib/types.js'
+import { buildKeywordQueries, expandViaRelations, extractFallbackKeywords, retrieveContext } from '../src/lib/retrieval.js'
 import { createMockCommandRecord } from './helpers.js'
 import { loadSettings } from '../src/lib/settings.js'
 import { DEFAULT_SETTINGS } from '../src/lib/settings-schema.js'
@@ -111,6 +111,8 @@ const BASE_SETTINGS: RetrievalSettings = {
   maxRelationExpansions: 5,
   relationHopDecay: 0.6,
   maxRelationsPerRecord: 50,
+  enableEntityEdges: false,
+  enableEntityKeywords: false,
   maxKeywordQueries: 4,
   maxKeywordErrors: 2,
   maxKeywordCommands: 2,
@@ -156,7 +158,7 @@ const makeResult = (
   keywordMatch
 })
 
-const makeRelation = (targetId: string, weight: number = 1, kind: 'relates_to' | 'supersedes' = 'relates_to') => ({
+const makeRelation = (targetId: string, weight: number = 1, kind: RelationKind = 'relates_to') => ({
   targetId,
   kind,
   weight,
@@ -369,6 +371,76 @@ describe('Relation expansion', () => {
 
     expect(results.map(result => result.record.id)).toEqual(['parent', 'child'])
     expect(mockedFetchRecordsByIds).not.toHaveBeenCalled()
+  })
+
+  it('skips shares_entity relations when enableEntityEdges is off', async () => {
+    const parent = makeResult('parent', [1, 0], 0.8, 0.7)
+    parent.record.relations = [
+      makeRelation('entity-child', 0.5, 'shares_entity'),
+      makeRelation('cooccur-child', 0.5, 'relates_to')
+    ]
+    mockedFetchRecordsByIds.mockResolvedValue([
+      createMockCommandRecord({ id: 'cooccur-child', command: 'cooccur', embedding: [0, 1] })
+    ])
+
+    const results = await expandViaRelations([parent], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 1,
+      maxRelationExpansions: 5,
+      relationHopDecay: 0.6,
+      enableEntityEdges: false
+    }))
+
+    expect(results.map(result => result.record.id)).toEqual(['parent', 'cooccur-child'])
+    expect(mockedFetchRecordsByIds).toHaveBeenCalledWith(['cooccur-child'], DEFAULT_CONFIG, { includeEmbeddings: true })
+  })
+
+  it('follows shares_entity relations when enableEntityEdges is on', async () => {
+    const parent = makeResult('parent', [1, 0], 0.8, 0.7)
+    parent.record.relations = [makeRelation('entity-child', 0.5, 'shares_entity')]
+    mockedFetchRecordsByIds.mockResolvedValue([
+      createMockCommandRecord({ id: 'entity-child', command: 'entity', embedding: [0, 1] })
+    ])
+
+    const results = await expandViaRelations([parent], DEFAULT_CONFIG, makeSettings({
+      maxRelationHops: 1,
+      maxRelationExpansions: 5,
+      relationHopDecay: 0.6,
+      enableEntityEdges: true
+    }))
+
+    expect(results.map(result => result.record.id)).toEqual(['parent', 'entity-child'])
+    expect(results[1].via).toEqual({ parentId: 'parent', kind: 'shares_entity', hop: 1 })
+  })
+})
+
+describe('Entity keyword needles', () => {
+  const NEEDLE_SIGNALS = { errors: [], commands: [], projectRoot: undefined, projectName: 'claude-memory' }
+  const NEEDLE_PROMPT = 'why does retrieval on phantom break for src/lib/retrieval.ts sometimes'
+
+  it('adds nothing beyond signal queries when disabled', () => {
+    const signals = { ...NEEDLE_SIGNALS, errors: ['err-a'], commands: ['cmd-a'] }
+    const off = buildKeywordQueries(signals, NEEDLE_PROMPT, makeSettings({ enableEntityKeywords: false }))
+    expect(off).toEqual(['err-a', 'cmd-a'])
+  })
+
+  it('appends entity needles after the keyword budget without displacing signal queries', () => {
+    const signals = { ...NEEDLE_SIGNALS, errors: ['err-a', 'err-b'], commands: ['cmd-a', 'cmd-b'] }
+    const queries = buildKeywordQueries(signals, NEEDLE_PROMPT, makeSettings({ enableEntityKeywords: true }))
+
+    expect(queries.slice(0, 4)).toEqual(['err-a', 'err-b', 'cmd-a', 'cmd-b'])
+    expect(queries).toContain('src/lib/retrieval.ts')
+  })
+
+  it('recognizes lowercase vocabulary entities and dedupes against existing queries', () => {
+    const queries = buildKeywordQueries(
+      NEEDLE_SIGNALS,
+      NEEDLE_PROMPT,
+      makeSettings({ enableEntityKeywords: true }),
+      new Set(['phantom'])
+    )
+
+    expect(queries).toContain('phantom')
+    expect(queries.filter(query => query === 'phantom')).toHaveLength(1)
   })
 })
 

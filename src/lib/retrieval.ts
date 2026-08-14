@@ -1,5 +1,6 @@
 import { truncateText, withTimeout } from './shared.js'
-import { closeLanceDB, initLanceDB, hybridSearch, computeUsageRatio, fetchRecordsByIds } from './lancedb.js'
+import { closeLanceDB, initLanceDB, hybridSearch, computeUsageRatio, fetchRecordsByIds, iterateRecords } from './lancedb.js'
+import { ENTITY_TOKEN_PATTERN, extractEntityNeedles } from './entities.js'
 import { buildContext, extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embed } from './embed.js'
 import { mergeNearMisses, buildExclusionReason } from './diagnostics.js'
@@ -140,7 +141,10 @@ const FALLBACK_SHORT_TECH_KEYWORDS = new Set([
   'udp'
 ])
 
-const FALLBACK_TOKEN_PATTERN = /[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}._:/@+-]*[\p{L}\p{N}\p{M}])?/gu
+const FALLBACK_TOKEN_PATTERN = ENTITY_TOKEN_PATTERN
+
+/** Separate budget for entity needles appended to keyword queries (B2 mechanism). */
+const ENTITY_NEEDLE_CAP = 3
 
 /**
  * Fixed weight for semantic similarity in the unified scoring formula.
@@ -406,7 +410,10 @@ async function searchMemories(
     ? stripNoiseWords(queryPlan.resolvedQuery)
     : cleanPrompt
   const effectivePrompt = resolvedPrompt || cleanPrompt
-  const rawKeywordQueries = buildKeywordQueries(signals, cleanPrompt, settings)
+  const entityVocabulary = settings.enableEntityKeywords
+    ? await loadEntityVocabulary(config)
+    : undefined
+  const rawKeywordQueries = buildKeywordQueries(signals, cleanPrompt, settings, entityVocabulary)
   const plannedKeywordQueries = queryPlan
     ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings, queryPlan.resolvedQuery)
       .filter(query => !rawKeywordQueries.some(rawQuery => rawQuery.toLowerCase() === query.toLowerCase()))
@@ -985,7 +992,7 @@ type RelationExpansionFrontierEntry = {
 export async function expandViaRelations(
   initialResults: HybridSearchResult[],
   config: Config,
-  settings: Pick<RetrievalSettings, 'maxRelationHops' | 'maxRelationExpansions' | 'relationHopDecay'>
+  settings: Pick<RetrievalSettings, 'maxRelationHops' | 'maxRelationExpansions' | 'relationHopDecay' | 'enableEntityEdges'>
 ): Promise<HybridSearchResult[]> {
   const maxHops = Math.max(0, Math.trunc(settings.maxRelationHops))
   const maxExpansions = Math.max(0, Math.trunc(settings.maxRelationExpansions))
@@ -1011,6 +1018,7 @@ export async function expandViaRelations(
     for (const parent of frontier) {
       for (const relation of parent.result.record.relations ?? []) {
         if (!relation.targetId || relation.weight <= 0) continue
+        if (relation.kind === 'shares_entity' && !settings.enableEntityEdges) continue
         if (byId.has(relation.targetId)) continue
 
         const decay = Math.pow(hopDecay, hop)
@@ -1427,10 +1435,11 @@ function normalizeSemanticQueries(
   return normalized
 }
 
-function buildKeywordQueries(
+export function buildKeywordQueries(
   signals: ContextSignals,
   cleanPrompt: string,
-  settings: RetrievalSettings
+  settings: RetrievalSettings,
+  entityVocabulary?: ReadonlySet<string>
 ): string[] {
   const errorQueries = signals.errors.slice(0, settings.maxKeywordErrors)
   const commandQueries = signals.commands.slice(0, settings.maxKeywordCommands)
@@ -1441,8 +1450,48 @@ function buildKeywordQueries(
     queries.push(...extractFallbackKeywords(cleanPrompt, settings.maxKeywordQueries))
   }
 
-  if (queries.length <= settings.maxKeywordQueries) return queries
-  return queries.slice(0, settings.maxKeywordQueries)
+  const base = queries.length <= settings.maxKeywordQueries
+    ? queries
+    : queries.slice(0, settings.maxKeywordQueries)
+  if (!settings.enableEntityKeywords) return base
+
+  // Entity needles get a separate small budget appended AFTER the
+  // maxKeywordQueries slice so they never displace error/command queries and
+  // flag-off behavior stays byte-identical.
+  const seen = new Set(base.map(query => query.toLowerCase()))
+  for (const needle of extractEntityNeedles(cleanPrompt, ENTITY_NEEDLE_CAP, entityVocabulary)) {
+    if (seen.has(needle)) continue
+    seen.add(needle)
+    base.push(needle)
+  }
+  return base
+}
+
+/**
+ * Distinct entity strings across the table, used to recognize prompt tokens
+ * that are known entities but look like ordinary words (lowercase hostnames).
+ * One full-table scan per process, cached per directory::table. Fine for the
+ * eval harness and short-lived hook processes with the flag off; production
+ * enablement of enableEntityKeywords should replace this with a maintained
+ * vocabulary artifact.
+ */
+const entityVocabularyCache = new Map<string, ReadonlySet<string>>()
+
+async function loadEntityVocabulary(config: Config): Promise<ReadonlySet<string>> {
+  const key = `${config.lancedb.directory}::${config.lancedb.table}`
+  const cached = entityVocabularyCache.get(key)
+  if (cached) return cached
+
+  const vocabulary = new Set<string>()
+  try {
+    for await (const record of iterateRecords({ filter: 'deprecated = false' }, config)) {
+      for (const entity of record.entities ?? []) vocabulary.add(entity)
+    }
+  } catch (error) {
+    console.error('[claude-memory] Entity vocabulary load failed; needles fall back to shape heuristics:', error)
+  }
+  entityVocabularyCache.set(key, vocabulary)
+  return vocabulary
 }
 
 function buildSemanticQuery(
