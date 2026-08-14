@@ -294,7 +294,7 @@ function joinEmbeddingParts(parts: Array<string | undefined>): string | undefine
   return filtered.length > 0 ? filtered.join('\n') : undefined
 }
 
-function serializeRecord(record: MemoryRecord): string {
+export function serializeRecord(record: MemoryRecord): string {
   const { embedding: _embedding, ...rest } = record as MemoryRecord & { embedding?: number[] }
   return JSON.stringify(rest)
 }
