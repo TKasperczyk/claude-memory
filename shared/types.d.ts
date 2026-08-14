@@ -1,6 +1,6 @@
 export type RecordType = 'command' | 'error' | 'discovery' | 'procedure' | 'warning'
 export type RecordScope = 'global' | 'project'
-export type RelationKind = 'relates_to' | 'supersedes'
+export type RelationKind = 'relates_to' | 'supersedes' | 'shares_entity'
 
 export interface Relation {
   targetId: string
@@ -39,6 +39,8 @@ export interface BaseRecord {
   /** UUID of a prior memory that this record supersedes/invalidates */
   supersedes?: string
   relations?: Relation[]
+  /** Normalized entity anchors (file paths, hostnames, services, tools, projects) extracted from record content */
+  entities?: string[]
 }
 
 export interface CommandRecord extends BaseRecord {
@@ -290,6 +292,8 @@ export interface RetrievalSettings {
   maxRelationExpansions: number
   relationHopDecay: number
   maxRelationsPerRecord: number
+  enableEntityEdges: boolean
+  enableEntityKeywords: boolean
   maxKeywordQueries: number
   maxKeywordErrors: number
   maxKeywordCommands: number

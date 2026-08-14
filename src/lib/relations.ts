@@ -77,7 +77,7 @@ function normalizeRelation(value: unknown): Relation | null {
 }
 
 function normalizeRelationKind(value: unknown): RelationKind | null {
-  return value === 'relates_to' || value === 'supersedes' ? value : null
+  return value === 'relates_to' || value === 'supersedes' || value === 'shares_entity' ? value : null
 }
 
 function normalizeWeight(value: unknown): number | null {

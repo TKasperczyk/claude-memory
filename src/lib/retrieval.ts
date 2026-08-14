@@ -19,6 +19,7 @@ import {
   type MemoryRecord,
   type NearMissRecord,
   type PrePromptInput,
+  type RelationKind,
   type SuppressionMode
 } from './types.js'
 
@@ -965,7 +966,7 @@ async function searchWithScope(
 type RelationExpansionCandidate = {
   targetId: string
   parent: HybridSearchResult
-  kind: 'relates_to' | 'supersedes'
+  kind: RelationKind
   hop: number
   rootScore: number
   rootSimilarity: number

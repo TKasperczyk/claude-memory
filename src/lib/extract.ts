@@ -20,6 +20,7 @@ import { REMEMBER_MARKER } from './claude-commands.js'
 import { stripNoiseWords } from './context.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { getRecordSchemaOneOf } from './record-schema.js'
+import { normalizeEntities } from './entities.js'
 import { asConfidence, asOutcome, asScope, asSeverity, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { emptyTokenUsage, extractTokenUsage } from './token-usage.js'
 import { recordTokenUsageEventsAsync } from './token-usage-events.js'
@@ -919,6 +920,9 @@ function applyCommonOptionalFields(record: MemoryRecord, input: Record<string, u
 
   const supersedes = asString(input.supersedes)
   if (supersedes) record.supersedes = supersedes
+
+  const entities = normalizeEntities(coerceStringArray(input.entities))
+  if (entities.length > 0) record.entities = entities
 }
 
 function inferIntent(transcript: Transcript): string | undefined {

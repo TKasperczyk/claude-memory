@@ -27,6 +27,12 @@ const COMMON_OPTIONAL_PROPERTIES = {
   supersedes: {
     type: 'string',
     description: 'Full UUID of a prior knowledge memory that this record supersedes/invalidates. Only set when this extraction corrects outdated information from an injected memory.'
+  },
+  entities: {
+    type: 'array',
+    items: { type: 'string' },
+    maxItems: 8,
+    description: 'Specific named entities anchoring this knowledge: file paths, hostnames/servers, service names, CLI tools, project/repo names. Lowercase, verbatim from the text where possible, max 8. Never generic terms like "git", "server", or "config".'
   }
 } as const
 

@@ -378,6 +378,22 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     group: RETRIEVAL_GROUPS.relations
   },
   {
+    key: 'enableEntityEdges',
+    label: 'Enable entity edges',
+    description: 'Follow shares_entity relations during relation expansion. When off, entity-overlap edges are ignored even if present.',
+    kind: 'bool',
+    default: false,
+    group: RETRIEVAL_GROUPS.relations
+  },
+  {
+    key: 'enableEntityKeywords',
+    label: 'Enable entity keywords',
+    description: 'Append entity-shaped needles extracted from the prompt (paths, hostnames, proper nouns) to keyword queries.',
+    kind: 'bool',
+    default: false,
+    group: RETRIEVAL_GROUPS.relations
+  },
+  {
     key: 'enableHaikuRetrieval',
     label: 'Enable Haiku retrieval',
     description: 'Use Haiku to analyze conversation context and generate better queries.',
