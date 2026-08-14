@@ -87,7 +87,7 @@ type ReviewPayload = {
   summary: string
 }
 
-type InjectionReviewInput = {
+export type InjectionReviewInput = {
   sessionId: string
   prompt: string
   cwd?: string
@@ -97,12 +97,17 @@ type InjectionReviewInput = {
   similarMemories: Array<{ record: MemoryRecord; similarity: number }>
 }
 
-export async function reviewInjection(
-  sessionId: string,
-  config: Config = DEFAULT_CONFIG
+/**
+ * Judge an already-assembled review input. Session-independent seam shared by
+ * reviewInjection and the eval harness (which feeds synthetic inputs).
+ */
+export async function reviewInjectionInput(
+  input: InjectionReviewInput,
+  injectedEntries: InjectedMemoryEntry[],
+  config: Config = DEFAULT_CONFIG,
+  options: { model?: string; startedAt?: number } = {}
 ): Promise<InjectionReview> {
-  const startTime = Date.now()
-  const { input, injectedEntries } = await buildInjectionReviewInput(sessionId, config)
+  const startTime = options.startedAt ?? Date.now()
   const settings = loadSettings()
   const { payload, reviewedAt, model, durationMs } = await executeReview(input, {
     toolName: REVIEW_TOOL_NAME,
@@ -110,7 +115,7 @@ export async function reviewInjection(
     toolSchema: REVIEW_TOOL_SCHEMA,
     maxTokens: REVIEW_MAX_TOKENS,
     systemPrompt: REVIEW_SYSTEM_PROMPT,
-    model: settings.reviewModel,
+    model: options.model ?? settings.reviewModel,
     buildPrompt: buildInjectionReviewPrompt,
     coercePayload: coerceReviewPayload,
     authErrorMessage: 'No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.',
@@ -119,7 +124,7 @@ export async function reviewInjection(
 
   const injectedVerdicts = normalizeInjectedVerdicts(payload.injectedVerdicts, injectedEntries)
   return {
-    sessionId,
+    sessionId: input.sessionId,
     prompt: input.prompt,
     reviewedAt,
     overallRating: payload.overallRating,
@@ -130,6 +135,15 @@ export async function reviewInjection(
     model,
     durationMs
   }
+}
+
+export async function reviewInjection(
+  sessionId: string,
+  config: Config = DEFAULT_CONFIG
+): Promise<InjectionReview> {
+  const startTime = Date.now()
+  const { input, injectedEntries } = await buildInjectionReviewInput(sessionId, config)
+  return reviewInjectionInput(input, injectedEntries, config, { startedAt: startTime })
 }
 
 export async function reviewInjectionStreaming(
