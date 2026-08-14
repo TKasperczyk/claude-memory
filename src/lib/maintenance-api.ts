@@ -13,6 +13,7 @@ import {
   runCurrentnessCheck,
   runConsolidation,
   runCrossTypeConsolidation,
+  runEntityOverlapDiscovery,
   runRelationDiscovery,
   runGlobalPromotion,
   runWarningSynthesis,
@@ -84,6 +85,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     key: 'relation-discovery',
     label: 'Relation Discovery',
     description: 'Strengthen links between memories repeatedly injected together',
+    allowExecute: true
+  },
+  {
+    key: 'entity-overlap-discovery',
+    label: 'Entity Overlap Discovery',
+    description: 'Link memories that share rare entity anchors (files, hosts, services)',
     allowExecute: true
   },
   {
@@ -205,6 +212,8 @@ async function runOperation(
       return runCurrentnessCheck(dryRun, config, settings, onProgress)
     case 'relation-discovery':
       return runRelationDiscovery(dryRun, config)
+    case 'entity-overlap-discovery':
+      return runEntityOverlapDiscovery(dryRun, config)
     case 'warning-synthesis':
       return runWarningSynthesis(dryRun, config, settings)
     case 'global-promotion':

@@ -26,6 +26,8 @@ export {
 
 export { runRelationDiscovery } from './relations.js'
 
+export { runEntityOverlapDiscovery } from './entities.js'
+
 export { runWarningSynthesis } from './warning-synthesis-runner.js'
 
 export { runPromotionSuggestions } from './promotion-suggestions-runner.js'
