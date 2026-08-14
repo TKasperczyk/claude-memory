@@ -13,7 +13,7 @@
  */
 
 import { normalizeEntities } from '../src/lib/entities.js'
-import { batchUpdateRecords, countRecords, initLanceDB, iterateRecords } from '../src/lib/lancedb.js'
+import { batchUpdateRecords, countRecords, fetchRecordsByIds, initLanceDB, iterateRecords } from '../src/lib/lancedb.js'
 import { serializeRecord } from '../src/lib/lancedb-records.js'
 import { executeReview } from '../src/lib/review-framework.js'
 import { loadSettings } from '../src/lib/settings.js'
@@ -127,9 +127,24 @@ async function backfill() {
   )
   console.log(`[eval-backfill] ${total} records in table, ${cache.size} cached extractions`)
 
+  // Two-phase: collect candidate ids with a read-only scan FIRST, then fetch
+  // and mutate by id. Writing during an offset-paged iteration shifts row
+  // order under the scan — records get re-visited or skipped entirely.
+  const candidateIds: string[] = []
   let scanned = 0
-  let updated = 0
   let skipped = 0
+  for await (const record of iterateRecords({ filter: 'deprecated = false' }, evalConfig)) {
+    if (scanned >= limit) break
+    scanned += 1
+    if (Array.isArray(record.entities) && record.entities.length > 0) {
+      skipped += 1
+      continue
+    }
+    candidateIds.push(record.id)
+  }
+  console.log(`[eval-backfill] Candidates without entities: ${candidateIds.length}`)
+
+  let updated = 0
   let oversize = 0
   let failedBatches = 0
   let pending: MemoryRecord[] = []
@@ -193,26 +208,17 @@ async function backfill() {
     }
 
     await applyEntities(batch, entitiesById)
-    process.stdout.write(`\r[eval-backfill] Scanned ${scanned}/${total} | updated ${updated} | skipped ${skipped}`)
+    process.stdout.write(`\r[eval-backfill] Updated ${updated}/${candidateIds.length} candidates | cached ${cache.size}`)
     return true
   }
 
-  for await (const record of iterateRecords({ filter: 'deprecated = false', includeEmbeddings: true }, evalConfig)) {
-    if (scanned >= limit) break
-    scanned += 1
-
-    if (Array.isArray(record.entities) && record.entities.length > 0) {
-      skipped += 1
-      continue
-    }
-
-    pending.push(record)
-    if (pending.length >= LLM_BATCH_SIZE) {
-      const shouldContinue = await flush()
-      if (!shouldContinue) return
-    }
+  for (let offset = 0; offset < candidateIds.length; offset += LLM_BATCH_SIZE) {
+    const ids = candidateIds.slice(offset, offset + LLM_BATCH_SIZE)
+    // Fetch by id (order-independent) with embeddings so writes never re-embed.
+    pending = await fetchRecordsByIds(ids, evalConfig, { includeEmbeddings: true })
+    const shouldContinue = await flush()
+    if (!shouldContinue) return
   }
-  await flush()
   console.log()
   console.log(`[eval-backfill] Done. Scanned ${scanned}, updated ${updated}, already-had-entities ${skipped}, oversize-trimmed-away ${oversize}, failed batches ${failedBatches}`)
   if (failedBatches > 0) {
