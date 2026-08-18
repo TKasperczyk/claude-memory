@@ -316,6 +316,7 @@ describe('post-session worker run saving', () => {
       recordCount?: number
       skippedRecordCount?: number
       failedRecordCount?: number
+      extractedEventCount?: number
       extractedRecordIds?: string[]
       updatedRecordIds?: string[]
       extractedRecords?: Array<Record<string, unknown>>
@@ -323,6 +324,7 @@ describe('post-session worker run saving', () => {
     expect(saved.recordCount).toBe(2)
     expect(saved.skippedRecordCount).toBe(1)
     expect(saved.failedRecordCount).toBe(1)
+    expect(saved.extractedEventCount).toBe(45)
     expect(saved.extractedRecordIds).toEqual([inserted.id])
     expect(saved.updatedRecordIds).toEqual(['existing-updated'])
     const deleteUnion = new Set([...(saved.extractedRecordIds ?? []), ...(saved.updatedRecordIds ?? [])])
@@ -358,6 +360,36 @@ describe('post-session worker run saving', () => {
     expect(saved.extractedEventCount).toBe(44)
     expect(saved.error).toBeUndefined()
     expect(await readAuditLog()).toContain('DONE session=worker-session')
+  })
+
+  it('withholds the checkpoint when extraction produced records but every store failed', async () => {
+    const { saveRunLog } = await loadWorker()
+    const failedRecord = createMockDiscoveryRecord({ id: 'all-store-failed' })
+
+    const persisted = saveRunLog(payload, {
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 1,
+      records: [failedRecord],
+      recordOutcomes: [{
+        id: failedRecord.id,
+        outcome: 'failed',
+        storeError: 'embedding endpoint unavailable'
+      }],
+      insertedIds: [],
+      updatedIds: [],
+      extractedEventCount: 45
+    }, 'planned-store-failure', 123, tokenUsage, 'test-collection')
+
+    expect(persisted).toBe(true)
+    expect(savedRuns).toHaveLength(1)
+    expect(savedRuns[0]).toMatchObject({
+      recordCount: 0,
+      failedRecordCount: 1
+    })
+    expect((savedRuns[0] as { extractedEventCount?: number }).extractedEventCount).toBeUndefined()
+    expect(await readAuditLog()).toContain('FAILED session=worker-session runId=planned-store-failure')
   })
 
   it('uses the planned run id and appends compact stage timings to audit lines', async () => {

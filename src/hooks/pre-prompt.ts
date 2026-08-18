@@ -1,5 +1,6 @@
 #!/usr/bin/env -S npx tsx
 
+import fs from 'fs'
 import { randomUUID } from 'crypto'
 import { SKIP_MARKER, getCommandFilePath } from '../lib/claude-commands.js'
 import { isProcessEntrypoint, readFileIfExists } from '../lib/shared.js'
@@ -19,6 +20,10 @@ import { appendSessionTracking, markInjectedForSuppression } from '../lib/sessio
 
 export { handlePrePrompt } from '../lib/retrieval.js'
 export type { PrePromptDiagnostics, PrePromptResult } from '../lib/retrieval.js'
+
+const TASK_NOTIFICATION_PREFIX = '<task-notification>'
+const TRANSCRIPT_TAIL_MAX_BYTES = 64 * 1024
+
 function shouldSkipInjection(prompt: string): boolean {
   if (prompt.includes(SKIP_MARKER)) {
     return true
@@ -35,6 +40,85 @@ function shouldSkipInjection(prompt: string): boolean {
   }
   return false
 }
+
+type TaskNotificationTranscriptEntry = {
+  type?: unknown
+  isSidechain?: unknown
+  isMeta?: unknown
+  origin?: { kind?: unknown }
+  promptSource?: unknown
+  message?: {
+    role?: unknown
+    content?: unknown
+  }
+}
+
+/**
+ * Skip only task notifications that can be tied to the current transcript entry.
+ * Any missing or ambiguous provenance deliberately falls through to retrieval.
+ */
+export function isMachineGeneratedTaskNotification(prompt: string, transcriptPath: string | undefined): boolean {
+  // All observed task notifications start with this exact marker. Keep the common
+  // path free of transcript I/O because this hook runs under a tight timeout.
+  if (!prompt.startsWith(TASK_NOTIFICATION_PREFIX) || !transcriptPath) return false
+
+  const lastLine = readLastTranscriptLine(transcriptPath)
+  if (!lastLine) return false
+
+  try {
+    const entry = JSON.parse(lastLine) as TaskNotificationTranscriptEntry
+    return entry.type === 'user'
+      && entry.message?.role === 'user'
+      && entry.isSidechain !== true
+      && entry.isMeta !== true
+      && entry.origin?.kind === 'task-notification'
+      && entry.promptSource === 'system'
+      && typeof entry.message.content === 'string'
+      && entry.message.content === prompt
+  } catch {
+    return false
+  }
+}
+
+function readLastTranscriptLine(transcriptPath: string): string | null {
+  let descriptor: number | undefined
+  try {
+    descriptor = fs.openSync(transcriptPath, 'r')
+    const size = fs.fstatSync(descriptor).size
+    if (size <= 0) return null
+
+    const bytesToRead = Math.min(size, TRANSCRIPT_TAIL_MAX_BYTES)
+    const tailStart = size - bytesToRead
+    const readStart = tailStart > 0 ? tailStart - 1 : 0
+    const buffer = Buffer.allocUnsafe(size - readStart)
+    const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, readStart)
+    const precedingByte = tailStart > 0 && bytesRead > 0 ? buffer[0] : undefined
+    let tail = buffer
+      .subarray(tailStart > 0 ? 1 : 0, bytesRead)
+      .toString('utf-8')
+
+    if (tailStart > 0 && precedingByte !== 0x0a) {
+      const firstNewline = tail.indexOf('\n')
+      if (firstNewline < 0) return null
+      tail = tail.slice(firstNewline + 1)
+    }
+
+    const lines = tail.split(/\r?\n/)
+    while (lines.length > 0 && !lines[lines.length - 1]?.trim()) lines.pop()
+    return lines.at(-1)?.trim() || null
+  } catch {
+    return null
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        fs.closeSync(descriptor)
+      } catch {
+        // Fail open; retrieval should continue even if transcript cleanup fails.
+      }
+    }
+  }
+}
+
 function commandFileHasSkipMarker(filePath: string): boolean {
   try {
     const content = readFileIfExists(filePath)
@@ -65,8 +149,34 @@ async function readHookInput(): Promise<UserPromptSubmitInput | null> {
     throw new Error(`Failed to parse hook input: ${message}`)
   }
 }
-async function main(): Promise<void> {
-  const payload = await readHookInput()
+
+type PrePromptRuntime = {
+  closeLanceDB: typeof closeLanceDB
+  findGitRoot: typeof findGitRoot
+  handlePrePrompt: typeof handlePrePrompt
+  loadConfig: typeof loadConfig
+  loadSettings: typeof loadSettings
+  markInjectedForSuppression: typeof markInjectedForSuppression
+  readHookInput: typeof readHookInput
+  trackSession: typeof trackSession
+  writeStdout: typeof writeStdout
+}
+
+const DEFAULT_RUNTIME: PrePromptRuntime = {
+  closeLanceDB,
+  findGitRoot,
+  handlePrePrompt,
+  loadConfig,
+  loadSettings,
+  markInjectedForSuppression,
+  readHookInput,
+  trackSession,
+  writeStdout
+}
+
+export async function main(runtimeOverrides: Partial<PrePromptRuntime> = {}): Promise<void> {
+  const runtime = { ...DEFAULT_RUNTIME, ...runtimeOverrides }
+  const payload = await runtime.readHookInput()
   if (!payload) return
 
   try {
@@ -77,42 +187,46 @@ async function main(): Promise<void> {
 
     if (!payload.prompt || !payload.prompt.trim()) {
       console.error('[claude-memory] Empty prompt; skipping injection.')
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'empty_prompt')
+      runtime.trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'empty_prompt')
       return
     }
     if (shouldSkipInjection(payload.prompt)) {
       console.error('[claude-memory] Skip marker detected; skipping injection.')
       return
     }
+    if (isMachineGeneratedTaskNotification(payload.prompt, payload.transcript_path)) {
+      console.error('[claude-memory] Machine-generated task notification detected; skipping injection.')
+      return
+    }
 
-    const projectRoot = findGitRoot(payload.cwd)
+    const projectRoot = runtime.findGitRoot(payload.cwd)
     const configRoot = projectRoot ?? payload.cwd
-    const config = loadConfig(configRoot)
-    const settings = loadSettings()
+    const config = runtime.loadConfig(configRoot)
+    const settings = runtime.loadSettings()
 
-    const result = await handlePrePrompt(payload, config, { projectRoot, settingsOverride: settings })
+    const result = await runtime.handlePrePrompt(payload, config, { projectRoot, settingsOverride: settings })
 
     if (result.timedOut) {
       console.error(`[claude-memory] Pre-prompt timed out after ${settings.prePromptTimeoutMs}ms; skipping injection.`)
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout', config.lancedb.table)
+      runtime.trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'timeout', config.lancedb.table)
       return
     }
 
     if (result.results.length === 0) {
       console.error('[claude-memory] No matching memories found.')
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.lancedb.table)
+      runtime.trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.lancedb.table)
       return
     }
 
     if (!result.context) {
       console.error('[claude-memory] Context empty after formatting.')
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.lancedb.table)
+      runtime.trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'no_matches', config.lancedb.table)
       return
     }
 
     let injected = false
     try {
-      await writeStdout(result.context)
+      await runtime.writeStdout(result.context)
       injected = true
     } catch (error) {
       console.error('[claude-memory] Failed to write injected context:', error)
@@ -121,7 +235,7 @@ async function main(): Promise<void> {
     if (injected) {
       if (settings.enableTopicSuppression && result.suppressionWritebackVersion !== undefined) {
         try {
-          markInjectedForSuppression(
+          runtime.markInjectedForSuppression(
             payload.session_id,
             result.injectedRecords.map(record => record.id),
             settings.recentlyInjectedWindow,
@@ -132,7 +246,7 @@ async function main(): Promise<void> {
           console.error('[claude-memory] Failed to mark injected memories for suppression:', error)
         }
       }
-      trackSession(
+      runtime.trackSession(
         payload.session_id,
         result.injectedRecords,
         result.results,
@@ -142,10 +256,10 @@ async function main(): Promise<void> {
         config.lancedb.table
       )
     } else {
-      trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error', config.lancedb.table)
+      runtime.trackSession(payload.session_id, [], [], payload.cwd, payload.prompt, 'error', config.lancedb.table)
     }
   } finally {
-    await closeLanceDB()
+    await runtime.closeLanceDB()
   }
 }
 function trackSession(

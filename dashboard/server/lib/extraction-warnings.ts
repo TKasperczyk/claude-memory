@@ -1,4 +1,4 @@
-import { getRunStatus, type ExtractionRunStatus } from '../../../src/lib/extraction-status.js'
+import { getRunStatus, isTrueExtractionFailure, type ExtractionRunStatus } from '../../../src/lib/extraction-status.js'
 import { DAY_MS } from '../../../src/lib/time-buckets.js'
 import type { ExtractionRun } from '../../../shared/types.js'
 
@@ -176,7 +176,10 @@ function addInternalErrorWarning(warnings: ExtractionWarning[], recentRuns: Extr
 }
 
 function addRecordStoreWarning(warnings: ExtractionWarning[], recentRuns: RunWithStatus[]): void {
-  const matches = recentRuns.filter(entry => entry.status !== 'failed' && (entry.run.failedRecordCount ?? 0) > 0)
+  const matches = recentRuns.filter(entry =>
+    !isTrueExtractionFailure(entry.run.error, entry.run.recordCount)
+    && (entry.run.failedRecordCount ?? 0) > 0
+  )
   if (matches.length === 0) return
   const matchedRuns = matches.map(entry => entry.run)
   const latest = latestRun(matchedRuns)

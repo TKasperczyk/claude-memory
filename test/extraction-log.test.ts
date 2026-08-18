@@ -232,7 +232,7 @@ describe('extraction run log', () => {
     }])
   })
 
-  it('uses clean no_records and partial-success runs as checkpoints but skips true failures', async () => {
+  it('uses clean no_records and partial-success runs as checkpoints but skips failed runs', async () => {
     const { saveExtractionRun, getLastExtractionRunForSession } = await loadExtractionLog()
     const collection = `extraction-log-${randomUUID()}`
     const sessionId = 'checkpoint-session'
@@ -256,12 +256,23 @@ describe('extraction run log', () => {
     expect(getLastExtractionRunForSession(sessionId, collection)?.runId).toBe('clean-no-records')
 
     saveExtractionRun(buildRun({
-      runId: 'partial-success',
+      runId: 'legacy-all-store-failed',
       sessionId,
       timestamp: now + 2,
+      failedRecordCount: 2,
+      extractedEventCount: 12
+    }), collection)
+
+    expect(getLastExtractionRunForSession(sessionId, collection)?.runId).toBe('clean-no-records')
+
+    saveExtractionRun(buildRun({
+      runId: 'partial-success',
+      sessionId,
+      timestamp: now + 3,
       recordCount: 1,
       extractedRecordIds: ['record-1'],
-      extractedEventCount: 12,
+      failedRecordCount: 1,
+      extractedEventCount: 13,
       error: { kind: 'max_tokens', maxTokens: 64000 }
     }), collection)
 
@@ -309,6 +320,10 @@ describe('extraction run log', () => {
       extractedRecordIds: ['record-1'],
       error: { kind: 'max_tokens', maxTokens: 64000 }
     }))).toBe('partial')
+
+    expect(getRunStatus(buildRun({
+      failedRecordCount: 2
+    }))).toBe('failed')
 
     expect(getRunStatus(buildRun())).toBe('completed')
   })

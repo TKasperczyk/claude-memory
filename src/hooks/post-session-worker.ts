@@ -8,7 +8,7 @@ import fs, { appendFileSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { isProcessEntrypoint } from '../lib/shared.js'
-import { closeLanceDB, flushCollection, initLanceDB, incrementRecordCounters } from '../lib/lancedb.js'
+import { batchUpdateRecords, closeLanceDB, fetchRecordsByIds, flushCollection, initLanceDB } from '../lib/lancedb.js'
 import { rateInjectedMemories, sanitizeExtractionFailure } from '../lib/extract.js'
 import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
 import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
@@ -28,7 +28,7 @@ import { findGitRoot } from '../lib/context.js'
 import { SKIP_EXTRACTION_MARKER } from '../lib/claude-commands.js'
 import { addTokenUsage, emptyTokenUsage, hasTokenUsage } from '../lib/token-usage.js'
 import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE, LOCKS_DIR } from '../lib/paths.js'
-import { formatExtractionFailureSummary, isTrueExtractionFailure } from '../lib/extraction-status.js'
+import { formatExtractionFailureSummary, isExtractionRunFailure } from '../lib/extraction-status.js'
 import { formatStageTimings } from '../lib/extraction-timings.js'
 import { runSelfUpdate } from '../lib/self-update.js'
 import {
@@ -600,7 +600,11 @@ export function saveRunLog(
   const extractedRecords = buildExtractionRecordSummaries(result.records, recordOutcomes)
   const firstPrompt = result.transcript ? getFirstUserPrompt(result.transcript) : undefined
   const extractionError = sanitizeExtractionFailure(result.extractionError)
-  const trueFailure = isTrueExtractionFailure(extractionError, persistedRecordCount)
+  const runFailure = isExtractionRunFailure({
+    error: extractionError,
+    recordCount: persistedRecordCount,
+    failedRecordCount
+  })
 
   const runSaved = saveExtractionRun({
     runId,
@@ -617,7 +621,7 @@ export function saveRunLog(
     duration,
     firstPrompt,
     tokenUsage: hasTokenUsage(tokenUsage) ? tokenUsage : undefined,
-    extractedEventCount: trueFailure ? undefined : result.extractedEventCount,
+    extractedEventCount: runFailure ? undefined : result.extractedEventCount,
     isIncremental: result.isIncremental,
     hasRememberMarker: result.hasRememberMarker,
     memoryWriteHints: memoryWriteHints && memoryWriteHints.length > 0
@@ -631,7 +635,7 @@ export function saveRunLog(
     error: extractionError
   }, collection)
 
-  const auditStatus = trueFailure ? 'FAILED' : 'DONE'
+  const auditStatus = runFailure ? 'FAILED' : 'DONE'
   auditLog(`${auditStatus} session=${payload.session_id} runId=${runId} inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed} supersedesMissing=${result.supersedesMissing ?? 0} duration=${duration}ms events=${result.extractedEventCount ?? '?'}${result.isIncremental ? ' incremental' : ''}${formatStageTimings(stageTimings ?? result.timings, { extraStages: WORKER_EXTRA_TIMING_STAGES, leadingSpace: true })}${auditErrorSuffix(extractionError)}`)
   return runSaved
 }
@@ -665,12 +669,7 @@ export async function processUsefulnessRating(
   try {
     const retrievalDeltas = countRetrievalDeltas(memories)
     if (retrievalDeltas.size > 0) {
-      await Promise.all(
-        Array.from(retrievalDeltas.entries()).map(([id, count]) =>
-          incrementRecordCounters(id, { retrievalCount: count }, config)
-        )
-      )
-      updated = true
+      updated = await batchIncrementRecordCounters(retrievalDeltas, 'retrievalCount', config) || updated
     }
   } catch (error) {
     console.error('[claude-memory] Failed to update retrieval counts:', error)
@@ -703,10 +702,8 @@ export async function processUsefulnessRating(
 
     if (helpfulIds.length > 0) {
       // NOTE: Best-effort counters; concurrent sessions can drop increments.
-      await Promise.all(helpfulIds.map(id =>
-        incrementRecordCounters(id, { usageCount: 1 }, config)
-      ))
-      updated = true
+      const usageDeltas = new Map(Array.from(new Set(helpfulIds)).map(id => [id, 1]))
+      updated = await batchIncrementRecordCounters(usageDeltas, 'usageCount', config) || updated
     }
 
     shouldRemove = true
@@ -729,6 +726,36 @@ function countRetrievalDeltas(memories: InjectedMemoryEntry[]): Map<string, numb
     counts.set(entry.id, (counts.get(entry.id) ?? 0) + 1)
   }
   return counts
+}
+
+async function batchIncrementRecordCounters(
+  deltas: Map<string, number>,
+  counter: 'retrievalCount' | 'usageCount',
+  config: Config
+): Promise<boolean> {
+  const records = await fetchRecordsByIds(Array.from(deltas.keys()), config, { includeEmbeddings: true })
+  if (records.length === 0) return false
+
+  const lastUsed = Date.now()
+  const updatedRecords = records.map(record => ({
+    ...record,
+    [counter]: (record[counter] ?? 0) + (deltas.get(record.id) ?? 0),
+    lastUsed
+  }))
+  const result = await batchUpdateRecords(updatedRecords, {}, config, { continueOnBatchError: true })
+  if (result.failed > 0) {
+    const failures = result.failures ?? []
+    const details = failures.map(failure => {
+      const ids = failure.recordIds.join(',')
+      return `${failure.stage} [${ids}]: ${sanitizeErrorMessage(failure.error)}`
+    })
+    const suffix = details.length > 0 ? `: ${details.join('; ')}` : ''
+    throw new AggregateError(
+      failures.map(failure => failure.error),
+      `Failed ${result.failed} ${counter} counter update(s)${suffix}`
+    )
+  }
+  return result.updated > 0
 }
 
 const SEGMENT_MAX_CHARS = 8000

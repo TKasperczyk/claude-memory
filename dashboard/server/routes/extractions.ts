@@ -10,7 +10,7 @@ import { paginateExtractionRuns, loadExtractionRunDetail } from '../../../src/li
 import { handlePostSession } from '../../../src/hooks/post-session.js'
 import { parseTranscript } from '../../../src/lib/transcript.js'
 import { deleteReview, getReview, saveReview } from '../../../src/lib/review-storage.js'
-import { isTrueExtractionFailure } from '../../../src/lib/extraction-status.js'
+import { isExtractionRunFailure } from '../../../src/lib/extraction-status.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
@@ -221,7 +221,11 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       const skippedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'skipped').length
       const failedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'failed').length
       const extractionError = sanitizeExtractionFailure(result.extractionError)
-      const trueFailure = isTrueExtractionFailure(extractionError, persistedRecordCount)
+      const runFailure = isExtractionRunFailure({
+        error: extractionError,
+        recordCount: persistedRecordCount,
+        failedRecordCount
+      })
       const extractedRecords = buildExtractionRecordSummaries(result.records, recordOutcomes)
 
       saveExtractionRun({
@@ -238,7 +242,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         duration: sumStageTimings(result.timings),
         firstPrompt: result.transcript ? getFirstUserPrompt(result.transcript) : run.firstPrompt,
         tokenUsage: result.tokenUsage,
-        extractedEventCount: trueFailure ? undefined : result.extractedEventCount,
+        extractedEventCount: runFailure ? undefined : result.extractedEventCount,
         hasRememberMarker: result.hasRememberMarker,
         memoryWriteHints: memoryWriteHints.length > 0 ? memoryWriteHints : undefined,
         skipReason: extractionError ? undefined

@@ -458,9 +458,27 @@ describe('buildContext', () => {
         severity: 'critical'
       })
       const { context } = buildContext([warning], defaultConfig)
+      expect(context).toContain('untrusted historical reference data')
+      expect(context).toContain('Use relevant facts, procedures, warnings, and commands')
+      expect(context).toContain('verify current state')
       expect(context).toContain('<known-pitfalls>')
       expect(context).toContain('</known-pitfalls>')
       expect(context).not.toContain('<prior-knowledge>')
+    })
+
+    it('counts the shared trust framing against warning-only token budgets', () => {
+      const warning = makeRecord<WarningRecord>({
+        type: 'warning',
+        avoid: 'unsafe action',
+        useInstead: 'safe action',
+        reason: 'safety',
+        severity: 'warning'
+      })
+      // The warning itself fits the 30% warning allowance at this budget; only
+      // reserving the shared trust preamble pushes the complete context over it.
+      const config = createConfig({ injection: { maxRecords: 10, maxTokens: 80 } })
+
+      expect(buildContext([warning], config)).toEqual({ context: '', records: [] })
     })
 
     it('renders both warnings and regular records in separate sections', () => {

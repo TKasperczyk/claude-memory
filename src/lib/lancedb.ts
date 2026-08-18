@@ -26,7 +26,13 @@ export {
   iterateRecords,
   countRecords
 } from './lancedb-crud.js'
-export type { FlushMode, WriteOptions } from './lancedb-crud.js'
+export type {
+  BatchUpdateFailure,
+  BatchUpdateOptions,
+  BatchUpdateResult,
+  FlushMode,
+  WriteOptions
+} from './lancedb-crud.js'
 
 export {
   hybridSearch,

@@ -427,11 +427,28 @@ export async function countRecords(
  * Much more efficient than calling updateRecord() in a loop when updating many records.
  * All records must already have embeddings (no re-embedding is done).
  */
+export interface BatchUpdateFailure {
+  recordIds: string[]
+  stage: 'prepare' | 'execute'
+  error: unknown
+}
+
+export interface BatchUpdateOptions {
+  continueOnBatchError?: boolean
+}
+
+export interface BatchUpdateResult {
+  updated: number
+  failed: number
+  failures?: BatchUpdateFailure[]
+}
+
 export async function batchUpdateRecords(
   records: MemoryRecord[],
   updates: Partial<MemoryRecord>,
-  config: Config = DEFAULT_CONFIG
-): Promise<{ updated: number; failed: number }> {
+  config: Config = DEFAULT_CONFIG,
+  options: BatchUpdateOptions = {}
+): Promise<BatchUpdateResult> {
   if (records.length === 0) return { updated: 0, failed: 0 }
 
   try {
@@ -439,10 +456,12 @@ export async function batchUpdateRecords(
     const batchSize = 500
     let updated = 0
     let failed = 0
+    const failures: BatchUpdateFailure[] = []
 
     for (let i = 0; i < records.length; i += batchSize) {
       const batch = records.slice(i, i + batchSize)
       const rows: LanceRow[] = []
+      const preparedRecordIds: string[] = []
 
       for (const record of batch) {
         try {
@@ -451,22 +470,30 @@ export async function batchUpdateRecords(
           // Keep existing embedding - no re-embedding for metadata-only updates
           const row = await buildLanceRow({ ...merged, embedding: record.embedding }, config)
           rows.push(row)
-        } catch {
+          preparedRecordIds.push(record.id)
+        } catch (error) {
           failed += 1
+          failures.push({ recordIds: [record.id], stage: 'prepare', error })
         }
       }
 
       if (rows.length > 0) {
-        await table
-          .mergeInsert('id')
-          .whenMatchedUpdateAll()
-          .whenNotMatchedInsertAll()
-          .execute(rows)
-        updated += rows.length
+        try {
+          await table
+            .mergeInsert('id')
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute(rows)
+          updated += rows.length
+        } catch (error) {
+          if (!options.continueOnBatchError) throw error
+          failed += rows.length
+          failures.push({ recordIds: preparedRecordIds, stage: 'execute', error })
+        }
       }
     }
 
-    return { updated, failed }
+    return failures.length > 0 ? { updated, failed, failures } : { updated, failed }
   } catch (error) {
     console.error('[claude-memory] batchUpdateRecords failed:', error)
     throw error

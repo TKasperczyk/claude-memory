@@ -84,8 +84,8 @@ export const MIGRATION_COLUMNS: Array<{ name: string; valueSql: string }> = [
   { name: 'last_conflict_check', valueSql: '0' },
   { name: 'last_currentness_check', valueSql: '0' },
   { name: 'last_warning_synthesis_check', valueSql: '0' },
-  { name: 'source_session_id', valueSql: 'NULL' },
-  { name: 'source_excerpt', valueSql: 'NULL' },
+  { name: 'source_session_id', valueSql: 'CAST(NULL AS STRING)' },
+  { name: 'source_excerpt', valueSql: 'CAST(NULL AS STRING)' },
   { name: 'deprecated_at', valueSql: 'CAST(NULL AS BIGINT)' },
   { name: 'deprecated_reason', valueSql: 'CAST(NULL AS STRING)' },
   { name: 'superseding_record_id', valueSql: 'CAST(NULL AS STRING)' }

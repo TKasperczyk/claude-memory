@@ -1569,6 +1569,64 @@ describe('extractions routes', () => {
   }
 })
 
+  it('withholds a re-extraction checkpoint when every produced record fails to store', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-reextract-store-failure-'))
+    const transcriptPath = path.join(tempRoot, 'session.jsonl')
+    await fs.writeFile(transcriptPath, JSON.stringify({
+      type: 'user',
+      timestamp: new Date().toISOString(),
+      cwd: '/tmp/project',
+      message: { role: 'user', content: 'extract this session' }
+    }) + '\n')
+
+    mockedGetExtractionRun.mockReturnValueOnce(buildExtractionRun({
+      transcriptPath,
+      extractedEventCount: 7
+    }))
+    mockedHandlePostSession.mockResolvedValueOnce({
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 1,
+      records: [{
+        id: 'failed-record',
+        type: 'discovery',
+        what: 'A fact whose embedding could not be stored',
+        where: 'tests',
+        evidence: 'store attempt',
+        timestamp: 10
+      }] as any,
+      recordOutcomes: [{
+        id: 'failed-record',
+        outcome: 'failed',
+        storeError: 'embedding service unavailable'
+      }],
+      insertedIds: [],
+      updatedIds: [],
+      transcript: { events: [], messages: [], toolCalls: [], toolResults: [], parseErrors: 0 },
+      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+      extractedEventCount: 8,
+      timings: { parse: 1, slice: 2, llm: 3, embed: 4, store: 5 }
+    })
+
+    try {
+      const { app } = buildApp()
+      const res = await request(app)
+        .post('/api/extractions/run-1/re-extract')
+        .send({})
+
+      expect(res.status).toBe(200)
+      const saved = mockedSaveExtractionRun.mock.calls[0]?.[0]
+      expect(saved).toMatchObject({
+        recordCount: 0,
+        failedRecordCount: 1
+      })
+      expect(saved?.extractedEventCount).toBeUndefined()
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
   it('overwrites stale re-extraction outcome fields and keeps updated IDs in destructive arrays', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-reextract-outcomes-'))
     const transcriptPath = path.join(tempRoot, 'session.jsonl')
@@ -1668,6 +1726,7 @@ describe('extractions routes', () => {
         recordCount?: number
         skippedRecordCount?: number
         failedRecordCount?: number
+        extractedEventCount?: number
         extractedRecordIds?: string[]
         updatedRecordIds?: string[]
         extractedRecords?: Array<Record<string, unknown>>
@@ -1677,6 +1736,7 @@ describe('extractions routes', () => {
       expect(saved.recordCount).toBe(2)
       expect(saved.skippedRecordCount).toBe(1)
       expect(saved.failedRecordCount).toBe(1)
+      expect(saved.extractedEventCount).toBe(8)
       expect(saved.extractedRecordIds).toEqual(['new-inserted'])
       expect(saved.updatedRecordIds).toEqual(['existing-updated'])
       expect(saved.extractedRecords).toMatchObject([

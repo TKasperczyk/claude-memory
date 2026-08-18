@@ -4,7 +4,7 @@ import { asInteger, asNumber, asRecordType, asString, asStringArray, asTrimmedSt
 import { getRecordSummary } from './record-summary.js'
 import { RunLog } from './run-log.js'
 import { LOCKS_DIR } from './paths.js'
-import { isTrueExtractionFailure } from './extraction-status.js'
+import { isExtractionRunFailure } from './extraction-status.js'
 import { coerceMemoryWriteHintEvent } from './memory-write-hints.js'
 import type { ExtractionFailure, ExtractionRecordOutcome, ExtractionRecordSummary, ExtractionRun, MemoryRecord, MemoryWriteHintEvent, RecordType, TokenUsage } from '../../shared/types.js'
 
@@ -54,7 +54,7 @@ export function getLastExtractionRunForSession(sessionId: string, collection?: s
   return runs.find(run =>
     run.sessionId === sessionId
     && run.extractedEventCount != null
-    && !isTrueExtractionFailure(run.error, run.recordCount)
+    && !isExtractionRunFailure(run)
   ) ?? null
 }
 
