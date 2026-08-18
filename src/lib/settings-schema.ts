@@ -822,7 +822,7 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
   {
     key: 'extractionContextOverlapTurns',
     label: 'Incremental overlap turns',
-    description: 'When re-extracting a resumed session, overlap this many user turns from the previous extraction for context continuity.',
+    description: 'When incrementally extracting a resumed session, overlap this many user turns from the previous extraction for context continuity.',
     step: 1,
     min: 0,
     max: 20,

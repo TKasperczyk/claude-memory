@@ -25,16 +25,3 @@ export function formatStageTimings(
   const token = `stages=${stages.join(',')}`
   return options.leadingSpace ? ` ${token}` : token
 }
-
-export function sumStageTimings(
-  timings: TimingMap | undefined,
-  options: { extraStages?: readonly string[] } = {}
-): number {
-  if (!timings) return 0
-  return orderedStages(options.extraStages).reduce((sum, stage) => {
-    const value = timings[stage]
-    return typeof value === 'number' && Number.isFinite(value)
-      ? sum + Math.max(0, Math.trunc(value))
-      : sum
-  }, 0)
-}

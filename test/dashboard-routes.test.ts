@@ -34,6 +34,7 @@ import {
   buildKeywordFilter,
   countRecords,
   deleteRecord,
+  deleteRecordsByIds,
   escapeFilterValue,
   fetchRecordsByIds,
   getRecord,
@@ -51,9 +52,8 @@ import { mergeNearMisses } from '../src/lib/diagnostics.js'
 import { retrieveContext } from '../src/lib/retrieval.js'
 import { getTokenUsageActivity } from '../src/lib/token-usage-events.js'
 import { reviewInjection, reviewInjectionStreaming } from '../src/lib/injection-review.js'
-import { deleteExtractionRun, getExtractionRun, listExtractionRuns, listInProgressExtractions, saveExtractionRun } from '../src/lib/extraction-log.js'
+import { deleteExtractionRun, getExtractionRun, listExtractionRuns, listInProgressExtractions } from '../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../src/lib/extraction-review.js'
-import { handlePostSession } from '../src/hooks/post-session.js'
 import {
   deleteReview,
   getInjectionReview,
@@ -105,6 +105,7 @@ vi.mock('../src/lib/lancedb.js', () => ({
   insertRecord: vi.fn(),
   countRecords: vi.fn(),
   deleteRecord: vi.fn(),
+  deleteRecordsByIds: vi.fn(),
   escapeFilterValue: vi.fn(),
   fetchRecordsByIds: vi.fn(),
   getRecord: vi.fn(),
@@ -149,7 +150,6 @@ vi.mock('../src/lib/extraction-log.js', async () => {
     getExtractionRun: vi.fn(),
     listExtractionRuns: vi.fn(),
     listInProgressExtractions: vi.fn(() => []),
-    saveExtractionRun: vi.fn(),
     deleteExtractionRun: vi.fn()
   }
 })
@@ -192,10 +192,6 @@ vi.mock('../src/lib/maintenance-api.js', () => ({
   runMaintenanceOperation: vi.fn()
 }))
 
-vi.mock('../src/hooks/post-session.js', () => ({
-  handlePostSession: vi.fn()
-}))
-
 const mockedLoadSettings = vi.mocked(loadSettings)
 const mockedSaveSettings = vi.mocked(saveSettings)
 const mockedResetSettings = vi.mocked(resetSettings)
@@ -214,6 +210,7 @@ const mockedQueryRecords = vi.mocked(queryRecords)
 const mockedFetchRecordsByIds = vi.mocked(fetchRecordsByIds)
 const mockedGetRecord = vi.mocked(getRecord)
 const mockedDeleteRecord = vi.mocked(deleteRecord)
+const mockedDeleteRecordsByIds = vi.mocked(deleteRecordsByIds)
 const mockedResetCollection = vi.mocked(resetCollection)
 const mockedHybridSearch = vi.mocked(hybridSearch)
 const mockedEnsureClient = vi.mocked(ensureClient)
@@ -237,11 +234,9 @@ const mockedHasInjectionReview = vi.mocked(hasInjectionReview)
 const mockedGetExtractionRun = vi.mocked(getExtractionRun)
 const mockedListExtractionRuns = vi.mocked(listExtractionRuns)
 const mockedListInProgressExtractions = vi.mocked(listInProgressExtractions)
-const mockedSaveExtractionRun = vi.mocked(saveExtractionRun)
 const mockedDeleteExtractionRun = vi.mocked(deleteExtractionRun)
 const mockedReviewExtraction = vi.mocked(reviewExtraction)
 const mockedReviewExtractionStreaming = vi.mocked(reviewExtractionStreaming)
-const mockedHandlePostSession = vi.mocked(handlePostSession)
 const mockedDeleteReview = vi.mocked(deleteReview)
 const mockedGetReview = vi.mocked(getReview)
 const mockedSaveReview = vi.mocked(saveReview)
@@ -361,6 +356,7 @@ beforeEach(() => {
   mockedFetchRecordsByIds.mockResolvedValue([])
   mockedGetRecord.mockResolvedValue(null)
   mockedDeleteRecord.mockResolvedValue(undefined)
+  mockedDeleteRecordsByIds.mockResolvedValue(0)
   mockedResetCollection.mockResolvedValue(undefined)
   mockedHybridSearch.mockResolvedValue([])
   mockedEnsureClient.mockResolvedValue({} as any)
@@ -406,15 +402,6 @@ beforeEach(() => {
   mockedListInProgressExtractions.mockReturnValue([])
   mockedReviewExtraction.mockResolvedValue({ status: 'ok' })
   mockedReviewExtractionStreaming.mockResolvedValue({ status: 'ok' })
-  mockedHandlePostSession.mockResolvedValue({
-    inserted: 0,
-    updated: 0,
-    skipped: 0,
-    failed: 0,
-    records: [],
-    insertedIds: [],
-    updatedIds: []
-  })
   mockedGetReview.mockReturnValue(null)
   mockedSaveReview.mockResolvedValue(undefined)
   mockedGetMaintenanceReview.mockReturnValue(null)
@@ -1360,27 +1347,6 @@ describe('extractions routes', () => {
     expect(res.body.warnings.some((entry: { id: string }) => entry.id === 'stalled')).toBe(false)
   })
 
-  it('excludes flagged re-extract runs from warning windows and cadence', async () => {
-    const now = Date.now()
-    mockedListExtractionRuns.mockReturnValueOnce([
-      buildExtractionRun({
-        runId: 'manual-reextract',
-        timestamp: now - 1000,
-        isReExtract: true,
-        failedRecordCount: 5,
-        error: { kind: 'api_error', status: 429, code: 'rate_limit_error', message: 'rate limited' }
-      })
-    ])
-
-    const { app } = buildApp()
-    const res = await request(app).get('/api/extractions/warnings')
-
-    expect(res.status).toBe(200)
-    expect(res.body.summary.excludedReExtractRuns).toBe(1)
-    expect(res.body.summary.analyzedRuns).toBe(0)
-    expect(res.body.warnings).toEqual([])
-  })
-
   it('paginates extraction runs', async () => {
     mockedListExtractionRuns.mockReturnValueOnce([
       { runId: 'run-1', timestamp: 1 },
@@ -1479,278 +1445,6 @@ describe('extractions routes', () => {
     expect(res.text).toContain('data: [DONE]\n\n')
   })
 
-  it('persists re-extraction failures without skipReason or checkpoint', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-reextract-'))
-    const transcriptPath = path.join(tempRoot, 'session.jsonl')
-    const memoryWriteHints = [{
-      sessionId: 'session-1',
-      timestamp: 123,
-      name: 'Persisted re-extraction evidence',
-      toolUseId: 'memory-write-1',
-      content: 'Use the run-scoped hint evidence.'
-    }]
-    await fs.writeFile(transcriptPath, JSON.stringify({
-      type: 'user',
-      timestamp: new Date().toISOString(),
-      cwd: '/tmp/project',
-      message: { role: 'user', content: 'extract this session' }
-    }) + '\n')
-
-    mockedGetExtractionRun.mockReturnValueOnce({
-      runId: 'run-1',
-      sessionId: 'session-1',
-      transcriptPath,
-      timestamp: 0,
-      recordCount: 0,
-      parseErrorCount: 0,
-      extractedRecordIds: [],
-      duration: 0,
-      extractedEventCount: 7,
-      memoryWriteHints
-    })
-    mockedHandlePostSession.mockResolvedValueOnce({
-      inserted: 0,
-      updated: 0,
-      skipped: 0,
-      failed: 0,
-      records: [],
-      insertedIds: [],
-      updatedIds: [],
-      reason: 'no_records',
-      transcript: { events: [], messages: [], toolCalls: [], toolResults: [], parseErrors: 0 },
-      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
-      extractedEventCount: 8,
-      extractionError: {
-        kind: 'api_error',
-        code: 'api_error',
-        message: 'Internal server error',
-        requestId: 'req_route'
-      }
-    })
-
-    try {
-      const { app } = buildApp()
-      const res = await request(app)
-        .post('/api/extractions/run-1/re-extract')
-        .send({})
-
-      expect(res.status).toBe(200)
-      expect(mockedDeleteReview).toHaveBeenCalledWith('run-1', DEFAULT_CONFIG.lancedb.table)
-      expect(mockedSaveExtractionRun).toHaveBeenCalledTimes(1)
-    const saved = mockedSaveExtractionRun.mock.calls[0]?.[0] as {
-      isReExtract?: boolean
-      skipReason?: string
-      extractedEventCount?: number
-      duration?: number
-      error?: unknown
-      memoryWriteHints?: unknown[]
-    }
-    expect(saved.isReExtract).toBe(true)
-    expect(saved.skipReason).toBeUndefined()
-    expect(saved.extractedEventCount).toBeUndefined()
-      expect(saved.memoryWriteHints).toEqual(memoryWriteHints)
-      expect(saved.error).toMatchObject({
-        kind: 'api_error',
-        code: 'api_error',
-      message: 'Internal server error',
-      requestId: 'req_route'
-    })
-    expect(mockedHandlePostSession).toHaveBeenCalledWith(
-      expect.objectContaining({ session_id: 'session-1' }),
-      DEFAULT_CONFIG,
-      expect.objectContaining({
-        flush: 'always',
-        plannedRunId: 'run-1',
-        memoryWriteHints
-      })
-    )
-  } finally {
-    await fs.rm(tempRoot, { recursive: true, force: true })
-  }
-})
-
-  it('withholds a re-extraction checkpoint when every produced record fails to store', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-reextract-store-failure-'))
-    const transcriptPath = path.join(tempRoot, 'session.jsonl')
-    await fs.writeFile(transcriptPath, JSON.stringify({
-      type: 'user',
-      timestamp: new Date().toISOString(),
-      cwd: '/tmp/project',
-      message: { role: 'user', content: 'extract this session' }
-    }) + '\n')
-
-    mockedGetExtractionRun.mockReturnValueOnce(buildExtractionRun({
-      transcriptPath,
-      extractedEventCount: 7
-    }))
-    mockedHandlePostSession.mockResolvedValueOnce({
-      inserted: 0,
-      updated: 0,
-      skipped: 0,
-      failed: 1,
-      records: [{
-        id: 'failed-record',
-        type: 'discovery',
-        what: 'A fact whose embedding could not be stored',
-        where: 'tests',
-        evidence: 'store attempt',
-        timestamp: 10
-      }] as any,
-      recordOutcomes: [{
-        id: 'failed-record',
-        outcome: 'failed',
-        storeError: 'embedding service unavailable'
-      }],
-      insertedIds: [],
-      updatedIds: [],
-      transcript: { events: [], messages: [], toolCalls: [], toolResults: [], parseErrors: 0 },
-      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
-      extractedEventCount: 8,
-      timings: { parse: 1, slice: 2, llm: 3, embed: 4, store: 5 }
-    })
-
-    try {
-      const { app } = buildApp()
-      const res = await request(app)
-        .post('/api/extractions/run-1/re-extract')
-        .send({})
-
-      expect(res.status).toBe(200)
-      const saved = mockedSaveExtractionRun.mock.calls[0]?.[0]
-      expect(saved).toMatchObject({
-        recordCount: 0,
-        failedRecordCount: 1
-      })
-      expect(saved?.extractedEventCount).toBeUndefined()
-    } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true })
-    }
-  })
-
-  it('overwrites stale re-extraction outcome fields and keeps updated IDs in destructive arrays', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-reextract-outcomes-'))
-    const transcriptPath = path.join(tempRoot, 'session.jsonl')
-    await fs.writeFile(transcriptPath, JSON.stringify({
-      type: 'user',
-      timestamp: new Date().toISOString(),
-      cwd: '/tmp/project',
-      message: { role: 'user', content: 'extract this session' }
-    }) + '\n')
-
-    const inserted = {
-      id: 'new-inserted',
-      type: 'discovery',
-      what: 'Inserted fact',
-      where: 'tests',
-      evidence: 'inserted evidence',
-      timestamp: 10
-    }
-    const updated = {
-      id: 'extracted-updated',
-      type: 'discovery',
-      what: 'Updated fact',
-      where: 'tests',
-      evidence: 'updated evidence',
-      timestamp: 11
-    }
-    const skipped = {
-      id: 'extracted-skipped',
-      type: 'discovery',
-      what: 'Skipped fact',
-      where: 'tests',
-      evidence: 'skipped evidence',
-      timestamp: 12
-    }
-    const failed = {
-      id: 'extracted-failed',
-      type: 'discovery',
-      what: 'Failed fact',
-      where: 'tests',
-      evidence: 'failed evidence',
-      timestamp: 13
-    }
-
-    mockedGetExtractionRun.mockReturnValueOnce({
-      runId: 'run-1',
-      sessionId: 'session-1',
-      transcriptPath,
-      timestamp: 0,
-      recordCount: 2,
-      parseErrorCount: 0,
-      skippedRecordCount: 9,
-      failedRecordCount: 8,
-      extractedRecordIds: ['old-inserted'],
-      updatedRecordIds: ['old-updated'],
-      extractedRecords: [{
-        id: 'stale-record',
-        type: 'command',
-        summary: 'stale',
-        outcome: 'failed',
-        storeError: 'stale failure'
-      }],
-      duration: 0,
-      extractedEventCount: 7
-    })
-    mockedHandlePostSession.mockResolvedValueOnce({
-      inserted: 1,
-      updated: 1,
-      skipped: 1,
-      failed: 1,
-      records: [inserted, updated, skipped, failed] as any,
-      recordOutcomes: [
-        { id: 'new-inserted', outcome: 'inserted', storedRecordId: 'new-inserted' },
-        { id: 'extracted-updated', outcome: 'updated', storedRecordId: 'existing-updated', dedupSimilarity: 0.876 },
-        { id: 'extracted-skipped', outcome: 'skipped', storedRecordId: 'existing-skipped', dedupSimilarity: 0.765 },
-        { id: 'extracted-failed', outcome: 'failed', storeError: 'store failed' }
-      ],
-      insertedIds: ['new-inserted'],
-      updatedIds: ['existing-updated'],
-      transcript: { events: [], messages: [], toolCalls: [], toolResults: [], parseErrors: 0 },
-      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
-      extractedEventCount: 8,
-      timings: { parse: 1, slice: 2, llm: 3, embed: 4, store: 5 }
-    })
-
-    try {
-      const { app } = buildApp()
-      const res = await request(app)
-        .post('/api/extractions/run-1/re-extract')
-        .send({})
-
-      expect(res.status).toBe(200)
-      expect(mockedDeleteRecord.mock.calls.map(call => call[0])).toEqual(['old-inserted', 'old-updated'])
-      expect(mockedSaveExtractionRun).toHaveBeenCalledTimes(1)
-      const saved = mockedSaveExtractionRun.mock.calls[0]?.[0] as {
-        isReExtract?: boolean
-        duration?: number
-        recordCount?: number
-        skippedRecordCount?: number
-        failedRecordCount?: number
-        extractedEventCount?: number
-        extractedRecordIds?: string[]
-        updatedRecordIds?: string[]
-        extractedRecords?: Array<Record<string, unknown>>
-      }
-      expect(saved.isReExtract).toBe(true)
-      expect(saved.duration).toBe(15)
-      expect(saved.recordCount).toBe(2)
-      expect(saved.skippedRecordCount).toBe(1)
-      expect(saved.failedRecordCount).toBe(1)
-      expect(saved.extractedEventCount).toBe(8)
-      expect(saved.extractedRecordIds).toEqual(['new-inserted'])
-      expect(saved.updatedRecordIds).toEqual(['existing-updated'])
-      expect(saved.extractedRecords).toMatchObject([
-        { id: 'new-inserted', outcome: 'inserted', storedRecordId: 'new-inserted' },
-        { id: 'extracted-updated', outcome: 'updated', storedRecordId: 'existing-updated', dedupSimilarity: 0.876 },
-        { id: 'extracted-skipped', outcome: 'skipped', storedRecordId: 'existing-skipped', dedupSimilarity: 0.765 },
-        { id: 'extracted-failed', outcome: 'failed', storeError: 'store failed' }
-      ])
-      expect(saved.extractedRecords?.some(record => record.id === 'stale-record')).toBe(false)
-    } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true })
-    }
-  })
-
   it('deletes inserted and updated ID fields, not skipped storedRecordId mappings', async () => {
     mockedGetExtractionRun.mockReturnValueOnce({
       runId: 'run-1',
@@ -1777,8 +1471,11 @@ describe('extractions routes', () => {
     const res = await request(app).delete('/api/extractions/run-1')
 
     expect(res.status).toBe(200)
-    expect(mockedDeleteRecord.mock.calls.map(call => call[0])).toEqual(['inserted-owned', 'existing-updated'])
-    expect(mockedDeleteRecord.mock.calls.some(call => call[0] === 'existing-skipped')).toBe(false)
+    expect(mockedDeleteRecordsByIds).toHaveBeenCalledWith(
+      ['inserted-owned', 'existing-updated'],
+      DEFAULT_CONFIG
+    )
+    expect(mockedDeleteRecordsByIds.mock.calls[0]?.[0]).not.toContain('existing-skipped')
     expect(mockedDeleteExtractionRun).toHaveBeenCalledWith('run-1', DEFAULT_CONFIG.lancedb.table)
   })
 })

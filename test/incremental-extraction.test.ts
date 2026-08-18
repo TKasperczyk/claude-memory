@@ -206,9 +206,9 @@ describe('handlePostSession incremental', () => {
     expect(result.reason).toBe('no_new_events')
   })
 
-  it('should set extractedEventCount on no_records result to prevent re-extraction', async () => {
+  it('should set extractedEventCount on no_records result to prevent duplicate extraction', async () => {
     // When LLM runs but finds no records, we still checkpoint so we don't
-    // waste tokens re-extracting the same content on next session close
+    // waste tokens extracting the same content again on the next session close
     const entries = [
       { type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: 'hi' } },
       { type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', content: 'hello' } }
@@ -224,8 +224,7 @@ describe('handlePostSession incremental', () => {
 
     const result = await handlePostSession(input, TEST_CONFIG, {})
 
-    if (result.reason === 'no_records') {
-      expect(result.extractedEventCount).toBe(entries.length)
-    }
+    expect(result.reason).toBe('no_records')
+    expect(result.extractedEventCount).toBe(entries.length)
   })
 })

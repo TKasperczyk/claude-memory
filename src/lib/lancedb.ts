@@ -17,6 +17,7 @@ export {
   incrementRecordCounters,
   deleteRecord,
   deleteByFilter,
+  deleteRecordsByIds,
   resetCollection,
   getRecord,
   getRecordStats,

@@ -119,5 +119,5 @@ When a user prompt arrives, the pre-prompt hook runs this pipeline:
 
 **Outdated memories**
 - If the information is simply old but was once correct: deprecate (preserves history)
-- If the information is wrong or superseded: update the record content, or delete and let re-extraction create a fresh version
+- If the information is wrong or superseded: update the record content or delete it
 - If it conflicts with a newer memory: delete the old one or use the `supersedes` field

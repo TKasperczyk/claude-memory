@@ -46,7 +46,6 @@ export interface ExtractionWarningsPayload {
   summary: {
     analyzedRuns: number
     recentRuns: number
-    excludedReExtractRuns: number
     inProgressCount: number
     inProgressLocksCollectionScoped: false
     stalledSuppressedByInProgress: boolean
@@ -70,6 +69,7 @@ export function buildExtractionWarnings(
   now: number
 ): ExtractionWarningsPayload {
   const windowStart = now - EXTRACTION_WARNING_THRESHOLDS.recentWindowMs
+  // Exclude manual re-extraction runs created before feature removal; this can go once they age out of retention.
   const analyzedRuns = runs
     .filter(run => run.isReExtract !== true)
     .sort((a, b) => b.timestamp - a.timestamp)
@@ -87,10 +87,10 @@ export function buildExtractionWarnings(
   addInternalErrorWarning(warnings, recentRuns)
   addRecordStoreWarning(warnings, recentWithStatus)
   addHighFailureRateWarning(warnings, recentWithStatus)
-  addStalledWarning(warnings, runs.length, successfulRuns, inProgressCount, now)
+  addStalledWarning(warnings, analyzedRuns.length, successfulRuns, inProgressCount, now)
 
   const lastSuccessful = successfulRuns[0]
-  const stalledSuppressedByInProgress = runs.length > 0
+  const stalledSuppressedByInProgress = analyzedRuns.length > 0
     && successfulRuns.length >= EXTRACTION_WARNING_THRESHOLDS.stalledMinSuccessfulRuns
     && inProgressCount > 0
 
@@ -105,7 +105,6 @@ export function buildExtractionWarnings(
     summary: {
       analyzedRuns: analyzedRuns.length,
       recentRuns: recentRuns.length,
-      excludedReExtractRuns: runs.length - analyzedRuns.length,
       inProgressCount,
       inProgressLocksCollectionScoped: false,
       stalledSuppressedByInProgress,

@@ -76,7 +76,7 @@ Five types: **command**, **error**, **discovery**, **procedure**, **warning**. E
 ## Design Decisions
 
 ### Extraction Run Deletion Includes Updated Records
-Deleting an extraction run removes BOTH newly inserted AND dedup-matched updated records. Updated records get linked to the run via `extractionRunId`; leaving them would create inconsistent state. To preserve pre-existing records, manually review before deletion.
+`extractedRecordIds` identifies records the run CREATED. `updatedRecordIds` contains audit references to pre-existing records that dedup merely touched. Explicitly deleting an extraction run intentionally removes both sets of records, so review the run before using deletion.
 
 ### Token Display: input + output Only
 Dashboard totals are `inputTokens + outputTokens`. Cache token fields (`cacheCreationInputTokens`, `cacheReadInputTokens`) are **subsets** of `input_tokens`, not additive — including them would double-count.

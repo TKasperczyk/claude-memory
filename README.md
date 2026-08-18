@@ -166,7 +166,7 @@ Tuning knobs for retrieval, maintenance, and models. Editable through the dashbo
 | `enableHaikuRetrieval` | `false` | Use Haiku to plan / expand retrieval queries |
 | `enableMemoryWriteHints` | `true` | Capture native `memory_write` calls as priority anchors for post-session extraction |
 | `extractionDedupThreshold` | `0.85` | Similarity threshold for update-vs-insert during extraction |
-| `extractionContextOverlapTurns` | `3` | Overlap when re-extracting a resumed session |
+| `extractionContextOverlapTurns` | `3` | Context overlap when incrementally extracting a resumed session |
 | `consolidationThreshold` | `0.80` | Similarity threshold for merging records |
 | `consolidationNoMergeBackoffDays` | `90` | Recheck delay for unchanged clusters rejected by the consolidation verifier |
 | `autoMaintenanceIntervalHours` | `24` | Run maintenance automatically after extraction if it's been this long (0 disables) |
@@ -238,9 +238,9 @@ A web UI for browsing and operating the memory pool. Start with `pnpm dashboard`
 |---|---|
 | **Overview** | Pool statistics, record-type breakdown, retrieval scoring chart, install/health status |
 | **Memory Pool** | Search, filter, and edit individual records |
-| **Extractions** | List extraction runs, drill into per-record details, re-run extraction on a session |
+| **Extractions** | List extraction runs and drill into per-record details |
 | **Sessions** | Inspect injected memories per session and run an Opus-powered "was this injection useful?" review |
-| **Chat** | Interactive chat with tool access -- search the pool, create memories, trigger extractions |
+| **Chat** | Interactive chat with tool access -- search and edit the pool, inspect extraction runs |
 | **Maintenance** | Preview maintenance phases, execute safe phases, and review the diffs |
 | **Simulator** (Context Preview) | Replay retrieval for a custom prompt with full diagnostics |
 | **Settings** | Edit retrieval, maintenance, and model settings (writes `~/.claude-memory/settings.json`) |

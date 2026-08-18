@@ -154,6 +154,35 @@ export async function deleteByFilter(
   }
 }
 
+/** Delete records in bounded bulk statements, avoiding one table version per ID. */
+export async function deleteRecordsByIds(
+  ids: string[],
+  config: Config = DEFAULT_CONFIG
+): Promise<number> {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
+  if (uniqueIds.length === 0) return 0
+
+  try {
+    const { table } = await ensureClient(config)
+    let deleted = 0
+
+    for (let i = 0; i < uniqueIds.length; i += QUERY_PAGE_SIZE) {
+      const batch = uniqueIds.slice(i, i + QUERY_PAGE_SIZE)
+      const idFilter = batch.map(id => `'${escapeFilterValue(id)}'`).join(', ')
+      const filter = `id IN (${idFilter})`
+      const count = await table.countRows(filter)
+      if (count <= 0) continue
+      await table.delete(filter)
+      deleted += count
+    }
+
+    return deleted
+  } catch (error) {
+    console.error('[claude-memory] deleteRecordsByIds failed:', error)
+    throw error
+  }
+}
+
 export async function resetCollection(
   config: Config = DEFAULT_CONFIG
 ): Promise<void> {

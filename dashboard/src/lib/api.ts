@@ -217,7 +217,6 @@ export interface ExtractionWarningsResponse {
   summary: {
     analyzedRuns: number
     recentRuns: number
-    excludedReExtractRuns: number
     inProgressCount: number
     inProgressLocksCollectionScoped: false
     stalledSuppressedByInProgress: boolean
@@ -584,19 +583,6 @@ export interface InProgressExtraction {
 
 export function fetchInProgressExtractions(): Promise<{ inProgress: InProgressExtraction[] }> {
   return request('/extractions/in-progress')
-}
-
-export interface ReExtractResponse {
-  success: boolean
-  inserted: number
-  updated: number
-  skipped: number
-  failed: number
-  reason?: string
-}
-
-export function reExtract(runId: string): Promise<ReExtractResponse> {
-  return request(`/extractions/${runId}/re-extract`, { method: 'POST' })
 }
 
 export function fetchMaintenanceRuns(params: {

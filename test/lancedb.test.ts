@@ -11,6 +11,7 @@ import {
   closeLanceDB,
   countRecords,
   deleteRecord,
+  deleteRecordsByIds,
   escapeFilterValue,
   escapeLikeValue,
   getRecord,
@@ -190,6 +191,20 @@ describe('LanceDB core API', () => {
     await deleteRecord(record.id, config)
     const loaded = await getRecord(record.id, config)
     expect(loaded).toBeNull()
+  })
+
+  it('bulk-deletes only the exact injection-shaped ID', async () => {
+    const injectionShapedId = `bulk-${randomUUID()}' OR true --`
+    const selected = makeCommandRecord({ id: injectionShapedId, embedding: makeEmbedding(3) })
+    const survivor = makeCommandRecord({ embedding: makeEmbedding(3) })
+    await insertRecord(selected, config)
+    await insertRecord(survivor, config)
+
+    const deleted = await deleteRecordsByIds([selected.id, selected.id, ''], config)
+
+    expect(deleted).toBe(1)
+    expect(await getRecord(selected.id, config)).toBeNull()
+    expect(await getRecord(survivor.id, config)).not.toBeNull()
   })
 
   it('updates an existing record and returns false for missing ids', async () => {

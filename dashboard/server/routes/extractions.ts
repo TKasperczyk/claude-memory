@@ -1,16 +1,9 @@
 import express from 'express'
-import fs from 'fs'
-import path from 'path'
-import { buildExtractionRecordSummaries, deleteExtractionRun, getExtractionRun, listExtractionRuns, listInProgressExtractions, saveExtractionRun } from '../../../src/lib/extraction-log.js'
-import { getFirstUserPrompt } from '../../../src/lib/transcript.js'
+import { deleteExtractionRun, getExtractionRun, listExtractionRuns, listInProgressExtractions } from '../../../src/lib/extraction-log.js'
 import { reviewExtraction, reviewExtractionStreaming } from '../../../src/lib/extraction-review.js'
-import { sanitizeExtractionFailure } from '../../../src/lib/extract.js'
-import { deleteRecord } from '../../../src/lib/lancedb.js'
+import { deleteRecordsByIds } from '../../../src/lib/lancedb.js'
 import { paginateExtractionRuns, loadExtractionRunDetail } from '../../../src/lib/extraction-query.js'
-import { handlePostSession } from '../../../src/hooks/post-session.js'
-import { parseTranscript } from '../../../src/lib/transcript.js'
 import { deleteReview, getReview, saveReview } from '../../../src/lib/review-storage.js'
-import { isExtractionRunFailure } from '../../../src/lib/extraction-status.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
@@ -18,7 +11,6 @@ import { buildExtractionWarnings } from '../lib/extraction-warnings.js'
 import { parseNonNegativeInt } from '../utils/params.js'
 import { getRequestConfig } from '../utils/config.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
-import { formatStageTimings, sumStageTimings } from '../../../src/lib/extraction-timings.js'
 
 const logger = createLogger('extractions')
 
@@ -89,11 +81,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       const config = await ensureConfigInitialized(req, baseConfig)
       const insertedIds = run.extractedRecordIds ?? []
       const updatedIds = run.updatedRecordIds ?? []
-      const ids = Array.from(new Set([...insertedIds, ...updatedIds]))
-
-      for (const id of ids) {
-        await deleteRecord(id, config)
-      }
+      await deleteRecordsByIds([...insertedIds, ...updatedIds], config)
 
       deleteExtractionRun(runId, requestConfig.lancedb.table)
       deleteReview(runId, requestConfig.lancedb.table)
@@ -155,115 +143,6 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
       const message = error instanceof Error ? error.message : String(error)
       logger.error('Extraction review error', error)
       res.status(500).json({ error: message || 'Failed to run extraction review' })
-    }
-  })
-
-  router.post('/api/extractions/:runId/re-extract', async (req, res) => {
-    try {
-      const runId = req.params.runId
-      const requestConfig = getRequestConfig(req, baseConfig)
-      const run = getExtractionRun(runId, requestConfig.lancedb.table)
-      if (!run) {
-        return res.status(404).json({ error: 'Extraction run not found' })
-      }
-
-      if (!run.transcriptPath || !fs.existsSync(run.transcriptPath)) {
-        return res.status(400).json({ error: `Transcript file not found: ${run.transcriptPath || '(empty)'}` })
-      }
-
-      const config = await ensureConfigInitialized(req, baseConfig)
-
-      // Recover the original cwd from transcript events (transcript path is under ~/.claude/, not the project)
-      const transcript = await parseTranscript(run.transcriptPath)
-      const firstCwd = transcript.events.find(e => e.cwd)?.cwd
-      const cwd = firstCwd ?? path.dirname(run.transcriptPath)
-
-      // Delete old records that the re-extract will replace
-      const oldInsertedIds = run.extractedRecordIds ?? []
-      const oldUpdatedIds = run.updatedRecordIds ?? []
-      const oldIds = Array.from(new Set([...oldInsertedIds, ...oldUpdatedIds]))
-      for (const id of oldIds) {
-        try { await deleteRecord(id, config) } catch { /* already gone */ }
-      }
-
-      // Clear stale review
-      deleteReview(runId, requestConfig.lancedb.table)
-
-      const memoryWriteHints = run.memoryWriteHints ?? []
-      const result = await handlePostSession({
-        hook_event_name: 'SessionEnd',
-        session_id: run.sessionId,
-        transcript_path: run.transcriptPath,
-        cwd
-      }, config, {
-        flush: 'always',
-        plannedRunId: run.runId,
-        memoryWriteHints
-      })
-
-      const stages = formatStageTimings(result.timings)
-      if (stages) {
-        logger.info(`Re-extraction timings runId=${run.runId} ${stages}`)
-      }
-      for (const diagnostic of result.diagnostics ?? []) {
-        if (diagnostic.level === 'warn') {
-          const records = typeof diagnostic.records === 'number' ? ` records=${diagnostic.records}` : ''
-          logger.warn(`Re-extraction diagnostic runId=${run.runId} stage=${diagnostic.stage}${records} cause=${diagnostic.cause}`)
-        }
-      }
-
-      // Update the existing extraction run with new results
-      const recordOutcomes = result.recordOutcomes ?? []
-      const insertedIds = Array.from(new Set(result.insertedIds ?? []))
-      const updatedIds = Array.from(new Set(result.updatedIds ?? []))
-      const allIds = Array.from(new Set([...insertedIds, ...updatedIds]))
-      const persistedRecordCount = allIds.length
-      const skippedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'skipped').length
-      const failedRecordCount = recordOutcomes.filter(outcome => outcome.outcome === 'failed').length
-      const extractionError = sanitizeExtractionFailure(result.extractionError)
-      const runFailure = isExtractionRunFailure({
-        error: extractionError,
-        recordCount: persistedRecordCount,
-        failedRecordCount
-      })
-      const extractedRecords = buildExtractionRecordSummaries(result.records, recordOutcomes)
-
-      saveExtractionRun({
-        ...run,
-        isReExtract: true,
-        timestamp: Date.now(),
-        recordCount: persistedRecordCount,
-        parseErrorCount: result.transcript?.parseErrors ?? 0,
-        skippedRecordCount,
-        failedRecordCount,
-        extractedRecordIds: insertedIds,
-        updatedRecordIds: updatedIds.length > 0 ? updatedIds : undefined,
-        extractedRecords: extractedRecords.length > 0 ? extractedRecords : undefined,
-        duration: sumStageTimings(result.timings),
-        firstPrompt: result.transcript ? getFirstUserPrompt(result.transcript) : run.firstPrompt,
-        tokenUsage: result.tokenUsage,
-        extractedEventCount: runFailure ? undefined : result.extractedEventCount,
-        hasRememberMarker: result.hasRememberMarker,
-        memoryWriteHints: memoryWriteHints.length > 0 ? memoryWriteHints : undefined,
-        skipReason: extractionError ? undefined
-          : result.reason === 'too_short' ? 'too_short'
-          : (result.reason === 'no_records' && persistedRecordCount === 0) ? 'no_records'
-          : undefined,
-        error: extractionError
-      }, requestConfig.lancedb.table)
-
-      res.json({
-        success: true,
-        inserted: result.inserted,
-        updated: result.updated,
-        skipped: result.skipped,
-        failed: result.failed,
-        reason: result.reason
-      })
-    } catch (error) {
-      logger.error('Re-extraction failed', error)
-      const message = error instanceof Error ? error.message : String(error)
-      res.status(500).json({ error: message || 'Re-extraction failed' })
     }
   })
 

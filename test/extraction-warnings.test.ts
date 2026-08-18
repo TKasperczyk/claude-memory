@@ -154,16 +154,6 @@ describe('buildExtractionWarnings', () => {
     expect(warningIds(result.warnings)).toEqual([])
   })
 
-  it('excludes successful re-extract runs from the stalled cadence baseline', () => {
-    const result = buildExtractionWarnings([
-      success('manual-reextract', NOW - HOUR_MS, { isReExtract: true }),
-      ...successSeries('normal', 10 * DAY_MS, [HOUR_MS, HOUR_MS, HOUR_MS])
-    ], 0, NOW)
-
-    expect(warningIds(result.warnings)).toEqual(['stalled'])
-    expect(findWarning(result.warnings, 'stalled').latestRunId).toBe('normal-4')
-  })
-
   it('fires stalled for burst successes once the absolute floor is exceeded', () => {
     const result = buildExtractionWarnings(
       successSeries('burst', 10 * DAY_MS, [2 * HOUR_MS, 2 * HOUR_MS, 2 * HOUR_MS]),
@@ -182,6 +172,26 @@ describe('buildExtractionWarnings', () => {
 
     expect(warningIds(result.warnings)).toEqual(['stalled'])
     expect(findWarning(result.warnings, 'stalled').latestRunId).toBe('normal-4')
+  })
+
+  it('excludes legacy re-extraction runs from health warnings and stalled cadence', () => {
+    const result = buildExtractionWarnings([
+      ...successSeries('normal', 10 * DAY_MS, [HOUR_MS, HOUR_MS, HOUR_MS]),
+      success('legacy-success', NOW - 2 * HOUR_MS, { isReExtract: true }),
+      run({
+        runId: 'legacy-auth-failure',
+        timestamp: NOW - HOUR_MS,
+        isReExtract: true,
+        error: { kind: 'api_error', status: 401, message: 'Unauthorized' }
+      })
+    ], 0, NOW)
+
+    expect(warningIds(result.warnings)).toEqual(['stalled'])
+    expect(result.summary).toMatchObject({
+      analyzedRuns: 4,
+      recentRuns: 0,
+      lastSuccessfulRun: { runId: 'normal-4' }
+    })
   })
 
   it('detects auth via status 401 and excludes future runs from window signals', () => {

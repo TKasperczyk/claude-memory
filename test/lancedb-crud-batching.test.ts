@@ -17,7 +17,7 @@ vi.mock('../src/lib/lancedb-records.js', async () => {
   return { ...actual, buildLanceRow: mocks.buildLanceRow }
 })
 
-import { batchUpdateRecords } from '../src/lib/lancedb-crud.js'
+import { batchUpdateRecords, deleteRecordsByIds } from '../src/lib/lancedb-crud.js'
 
 describe('batchUpdateRecords best-effort chunking', () => {
   beforeEach(() => {
@@ -100,5 +100,52 @@ describe('batchUpdateRecords best-effort chunking', () => {
         error: preparationFailure
       }]
     })
+  })
+})
+
+describe('deleteRecordsByIds bulk deletion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('deletes bounded ID batches and skips empty delete commits', async () => {
+    const countRows = vi.fn()
+      .mockResolvedValueOnce(1000)
+      .mockResolvedValueOnce(0)
+    const deleteRows = vi.fn(async () => {})
+    mocks.ensureClient.mockResolvedValue({ table: { countRows, delete: deleteRows } })
+    const ids = Array.from({ length: 1001 }, (_, index) => `record-${index}`)
+
+    const deleted = await deleteRecordsByIds(ids, DEFAULT_CONFIG)
+
+    expect(deleted).toBe(1000)
+    expect(countRows).toHaveBeenCalledTimes(2)
+    expect(deleteRows).toHaveBeenCalledTimes(1)
+    expect(deleteRows.mock.calls[0]?.[0]).toContain("'record-999'")
+    expect(deleteRows.mock.calls[0]?.[0]).not.toContain("'record-1000'")
+  })
+
+  it('returns before opening LanceDB when no usable IDs are provided', async () => {
+    const deleted = await deleteRecordsByIds(['', ''], DEFAULT_CONFIG)
+
+    expect(deleted).toBe(0)
+    expect(mocks.ensureClient).not.toHaveBeenCalled()
+  })
+
+  it('deduplicates IDs and escapes quotes in the bulk filter', async () => {
+    const countRows = vi.fn(async () => 2)
+    const deleteRows = vi.fn(async () => {})
+    mocks.ensureClient.mockResolvedValue({ table: { countRows, delete: deleteRows } })
+
+    const deleted = await deleteRecordsByIds([
+      'plain-id',
+      "quote' OR true --",
+      'plain-id'
+    ], DEFAULT_CONFIG)
+
+    const expectedFilter = "id IN ('plain-id', 'quote'' OR true --')"
+    expect(deleted).toBe(2)
+    expect(countRows).toHaveBeenCalledWith(expectedFilter)
+    expect(deleteRows).toHaveBeenCalledWith(expectedFilter)
   })
 })

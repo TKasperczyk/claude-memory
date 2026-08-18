@@ -1,12 +1,11 @@
-import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Trash2, RotateCcw, MessageSquare } from 'lucide-react'
+import { Trash2, MessageSquare } from 'lucide-react'
 import MetricTile from '@/components/MetricTile'
 import ListItem from '@/components/ListItem'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration, formatRelativeTimeShort, formatTokenCount, truncateText } from '@/lib/format'
 import { TYPE_COLORS, getMemorySummary } from '@/lib/memory-ui'
-import { reExtract, type ExtractionRun, type MemoryRecord } from '@/lib/api'
+import { type ExtractionRun, type MemoryRecord } from '@/lib/api'
 import { useExtractionRunDetail, useExtractionReview } from '@/hooks/queries'
 import ExtractionReviewPanel from './ExtractionReviewPanel'
 import { RecordsSkeleton } from './ExtractionSkeletons'
@@ -40,8 +39,6 @@ export default function ExtractionDetail({
   isCopied: (id: string) => boolean
 }) {
   const queryClient = useQueryClient()
-  const [reExtracting, setReExtracting] = useState(false)
-  const [reExtractResult, setReExtractResult] = useState<string | null>(null)
 
   const runId = run?.runId ?? null
   const { data: runDetail, isLoading: isLoadingRecords, error: runDetailError } = useExtractionRunDetail(runId)
@@ -54,12 +51,6 @@ export default function ExtractionDetail({
   const runError = runDetailError instanceof Error ? runDetailError.message : undefined
   const reviewError = reviewQueryError instanceof Error ? reviewQueryError.message : undefined
   const hasReviewLoaded = review !== undefined
-
-  const invalidateRunData = () => {
-    void queryClient.invalidateQueries({ queryKey: ['extraction-run', runId] })
-    void queryClient.invalidateQueries({ queryKey: ['extraction-review', runId] })
-    void queryClient.invalidateQueries({ queryKey: ['extractions'] })
-  }
 
   const handleReviewUpdate = (_runId: string, nextReview: import('@/lib/api').ExtractionReview) => {
     queryClient.setQueryData(['extraction-review', runId], nextReview)
@@ -100,21 +91,6 @@ export default function ExtractionDetail({
     }
     if (run.error.kind === 'max_tokens') {
       errorDetails.push(['Max tokens', run.error.maxTokens])
-    }
-  }
-
-  const handleReExtract = async () => {
-    if (reExtracting) return
-    setReExtracting(true)
-    setReExtractResult(null)
-    try {
-      const result = await reExtract(run.runId)
-      setReExtractResult(`Done: ${result.inserted} inserted, ${result.updated} updated, ${result.skipped} skipped`)
-      invalidateRunData()
-    } catch (error) {
-      setReExtractResult(`Failed: ${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      setReExtracting(false)
     }
   }
 
@@ -180,15 +156,6 @@ export default function ExtractionDetail({
                 Chat
               </Button>
               <Button
-                variant="outline"
-                size="xs"
-                onClick={handleReExtract}
-                disabled={reExtracting}
-              >
-                <RotateCcw className={`w-3.5 h-3.5 ${reExtracting ? 'animate-spin' : ''}`} />
-                {reExtracting ? 'Re-extracting...' : 'Re-extract'}
-              </Button>
-              <Button
                 variant="destructive"
                 size="xs"
                 onClick={handleDelete}
@@ -237,11 +204,6 @@ export default function ExtractionDetail({
           </div>
           {deleteError && (
             <div className="mt-2 text-xs text-destructive">{deleteError}</div>
-          )}
-          {reExtractResult && (
-            <div className={`mt-2 text-xs ${reExtractResult.startsWith('Failed') ? 'text-destructive' : 'text-muted-foreground'}`}>
-              {reExtractResult}
-            </div>
           )}
           {(isFailedRun || isPartialRun) && run.error && (
             <div className={`mt-2 rounded-md border px-3 py-2 text-xs ${isFailedRun ? 'border-destructive/20 bg-destructive/10 text-destructive' : 'border-warning/20 bg-warning/10 text-warning'}`}>
