@@ -659,7 +659,15 @@ function isGitRootCacheEntryValid(cwd: string, entry: GitRootCacheEntry): boolea
 
 function hasGitMarker(root: string): boolean {
   try {
-    return fs.existsSync(path.join(root, '.git'))
+    const marker = path.join(root, '.git')
+    const stats = fs.statSync(marker, { throwIfNoEntry: false })
+    if (!stats) return false
+    // Worktrees and submodules store a pointer file rather than a directory.
+    if (stats.isFile()) return true
+    // A real repository directory always contains HEAD. A bare existence check
+    // treats a stray empty `.git` directory as a project root, which pulls that
+    // ancestor's memories into every descendant project's retrieval.
+    return stats.isDirectory() && fs.existsSync(path.join(marker, 'HEAD'))
   } catch {
     return false
   }

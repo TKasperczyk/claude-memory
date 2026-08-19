@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'crypto'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import {
   buildContext,
   extractSignals,
@@ -632,6 +635,41 @@ describe('findAncestorProjects', () => {
     // We test the behavior of not going past filesystem root.
     const ancestors = findAncestorProjects('/')
     expect(ancestors).toEqual([])
+  })
+
+  it('ignores a stray .git directory that is not a repository', () => {
+    // A bare existsSync check treated an empty `.git` directory as a project
+    // root, so every descendant inherited that ancestor's memories.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-ancestor-'))
+    try {
+      fs.mkdirSync(path.join(base, 'stray', '.git'), { recursive: true })
+      const child = path.join(base, 'stray', 'child')
+      fs.mkdirSync(child, { recursive: true })
+      expect(findAncestorProjects(child)).toEqual([])
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('detects a real repository directory and a worktree pointer file', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-ancestor-'))
+    try {
+      const repo = path.join(base, 'repo')
+      fs.mkdirSync(path.join(repo, '.git'), { recursive: true })
+      fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+      const repoChild = path.join(repo, 'child')
+      fs.mkdirSync(repoChild, { recursive: true })
+      expect(findAncestorProjects(repoChild)).toEqual([repo])
+
+      const worktree = path.join(base, 'worktree')
+      fs.mkdirSync(worktree, { recursive: true })
+      fs.writeFileSync(path.join(worktree, '.git'), 'gitdir: /somewhere/.git/worktrees/wt\n')
+      const wtChild = path.join(worktree, 'child')
+      fs.mkdirSync(wtChild, { recursive: true })
+      expect(findAncestorProjects(wtChild)).toEqual([worktree])
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
   })
 })
 

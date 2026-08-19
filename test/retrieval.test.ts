@@ -1207,6 +1207,9 @@ describe('Semantic anchor gate', () => {
     const ancestorProject = path.join(tempRoot, 'parent')
     const projectRoot = path.join(ancestorProject, 'child')
     fs.mkdirSync(path.join(ancestorProject, '.git'), { recursive: true })
+    // A real repository always has HEAD; findAncestorProjects requires it so a
+    // stray empty `.git` directory is not mistaken for a project root.
+    fs.writeFileSync(path.join(ancestorProject, '.git', 'HEAD'), 'ref: refs/heads/main\n')
     fs.mkdirSync(projectRoot, { recursive: true })
 
     const keywordSurvivor = makeResult('keyword-survivor', [0.25, 1], 0.6, 0.6, true)
