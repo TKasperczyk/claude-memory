@@ -44,6 +44,8 @@ type ReplayLine = {
   arms: Record<string, { injected: Array<{ id: string }> }>
 }
 
+const MAX_CONSECUTIVE_FAILURES = 5
+
 type JudgmentRow = {
   promptKey: string
   memoryId: string
@@ -106,6 +108,7 @@ async function judge() {
   let judged = 0
   let skipped = 0
   let failed = 0
+  let consecutiveFailures = 0
   for (const line of latestByKey.values()) {
     if (judged >= limit) break
     if (forceKey && line.promptKey !== forceKey) continue
@@ -167,9 +170,17 @@ async function judge() {
       appendJsonLines(judgmentsPath, rows)
       for (const row of rows) cached.set(`${row.promptKey}:${row.memoryId}`, row)
       judged += 1
+      consecutiveFailures = 0
     } catch (error) {
       failed += 1
+      consecutiveFailures += 1
       console.error(`\n[eval-judge] Failed to judge ${line.promptKey}:`, error)
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        // A failure streak means a rate-limit wall or auth outage, not bad
+        // prompts - hammering on wastes the rest of the corpus. Cache makes
+        // the rerun resume exactly here.
+        throw new Error(`Aborting after ${consecutiveFailures} consecutive failures; rerun to resume.`)
+      }
     }
     process.stdout.write(`\r[eval-judge] Judged ${judged} | cached-skip ${skipped} | failed ${failed}`)
   }

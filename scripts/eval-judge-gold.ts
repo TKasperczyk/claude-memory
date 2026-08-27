@@ -54,6 +54,8 @@ type ReplayLine = {
   arms: Record<string, { injected: Array<{ id: string }> }>
 }
 
+const MAX_CONSECUTIVE_FAILURES = 5
+
 type GoldRow = {
   promptKey: string
   memoryId: string
@@ -161,6 +163,7 @@ async function judgeGold() {
   let judged = 0
   let skipped = 0
   let failed = 0
+  let consecutiveFailures = 0
   for (const { line, transcriptPath } of covered) {
     if (judged >= limit) break
 
@@ -226,9 +229,14 @@ async function judgeGold() {
       appendJsonLines(goldPath, rows)
       for (const row of rows) cached.set(`${row.promptKey}:${row.memoryId}`, row)
       judged += 1
+      consecutiveFailures = 0
     } catch (error) {
       failed += 1
+      consecutiveFailures += 1
       console.error(`\n[eval-gold] Failed to judge ${line.promptKey}:`, error)
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        throw new Error(`Aborting after ${consecutiveFailures} consecutive failures; rerun to resume.`)
+      }
     }
     process.stdout.write(`\r[eval-gold] Judged ${judged} | skipped ${skipped} | failed ${failed}`)
   }

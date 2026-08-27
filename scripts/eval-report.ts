@@ -255,8 +255,17 @@ function report() {
 
   md.push(`## Top ${TOP_DISCOVERIES_SHOWN} discoveries (qualitative gut-check)`)
   md.push('')
+  // Dedupe near-identical rows (same memory surfacing for retried prompts or
+  // across B arms) so the drill-down shows distinct wins.
+  const seenDiscoveries = new Set<string>()
   const topDiscoveries = discoveries
     .filter(discovery => discovery.verdict === 'relevant')
+    .filter(discovery => {
+      const key = `${discovery.memoryId}:${discovery.text.slice(0, 60)}`
+      if (seenDiscoveries.has(key)) return false
+      seenDiscoveries.add(key)
+      return true
+    })
     .slice(0, TOP_DISCOVERIES_SHOWN)
   if (topDiscoveries.length === 0) md.push('_None._')
   for (const discovery of topDiscoveries) {
