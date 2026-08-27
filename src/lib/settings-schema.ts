@@ -892,6 +892,8 @@ const MODEL_GROUPS_META = {
 } as const satisfies Record<string, SettingsGroupMeta>
 
 export const MODEL_OPTIONS: TextOption[] = [
+  { value: 'claude-opus-5', label: 'Opus 5' },
+  { value: 'claude-sonnet-5', label: 'Sonnet 5' },
   { value: 'claude-fable-5', label: 'Fable 5' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8' },
   { value: 'claude-opus-4-7', label: 'Opus 4.7' },
@@ -908,7 +910,7 @@ export const MODEL_FIELDS: SettingsFieldDefinition<keyof ModelSettings>[] = [
     label: 'Extraction model',
     description: 'Model used for extraction, query generation, and maintenance operations.',
     kind: 'text',
-    default: 'claude-sonnet-4-6',
+    default: 'claude-sonnet-5',
     group: MODEL_GROUPS_META.models,
     options: MODEL_OPTIONS,
     allowCustom: true
@@ -918,7 +920,7 @@ export const MODEL_FIELDS: SettingsFieldDefinition<keyof ModelSettings>[] = [
     label: 'Review model',
     description: 'Model used for injection, extraction, and maintenance reviews.',
     kind: 'text',
-    default: 'claude-opus-4-8',
+    default: 'claude-opus-5',
     group: MODEL_GROUPS_META.models,
     options: MODEL_OPTIONS,
     allowCustom: true
@@ -928,7 +930,7 @@ export const MODEL_FIELDS: SettingsFieldDefinition<keyof ModelSettings>[] = [
     label: 'Chat model',
     description: 'Model used for the dashboard chat assistant.',
     kind: 'text',
-    default: 'claude-opus-4-8',
+    default: 'claude-opus-5',
     group: MODEL_GROUPS_META.models,
     options: MODEL_OPTIONS,
     allowCustom: true

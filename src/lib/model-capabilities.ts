@@ -6,6 +6,14 @@ export interface ModelCapabilities {
 }
 
 export const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
+  'claude-opus-5': {
+    maxOutputTokens: 128000,
+    thinkingStyle: 'adaptive'
+  },
+  'claude-sonnet-5': {
+    maxOutputTokens: 64000,
+    thinkingStyle: 'adaptive'
+  },
   'claude-fable-5': {
     maxOutputTokens: 128000,
     thinkingStyle: 'always_on'
