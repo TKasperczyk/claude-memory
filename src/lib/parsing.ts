@@ -156,3 +156,18 @@ export function asScope(value: unknown): RecordScope | undefined {
 export function normalizeScope(value: unknown, fallback: RecordScope = 'project'): RecordScope {
   return asScope(value) ?? fallback
 }
+
+/**
+ * Models occasionally nest a tool call's input under a single wrapper key
+ * echoing the tool name (e.g. { "Emit_injection_review": {...} }). Unwrap one
+ * level when the payload is a lone key holding a plain object; legitimate
+ * single-key payloads hold arrays or scalars and are left untouched.
+ */
+export function unwrapSingleKeyPayload(value: unknown): unknown {
+  if (!isPlainObject(value)) return value
+  const keys = Object.keys(value)
+  if (keys.length === 1 && isPlainObject((value as Record<string, unknown>)[keys[0]])) {
+    return (value as Record<string, unknown>)[keys[0]]
+  }
+  return value
+}

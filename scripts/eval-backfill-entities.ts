@@ -13,6 +13,7 @@
  */
 
 import { normalizeEntities } from '../src/lib/entities.js'
+import { unwrapSingleKeyPayload } from '../src/lib/parsing.js'
 import { batchUpdateRecords, countRecords, fetchRecordsByIds, initLanceDB, iterateRecords } from '../src/lib/lancedb.js'
 import { serializeRecord } from '../src/lib/lancedb-records.js'
 import { executeReview } from '../src/lib/review-framework.js'
@@ -54,8 +55,9 @@ ${lines.join('\n---\n')}`
 }
 
 function coerceExtractionPayload(raw: unknown): ExtractionPayload | null {
-  if (!raw || typeof raw !== 'object') return null
-  const items = (raw as Record<string, unknown>).items
+  const unwrapped = unwrapSingleKeyPayload(raw)
+  if (!unwrapped || typeof unwrapped !== 'object') return null
+  const items = (unwrapped as Record<string, unknown>).items
   if (!Array.isArray(items)) return null
   const coerced: CacheEntry[] = []
   for (const item of items) {

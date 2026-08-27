@@ -5,7 +5,7 @@ import { buildFilter, escapeFilterValue, fetchRecordsByIds, vectorSearchSimilar 
 import { dedupeInjectedMemories, loadSessionTracking } from './session-tracking.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { formatSimilarRecord } from './review-formatters.js'
-import { asString, isPlainObject } from './parsing.js'
+import { asString, isPlainObject, unwrapSingleKeyPayload } from './parsing.js'
 import { clampScore, coerceInjectedVerdict, coerceMissedMemory, parseReviewRating } from './review-coercion.js'
 import { executeReview, executeReviewStreaming, type ThinkingCallback } from './review-framework.js'
 import { loadSettings } from './settings.js'
@@ -105,7 +105,7 @@ export async function reviewInjectionInput(
   input: InjectionReviewInput,
   injectedEntries: InjectedMemoryEntry[],
   config: Config = DEFAULT_CONFIG,
-  options: { model?: string; startedAt?: number } = {}
+  options: { model?: string; startedAt?: number; onInvalidPayload?: (raw: unknown) => void } = {}
 ): Promise<InjectionReview> {
   const startTime = options.startedAt ?? Date.now()
   const settings = loadSettings()
@@ -119,7 +119,8 @@ export async function reviewInjectionInput(
     buildPrompt: buildInjectionReviewPrompt,
     coercePayload: coerceReviewPayload,
     authErrorMessage: 'No authentication available for injection review. Set ANTHROPIC_API_KEY or run kira login.',
-    startedAt: startTime
+    startedAt: startTime,
+    ...(options.onInvalidPayload ? { onInvalidPayload: options.onInvalidPayload } : {})
   }, config)
 
   const injectedVerdicts = normalizeInjectedVerdicts(payload.injectedVerdicts, injectedEntries)
@@ -465,8 +466,9 @@ function normalizeInjectedVerdicts(
 }
 
 function coerceReviewPayload(input: unknown): ReviewPayload | null {
-  if (!isPlainObject(input)) return null
-  const record = input
+  const unwrapped = unwrapSingleKeyPayload(input)
+  if (!isPlainObject(unwrapped)) return null
+  const record = unwrapped
 
   const overallRating = parseReviewRating(record.overallRating ?? record.overallRelevance)
   const relevanceScore = parseRelevanceScore(record.relevanceScore)

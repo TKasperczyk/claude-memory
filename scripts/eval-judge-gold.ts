@@ -29,6 +29,7 @@ import { fetchRecordsByIds, initLanceDB } from '../src/lib/lancedb.js'
 import { executeReview } from '../src/lib/review-framework.js'
 import { loadSettings } from '../src/lib/settings.js'
 import { buildRecordSnippet, truncateSnippet } from '../src/lib/shared.js'
+import { unwrapSingleKeyPayload } from '../src/lib/parsing.js'
 import { parseTranscript, type Transcript, type TranscriptEvent } from '../src/lib/transcript.js'
 import type { MemoryRecord } from '../src/lib/types.js'
 import {
@@ -123,8 +124,9 @@ Question: knowing what the session actually needed to do, which candidate memori
 }
 
 function coerceGoldPayload(raw: unknown): { helpfulIds: string[] } | null {
-  if (!raw || typeof raw !== 'object') return null
-  const ids = (raw as Record<string, unknown>).helpfulIds
+  const unwrapped = unwrapSingleKeyPayload(raw)
+  if (!unwrapped || typeof unwrapped !== 'object') return null
+  const ids = (unwrapped as Record<string, unknown>).helpfulIds
   if (!Array.isArray(ids)) return null
   return { helpfulIds: ids.filter((id): id is string => typeof id === 'string') }
 }

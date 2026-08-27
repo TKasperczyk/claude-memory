@@ -157,7 +157,12 @@ async function judge() {
     }))
 
     try {
-      const review = await reviewInjectionInput(input, entries, evalConfig, { model })
+      const review = await reviewInjectionInput(input, entries, evalConfig, {
+        model,
+        onInvalidPayload: raw => {
+          appendJsonLines(evalDataPath('judge-invalid-payloads.jsonl'), [{ promptKey: line.promptKey, raw }])
+        }
+      })
       const judgedAt = Date.now()
       const rows: JudgmentRow[] = review.injectedVerdicts.map(verdict => ({
         promptKey: line.promptKey,
