@@ -154,5 +154,6 @@ describe('entity retrieval settings', () => {
     const defaults = getDefaultRetrievalSettings()
     expect(defaults.enableEntityEdges).toBe(false)
     expect(defaults.enableEntityKeywords).toBe(false)
+    expect(defaults.fallbackKeywordSemanticFloor).toBe(false)
   })
 })

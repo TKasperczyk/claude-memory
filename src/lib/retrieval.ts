@@ -491,6 +491,27 @@ async function searchMemories(
     mergeNearMisses(searchNearMisses, searchQualifiedResult.nearMisses)
   }
 
+  // On prompts with no error/command signals every keyword needle is a
+  // fallback token, and fallback-keyword matches below the semantic floor are
+  // overwhelmingly irrelevant (9% strict precision in the offline eval).
+  // Hold ALL candidates to minSemanticSimilarity on such prompts; genuine
+  // signal needles keep their exact-recall bypass.
+  const signalsPresent = signals.errors.length > 0 || signals.commands.length > 0
+  if (settings.fallbackKeywordSemanticFloor && !signalsPresent && settings.minSemanticSimilarity > 0) {
+    const floored = results.filter(result => result.similarity >= settings.minSemanticSimilarity)
+    if (diagnostic && searchNearMisses) {
+      for (const result of results) {
+        if (!floored.includes(result)) {
+          searchNearMisses.set(result.record.id, {
+            record: result,
+            exclusionReasons: [buildExclusionReason('similarity_below_threshold', settings.minSemanticSimilarity, result.similarity)]
+          })
+        }
+      }
+    }
+    results = floored
+  }
+
   // Note: Global memories (scope="global") are already included via includeGlobal=true
   // in buildFilter. We no longer fallback to remove the project filter, as that
   // allowed project-scoped memories from OTHER projects to leak through.

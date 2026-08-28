@@ -294,6 +294,7 @@ export interface RetrievalSettings {
   maxRelationsPerRecord: number
   enableEntityEdges: boolean
   enableEntityKeywords: boolean
+  fallbackKeywordSemanticFloor: boolean
   maxKeywordQueries: number
   maxKeywordErrors: number
   maxKeywordCommands: number

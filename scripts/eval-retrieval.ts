@@ -95,7 +95,9 @@ function buildArms(): Record<string, RetrievalSettings> {
     A: base,
     AF: floored,
     B1: { ...floored, enableEntityEdges: true },
-    B2: { ...floored, enableEntityEdges: true, enableEntityKeywords: true }
+    B2: { ...floored, enableEntityEdges: true, enableEntityKeywords: true },
+    // Precision arm: fallback-keyword matches must clear the semantic floor.
+    P1: { ...base, fallbackKeywordSemanticFloor: true }
   }
 }
 

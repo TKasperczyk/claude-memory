@@ -394,6 +394,14 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     group: RETRIEVAL_GROUPS.relations
   },
   {
+    key: 'fallbackKeywordSemanticFloor',
+    label: 'Semantic floor for fallback keywords',
+    description: 'On prompts with no error/command signals, require keyword-matched candidates to meet minSemanticSimilarity like everything else. Signal-derived keyword matches keep their exact-recall bypass.',
+    kind: 'bool',
+    default: false,
+    group: RETRIEVAL_GROUPS.similarity
+  },
+  {
     key: 'enableHaikuRetrieval',
     label: 'Enable Haiku retrieval',
     description: 'Use Haiku to analyze conversation context and generate better queries.',
