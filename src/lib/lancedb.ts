@@ -20,6 +20,7 @@ export {
   deleteRecordsByIds,
   resetCollection,
   getRecord,
+  resolveMemoryRecord,
   getRecordStats,
   flushCollection,
   queryRecords,
@@ -32,6 +33,7 @@ export type {
   BatchUpdateOptions,
   BatchUpdateResult,
   FlushMode,
+  MemoryRecordResolution,
   WriteOptions
 } from './lancedb-crud.js'
 

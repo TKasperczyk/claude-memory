@@ -1,9 +1,10 @@
 import { truncateText, withTimeout } from './shared.js'
-import { closeLanceDB, initLanceDB, hybridSearch, computeUsageRatio, fetchRecordsByIds, iterateRecords } from './lancedb.js'
+import { closeLanceDB, initLanceDB, fetchRecordsByIds, iterateRecords } from './lancedb.js'
 import { ENTITY_TOKEN_PATTERN, extractEntityNeedles } from './entities.js'
 import { buildContext, extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embed } from './embed.js'
 import { mergeNearMisses, buildExclusionReason } from './diagnostics.js'
+import { cosineSimilarity, searchRankedCandidates, sortByScore } from './ranked-search.js'
 import { generateRetrievalQueryPlan } from './retrieval-query-generator.js'
 import { recordTokenUsageEventsAsync } from './token-usage-events.js'
 import { loadSettings, type RetrievalSettings } from './settings.js'
@@ -16,13 +17,19 @@ import {
   type DiagnosticSearchResults,
   type ExclusionReason,
   type HybridSearchResult,
-  type HybridSearchParams,
   type MemoryRecord,
   type NearMissRecord,
   type PrePromptInput,
   type RelationKind,
   type SuppressionMode
 } from './types.js'
+
+export {
+  computeUnifiedScore,
+  cosineSimilarity,
+  UNIFIED_SEMANTIC_WEIGHT
+} from './ranked-search.js'
+export type { UnifiedScoreBreakdown, UnifiedScoreInputs } from './ranked-search.js'
 
 const FALLBACK_KEYWORD_STOPWORDS = new Set([
   'a',
@@ -145,47 +152,6 @@ const FALLBACK_TOKEN_PATTERN = ENTITY_TOKEN_PATTERN
 
 /** Separate budget for entity needles appended to keyword queries (B2 mechanism). */
 const ENTITY_NEEDLE_CAP = 3
-
-/**
- * Fixed weight for semantic similarity in the unified scoring formula.
- * Not user-configurable because changing it would shift the meaning of
- * minScore and other thresholds that depend on this scale.
- */
-export const UNIFIED_SEMANTIC_WEIGHT = 0.7
-
-export interface UnifiedScoreInputs {
-  similarity: number
-  keywordMatch: boolean
-  usageRatio: number
-  projectMatch: boolean
-  settings: Pick<RetrievalSettings, 'keywordBonus' | 'minSemanticSimilarity' | 'usageRatioWeight' | 'projectMatchBonus'>
-}
-
-export interface UnifiedScoreBreakdown {
-  semantic: number
-  keywordBonus: number
-  usage: number
-  projectBoost: number
-  total: number
-}
-
-export function computeUnifiedScore(inputs: UnifiedScoreInputs): UnifiedScoreBreakdown {
-  const { similarity, keywordMatch, usageRatio, projectMatch, settings } = inputs
-  const similarityScale = settings.minSemanticSimilarity > 0
-    ? Math.min(similarity / settings.minSemanticSimilarity, 1.0)
-    : 1.0
-  const semantic = similarity * UNIFIED_SEMANTIC_WEIGHT
-  const keywordBonus = keywordMatch ? settings.keywordBonus * similarityScale : 0
-  const usage = usageRatio * settings.usageRatioWeight
-  const projectBoost = projectMatch ? settings.projectMatchBonus : 0
-  return {
-    semantic,
-    keywordBonus,
-    usage,
-    projectBoost,
-    total: semantic + keywordBonus + usage + projectBoost
-  }
-}
 
 function applySettingsToConfig(config: Config, settings: RetrievalSettings): Config {
   return {
@@ -359,13 +325,6 @@ type SearchMemoriesResult = {
   diagnostics?: SearchMemoriesDiagnostics
 }
 
-type SearchWithScopeResult = {
-  results: HybridSearchResult[]
-  nearMisses: NearMissRecord[]
-  rawKeywordMatchIds?: Set<string>
-  rawKeywordQualificationScores?: Map<string, number>
-}
-
 async function searchMemories(
   prompt: string,
   signals: ContextSignals,
@@ -473,18 +432,24 @@ async function searchMemories(
   const suppressedIds = suppressionResolution.ids
   suppressionStateVersion = suppressionResolution.stateVersion
 
-  let searchQualifiedResult = await searchWithScope(
+  const candidateLimit = Math.max(config.injection.maxRecords * 3, config.injection.maxRecords)
+  let searchQualifiedResult = await searchRankedCandidates({
     rawKeywordQueries,
     plannedKeywordQueries,
     config,
     settings,
     project,
     ancestorProjects,
+    // Hook retrieval deliberately leaves semantic search unscoped and relies
+    // on the same-project score bonus. Explicit search callers can hard-scope
+    // semantic candidates through the service's separate semanticProject.
     embeddings,
     rawPromptEmbedding,
+    sourceLimit: candidateLimit,
+    resultLimit: candidateLimit,
     signal,
-    { diagnostic }
-  )
+    diagnostic
+  })
   let results = searchQualifiedResult.results
   const searchNearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
   if (diagnostic && searchNearMisses) {
@@ -780,217 +745,6 @@ export function applyRecentlyInjectedSuppression(
   }
 }
 
-async function runHybridSearch(
-  params: HybridSearchParams,
-  config: Config,
-  diagnostic: boolean
-): Promise<SearchWithScopeResult> {
-  const response = await hybridSearch(
-    diagnostic ? { ...params, diagnostic: true } : params,
-    config
-  )
-  if (diagnostic) {
-    const diagnosticResponse = response as DiagnosticSearchResults
-    return { results: diagnosticResponse.qualified, nearMisses: diagnosticResponse.nearMisses }
-  }
-  return { results: response as HybridSearchResult[], nearMisses: [] }
-}
-
-async function searchWithScope(
-  rawKeywordQueries: string[],
-  plannedKeywordQueries: string[],
-  config: Config,
-  settings: RetrievalSettings,
-  project: string | undefined,
-  ancestorProjects: string[],
-  precomputedEmbeddings: number[][] = [],
-  rawPromptEmbedding?: number[],
-  signal?: AbortSignal,
-  options: { diagnostic?: boolean } = {}
-): Promise<SearchWithScopeResult> {
-  const maxRecords = config.injection.maxRecords
-  const candidateLimit = Math.max(maxRecords * 3, maxRecords)
-  const resultsById = new Map<string, HybridSearchResult>()
-  const rawKeywordMatchIds = new Set<string>()
-  const rawKeywordScores = new Map<string, number>()
-  const rawKeywordQualificationScores = new Map<string, number>()
-  const diagnostic = options.diagnostic === true
-  const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
-
-  console.error(`[claude-memory] Search scope: keywords=${rawKeywordQueries.length + plannedKeywordQueries.length}, project=${project ?? 'none'}${ancestorProjects.length ? `, ancestors=${ancestorProjects.join(',')}` : ''}`)
-
-  const upsertResult = (item: HybridSearchResult): void => {
-    const existing = resultsById.get(item.record.id)
-    if (existing) {
-      existing.similarity = Math.max(existing.similarity, item.similarity)
-      existing.score = Math.max(existing.score, item.score)
-      existing.keywordMatch = existing.keywordMatch || item.keywordMatch
-    } else {
-      resultsById.set(item.record.id, item)
-    }
-  }
-
-  const keywordSearches = [
-    { queries: rawKeywordQueries, raw: true },
-    { queries: plannedKeywordQueries, raw: false }
-  ].filter(search => search.queries.length > 0)
-  const keywordResultSets = await Promise.all(keywordSearches.map(async search => ({
-    ...search,
-    result: await runHybridSearch({
-      query: search.queries[0],
-      keywordQueries: search.queries,
-      limit: candidateLimit,
-      project,
-      ancestorProjects,
-      excludeDeprecated: true,
-      vectorWeight: 0,
-      keywordWeight: 1,
-      keywordLimit: candidateLimit * search.queries.length,
-      usageRatioWeight: settings.usageRatioWeight,
-      includeEmbeddings: true,
-      signal
-    }, config, diagnostic)
-  })))
-  for (const keywordResults of keywordResultSets) {
-    for (const item of keywordResults.result.results) {
-      if (keywordResults.raw) {
-        rawKeywordScores.set(
-          item.record.id,
-          Math.max(rawKeywordScores.get(item.record.id) ?? Number.NEGATIVE_INFINITY, item.score)
-        )
-      }
-      upsertResult(item)
-      if (keywordResults.raw) rawKeywordMatchIds.add(item.record.id)
-    }
-    if (diagnostic && nearMisses) {
-      mergeNearMisses(nearMisses, keywordResults.result.nearMisses)
-    }
-  }
-
-  if (precomputedEmbeddings.length > 0) {
-    // Semantic search runs WITHOUT project filter. Embedding similarity
-    // minSemanticSimilarity already gates relevance, and the
-    // projectMatchBonus in unified re-scoring ranks same-project memories
-    // higher. Hard project filtering here excluded relevant memories from
-    // sibling repos (e.g., aura-billing-agent invisible when searching
-    // from aura) — the exact scenario the scoring formula handles well.
-    // Keyword search keeps its project filter since substring matching is
-    // too broad without it.
-    const semanticResultSets = await Promise.all(
-      precomputedEmbeddings.map(embedding => runHybridSearch({
-        query: '', // Not used when embedding provided
-        embedding,
-        limit: candidateLimit,
-        excludeDeprecated: true,
-        vectorWeight: 1,
-        keywordWeight: 0,
-        minSimilarity: settings.minSemanticSimilarity,
-        minScore: settings.minSemanticOnlyScore,
-        usageRatioWeight: settings.usageRatioWeight,
-        includeEmbeddings: true,
-        signal
-      }, config, diagnostic))
-    )
-    for (const semanticResults of semanticResultSets) {
-      for (const item of semanticResults.results) {
-        upsertResult(item)
-      }
-      if (diagnostic && nearMisses) {
-        mergeNearMisses(nearMisses, semanticResults.nearMisses)
-      }
-    }
-  }
-
-  // Unified re-scoring: compute actual semantic similarity for keyword-only
-  // matches and apply a single scoring formula across all candidates.
-  //
-  // Previously, keyword matches got score=1.0+ (from keywordWeight=1) with
-  // similarity=0, and bypassed minScore filtering. This caused broad substring
-  // matches (e.g., "p4" matching anything mentioning P4) to flood results and
-  // crowd out semantically relevant memories. Now all candidates are scored by:
-  //   score = similarity * SEMANTIC_WEIGHT + keywordBonus + usageRatio * usageWeight
-  // where keywordBonus is a small boost (~0.08) instead of the old effective 1.0.
-  const allCandidates = Array.from(resultsById.values())
-
-  if (precomputedEmbeddings.length > 0 || rawPromptEmbedding) {
-    for (const item of allCandidates) {
-      const candidateEmbedding = item.record.embedding
-      let rankingScore = item.score
-
-      if (precomputedEmbeddings.length > 0) {
-        // Compute real cosine similarity for keyword-only matches that came in with similarity=0.
-        if (item.similarity === 0 && item.keywordMatch && candidateEmbedding && candidateEmbedding.length > 0) {
-          item.similarity = maxCosineSimilarity(precomputedEmbeddings, candidateEmbedding)
-        }
-        const usageRatio = computeUsageRatio(item.record)
-        // Scale keyword bonus by similarity: low-similarity keyword matches get proportionally
-        // less boost, preventing broad substring matches from rescuing irrelevant results.
-        rankingScore = computeUnifiedScore({
-          similarity: item.similarity,
-          keywordMatch: item.keywordMatch,
-          usageRatio,
-          projectMatch: Boolean(project && item.record.project === project),
-          settings
-        }).total
-      }
-
-      if (!rawKeywordMatchIds.has(item.record.id)) {
-        item.score = rankingScore
-        continue
-      }
-
-      // Raw-keyword candidates must reach the raw anchor gate even when Haiku
-      // topicalized away from them. Qualify those candidates against the raw
-      // prompt when possible; if the raw embedding is unavailable, retain the
-      // keyword search's original score for the fail-closed survivor path.
-      let qualificationScore = rawKeywordScores.get(item.record.id) ?? item.score
-      if (rawPromptEmbedding && candidateEmbedding && candidateEmbedding.length > 0) {
-        const rawSimilarity = cosineSimilarity(rawPromptEmbedding, candidateEmbedding)
-        qualificationScore = computeUnifiedScore({
-          similarity: rawSimilarity,
-          keywordMatch: true,
-          usageRatio: computeUsageRatio(item.record),
-          projectMatch: Boolean(project && item.record.project === project),
-          settings
-        }).total
-        item.similarity = Math.max(item.similarity, rawSimilarity)
-      }
-      rawKeywordQualificationScores.set(item.record.id, qualificationScore)
-      item.score = Math.max(rankingScore, qualificationScore)
-    }
-  }
-  // When no embeddings are available (embedding generation failed),
-  // candidates keep their original hybridSearch scores (keyword matches have
-  // score=1.0+, which passes minScore naturally). No special bypass needed.
-
-  if (diagnostic && nearMisses) {
-    for (const item of allCandidates) {
-      if (item.score < settings.minScore) {
-        nearMisses.set(item.record.id, {
-          record: item,
-          exclusionReasons: [buildExclusionReason('score_below_threshold', settings.minScore, item.score)]
-        })
-      }
-    }
-  }
-
-  const filteredResults = allCandidates.filter(result =>
-    result.score >= settings.minScore
-  )
-  const rankedResults = sortByScore(filteredResults).slice(0, candidateLimit)
-  if (diagnostic && nearMisses) {
-    for (const result of rankedResults) {
-      nearMisses.delete(result.record.id)
-    }
-  }
-  return {
-    results: rankedResults,
-    nearMisses: Array.from(nearMisses?.values() ?? []),
-    rawKeywordMatchIds,
-    rawKeywordQualificationScores
-  }
-}
-
 type RelationExpansionCandidate = {
   targetId: string
   parent: HybridSearchResult
@@ -1136,13 +890,6 @@ type MMRSelection = {
 
 function hasEmbedding(candidate: HybridSearchResult): boolean {
   return Boolean(candidate.record.embedding && candidate.record.embedding.length > 0)
-}
-
-function sortByScore(candidates: HybridSearchResult[]): HybridSearchResult[] {
-  return [...candidates].sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score
-    return b.similarity - a.similarity
-  })
 }
 
 function selectWithMMR(
@@ -1305,33 +1052,6 @@ function applyMMR(
     ordered: [...finalSelected, ...remainingWithEmbeddings, ...remainingWithoutEmbeddings],
     exclusions
   }
-}
-
-export function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0
-
-  let dotProduct = 0
-  let normA = 0
-  let normB = 0
-
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i]
-    normA += a[i] * a[i]
-    normB += b[i] * b[i]
-  }
-
-  const denominator = Math.sqrt(normA) * Math.sqrt(normB)
-  if (denominator === 0) return 0
-
-  return dotProduct / denominator
-}
-
-function maxCosineSimilarity(queries: number[][], candidate: number[]): number {
-  let maxSimilarity = 0
-  for (const query of queries) {
-    maxSimilarity = Math.max(maxSimilarity, cosineSimilarity(query, candidate))
-  }
-  return maxSimilarity
 }
 
 export function extractFallbackKeywords(cleanPrompt: string, maxKeywords = Number.POSITIVE_INFINITY): string[] {

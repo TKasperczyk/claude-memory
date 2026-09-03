@@ -228,6 +228,7 @@ describe('formatRecordSnippet', () => {
     expect(snippet).toContain('command: npm test')
     expect(snippet).toContain('outcome: success')
     expect(snippet).toContain('exit: 0')
+    expect(snippet).not.toContain('| id:')
   })
 
   it('formats an error record with cause', () => {
@@ -336,6 +337,41 @@ describe('buildContext', () => {
       const { records } = buildContext([cmd], defaultConfig)
       expect(records).toHaveLength(1)
       expect(records[0].id).toBe(cmd.id)
+    })
+
+    it('appends short IDs to every regular injected record line', () => {
+      const records = [
+        makeRecord<CommandRecord>({ type: 'command', id: '11111111-command', timestamp: undefined, lastUsed: undefined }),
+        makeRecord<ErrorRecord>({ type: 'error', id: '22222222-error', timestamp: undefined, lastUsed: undefined }),
+        makeRecord<DiscoveryRecord>({ type: 'discovery', id: '33333333-discovery', timestamp: undefined, lastUsed: undefined }),
+        makeRecord<ProcedureRecord>({ type: 'procedure', id: '44444444-procedure', timestamp: undefined, lastUsed: undefined })
+      ]
+
+      const { context } = buildContext(records, createConfig({ injection: { maxRecords: 10, maxTokens: 10_000 } }))
+      const lines = context.split('\n').filter(line => line.startsWith('- '))
+
+      expect(lines).toEqual([
+        '- command: npm run build | outcome: success | exit: 0 | id: 11111111',
+        '- error: TypeError: x is undefined | resolution: Check null before access | id: 22222222',
+        '- discovery: Uses ESM | where: package.json | confidence: verified | id: 33333333',
+        '- procedure: Deploy | steps: pnpm build; pnpm test; ssh deploy | id: 44444444'
+      ])
+    })
+
+    it('appends the short ID after the recorded-age field', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-02-01T12:00:00Z'))
+      const record = makeRecord<DiscoveryRecord>({
+        type: 'discovery',
+        id: 'abcdef12-rest-of-id',
+        timestamp: Date.now() - (60 * 60_000)
+      })
+
+      const { context } = buildContext([record], defaultConfig)
+      const line = context.split('\n').find(candidate => candidate.startsWith('- '))
+
+      expect(line).toBe('- discovery: Uses ESM | where: package.json | confidence: verified | recorded: 1h ago | id: abcdef12')
+      vi.useRealTimers()
     })
   })
 
@@ -449,6 +485,22 @@ describe('buildContext', () => {
       // With ~600 token budget and ~500+ tokens per record, should be limited
       expect(included.length).toBeLessThan(5)
     })
+
+    it('counts the regular injected id field against the exact line budget', () => {
+      const record = makeRecord<CommandRecord>({
+        type: 'command',
+        id: 'abcd1234-rest-of-id',
+        timestamp: undefined,
+        lastUsed: undefined
+      })
+      const roomy = buildContext([record], createConfig({ injection: { maxRecords: 10, maxTokens: 10_000 } }))
+      const exactTokens = roomy.context
+        .split('\n')
+        .reduce((total, line) => total + Math.ceil(line.length / 4), 0)
+
+      expect(buildContext([record], createConfig({ injection: { maxRecords: 10, maxTokens: exactTokens } })).records).toHaveLength(1)
+      expect(buildContext([record], createConfig({ injection: { maxRecords: 10, maxTokens: exactTokens - 1 } })).records).toHaveLength(0)
+    })
   })
 
   describe('warning separation', () => {
@@ -467,6 +519,53 @@ describe('buildContext', () => {
       expect(context).toContain('<known-pitfalls>')
       expect(context).toContain('</known-pitfalls>')
       expect(context).not.toContain('<prior-knowledge>')
+    })
+
+    it('appends a short ID to the exact warning injection line', () => {
+      const warning = makeRecord<WarningRecord>({
+        type: 'warning',
+        id: 'fedcba98-rest-of-id',
+        avoid: 'using eval',
+        useInstead: 'safer alternatives',
+        reason: 'security risk',
+        severity: 'critical'
+      })
+
+      const { context } = buildContext([warning], defaultConfig)
+      const line = context.split('\n').find(candidate => candidate.startsWith('- '))
+
+      expect(line).toBe("- 🚨 Don't: using eval → Use: safer alternatives (security risk) | id: fedcba98")
+    })
+
+    it('counts both the warning id field and emitted bullet against its budget', () => {
+      let warning!: WarningRecord
+      let roomyContext = ''
+      let warningLine = ''
+
+      for (let padding = 0; padding < 4; padding++) {
+        warning = makeRecord<WarningRecord>({
+          type: 'warning',
+          id: 'facefeed-rest-of-id',
+          avoid: 'unsafe action '.repeat(8),
+          useInstead: 'safe action',
+          reason: `safety${'x'.repeat(padding)}`,
+          severity: 'warning'
+        })
+        roomyContext = buildContext([warning], createConfig({ injection: { maxRecords: 10, maxTokens: 10_000 } })).context
+        warningLine = roomyContext.split('\n').find(line => line.startsWith('- ')) ?? ''
+        if (Math.ceil(warningLine.length / 4) > Math.ceil(warningLine.slice(2).length / 4)) break
+      }
+
+      const lines = roomyContext.split('\n')
+      const preambleTokens = Math.ceil(lines[0].length / 4)
+      const sectionTokens = lines.slice(1).reduce((total, line) => total + Math.ceil(line.length / 4), 0)
+      const undercountedSectionTokens = sectionTokens - 1
+      const justTooSmall = Math.ceil(sectionTokens / 0.3) - 1
+
+      expect(Math.ceil(warningLine.length / 4)).toBe(Math.ceil(warningLine.slice(2).length / 4) + 1)
+      expect(undercountedSectionTokens).toBeLessThanOrEqual(justTooSmall * 0.3)
+      expect(preambleTokens + undercountedSectionTokens).toBeLessThanOrEqual(justTooSmall)
+      expect(buildContext([warning], createConfig({ injection: { maxRecords: 10, maxTokens: justTooSmall } }))).toEqual({ context: '', records: [] })
     })
 
     it('counts the shared trust framing against warning-only token budgets', () => {

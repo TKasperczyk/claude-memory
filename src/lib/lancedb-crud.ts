@@ -1,9 +1,10 @@
 import fs from 'fs'
 import path from 'path'
-import { escapeFilterValue } from './shared.js'
+import { escapeFilterValue, MEMORY_ID_PREFIX_LENGTH } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import { OUTPUT_FIELDS } from './lancedb-schema.js'
 import { ensureClient, closeLanceDB, initLanceDB, resolveDirectory } from './lancedb-client.js'
+import { escapeLikeValue } from './lancedb-search.js'
 import { getCollectionKey } from './file-store.js'
 import { CLAUDE_MEMORY_ROOT } from './paths.js'
 import {
@@ -19,6 +20,12 @@ export type FlushMode = 'never' | 'end-of-batch' | 'always'
 export interface WriteOptions {
   flush?: FlushMode
 }
+
+export type MemoryRecordResolution =
+  | { status: 'resolved'; record: MemoryRecord; matchedBy: 'exact' | 'prefix' }
+  | { status: 'not_found'; identifier: string }
+  | { status: 'prefix_too_short'; identifier: string; minimumLength: number }
+  | { status: 'ambiguous'; identifier: string; matchingIds: string[] }
 
 const QUERY_PAGE_SIZE = 1000
 
@@ -253,6 +260,54 @@ export async function getRecord(
     return await getRecordById(table, id, { includeEmbedding: options.includeEmbedding ?? false })
   } catch (error) {
     console.error('[claude-memory] getRecord failed:', error)
+    throw error
+  }
+}
+
+/** Resolve a full memory ID first, then a unique safe prefix for write tools. */
+export async function resolveMemoryRecord(
+  identifier: string,
+  config: Config = DEFAULT_CONFIG
+): Promise<MemoryRecordResolution> {
+  const normalized = identifier.trim()
+
+  try {
+    const { table } = await ensureClient(config)
+    const exact = await getRecordById(table, normalized)
+    if (exact) return { status: 'resolved', record: exact, matchedBy: 'exact' }
+
+    if (normalized.length < MEMORY_ID_PREFIX_LENGTH) {
+      return {
+        status: 'prefix_too_short',
+        identifier: normalized,
+        minimumLength: MEMORY_ID_PREFIX_LENGTH
+      }
+    }
+
+    const rows = await table
+      .query()
+      .where(`id LIKE '${escapeLikeValue(normalized)}%' ESCAPE '\\'`)
+      .select(OUTPUT_FIELDS)
+      .limit(2)
+      .toArray()
+
+    const matches = (rows ?? [])
+      .map((row: unknown) => parseRecordFromRow(row as Record<string, unknown>))
+      .filter((record: MemoryRecord | null): record is MemoryRecord => Boolean(record))
+
+    if (matches.length === 0) {
+      return { status: 'not_found', identifier: normalized }
+    }
+    if (matches.length > 1) {
+      return {
+        status: 'ambiguous',
+        identifier: normalized,
+        matchingIds: matches.map(record => record.id)
+      }
+    }
+    return { status: 'resolved', record: matches[0], matchedBy: 'prefix' }
+  } catch (error) {
+    console.error('[claude-memory] resolveMemoryRecord failed:', error)
     throw error
   }
 }

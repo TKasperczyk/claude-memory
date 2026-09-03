@@ -54,11 +54,17 @@ When a user prompt arrives, the pre-prompt hook runs this pipeline:
 3. **Semantic search** — Embeds the prompt and finds similar vectors. Drops results below `minSemanticSimilarity`.
 4. **Unified scoring** — All candidates are re-scored:
    ```
-   score = similarity × 0.7 + keywordBonus + usageRatio × usageRatioWeight
+   similarityScale = min(similarity / minSemanticSimilarity, 1)
+   score = similarity × semanticWeight
+         + (keywordMatch ? keywordBonus × similarityScale : 0)
+         + usageRatio × usageRatioWeight
+         + (projectMatch ? projectMatchBonus : 0)
    ```
    - `similarity`: cosine similarity (0–1), computed for all candidates including keyword matches
-   - `keywordBonus`: flat boost (default 0.08) added only for keyword-matched results
-   - `usageRatio`: usageCount / retrievalCount, clamped. Weighted by `usageRatioWeight` (default 0.2)
+   - `semanticWeight`: fixed weighting for the semantic contribution
+   - `keywordBonus`: configured boost for keyword matches, scaled by similarity up to the `minSemanticSimilarity` threshold; if that threshold is disabled, the full bonus applies
+   - `usageRatio`: usageCount / retrievalCount, clamped and weighted by the configured `usageRatioWeight`
+   - `projectMatchBonus`: configured flat boost when a record's project exactly matches the active project
 5. **Score filtering** — Drops candidates below `minScore` (default 0.45)
 6. **MMR reranking** — Maximal Marginal Relevance balances relevance vs diversity:
    ```

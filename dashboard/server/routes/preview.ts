@@ -2,6 +2,7 @@ import express from 'express'
 import { mergeNearMisses } from '../../../src/lib/diagnostics.js'
 import { retrieveContext } from '../../../src/lib/retrieval.js'
 import { coerceRetrievalSettings, loadSettings } from '../../../src/lib/settings.js'
+import { stripRecordEmbedding, stripSearchResultEmbedding } from '../../../src/lib/shared.js'
 import type { NearMissRecord } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
@@ -34,15 +35,15 @@ export function createPreviewRouter(context: ServerContext): express.Router {
 
       const result = await retrieveContext({ prompt, cwd, skipSuppressionWriteback: true }, config, { settingsOverride, diagnostic })
 
-      const scoredResults = result.results
+      const scoredResults = result.results.map(stripSearchResultEmbedding)
 
       const diagnosticPayload = diagnostic && result.diagnostics
         ? {
-            injected: result.diagnostics.context.injectedRecords,
+            injected: result.diagnostics.context.injectedRecords.map(stripSearchResultEmbedding),
             nearMisses: combineNearMisses(
               result.diagnostics.search.nearMisses,
               result.diagnostics.context.exclusions
-            ),
+            ).map(stripNearMissEmbedding),
             queryInfo: result.diagnostics.search.queryInfo
           }
         : undefined
@@ -50,7 +51,7 @@ export function createPreviewRouter(context: ServerContext): express.Router {
       res.json({
         signals: result.signals,
         results: scoredResults,
-        injectedRecords: result.injectedRecords,
+        injectedRecords: result.injectedRecords.map(stripRecordEmbedding),
         context: result.context ?? null,
         timedOut: result.timedOut,
         ...diagnosticPayload
@@ -62,6 +63,13 @@ export function createPreviewRouter(context: ServerContext): express.Router {
   })
 
   return router
+}
+
+function stripNearMissEmbedding(nearMiss: NearMissRecord): NearMissRecord {
+  return {
+    ...nearMiss,
+    record: stripSearchResultEmbedding(nearMiss.record)
+  }
 }
 
 function combineNearMisses(...sources: Array<NearMissRecord[] | undefined>): NearMissRecord[] {

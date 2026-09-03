@@ -20,6 +20,7 @@ import {
   insertRecord,
   iterateRecords,
   queryRecords,
+  resolveMemoryRecord,
   updateRecord,
   vectorSearchSimilar
 } from '../src/lib/lancedb.js'
@@ -27,6 +28,12 @@ import {
 function makeEmbedding(value: number): number[] {
   const embedding = new Array<number>(EMBEDDING_DIM).fill(0)
   embedding[0] = value
+  return embedding
+}
+
+function makeOrthogonalEmbedding(): number[] {
+  const embedding = new Array<number>(EMBEDDING_DIM).fill(0)
+  embedding[1] = 1
   return embedding
 }
 
@@ -99,6 +106,101 @@ describe('LanceDB core API', () => {
     expect(loaded?.lastCurrentnessCheck).toBe(1700000000123)
     expect(Array.isArray(loaded?.embedding)).toBe(true)
     expect(loaded?.embedding?.length).toBe(EMBEDDING_DIM)
+  })
+
+  it('resolves a unique record ID prefix', async () => {
+    const record = makeCommandRecord({
+      id: 'a1b2c3d4-1111-4111-8111-111111111111',
+      embedding: makeOrthogonalEmbedding()
+    })
+    await insertRecord(record, config)
+
+    const resolution = await resolveMemoryRecord('a1b2c3d4', config)
+
+    expect(resolution).toMatchObject({
+      status: 'resolved',
+      matchedBy: 'prefix',
+      record: { id: record.id }
+    })
+  })
+
+  it('distinguishes missing and undersized record ID prefixes', async () => {
+    await expect(resolveMemoryRecord('notfound', config)).resolves.toEqual({
+      status: 'not_found',
+      identifier: 'notfound'
+    })
+    await expect(resolveMemoryRecord('short', config)).resolves.toEqual({
+      status: 'prefix_too_short',
+      identifier: 'short',
+      minimumLength: 8
+    })
+  })
+
+  it('detects ambiguous record ID prefixes', async () => {
+    const first = makeCommandRecord({
+      id: 'feedface-1111-4111-8111-111111111111',
+      embedding: makeOrthogonalEmbedding()
+    })
+    const second = makeCommandRecord({
+      id: 'feedface-2222-4222-8222-222222222222',
+      embedding: makeOrthogonalEmbedding()
+    })
+    await insertRecord(first, config)
+    await insertRecord(second, config)
+
+    const resolution = await resolveMemoryRecord('feedface', config)
+
+    expect(resolution.status).toBe('ambiguous')
+    if (resolution.status === 'ambiguous') {
+      expect(resolution.matchingIds).toEqual(expect.arrayContaining([first.id, second.id]))
+    }
+  })
+
+  it('gives an exact ID precedence over longer records sharing that prefix', async () => {
+    const exact = makeCommandRecord({ id: 'exact123', embedding: makeOrthogonalEmbedding() })
+    const longer = makeCommandRecord({ id: 'exact123-longer', embedding: makeOrthogonalEmbedding() })
+    await insertRecord(exact, config)
+    await insertRecord(longer, config)
+
+    const resolution = await resolveMemoryRecord(exact.id, config)
+
+    expect(resolution).toMatchObject({
+      status: 'resolved',
+      matchedBy: 'exact',
+      record: { id: exact.id }
+    })
+  })
+
+  it('escapes wildcard characters when resolving a prefix', async () => {
+    const literal = makeCommandRecord({ id: 'ab_cd%ef-literal', embedding: makeOrthogonalEmbedding() })
+    const wildcardDecoy = makeCommandRecord({ id: 'abXcdZZef-decoy', embedding: makeOrthogonalEmbedding() })
+    await insertRecord(literal, config)
+    await insertRecord(wildcardDecoy, config)
+
+    const resolution = await resolveMemoryRecord('ab_cd%ef', config)
+
+    expect(resolution).toMatchObject({
+      status: 'resolved',
+      matchedBy: 'prefix',
+      record: { id: literal.id }
+    })
+  })
+
+  it('resolves deprecated records so callers can report their state', async () => {
+    const deprecated = makeCommandRecord({
+      id: 'deadc0de-1111-4111-8111-111111111111',
+      embedding: makeOrthogonalEmbedding(),
+      deprecated: true
+    })
+    await insertRecord(deprecated, config)
+
+    const resolution = await resolveMemoryRecord('deadc0de', config)
+
+    expect(resolution).toMatchObject({
+      status: 'resolved',
+      matchedBy: 'prefix',
+      record: { id: deprecated.id, deprecated: true }
+    })
   })
 
   it('round-trips relations inside record content and defaults missing relations to empty', async () => {

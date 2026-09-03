@@ -3,7 +3,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { getRecordExactTextParts } from './record-fields.js'
 import { getRecordSummary, type RecordSummarySource } from './record-summary.js'
-import { type MemoryRecord, type RecordType } from './types.js'
+import { type HybridSearchResult, type MemoryRecord, type RecordType } from './types.js'
 
 /**
  * Check if a string looks like a command line.
@@ -87,6 +87,26 @@ export function escapeFilterValue(value: string): string {
   // Escape SQL string literal content for DataFusion/LanceDB filters.
   // We always wrap values in single quotes, so escape single quotes by doubling.
   return value.replace(/'/g, "''")
+}
+
+export const MEMORY_ID_PREFIX_LENGTH = 8
+
+export function getMemoryIdPrefix(id: string): string {
+  return id.slice(0, MEMORY_ID_PREFIX_LENGTH)
+}
+
+/** Remove the vector used for internal ranking before exposing a record. */
+export function stripRecordEmbedding<T extends MemoryRecord>(record: T): T {
+  const { embedding: _embedding, ...rest } = record
+  return rest as T
+}
+
+/** Remove the internal ranking vector while preserving score diagnostics. */
+export function stripSearchResultEmbedding<T extends HybridSearchResult>(result: T): T {
+  return {
+    ...result,
+    record: stripRecordEmbedding(result.record)
+  }
 }
 
 const UNKNOWN_RECORD_SUMMARY: Record<RecordType, string> = {

@@ -12,7 +12,7 @@ import {
   type WarningRecord
 } from './types.js'
 import { getRecordTextGroups } from './record-fields.js'
-import { looksLikeCommand, truncateText } from './shared.js'
+import { getMemoryIdPrefix, looksLikeCommand, truncateText } from './shared.js'
 import { buildExclusionReason } from './diagnostics.js'
 
 export interface ContextSignals {
@@ -156,7 +156,8 @@ function buildWarningSection(
     if (warningCount >= MAX_WARNING_RECORDS) break
     const warning = warnings[i]
     const entry = formatWarningRecord(warning.record)
-    const entryTokens = estimateTokens(entry)
+    const line = `- ${entry}`
+    const entryTokens = estimateTokens(line)
     const baseTokens = warningCount === 0 ? usedTokens + headerTokens : usedTokens
     const projected = baseTokens + entryTokens + footerTokens
     const projectedTotal = initialUsedTokens + projected
@@ -170,7 +171,7 @@ function buildWarningSection(
         for (let j = i + 1; j < warnings.length; j++) {
           const candidate = warnings[j]
           const candidateEntry = formatWarningRecord(candidate.record)
-          const candidateTokens = estimateTokens(candidateEntry)
+          const candidateTokens = estimateTokens(`- ${candidateEntry}`)
           const candidateBaseTokens = warningCount === 0 ? usedTokens + headerTokens : usedTokens
           const candidateProjected = candidateBaseTokens + candidateTokens + footerTokens
           addExclusion(
@@ -189,7 +190,7 @@ function buildWarningSection(
       usedTokens += headerTokens
     }
 
-    lines.push(`- ${entry}`)
+    lines.push(line)
     usedTokens += entryTokens
     warningCount += 1
     selected.push(warning)
@@ -389,10 +390,11 @@ function formatWarningRecord(record: WarningRecord): string {
   const useInstead = cleanInline(record.useInstead)
   const reason = cleanInline(record.reason)
 
-  return truncateText(
+  const warning = truncateText(
     `${icon} Don't: ${avoid} → Use: ${useInstead} (${reason})`,
     MAX_WARNING_CHARS
   )
+  return `${warning} | id: ${getMemoryIdPrefix(record.id)}`
 }
 
 export function formatRecordSnippet(record: MemoryRecord): string | null {
@@ -491,9 +493,8 @@ function formatRecordWithAge(record: MemoryRecord): string | null {
   if (!base) return null
 
   const age = formatRelativeAge(record.timestamp ?? record.lastUsed)
-  if (!age) return base
-
-  return `${base} | recorded: ${age}`
+  const ageField = age ? ` | recorded: ${age}` : ''
+  return `${base}${ageField} | id: ${getMemoryIdPrefix(record.id)}`
 }
 
 function formatRelativeAge(timestamp: number | undefined): string | null {

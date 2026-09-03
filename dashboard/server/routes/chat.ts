@@ -9,6 +9,7 @@ import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from '../../../src/l
 import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from '../../../src/lib/anthropic-stream.js'
 import { CHAT_TOOLS, executeChatTool, type ChatToolName } from '../lib/chat-tools.js'
 import { loadSettings } from '../../../src/lib/settings.js'
+import { UNIFIED_SEMANTIC_WEIGHT } from '../../../src/lib/ranked-search.js'
 import { clampModelMaxTokens } from '../../../src/lib/model-capabilities.js'
 import type { Settings } from '../../../src/lib/settings.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
@@ -70,7 +71,7 @@ function formatSettingsForPrompt(settings: Settings): string {
     `## Current Settings (Retrieval)`,
     `- minScore: ${settings.minScore}, minSemanticSimilarity: ${settings.minSemanticSimilarity}`,
     `- maxRecords: ${settings.maxRecords}, maxTokens: ${settings.maxTokens}`,
-    `- mmrLambda: ${settings.mmrLambda}, keywordBonus: ${settings.keywordBonus}, usageRatioWeight: ${settings.usageRatioWeight}`,
+    `- semanticWeight: ${UNIFIED_SEMANTIC_WEIGHT}, mmrLambda: ${settings.mmrLambda}, keywordBonus: ${settings.keywordBonus}, projectMatchBonus: ${settings.projectMatchBonus}, usageRatioWeight: ${settings.usageRatioWeight}`,
     `- Haiku query planning: ${settings.enableHaikuRetrieval ? 'enabled' : 'disabled'}`,
   ]
   return lines.join('\n')

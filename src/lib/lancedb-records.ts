@@ -1,6 +1,6 @@
 import { embed, ensureEmbeddingDim } from './embed.js'
 import { getRecordSupplementalEmbeddingParts } from './record-fields.js'
-import { buildExactText } from './shared.js'
+import { buildExactText, stripRecordEmbedding } from './shared.js'
 import {
   CONTENT_MAX_LENGTH,
   EXACT_TEXT_MAX_LENGTH,
@@ -295,8 +295,7 @@ function joinEmbeddingParts(parts: Array<string | undefined>): string | undefine
 }
 
 export function serializeRecord(record: MemoryRecord): string {
-  const { embedding: _embedding, ...rest } = record as MemoryRecord & { embedding?: number[] }
-  return JSON.stringify(rest)
+  return JSON.stringify(stripRecordEmbedding(record))
 }
 
 function truncateString(value: string, maxLength: number): string {

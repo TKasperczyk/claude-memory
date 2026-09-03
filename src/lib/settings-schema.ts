@@ -253,7 +253,7 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'keywordBonus',
     label: 'Keyword match bonus',
-    description: 'Flat score boost for results that match a keyword query. Keyword matches are re-scored using semantic similarity; this bonus is added on top.',
+    description: 'Score boost for keyword matches, scaled by semantic similarity up to the minimum semantic threshold.',
     step: 0.01,
     min: 0,
     max: 0.5,

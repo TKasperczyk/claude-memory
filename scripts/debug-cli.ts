@@ -37,6 +37,7 @@ import {
 import { embed } from '../src/lib/embed.js'
 import { getRecordFieldView } from '../src/lib/record-fields.js'
 import { getRecordSummary } from '../src/lib/record-summary.js'
+import { stripRecordEmbedding } from '../src/lib/shared.js'
 import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '../src/lib/session-tracking.js'
 import { listInProgressExtractions } from '../src/lib/extraction-log.js'
 import { paginateExtractionRuns, loadExtractionRunDetail } from '../src/lib/extraction-query.js'
@@ -735,10 +736,10 @@ async function cmdExport(): Promise<void> {
   for await (const record of iterateRecords(options, config)) {
     count++
     if (format === 'jsonl') {
-      const output = includeEmbeddings ? record : stripEmbedding(record)
+      const output = includeEmbeddings ? record : stripRecordEmbedding(record)
       process.stdout.write(JSON.stringify(output) + '\n')
     } else {
-      records.push(includeEmbeddings ? record : stripEmbedding(record))
+      records.push(includeEmbeddings ? record : stripRecordEmbedding(record))
     }
   }
 
@@ -1492,12 +1493,6 @@ function serializeSearchResult(sr: HybridSearchResult | { record: MemoryRecord; 
     usageRatio: computeUsageRatio(sr.record),
     summary: getRecordSummary(sr.record)
   }
-}
-
-function stripEmbedding(record: MemoryRecord): MemoryRecord {
-  const rec = record as unknown as Record<string, unknown> & { embedding?: number[] }
-  const { embedding, ...rest } = rec
-  return rest as unknown as MemoryRecord
 }
 
 // ---------------------------------------------------------------------------

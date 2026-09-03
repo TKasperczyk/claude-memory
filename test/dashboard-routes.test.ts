@@ -5,6 +5,8 @@ import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import { DEFAULT_CONFIG, EMBEDDING_DIM } from '../src/lib/types.js'
+import { embed } from '../src/lib/embed.js'
+import { searchRankedCandidates } from '../src/lib/ranked-search.js'
 import { createExtractionsRouter } from '../dashboard/server/routes/extractions.js'
 import { createInstallationRouter } from '../dashboard/server/routes/installation.js'
 import { createMaintenanceRouter } from '../dashboard/server/routes/maintenance.js'
@@ -80,6 +82,14 @@ vi.mock('../src/lib/settings.js', () => ({
   saveSettings: vi.fn(),
   validateSettingValue: vi.fn(),
   coerceRetrievalSettings: vi.fn()
+}))
+
+vi.mock('../src/lib/embed.js', () => ({
+  embed: vi.fn()
+}))
+
+vi.mock('../src/lib/ranked-search.js', () => ({
+  searchRankedCandidates: vi.fn()
 }))
 
 vi.mock('../src/lib/installer.js', () => {
@@ -193,6 +203,8 @@ vi.mock('../src/lib/maintenance-api.js', () => ({
 }))
 
 const mockedLoadSettings = vi.mocked(loadSettings)
+const mockedEmbed = vi.mocked(embed)
+const mockedSearchRankedCandidates = vi.mocked(searchRankedCandidates)
 const mockedSaveSettings = vi.mocked(saveSettings)
 const mockedResetSettings = vi.mocked(resetSettings)
 const mockedGetDefaultSettings = vi.mocked(getDefaultSettings)
@@ -339,6 +351,13 @@ const ALL_MEMORY_TYPES = ['command', 'error', 'discovery', 'procedure', 'warning
 beforeEach(() => {
   vi.clearAllMocks()
   mockedLoadSettings.mockReturnValue({ ...DEFAULT_SETTINGS })
+  mockedEmbed.mockResolvedValue([0.1, 0.2, 0.3])
+  mockedSearchRankedCandidates.mockResolvedValue({
+    results: [],
+    nearMisses: [],
+    rawKeywordMatchIds: new Set(),
+    rawKeywordQualificationScores: new Map()
+  })
   mockedSaveSettings.mockResolvedValue(undefined)
   mockedResetSettings.mockResolvedValue(undefined)
   mockedGetDefaultSettings.mockReturnValue({ ...DEFAULT_SETTINGS })
@@ -901,14 +920,17 @@ describe('memory routes', () => {
 
   it('returns search results with trimmed query', async () => {
     mockedCountRecords.mockResolvedValueOnce(1)
-    mockedHybridSearch.mockResolvedValueOnce([
-      {
-        record: { id: 'rec-1', type: 'command' },
+    mockedSearchRankedCandidates.mockResolvedValueOnce({
+      results: [{
+        record: { id: 'rec-1', type: 'command', embedding: [0.1, 0.2, 0.3] },
         score: 0.9,
         similarity: 0.92,
         keywordMatch: true
-      }
-    ])
+      }],
+      nearMisses: [],
+      rawKeywordMatchIds: new Set(['rec-1']),
+      rawKeywordQualificationScores: new Map()
+    })
 
     const { app } = buildApp()
     const res = await request(app).get('/api/search?q=%20find%20me%20')
@@ -922,6 +944,15 @@ describe('memory routes', () => {
       similarity: 0.92,
       keywordMatch: true
     })
+    expect(res.body.results[0].record).not.toHaveProperty('embedding')
+    expect(res.text).not.toContain('"embedding"')
+    expect(mockedEmbed).toHaveBeenCalledWith('find me', expect.anything())
+    expect(mockedSearchRankedCandidates).toHaveBeenCalledWith(expect.objectContaining({
+      rawKeywordQueries: ['find me'],
+      embeddings: [[0.1, 0.2, 0.3]],
+      sourceLimit: 63,
+      resultLimit: 21
+    }))
   })
 
   it('returns a generic error when listing fails', async () => {
@@ -962,7 +993,7 @@ describe('preview routes', () => {
 
   it('includes diagnostics when requested', async () => {
     const scored = {
-      record: { id: 'rec-1', type: 'command' },
+      record: { id: 'rec-1', type: 'command', embedding: [0.1, 0.2, 0.3] },
       score: 0.8,
       similarity: 0.81,
       keywordMatch: true,
@@ -997,6 +1028,11 @@ describe('preview routes', () => {
     expect(res.body.injected[0].via).toEqual(scored.via)
     expect(res.body.nearMisses).toHaveLength(1)
     expect(res.body.injected).toHaveLength(1)
+    expect(res.body.results[0].record).not.toHaveProperty('embedding')
+    expect(res.body.injectedRecords[0]).not.toHaveProperty('embedding')
+    expect(res.body.injected[0].record).not.toHaveProperty('embedding')
+    expect(res.body.nearMisses[0].record.record).not.toHaveProperty('embedding')
+    expect(res.text).not.toContain('"embedding"')
   })
 
   it('honors collection override header for preview', async () => {

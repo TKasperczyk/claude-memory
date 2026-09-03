@@ -5,17 +5,20 @@ import {
   deleteRecord,
   escapeFilterValue,
   getRecord,
-  hybridSearch,
   insertRecord,
   queryRecords,
   resetCollection
 } from '../../../src/lib/lancedb.js'
+import { embed } from '../../../src/lib/embed.js'
 import { markDeprecated } from '../../../src/lib/maintenance/operations.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
 import { getRetrievalActivity } from '../../../src/lib/retrieval-events.js'
 import { getTokenUsageActivity, backfillFromExtractionRuns } from '../../../src/lib/token-usage-events.js'
 import { getStatsHistory } from '../../../src/lib/stats-snapshots.js'
 import type { TimeBucketPeriod } from '../../../src/lib/time-buckets.js'
+import { searchRankedCandidates } from '../../../src/lib/ranked-search.js'
+import { loadSettings } from '../../../src/lib/settings.js'
+import { stripRecordEmbedding } from '../../../src/lib/shared.js'
 import { EMBEDDING_DIM } from '../../../src/lib/types.js'
 import {
   asBoolean,
@@ -488,14 +491,23 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const deprecated = req.query.deprecated === 'true'
 
       const windowLimit = offset + limit + 1
+      const sourceLimit = Math.max(windowLimit * 3, windowLimit)
+      const settings = loadSettings()
+      const queryEmbedding = await embed(query, config)
 
-      const results = await hybridSearch({
-        query,
-        limit: windowLimit,
-        type,
+      const { results } = await searchRankedCandidates({
+        rawKeywordQueries: [query],
+        config,
+        settings,
         project,
-        excludeDeprecated: !deprecated
-      }, config)
+        semanticProject: project,
+        type,
+        excludeDeprecated: !deprecated,
+        embeddings: [queryEmbedding],
+        rawPromptEmbedding: queryEmbedding,
+        sourceLimit,
+        resultLimit: windowLimit
+      })
 
       const page = results.slice(offset, offset + limit)
       const hasMore = results.length > offset + limit
@@ -506,11 +518,11 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         total,
         offset,
         hasMore,
-        results: page.map(r => ({
-          record: r.record,
-          score: r.score,
-          similarity: r.similarity,
-          keywordMatch: r.keywordMatch
+        results: page.map(result => ({
+          record: stripRecordEmbedding(result.record),
+          score: result.score,
+          similarity: result.similarity,
+          keywordMatch: result.keywordMatch
         }))
       })
     } catch (error) {
