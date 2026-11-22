@@ -18,6 +18,10 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     maxOutputTokens: 128000,
     thinkingStyle: 'always_on'
   },
+  'claude-haiku-5-5': {
+    maxOutputTokens: 128000,
+    thinkingStyle: 'adaptive'
+  },
   'claude-opus-4-8': {
     maxOutputTokens: 128000,
     thinkingStyle: 'adaptive'

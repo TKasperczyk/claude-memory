@@ -21,7 +21,7 @@ export interface RetrievalQueryPlanGenerationResult {
 }
 
 const TOOL_NAME = 'emit_query_plan'
-const HAIKU_MODEL = 'claude-haiku-4-5-20251001'
+const HAIKU_MODEL = 'claude-haiku-5-5'
 const QUERY_MAX_TOKENS = 1000
 const MAX_CONTEXT_TURNS = 8
 const MAX_TURN_CHARS = 4000

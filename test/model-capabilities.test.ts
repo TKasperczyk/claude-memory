@@ -27,6 +27,10 @@ describe('model capabilities', () => {
       maxOutputTokens: 64000,
       thinkingStyle: 'adaptive'
     })
+    expect(getModelCapabilities('claude-haiku-5-5')).toEqual({
+      maxOutputTokens: 128000,
+      thinkingStyle: 'adaptive'
+    })
     expect(getModelCapabilities('claude-haiku-4-5-20251001')).toEqual({
       maxOutputTokens: 64000,
       thinkingStyle: 'budget'
