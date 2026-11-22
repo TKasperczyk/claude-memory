@@ -1382,9 +1382,12 @@ describe('Semantic anchor gate', () => {
     expect(result.diagnostics?.search.nearMisses.some(entry => entry.record.record.id === 'planned-keyword')).toBe(true)
   })
 
-  it('falls back to raw-keyword survivors when only the raw embedding fails', async () => {
-    const rawKeyword = makeResult('raw-keyword', [0, 1], 1, 0, true)
+  it('qualifies raw-keyword survivors on variant similarity when only the raw embedding fails', async () => {
+    // Keyword hits arrive with the raw keyword score (~1.0) and no similarity.
+    const rawKeyword = makeResult('raw-keyword', [0.8, 0.6], 1, 0, true)
     rawKeyword.record.project = PROJECT_ROOT
+    const unrelatedRawKeyword = makeResult('unrelated-raw-keyword', [0, 1], 1, 0, true)
+    unrelatedRawKeyword.record.project = PROJECT_ROOT
     const plannedKeyword = makeResult('planned-keyword', [1, 0], 0.8, 0.8, true)
     plannedKeyword.record.project = PROJECT_ROOT
     mockedGenerateRetrievalQueryPlan.mockResolvedValue({
@@ -1408,9 +1411,7 @@ describe('Semantic anchor gate', () => {
     mockedHybridSearch.mockImplementation(async params => {
       let qualified: HybridSearchResult[]
       if (params.vectorWeight === 0 && params.keywordQueries?.includes('miconet')) {
-        qualified = [rawKeyword]
-      } else if (params.vectorWeight === 0) {
-        qualified = [plannedKeyword]
+        qualified = [rawKeyword, unrelatedRawKeyword]
       } else {
         qualified = [plannedKeyword]
       }
@@ -1428,7 +1429,9 @@ describe('Semantic anchor gate', () => {
     )
 
     expect(result.results.map(item => item.record.id)).toEqual(['raw-keyword'])
-    expect(result.diagnostics?.search.nearMisses.some(entry => entry.record.record.id === 'planned-keyword')).toBe(true)
+    const nearMissIds = result.diagnostics?.search.nearMisses.map(entry => entry.record.record.id)
+    expect(nearMissIds).toContain('planned-keyword')
+    expect(nearMissIds).toContain('unrelated-raw-keyword')
   })
 })
 

@@ -125,7 +125,6 @@ export async function searchRankedCandidates(
   const diagnostic = options.diagnostic === true
   const resultsById = new Map<string, HybridSearchResult>()
   const rawKeywordMatchIds = new Set<string>()
-  const rawKeywordScores = new Map<string, number>()
   const rawKeywordQualificationScores = new Map<string, number>()
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
@@ -166,12 +165,6 @@ export async function searchRankedCandidates(
   })))
   for (const keywordResults of keywordResultSets) {
     for (const item of keywordResults.result.results) {
-      if (keywordResults.raw) {
-        rawKeywordScores.set(
-          item.record.id,
-          Math.max(rawKeywordScores.get(item.record.id) ?? Number.NEGATIVE_INFINITY, item.score)
-        )
-      }
       upsertResult(item)
       if (keywordResults.raw) rawKeywordMatchIds.add(item.record.id)
     }
@@ -211,30 +204,33 @@ export async function searchRankedCandidates(
 
   const allCandidates = Array.from(resultsById.values())
 
-  if (embeddings.length > 0 || rawPromptEmbedding) {
+  // Whichever query embeddings succeeded. Keyword hits must be rescored
+  // against them: their raw keyword score (~1.0) carries no semantic signal,
+  // and keeping it let generic fallback needles ("other", "currently") inject
+  // unrelated records whenever only some embeddings came back.
+  const scoringEmbeddings = embeddings.length > 0
+    ? embeddings
+    : rawPromptEmbedding ? [rawPromptEmbedding] : []
+  if (scoringEmbeddings.length > 0) {
     for (const item of allCandidates) {
       const candidateEmbedding = item.record.embedding
-      let rankingScore = item.score
-
-      if (embeddings.length > 0) {
-        if (item.similarity === 0 && item.keywordMatch && candidateEmbedding && candidateEmbedding.length > 0) {
-          item.similarity = maxCosineSimilarity(embeddings, candidateEmbedding)
-        }
-        rankingScore = computeUnifiedScore({
-          similarity: item.similarity,
-          keywordMatch: item.keywordMatch,
-          usageRatio: computeUsageRatio(item.record),
-          projectMatch: Boolean(project && item.record.project === project),
-          settings
-        }).total
+      if (item.similarity === 0 && item.keywordMatch && candidateEmbedding && candidateEmbedding.length > 0) {
+        item.similarity = maxCosineSimilarity(scoringEmbeddings, candidateEmbedding)
       }
+      const rankingScore = computeUnifiedScore({
+        similarity: item.similarity,
+        keywordMatch: item.keywordMatch,
+        usageRatio: computeUsageRatio(item.record),
+        projectMatch: Boolean(project && item.record.project === project),
+        settings
+      }).total
 
       if (!rawKeywordMatchIds.has(item.record.id)) {
         item.score = rankingScore
         continue
       }
 
-      let qualificationScore = rawKeywordScores.get(item.record.id) ?? item.score
+      let qualificationScore = rankingScore
       if (rawPromptEmbedding && candidateEmbedding && candidateEmbedding.length > 0) {
         const rawSimilarity = cosineSimilarity(rawPromptEmbedding, candidateEmbedding)
         qualificationScore = computeUnifiedScore({
