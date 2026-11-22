@@ -13,9 +13,9 @@ const config: Config = DEFAULT_CONFIG
 export async function embed(
   text: string,
   cfg: Config = config,
-  options?: { signal?: AbortSignal }
+  options?: { signal?: AbortSignal; timeoutMs?: number }
 ): Promise<number[]> {
-  const [embedding] = await requestEmbeddings(text, cfg, options?.signal)
+  const [embedding] = await requestEmbeddings(text, cfg, options?.signal, options?.timeoutMs)
   return embedding
 }
 
@@ -31,7 +31,8 @@ export async function embedBatch(
 async function requestEmbeddings(
   input: string | string[],
   cfg: Config,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<number[][]> {
   if (cfg.embeddings.insecure && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0') {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
@@ -77,11 +78,11 @@ async function requestEmbeddings(
     }
 
     return embeddings
-  }, { timeoutMs: DEFAULT_TIMEOUT_MS, signal })
+  }, { timeoutMs, signal })
 
   if (!result.completed) {
     if (result.timedOut) {
-      throw new Error(`Embedding request timed out after ${DEFAULT_TIMEOUT_MS}ms`)
+      throw new Error(`Embedding request timed out after ${timeoutMs}ms`)
     }
     throw new Error('Embedding request aborted')
   }

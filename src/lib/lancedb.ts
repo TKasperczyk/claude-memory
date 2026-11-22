@@ -8,7 +8,7 @@ export type { MemoryStats } from '../../shared/types.js'
 
 export { escapeFilterValue } from './shared.js'
 
-export { initLanceDB, closeLanceDB, resolveDirectory } from './lancedb-client.js'
+export { initLanceDB, closeLanceDB, compactTable, resolveDirectory } from './lancedb-client.js'
 
 export {
   insertRecord,

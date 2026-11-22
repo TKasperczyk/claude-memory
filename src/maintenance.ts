@@ -8,6 +8,7 @@ import { resolveMaintenanceSettings } from './lib/settings.js'
 import {
   AUTO_MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATION_DEFINITIONS,
+  compactTableSafely,
   runMaintenanceOperation,
   type OperationResult
 } from './lib/maintenance-api.js'
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
     const label = MAINTENANCE_OPERATION_DEFINITIONS.find(definition => definition.key === operation)?.label ?? operation
     logMaintenanceResult(label, result, dryRun)
   }
+  if (!dryRun) await compactTableSafely(config)
 
   const run = buildMaintenanceRun(results, {
     dryRun,

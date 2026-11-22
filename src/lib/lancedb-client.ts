@@ -44,6 +44,18 @@ export async function initLanceDB(config: Config = DEFAULT_CONFIG): Promise<void
   await ensureClient(config)
 }
 
+const COMPACTION_VERSION_RETENTION_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Merge small fragments and prune old versions. Every record update commits a
+ * new fragment and version, so without this the table degrades into thousands
+ * of tiny files that every search has to open.
+ */
+export async function compactTable(config: Config = DEFAULT_CONFIG): Promise<void> {
+  const { table } = await ensureClient(config)
+  await table.optimize({ cleanupOlderThan: new Date(Date.now() - COMPACTION_VERSION_RETENTION_MS) })
+}
+
 async function createInitializedClient(config: Config): Promise<LanceContext> {
   const directory = resolveDirectory(config.lancedb.directory)
   const tableName = config.lancedb.table

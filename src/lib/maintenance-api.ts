@@ -4,6 +4,7 @@ import { buildPromotionDiffs } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from './settings.js'
 import { runConflictResolution } from './maintenance.js'
+import { compactTable } from './lancedb.js'
 import {
   runStaleCheck,
   runStaleUnusedDeprecation,
@@ -181,7 +182,17 @@ export async function runAllMaintenance(
   for (const operation of AUTO_MAINTENANCE_OPERATIONS) {
     results.push(await runMaintenanceOperation(operation, dryRun, config, maintenance))
   }
+  if (!dryRun) await compactTableSafely(config)
   return results
+}
+
+/** Compaction failure must not discard the maintenance results already produced. */
+export async function compactTableSafely(config: Config): Promise<void> {
+  try {
+    await compactTable(config)
+  } catch (error) {
+    console.error('[claude-memory] LanceDB compaction failed:', error)
+  }
 }
 
 async function runOperation(

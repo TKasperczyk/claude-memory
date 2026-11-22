@@ -152,6 +152,9 @@ const FALLBACK_TOKEN_PATTERN = ENTITY_TOKEN_PATTERN
 
 /** Separate budget for entity needles appended to keyword queries (B2 mechanism). */
 const ENTITY_NEEDLE_CAP = 3
+// A hung embedding provider must cost one query variant, not the whole
+// pre-prompt budget; searchMemories already continues with partial embeddings.
+const HOOK_EMBEDDING_TIMEOUT_MS = 3000
 
 function applySettingsToConfig(config: Config, settings: RetrievalSettings): Config {
   return {
@@ -395,7 +398,7 @@ async function searchMemories(
   ]))
   const embeddingResults = await Promise.all(embeddingQueries.map(async query => {
     try {
-      return { query, embedding: await embed(query, config, { signal }) }
+      return { query, embedding: await embed(query, config, { signal, timeoutMs: HOOK_EMBEDDING_TIMEOUT_MS }) }
     } catch (error) {
       if (signal?.aborted) throw error
       return { query, error }
