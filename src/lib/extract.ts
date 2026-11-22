@@ -24,7 +24,7 @@ import { normalizeEntities } from './entities.js'
 import { asConfidence, asOutcome, asScope, asSeverity, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { emptyTokenUsage, extractTokenUsage } from './token-usage.js'
 import { recordTokenUsageEventsAsync } from './token-usage-events.js'
-import { clampModelMaxTokens } from './model-capabilities.js'
+import { buildToolCallParams, clampModelMaxTokens } from './model-capabilities.js'
 
 export interface ExtractionContext {
   sessionId: string
@@ -282,14 +282,13 @@ async function streamExtractionWithRetry(
     try {
       return await client.messages.stream({
         model: config.extraction.model,
-        max_tokens: maxTokens,
         system: [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
           { type: 'text', text: SYSTEM_PROMPT }
         ],
         messages: [{ role: 'user', content: userPrompt }],
         tools: [EMIT_RECORDS_TOOL],
-        tool_choice: { type: 'tool', name: TOOL_NAME }
+        ...buildToolCallParams(config.extraction.model, TOOL_NAME, maxTokens)
       }).finalMessage()
     } catch (error) {
       const tooLong = parsePromptTooLong(error)
@@ -412,21 +411,15 @@ export async function rateInjectedMemories(
   }
 
   const userPrompt = buildUsefulnessPrompt(transcript, injectedMemories)
-  const maxTokens = clampModelMaxTokens(
-    config.extraction.model,
-    Math.min(USEFULNESS_MAX_TOKENS, config.extraction.maxTokens)
-  )
-
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: maxTokens,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: USEFULNESS_SYSTEM_PROMPT }
     ],
     messages: [{ role: 'user', content: userPrompt }],
     tools: [EMIT_USEFULNESS_TOOL],
-    tool_choice: { type: 'tool', name: USEFULNESS_TOOL_NAME }
+    ...buildToolCallParams(config.extraction.model, USEFULNESS_TOOL_NAME, Math.min(USEFULNESS_MAX_TOKENS, config.extraction.maxTokens))
   })
 
   const tokenUsage = extractTokenUsage(response)

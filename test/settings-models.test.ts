@@ -5,11 +5,13 @@ import { validateSettingValue } from '../src/lib/settings.js'
 describe('model settings', () => {
   it('uses the current default models and keeps legacy options selectable', () => {
     expect(DEFAULT_MODEL_SETTINGS).toEqual({
-      extractionModel: 'claude-sonnet-5',
-      reviewModel: 'claude-opus-5',
-      chatModel: 'claude-opus-5'
+      extractionModel: 'claude-sonnet-5-5',
+      reviewModel: 'claude-opus-5-5',
+      chatModel: 'claude-opus-5-5'
     })
     expect(MODEL_OPTIONS.map(option => option.value)).toEqual([
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
       'claude-opus-5',
       'claude-sonnet-5',
       'claude-fable-5',

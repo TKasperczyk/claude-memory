@@ -7,7 +7,7 @@ import { join } from 'path'
 // OAuth subscription auth constants (aligned with OpenCode auth plugin)
 const OAUTH_BETAS = 'oauth-2025-04-20,interleaved-thinking-2025-05-14'
 const OAUTH_BETAS_WITH_CLAUDE_CODE = 'oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14'
-const OAUTH_USER_AGENT = 'claude-cli/2.1.2 (external, cli)'
+const OAUTH_USER_AGENT = 'claude-cli/2.1.330 (external, cli)'
 // This MUST be sent as the first system message for OAuth to work
 export const CLAUDE_CODE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude."
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildToolCallParams,
   clampModelMaxTokens,
   getModelCapabilities,
   getModelMaxOutputTokens
@@ -55,5 +56,19 @@ describe('model capabilities', () => {
     })
     expect(getModelMaxOutputTokens('claude-future-model')).toBe(64000)
     expect(clampModelMaxTokens('claude-future-model', 128000)).toBe(64000)
+  })
+
+  it('forces the tool only on models that accept it', () => {
+    expect(buildToolCallParams('claude-opus-4-8', 'emit', 1200)).toEqual({
+      tool_choice: { type: 'tool', name: 'emit' },
+      max_tokens: 1200
+    })
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5']) {
+      expect(buildToolCallParams(model, 'emit', 1200)).toEqual({
+        tool_choice: { type: 'auto' },
+        max_tokens: 17200
+      })
+      expect(buildToolCallParams(model, 'emit', 128000).max_tokens).toBe(128000)
+    }
   })
 })

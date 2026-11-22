@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
 import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from './anthropic-stream.js'
-import { clampModelMaxTokens, getModelCapabilities } from './model-capabilities.js'
+import { buildToolCallParams, clampModelMaxTokens, getModelCapabilities } from './model-capabilities.js'
 import { isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { type Config } from './types.js'
 
@@ -50,17 +50,13 @@ export async function executeReview<TInput, TPayload>(
   const prompt = frameworkConfig.buildPrompt(input)
   const response = await client.messages.create({
     model: frameworkConfig.model,
-    max_tokens: clampModelMaxTokens(
-      frameworkConfig.model,
-      Math.min(frameworkConfig.maxTokens, config.extraction.maxTokens)
-    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: frameworkConfig.systemPrompt }
     ],
     messages: [{ role: 'user', content: prompt }],
     tools: [tool],
-    tool_choice: { type: 'tool', name: frameworkConfig.toolName }
+    ...buildToolCallParams(frameworkConfig.model, frameworkConfig.toolName, Math.min(frameworkConfig.maxTokens, config.extraction.maxTokens))
   })
 
   const toolInput = response.content.find((block): block is ToolUseBlock =>

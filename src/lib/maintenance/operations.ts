@@ -17,7 +17,7 @@ import { batchUpdateRecords, buildEmbeddingInput, buildFilter, getRecord, update
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../shared.js'
-import { clampModelMaxTokens } from '../model-capabilities.js'
+import { buildToolCallParams, clampModelMaxTokens } from '../model-capabilities.js'
 import { recordTokenUsageFromResponse } from '../token-usage-events.js'
 import { upsertRelation } from '../relations.js'
 import {
@@ -366,17 +366,13 @@ async function synthesizeWarning(
 
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: clampModelMaxTokens(
-      config.extraction.model,
-      Math.min(WARNING_SYNTHESIS_MAX_TOKENS, config.extraction.maxTokens)
-    ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
       { type: 'text', text: WARNING_SYNTHESIS_PROMPT }
     ],
     messages: [{ role: 'user', content: `Failure records:\n${payload}` }],
     tools: [WARNING_SYNTHESIS_TOOL],
-    tool_choice: { type: 'tool', name: WARNING_SYNTHESIS_TOOL_NAME }
+    ...buildToolCallParams(config.extraction.model, WARNING_SYNTHESIS_TOOL_NAME, Math.min(WARNING_SYNTHESIS_MAX_TOKENS, config.extraction.maxTokens))
   })
   recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
     collection: config.lancedb.table
