@@ -21,7 +21,7 @@ import { initLanceDB, closeLanceDB, iterateRecords, deleteRecord } from '../src/
 import { markDeprecated } from '../src/lib/maintenance/operations.js'
 import { DEFAULT_CONFIG, type MemoryRecord } from '../src/lib/types.js'
 
-const GEMINI_MODEL = 'gemini-3-pro-preview'
+const GEMINI_MODEL = 'gemini-4-neon'
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
 
 // Parse command line args
