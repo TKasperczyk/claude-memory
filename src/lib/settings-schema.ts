@@ -904,6 +904,7 @@ export const MODEL_OPTIONS: TextOption[] = [
   { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
   { value: 'claude-opus-5', label: 'Opus 5' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5' },
+  { value: 'claude-fable-5-2', label: 'Fable 5.2' },
   { value: 'claude-fable-5', label: 'Fable 5' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8' },
   { value: 'claude-opus-4-7', label: 'Opus 4.7' },

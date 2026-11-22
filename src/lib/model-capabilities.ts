@@ -23,8 +23,13 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     thinkingStyle: 'adaptive'
   },
   'claude-sonnet-5': {
-    maxOutputTokens: 64000,
+    maxOutputTokens: 128000,
     thinkingStyle: 'adaptive'
+  },
+  'claude-fable-5-2': {
+    maxOutputTokens: 128000,
+    thinkingStyle: 'always_on',
+    rejectsForcedToolChoice: true
   },
   'claude-fable-5': {
     maxOutputTokens: 128000,
@@ -75,6 +80,13 @@ export function getModelCapabilities(model: string): ModelCapabilities {
 
 export function getModelMaxOutputTokens(model: string): number {
   return getModelCapabilities(model).maxOutputTokens
+}
+
+// Pre-adaptive models that still accept output_config.effort.
+const BUDGET_MODELS_WITH_EFFORT = new Set(['claude-opus-4-5-20251101'])
+
+export function supportsEffort(model: string): boolean {
+  return getModelCapabilities(model).thinkingStyle !== 'budget' || BUDGET_MODELS_WITH_EFFORT.has(model)
 }
 
 export function clampModelMaxTokens(model: string, requestedMaxTokens: number): number {

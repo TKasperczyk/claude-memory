@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildToolCallParams,
+  supportsEffort,
   clampModelMaxTokens,
   getModelCapabilities,
   getModelMaxOutputTokens
@@ -8,6 +9,11 @@ import {
 
 describe('model capabilities', () => {
   it('returns current lineup capabilities', () => {
+    expect(getModelCapabilities('claude-fable-5-2')).toEqual({
+      maxOutputTokens: 128000,
+      thinkingStyle: 'always_on',
+      rejectsForcedToolChoice: true
+    })
     expect(getModelCapabilities('claude-fable-5')).toEqual({
       maxOutputTokens: 128000,
       thinkingStyle: 'always_on'
@@ -69,6 +75,15 @@ describe('model capabilities', () => {
         max_tokens: 17200
       })
       expect(buildToolCallParams(model, 'emit', 128000).max_tokens).toBe(128000)
+    }
+  })
+
+  it('sends effort to adaptive models and the one budget model that accepts it', () => {
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-2', 'claude-haiku-5-5', 'claude-opus-4-5-20251101']) {
+      expect(supportsEffort(model)).toBe(true)
+    }
+    for (const model of ['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929']) {
+      expect(supportsEffort(model)).toBe(false)
     }
   })
 })

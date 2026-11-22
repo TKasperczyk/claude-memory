@@ -10,7 +10,7 @@ import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from '..
 import { CHAT_TOOLS, executeChatTool, type ChatToolName } from '../lib/chat-tools.js'
 import { loadSettings } from '../../../src/lib/settings.js'
 import { UNIFIED_SEMANTIC_WEIGHT } from '../../../src/lib/ranked-search.js'
-import { clampModelMaxTokens } from '../../../src/lib/model-capabilities.js'
+import { clampModelMaxTokens, supportsEffort } from '../../../src/lib/model-capabilities.js'
 import type { Settings } from '../../../src/lib/settings.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
 import type { Config } from '../../../src/lib/types.js'
@@ -24,11 +24,6 @@ const STATIC_PROMPT = readFileSync(
 
 const CHAT_MAX_TOKENS = 10000
 const MAX_TOOL_ROUNDS = 50
-const EFFORT_MODELS = ['claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-6']
-
-function supportsEffort(model: string): boolean {
-  return EFFORT_MODELS.some(prefix => model.startsWith(prefix))
-}
 
 type ChatMessage = {
   role: 'user' | 'assistant'
