@@ -18,6 +18,7 @@ import {
   createMockTranscript,
   buildTypicalTranscriptEntries,
   buildErrorTranscriptEntries,
+  cleanupTestCollectionData,
   cleanupTempFiles,
   createMockCommandRecord,
   createMockErrorRecord
@@ -56,16 +57,19 @@ const extractionSkipSuffix = extractionSkipReasons.length > 0
 describe('Extraction E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     await initLanceDB(TEST_CONFIG)
   })
 
   afterAll(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     cleanupTempFiles()
   })
 
   beforeEach(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     await initLanceDB(TEST_CONFIG)
   })
 

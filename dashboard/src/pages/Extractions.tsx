@@ -286,6 +286,11 @@ export default function Extractions() {
             void queryClient.invalidateQueries({ queryKey: ['extraction-run', selectedRun.runId] })
           }
         }}
+        onRestored={() => {
+          if (selectedRun) {
+            void queryClient.invalidateQueries({ queryKey: ['extraction-run', selectedRun.runId] })
+          }
+        }}
       />
 
       <Dialog open={Boolean(deleteConfirmRun)} onOpenChange={(open) => !open && setDeleteConfirmRun(null)}>

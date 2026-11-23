@@ -4,10 +4,33 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
+import { getCollectionKey } from '../src/lib/file-store.js'
 import { closeLanceDB, countRecords, flushCollection } from '../src/lib/lancedb.js'
+import { CLAUDE_MEMORY_ROOT } from '../src/lib/paths.js'
 import type { CommandRecord, DiscoveryRecord, ErrorRecord, MemoryRecord, ProcedureRecord, WarningRecord } from '../src/lib/types.js'
 
 const tempFixtureDirs: string[] = []
+const COLLECTION_SCOPED_FEATURES = [
+  'sessions',
+  'retrieval-events',
+  'extractions',
+  'token-usage-events',
+  'maintenance-runs',
+  'consolidation-verdicts',
+  'reviews',
+  'stats-snapshots',
+  'memory-write-hints'
+] as const
+
+/**
+ * Remove collection-scoped test files written under CLAUDE_MEMORY_ROOT.
+ */
+export function cleanupTestCollectionData(collection: string = TEST_CONFIG.lancedb.table): void {
+  const collectionKey = getCollectionKey(collection)
+  for (const feature of COLLECTION_SCOPED_FEATURES) {
+    fs.rmSync(path.join(CLAUDE_MEMORY_ROOT, feature, collectionKey), { recursive: true, force: true })
+  }
+}
 
 /**
  * Drop the test table if it exists.

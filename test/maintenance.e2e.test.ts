@@ -5,15 +5,13 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import fs from 'fs'
-import path from 'path'
-import { homedir } from 'os'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
 import {
   dropTestCollection,
   createMockCommandRecord,
   createMockDiscoveryRecord,
   createMockProcedureRecord,
+  cleanupTestCollectionData,
   cleanupTempFiles
 } from './helpers.js'
 import { initLanceDB, insertRecord, getRecord, queryRecords } from '../src/lib/lancedb.js'
@@ -25,7 +23,7 @@ import {
   consolidateCluster
 } from '../src/lib/maintenance.js'
 import { runRelationDiscovery } from '../src/lib/maintenance/runners/index.js'
-import { getCollectionKey, recordRetrievalEvents } from '../src/lib/retrieval-events.js'
+import { recordRetrievalEvents } from '../src/lib/retrieval-events.js'
 import { SIMILARITY_THRESHOLDS } from '../src/lib/types.js'
 
 const STALE_CUTOFF_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
@@ -41,28 +39,22 @@ function makeRelation(targetId: string, kind: 'relates_to' | 'supersedes' = 'rel
   }
 }
 
-function cleanupRetrievalEvents(): void {
-  fs.rmSync(
-    path.join(homedir(), '.claude-memory', 'retrieval-events', getCollectionKey(TEST_CONFIG.lancedb.table)),
-    { recursive: true, force: true }
-  )
-}
-
 describe('Maintenance E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     await initLanceDB(TEST_CONFIG)
   })
 
   afterAll(async () => {
     await dropTestCollection()
-    cleanupRetrievalEvents()
+    cleanupTestCollectionData()
     cleanupTempFiles()
   })
 
   beforeEach(async () => {
     await dropTestCollection()
-    cleanupRetrievalEvents()
+    cleanupTestCollectionData()
     await initLanceDB(TEST_CONFIG)
   })
 

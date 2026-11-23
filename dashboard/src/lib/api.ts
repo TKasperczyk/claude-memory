@@ -116,6 +116,11 @@ export interface ActionResponse {
   success: boolean
 }
 
+export interface RestoreMemoryResponse {
+  success: boolean
+  record: MemoryRecord | null
+}
+
 export interface HookStatusResponse {
   hooks: Record<HookEvent, HookStatusEntry>
 }
@@ -505,6 +510,10 @@ export function fetchMemory(id: string): Promise<MemoryRecord> {
 
 export function deleteMemory(id: string): Promise<ActionResponse> {
   return request(`/memories/${id}`, { method: 'DELETE' })
+}
+
+export function restoreMemory(id: string): Promise<RestoreMemoryResponse> {
+  return requestWithStatus(`/memories/${encodeURIComponent(id)}/restore`, { method: 'POST' })
 }
 
 export function resetCollection(): Promise<ActionResponse> {

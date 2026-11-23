@@ -11,7 +11,7 @@ import MemoryDetail from '@/components/MemoryDetail'
 import MemoryTable from '@/components/MemoryTable'
 import { useMemories, useMemoryTypes, useStats } from '@/hooks/queries'
 import { useSelectedMemory } from '@/hooks/useSelectedMemory'
-import { type RecordType } from '@/lib/api'
+import { restoreMemory, type MemoryRecord, type RecordType } from '@/lib/api'
 
 const PAGE_SIZE = 50
 
@@ -57,7 +57,8 @@ export default function MemoryPool() {
   const [searchQuery, setSearchQuery] = useState('')
   const [page, setPage] = useState(0)
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
-  const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose } = useSelectedMemory()
+  const [restoringIds, setRestoringIds] = useState<Set<string>>(() => new Set())
+  const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose, updateSelected } = useSelectedMemory()
   const queryClient = useQueryClient()
 
   const { data: stats } = useStats()
@@ -114,6 +115,37 @@ export default function MemoryPool() {
     setNotice({ type: 'success', message: `Deleted memory ${id}` })
     queryClient.invalidateQueries({ queryKey: ['memories'] })
     queryClient.invalidateQueries({ queryKey: ['stats'] })
+  }
+
+  const handleRestored = (id: string, restored: MemoryRecord | null) => {
+    if (selected?.id === id && restored) {
+      updateSelected(restored)
+    }
+    setNotice({ type: 'success', message: `Restored memory ${id}` })
+    queryClient.invalidateQueries({ queryKey: ['memories'] })
+    queryClient.invalidateQueries({ queryKey: ['stats'] })
+  }
+
+  const handleRestoreFromTable = async (record: MemoryRecord) => {
+    if (!record.deprecated || restoringIds.has(record.id)) return
+    setRestoringIds(prev => {
+      const next = new Set(prev)
+      next.add(record.id)
+      return next
+    })
+    try {
+      const response = await restoreMemory(record.id)
+      handleRestored(record.id, response.record)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to restore memory'
+      setNotice({ type: 'error', message })
+    } finally {
+      setRestoringIds(prev => {
+        const next = new Set(prev)
+        next.delete(record.id)
+        return next
+      })
+    }
   }
 
   const pageInfo = () => {
@@ -228,6 +260,8 @@ export default function MemoryPool() {
         <MemoryTable
           records={records}
           onSelect={handleSelect}
+          onRestore={handleRestoreFromTable}
+          restoringIds={restoringIds}
           emptyMessage="No memories match these filters"
         />
       )}
@@ -263,6 +297,7 @@ export default function MemoryPool() {
         error={detailError}
         onClose={handleClose}
         onDeleted={handleDeleted}
+        onRestored={handleRestored}
       />
     </div>
   )

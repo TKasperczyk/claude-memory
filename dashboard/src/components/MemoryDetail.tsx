@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { Loader2, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Loader2, RotateCcw, Trash2 } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -19,7 +20,7 @@ import {
 } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
-import { deleteMemory, type MemoryRecord } from '@/lib/api'
+import { deleteMemory, restoreMemory, type MemoryRecord } from '@/lib/api'
 import { formatDateTime, formatRelativeTimeLong } from '@/lib/format'
 import { TYPE_COLORS, getMemoryTitle } from '@/lib/memory-ui'
 
@@ -38,6 +39,7 @@ interface MemoryDetailProps {
   error?: string | null
   onClose: () => void
   onDeleted?: (id: string) => void
+  onRestored?: (id: string, record: MemoryRecord | null) => void
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -227,22 +229,62 @@ export default function MemoryDetail({
   loading = false,
   error = null,
   onClose,
-  onDeleted
+  onDeleted,
+  onRestored
 }: MemoryDetailProps) {
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isRestoring, setIsRestoring] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const isActive = open ?? Boolean(record)
+  const [restoreError, setRestoreError] = useState<string | null>(null)
+  const [restoredOverride, setRestoredOverride] = useState<MemoryRecord | null>(null)
+  const queryClient = useQueryClient()
+
+  useEffect(() => {
+    setRestoredOverride(null)
+    setRestoreError(null)
+    setDeleteError(null)
+    setConfirmDelete(false)
+  }, [record?.id])
+
+  const displayRecord = restoredOverride && record && restoredOverride.id === record.id
+    ? restoredOverride
+    : record
+  const isActive = open ?? Boolean(displayRecord)
   const isLoading = isActive && loading
 
+  const handleRestore = async () => {
+    if (!displayRecord || !displayRecord.deprecated || isRestoring || isDeleting || loading) return
+    setIsRestoring(true)
+    setRestoreError(null)
+    try {
+      const response = await restoreMemory(displayRecord.id)
+      const restoredRecord = response.record ?? {
+        ...displayRecord,
+        deprecated: false,
+        deprecatedAt: undefined,
+        deprecatedReason: undefined
+      }
+      setRestoredOverride(restoredRecord)
+      void queryClient.invalidateQueries({ queryKey: ['memories'] })
+      void queryClient.invalidateQueries({ queryKey: ['stats'] })
+      onRestored?.(displayRecord.id, restoredRecord)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to restore memory'
+      setRestoreError(message)
+    } finally {
+      setIsRestoring(false)
+    }
+  }
+
   const handleDelete = async () => {
-    if (!record || isDeleting || loading) return
+    if (!displayRecord || isDeleting || isRestoring || loading) return
     setIsDeleting(true)
     setDeleteError(null)
     try {
-      await deleteMemory(record.id)
+      await deleteMemory(displayRecord.id)
       setConfirmDelete(false)
-      onDeleted?.(record.id)
+      onDeleted?.(displayRecord.id)
       onClose()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete memory'
@@ -255,6 +297,8 @@ export default function MemoryDetail({
   const handleOpenChange = (open: boolean) => {
     if (!open) {
       setDeleteError(null)
+      setRestoreError(null)
+      setRestoredOverride(null)
       setConfirmDelete(false)
       onClose()
     }
@@ -265,18 +309,18 @@ export default function MemoryDetail({
       <Sheet open={isActive} onOpenChange={handleOpenChange}>
         <SheetContent className="w-full max-w-2xl sm:max-w-2xl p-0 flex flex-col">
           {/* Header */}
-          <SheetHeader className="px-6 py-4 border-b border-border/30 bg-surface-2 shrink-0">
+          <SheetHeader className="px-6 pr-12 py-4 border-b border-border/30 bg-surface-2 shrink-0">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2.5 mb-2">
-                  {record ? (
+                  {displayRecord ? (
                     <>
                       <span
                         className="w-2.5 h-2.5 rounded-full shadow-sm"
-                        style={{ backgroundColor: TYPE_COLORS[record.type] }}
+                        style={{ backgroundColor: TYPE_COLORS[displayRecord.type] }}
                       />
-                      <span className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground/70 font-medium">{record.type}</span>
-                      {record.deprecated && (
+                      <span className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground/70 font-medium">{displayRecord.type}</span>
+                      {displayRecord.deprecated && (
                         <Badge variant="destructive" className="text-[10px] px-1.5 py-0">Deprecated</Badge>
                       )}
                     </>
@@ -287,13 +331,13 @@ export default function MemoryDetail({
                     </>
                   )}
                 </div>
-                {record ? (
+                {displayRecord ? (
                   <>
                     <SheetTitle className="text-lg font-semibold tracking-tight truncate text-foreground/95">
-                      {getMemoryTitle(record)}
+                      {getMemoryTitle(displayRecord)}
                     </SheetTitle>
                     <SheetDescription className="text-[11px] text-muted-foreground/60 font-mono mt-1.5">
-                      {record.id}
+                      {displayRecord.id}
                     </SheetDescription>
                   </>
                 ) : (
@@ -303,22 +347,39 @@ export default function MemoryDetail({
                   </>
                 )}
               </div>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => {
-                  setDeleteError(null)
-                  setConfirmDelete(true)
-                }}
-                disabled={!record || loading || isDeleting}
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                Delete
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                {displayRecord?.deprecated && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRestore}
+                    disabled={loading || isDeleting || isRestoring}
+                  >
+                    {isRestoring ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    )}
+                    {isRestoring ? 'Restoring...' : 'Restore'}
+                  </Button>
+                )}
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => {
+                    setDeleteError(null)
+                    setConfirmDelete(true)
+                  }}
+                  disabled={!displayRecord || loading || isDeleting || isRestoring}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </Button>
+              </div>
             </div>
           </SheetHeader>
 
-          {error && !record && !isLoading ? (
+          {error && !displayRecord && !isLoading ? (
             <div className="flex-1 overflow-y-auto px-6 py-6">
               <div className="text-sm text-destructive">{error}</div>
             </div>
@@ -326,19 +387,41 @@ export default function MemoryDetail({
             <div className="flex-1 overflow-y-auto px-6">
               <DetailSkeleton showRetrieval={Boolean(retrievalContext)} />
             </div>
-          ) : record ? (
+          ) : displayRecord ? (
             <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+              {restoreError && (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
+                  {restoreError}
+                </div>
+              )}
+
+              {displayRecord.deprecated && (displayRecord.deprecatedReason || displayRecord.deprecatedAt) && (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm space-y-1">
+                  <div className="text-[10px] uppercase tracking-[0.06em] text-destructive/80 font-medium">
+                    Deprecation details
+                  </div>
+                  {displayRecord.deprecatedReason && (
+                    <div className="text-foreground/85">{displayRecord.deprecatedReason}</div>
+                  )}
+                  {displayRecord.deprecatedAt && (
+                    <div className="text-xs text-muted-foreground">
+                      Deprecated {formatDateTime(displayRecord.deprecatedAt)}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Metadata */}
               <div className="grid grid-cols-2 gap-4">
-                <Field label="Project">{record.project ?? '—'}</Field>
+                <Field label="Project">{displayRecord.project ?? '—'}</Field>
                 <Field label="Scope">
-                  <span className={record.scope === 'global' ? 'text-type-discovery font-medium' : ''}>
-                    {record.scope ?? 'project'}
+                  <span className={displayRecord.scope === 'global' ? 'text-type-discovery font-medium' : ''}>
+                    {displayRecord.scope ?? 'project'}
                   </span>
                 </Field>
-                <Field label="Created">{formatDateTime(record.timestamp)}</Field>
+                <Field label="Created">{formatDateTime(displayRecord.timestamp)}</Field>
                 <Field label="Last used">
-                  {formatRelativeTimeLong(record.lastUsed ?? record.timestamp)}
+                  {formatRelativeTimeLong(displayRecord.lastUsed ?? displayRecord.timestamp)}
                 </Field>
               </div>
 
@@ -348,28 +431,28 @@ export default function MemoryDetail({
                   <div className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground/70 mb-3 font-medium">Usage metrics</div>
                   <div className="grid grid-cols-4 gap-3 text-center">
                     <div className="py-2">
-                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{record.retrievalCount ?? 0}</div>
+                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{displayRecord.retrievalCount ?? 0}</div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">Retrievals</div>
                     </div>
                     <div className="py-2">
-                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{record.usageCount ?? 0}</div>
+                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{displayRecord.usageCount ?? 0}</div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">Usage</div>
                     </div>
                     <div className="py-2">
-                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{record.successCount ?? 0}</div>
+                      <div className="text-2xl font-semibold tabular-mono text-foreground/90">{displayRecord.successCount ?? 0}</div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">Success</div>
                     </div>
                     <div className="py-2">
                       <div className="text-2xl font-semibold tabular-mono text-foreground/90">
-                        {record.retrievalCount
-                          ? Math.round(((record.usageCount ?? 0) / record.retrievalCount) * 100)
+                        {displayRecord.retrievalCount
+                          ? Math.round(((displayRecord.usageCount ?? 0) / displayRecord.retrievalCount) * 100)
                           : 0}
                         %
                       </div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">Ratio</div>
                     </div>
                   </div>
-                  {retrievalContext && (record.retrievalCount ?? 0) === 0 && (
+                  {retrievalContext && (displayRecord.retrievalCount ?? 0) === 0 && (
                     <div className="mt-3 text-[11px] text-muted-foreground/50 text-center">
                       Stats update when the session ends
                     </div>
@@ -419,7 +502,7 @@ export default function MemoryDetail({
               )}
 
               {/* Type-specific details */}
-              <TypeDetails record={record} />
+              <TypeDetails record={displayRecord} />
             </div>
           ) : null}
         </SheetContent>

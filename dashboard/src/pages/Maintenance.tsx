@@ -689,6 +689,9 @@ export default function Maintenance() {
         loading={detailLoading}
         error={detailError}
         onClose={closeMemory}
+        onRestored={() => {
+          void loadDeprecatedCount()
+        }}
       />
     </div>
   )

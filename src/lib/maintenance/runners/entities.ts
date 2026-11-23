@@ -83,6 +83,7 @@ export async function runEntityOverlapDiscovery(
     const now = new Date().toISOString()
 
     const pendingWrites = new Map<string, MemoryRecord>()
+    const addedPairs: EntityPairCandidate[] = []
     for (const pair of pairCandidates) {
       const a = recordsById.get(pair.a)
       const b = recordsById.get(pair.b)
@@ -99,25 +100,17 @@ export async function runEntityOverlapDiscovery(
 
       const changedA = upsertRelation(a, { targetId: b.id, kind: 'shares_entity', weight: pair.weight, now })
       const changedB = upsertRelation(b, { targetId: a.id, kind: 'shares_entity', weight: pair.weight, now })
-      if (changedA || changedB) {
+      if (changedA) {
         pendingWrites.set(a.id, a)
-        pendingWrites.set(b.id, b)
         changedRecordIds.add(a.id)
+      }
+      if (changedB) {
+        pendingWrites.set(b.id, b)
         changedRecordIds.add(b.id)
       }
-
-      actions.push(buildAction({
-        type: 'update',
-        recordId: a.id,
-        snippet: truncateSnippet(buildRecordSnippet(a)),
-        reason: `shares_entity ${b.id} via ${pair.sharedEntities.join(', ')}`,
-        details: {
-          targetId: b.id,
-          kind: 'shares_entity',
-          sharedEntities: pair.sharedEntities.join(', '),
-          weight: pair.weight
-        }
-      }))
+      if (changedA || changedB) {
+        addedPairs.push(pair)
+      }
     }
 
     for (const [id, record] of Array.from(pendingWrites.entries())) {
@@ -132,6 +125,30 @@ export async function runEntityOverlapDiscovery(
       } else {
         changedRecordIds.add(id)
       }
+    }
+
+    for (const pair of addedPairs) {
+      const a = recordsById.get(pair.a)
+      const b = recordsById.get(pair.b)
+      if (!a || !b) continue
+      const keptOnA = hasSharesEntity(a, b.id) && changedRecordIds.has(a.id)
+      const keptOnB = hasSharesEntity(b, a.id) && changedRecordIds.has(b.id)
+      if (!keptOnA && !keptOnB) continue
+
+      const primary = keptOnA ? a : b
+      const target = keptOnA ? b : a
+      actions.push(buildAction({
+        type: 'update',
+        recordId: primary.id,
+        snippet: truncateSnippet(buildRecordSnippet(primary)),
+        reason: `shares_entity ${target.id} via ${pair.sharedEntities.join(', ')}`,
+        details: {
+          targetId: target.id,
+          kind: 'shares_entity',
+          sharedEntities: pair.sharedEntities.join(', '),
+          weight: pair.weight
+        }
+      }))
     }
 
     if (!dryRun && pendingWrites.size > 0) {
@@ -178,7 +195,7 @@ export async function runEntityOverlapDiscovery(
 function buildEntityBuckets(recordsById: Map<string, MemoryRecord>): Map<string, string[]> {
   const buckets = new Map<string, string[]>()
   for (const record of recordsById.values()) {
-    for (const entity of record.entities ?? []) {
+    for (const entity of new Set(record.entities ?? [])) {
       const bucket = buckets.get(entity)
       if (bucket) bucket.push(record.id)
       else buckets.set(entity, [record.id])
@@ -222,6 +239,10 @@ function buildPairCandidates(
 
 function hasAnyRelation(record: MemoryRecord, targetId: string): boolean {
   return Boolean(record.relations?.some(relation => relation.targetId === targetId))
+}
+
+function hasSharesEntity(record: MemoryRecord, targetId: string): boolean {
+  return Boolean(record.relations?.some(relation => relation.kind === 'shares_entity' && relation.targetId === targetId))
 }
 
 /**

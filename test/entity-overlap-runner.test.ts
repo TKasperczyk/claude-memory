@@ -154,4 +154,113 @@ describe('runEntityOverlapDiscovery', () => {
     const result = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, SETTINGS)
     expect(result.summary.scanned).toBe(30)
   })
+
+  it('omits actions and writes when maxRelationsPerRecord cap immediately evicts an edge on both sides', async () => {
+    const now = new Date().toISOString()
+    const strongEdge = (targetId: string) => ({
+      targetId,
+      kind: 'shares_entity' as const,
+      weight: 1,
+      createdAt: now,
+      lastReinforcedAt: now,
+      reinforcementCount: 1
+    })
+
+    // In a 30-record corpus, df=3 gives weight = 0.4 * ln((30+1)/(3+1)) ≈ 0.819 < 1.
+    // Both a and b already hold weight-1 edges at cap=1, so the weaker a<->b edge is evicted on both sides.
+    mockState.records = [
+      record('a', ['shared-tool'], { relations: [strongEdge('x')] }),
+      record('b', ['shared-tool'], { relations: [strongEdge('y')] }),
+      record('c', ['shared-tool'], { relations: [strongEdge('z')] }),
+      ...filler(27)
+    ]
+
+    const result = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, { maxRelationsPerRecord: 1 })
+
+    expect(result.summary.pairs).toBe(3)
+    expect(result.summary.updated).toBe(0)
+    expect(result.actions).toHaveLength(0)
+    expect(batchUpdateRecords).not.toHaveBeenCalled()
+  })
+
+  it('omits actions when maxRelationsPerRecord is zero in both live and dry-run modes', async () => {
+    mockState.records = [
+      record('a', ['phantom']),
+      record('b', ['phantom']),
+      ...filler(28)
+    ]
+
+    const dryRunResult = await runEntityOverlapDiscovery(true, DEFAULT_CONFIG, { maxRelationsPerRecord: 0 })
+    expect(dryRunResult.summary.pairs).toBe(1)
+    expect(dryRunResult.summary.updated).toBe(0)
+    expect(dryRunResult.actions).toHaveLength(0)
+    expect(batchUpdateRecords).not.toHaveBeenCalled()
+  })
+
+  it('omits actions and writes when trimSharesEntityRelations evicts edges due to content size ceiling', async () => {
+    const hugeEvidence = 'x'.repeat(16_050)
+    mockState.records = [
+      record('a', ['phantom'], { evidence: hugeEvidence }),
+      record('b', ['phantom'], { evidence: hugeEvidence }),
+      ...filler(28)
+    ]
+
+    const result = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, SETTINGS)
+
+    expect(result.summary.pairs).toBe(1)
+    expect(result.summary.updated).toBe(0)
+    expect(result.actions).toHaveLength(0)
+    expect(relationsOf('a')).toHaveLength(0)
+    expect(relationsOf('b')).toHaveLength(0)
+    expect(batchUpdateRecords).not.toHaveBeenCalled()
+  })
+
+  it('reports the surviving side when only one record retains an edge after capping', async () => {
+    const now = new Date().toISOString()
+    const strongEdge = {
+      targetId: 'x',
+      kind: 'shares_entity' as const,
+      weight: 1,
+      createdAt: now,
+      lastReinforcedAt: now,
+      reinforcementCount: 1
+    }
+
+    // Record 'a' is already at cap=1 with a weight-1 edge and drops 'b'; 'b' has room and retains 'a'.
+    mockState.records = [
+      record('a', ['shared-tool'], { relations: [strongEdge] }),
+      record('b', ['shared-tool']),
+      record('c', ['shared-tool'], { relations: [{ ...strongEdge, targetId: 'z' }] }),
+      ...filler(27)
+    ]
+
+    const result = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, { maxRelationsPerRecord: 1 })
+
+    // Only 'b' keeps a single edge (the lexicographically first targetId 'a' at cap=1).
+    expect(result.summary.updated).toBe(1)
+    expect(result.actions).toHaveLength(1)
+    expect(result.actions[0]).toMatchObject({
+      recordId: 'b',
+      details: expect.objectContaining({
+        targetId: 'a',
+        kind: 'shares_entity'
+      })
+    })
+    expect(batchUpdateRecords).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(batchUpdateRecords).mock.calls[0][0].map(r => r.id)).toEqual(['b'])
+  })
+
+  it('ignores duplicate entities on a single record without emitting self-edges or actions', async () => {
+    mockState.records = [
+      record('a', ['phantom', 'phantom']),
+      ...filler(29)
+    ]
+
+    const result = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, SETTINGS)
+
+    expect(result.summary.pairs).toBe(0)
+    expect(result.summary.updated).toBe(0)
+    expect(result.actions).toHaveLength(0)
+    expect(batchUpdateRecords).not.toHaveBeenCalled()
+  })
 })

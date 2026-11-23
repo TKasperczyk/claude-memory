@@ -9,6 +9,7 @@ type SelectedMemoryState = {
   detailError: string | null
   handleSelect: (recordOrId: MemoryRecord | string) => void
   handleClose: () => void
+  updateSelected: (record: MemoryRecord | null) => void
 }
 
 export function useSelectedMemory(): SelectedMemoryState {
@@ -78,6 +79,7 @@ export function useSelectedMemory(): SelectedMemoryState {
     detailLoading,
     detailError,
     handleSelect,
-    handleClose
+    handleClose,
+    updateSelected: setSelected
   }
 }

@@ -28,7 +28,15 @@ export const PROJECT_ROOT = canonicalizePath(
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 )
 
-export const CLAUDE_MEMORY_ROOT = path.join(homedir(), '.claude-memory')
+function resolveClaudeMemoryRoot(): string {
+  const override = process.env.CC_MEMORIES_DATA_DIR?.trim()
+  if (!override) return path.join(homedir(), '.claude-memory')
+  if (override === '~') return homedir()
+  if (override.startsWith('~/')) return path.join(homedir(), override.slice(2))
+  return path.resolve(override)
+}
+
+export const CLAUDE_MEMORY_ROOT = resolveClaudeMemoryRoot()
 export const DEBUG_LOG_FILE = path.join(CLAUDE_MEMORY_ROOT, 'debug.log')
 export const LOCKS_DIR = path.join(CLAUDE_MEMORY_ROOT, 'locks')
 export const SELF_UPDATE_STATE_PATH = path.join(CLAUDE_MEMORY_ROOT, 'self-update-state.json')

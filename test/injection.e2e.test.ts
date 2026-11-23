@@ -12,6 +12,7 @@ import {
   createMockCommandRecord,
   createMockErrorRecord,
   createTempProjectFixture,
+  cleanupTestCollectionData,
   cleanupTempFiles
 } from './helpers.js'
 import { initLanceDB, insertRecord, hybridSearch } from '../src/lib/lancedb.js'
@@ -28,16 +29,19 @@ const embeddingSkipSuffix = hasEmbeddings ? '' : ` (skipped: ${embeddingSkipNote
 describe('Injection E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     await initLanceDB(TEST_CONFIG)
   })
 
   afterAll(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     cleanupTempFiles()
   })
 
   beforeEach(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     await initLanceDB(TEST_CONFIG)
   })
 

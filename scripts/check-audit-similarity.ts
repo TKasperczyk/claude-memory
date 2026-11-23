@@ -65,6 +65,11 @@ async function main() {
       continue
     }
 
+    if (!r1.embedding || r1.embedding.length === 0) {
+      console.log(`${r1.id} <-> ${r2.id}: MISSING EMBEDDING (r1)`)
+      continue
+    }
+
     // Search from r1 to find r2
     const results = await vectorSearchSimilar(r1.embedding, { limit: 100 })
     const match = results.find(r => r.record.id === r2.id)

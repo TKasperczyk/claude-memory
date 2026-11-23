@@ -14,6 +14,7 @@ import { checkEmbeddingAvailability } from './embedding-availability.js'
 import {
   dropTestCollection,
   createMockTranscript,
+  cleanupTestCollectionData,
   cleanupTempFiles,
   countTestRecords
 } from './helpers.js'
@@ -40,16 +41,19 @@ const hasEmbeddings = embeddingAvailability.available
 describe('Round-Trip E2E', () => {
   beforeAll(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     await initLanceDB(TEST_CONFIG)
   })
 
   afterAll(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     cleanupTempFiles()
   })
 
   beforeEach(async () => {
     await dropTestCollection()
+    cleanupTestCollectionData()
     await initLanceDB(TEST_CONFIG)
   })
 
