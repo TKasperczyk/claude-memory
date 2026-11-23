@@ -1,6 +1,6 @@
 {
   "name": "claude-memory",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Technical knowledge persistence for Claude Code",
   "type": "module",
   "bin": {
