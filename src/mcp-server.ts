@@ -278,7 +278,7 @@ export async function runDeprecateMemoryTool({ id, reason }: DeprecateMemoryTool
 
 const server = new McpServer({
   name: 'claude-memory',
-  version: '0.2.0'
+  version: '0.3.0'
 })
 
 server.tool(
