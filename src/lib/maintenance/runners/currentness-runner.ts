@@ -1,10 +1,10 @@
 import { CLAUDE_CODE_SYSTEM_PROMPT } from '../../anthropic.js'
-import { batchUpdateRecords, buildFilter, vectorSearchSimilar } from '../../lancedb.js'
+import { batchUpdateRecords, buildFilter, fetchRecordsByIds, vectorSearchSimilar } from '../../lancedb.js'
 import { createLogger } from '../../logger.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../../parsing.js'
 import { buildToolCallParams } from '../../model-capabilities.js'
 import { recordTokenUsageFromResponse } from '../../token-usage-events.js'
-import { buildCandidateRecord, buildRecordSnippet, escapeFilterValue } from '../../shared.js'
+import { buildCandidateRecord, buildRecordSnippet } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord } from '../../types.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
 import {
@@ -290,8 +290,7 @@ async function markCurrentnessChecked(
 
   try {
     const ids = records.map(record => record.id)
-    const idList = ids.map(id => `'${escapeFilterValue(id)}'`).join(', ')
-    const recordsWithEmbeddings = await fetchRecords(`id IN (${idList})`, config, true)
+    const recordsWithEmbeddings = await fetchRecordsByIds(ids, config, { includeEmbeddings: true })
     if (recordsWithEmbeddings.length === 0) return records.length
 
     const result = await batchUpdateRecords(

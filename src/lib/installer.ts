@@ -309,9 +309,12 @@ function collectHookCommands(eventConfig: unknown): string[] {
 
 function preserveCustomHookCommand(existingCommand: string, expectedCommand: string): string {
   const trimmed = existingCommand.trim()
-  const nodeIndex = trimmed.search(/(?:^|\s)node(?:\s|$)/)
-  if (nodeIndex > 0) {
-    const prefix = trimmed.slice(0, nodeIndex).trim()
+  const hookNodeMatch = trimmed.match(/(?:^|\s)(?:\S*\/)?node(?=\s+["']?[^"']*dist\/hooks\/)/)
+  const matchIndex = hookNodeMatch?.index !== undefined
+    ? hookNodeMatch.index
+    : trimmed.search(/(?:^|\s)(?:\S*\/)?node(?:\s|$)/)
+  if (matchIndex > 0) {
+    const prefix = trimmed.slice(0, matchIndex).trim()
     if (prefix) {
       return `${prefix} ${expectedCommand}`
     }
@@ -362,9 +365,9 @@ function ensureHookInstalled(eventConfig: unknown, hook: HookDefinition, configR
     }
 
     if (retainedHooks.length > 0 || !removedOwnedHook) {
-      entries.push(retainedHooks.length === hooks.length
-        ? entry
-        : { ...entry, hooks: retainedHooks })
+      entries.push(removedOwnedHook
+        ? { ...entry, hooks: retainedHooks }
+        : entry)
     } else if (hasUnrelatedHookEntryMetadata(entry)) {
       entries.push({ ...entry, hooks: [] })
     }

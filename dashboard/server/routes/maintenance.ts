@@ -446,6 +446,12 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
     if (singleOperation && !MAINTENANCE_OPERATIONS.includes(singleOperation as MaintenanceOperation)) {
       return res.status(400).json({ error: 'Unknown operation' })
     }
+    if (singleOperation && !dryRun) {
+      const definition = MAINTENANCE_OPERATION_DEFINITIONS.find(item => item.key === singleOperation)
+      if (definition?.allowExecute === false) {
+        return res.status(403).json({ error: 'Operation is preview-only' })
+      }
+    }
 
     const requestConfig = getRequestConfig(req, getBaseConfig())
     const lockLease = acquireDashboardMaintenanceLock(requestConfig.lancedb.table, dryRun)
@@ -512,7 +518,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         await compactTableSafely(config)
       }
 
-      if (!stream.signal.aborted) {
+      if (!stream.signal.aborted && streamedResults.length > 0) {
         const run = buildMaintenanceRun(streamedResults, {
           dryRun,
           trigger: 'dashboard',
@@ -562,25 +568,46 @@ async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
-async function findExistingParent(targetPath: string): Promise<string> {
-  let current = path.resolve(targetPath)
-  while (!(await pathExists(current))) {
-    const parent = path.dirname(current)
-    if (parent === current) return current
-    current = parent
+const MAX_SYMLINK_DEPTH = 40
+
+async function lstatSafe(targetPath: string): Promise<Awaited<ReturnType<typeof fs.lstat>> | null> {
+  try {
+    return await fs.lstat(targetPath)
+  } catch {
+    return null
   }
-  return current
 }
 
-async function resolveRealPath(targetPath: string): Promise<string> {
-  const resolved = path.resolve(targetPath)
-  if (await pathExists(resolved)) {
-    return fs.realpath(resolved)
+async function resolveRealPath(targetPath: string, depth: number = 0): Promise<string> {
+  if (depth > MAX_SYMLINK_DEPTH) {
+    throw new SuggestionTargetError('Invalid targetFile path')
   }
-  const existingParent = await findExistingParent(resolved)
-  const realParent = await fs.realpath(existingParent)
-  const relative = path.relative(existingParent, resolved)
-  return path.join(realParent, relative)
+  const resolved = path.resolve(targetPath)
+  try {
+    return await fs.realpath(resolved)
+  } catch {
+    // Either the path does not exist yet OR it (or an ancestor) is a dangling symlink.
+    // Walk upward with lstat so dangling symlinks are detected and followed instead of
+    // treated as regular non-existent files inside allowedRoots.
+    let current = resolved
+    while (true) {
+      const stat = await lstatSafe(current)
+      if (stat) {
+        const suffix = path.relative(current, resolved)
+        if (stat.isSymbolicLink()) {
+          const linkTarget = await fs.readlink(current)
+          const nextBase = path.resolve(path.dirname(current), linkTarget)
+          const nextPath = suffix ? path.join(nextBase, suffix) : nextBase
+          return resolveRealPath(nextPath, depth + 1)
+        }
+        const realCurrent = await fs.realpath(current)
+        return suffix ? path.join(realCurrent, suffix) : realCurrent
+      }
+      const parent = path.dirname(current)
+      if (parent === current) return resolved
+      current = parent
+    }
+  }
 }
 
 const FORBIDDEN_SUGGESTION_SEGMENTS = new Set(['.git', 'node_modules', 'dist', 'src', 'dashboard', 'scripts'])
@@ -630,7 +657,7 @@ async function resolveSuggestionTarget(
     throw new SuggestionTargetError('Target file must be a safe markdown (.md) documentation or skill file')
   }
 
-  return resolved
+  return realTarget
 }
 
 function normalizeDiffPathValue(targetFile: string): string {

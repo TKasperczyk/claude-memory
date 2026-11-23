@@ -1547,4 +1547,91 @@ describe('Keyword query normalization', () => {
     expect(keywordQueries).toContain('aws')
     expect(keywordQueries).toContain('s3')
   })
+
+  it('does not emit unhandledRejection when rawEmbedPromise aborts while Haiku planning is awaited', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+
+    try {
+      mockedEmbed.mockImplementationOnce((_text, _config, options) => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          reject(new Error('Embedding aborted'))
+        }, { once: true })
+      }))
+      mockedGenerateRetrievalQueryPlan.mockImplementationOnce(async (_prompt, _path, options) => {
+        // Stay pending slightly past abort so rawEmbedPromise settles first
+        await new Promise(resolve => setTimeout(resolve, 60))
+        if (options?.signal?.aborted) return null
+        return null
+      })
+
+      const result = await retrieveContext(
+        { prompt: 'trigger timeout abort race', cwd: PROJECT_ROOT },
+        DEFAULT_CONFIG,
+        {
+          projectRoot: PROJECT_ROOT,
+          settingsOverride: {
+            enableHaikuRetrieval: true,
+            prePromptTimeoutMs: 25,
+            haikuQueryTimeoutMs: 500
+          }
+        }
+      )
+
+      // Allow timers/microtasks to flush so any unhandledRejection would surface
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      expect(result.timedOut).toBe(true)
+      expect(unhandled).toHaveLength(0)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('blocks relation expansion from a global record into a different project while allowing same-project and global neighbors', async () => {
+    const globalParent = makeResult('global-parent', [0.95, 0.05], 0.9, 0.9, false)
+    globalParent.record.scope = 'global'
+    globalParent.record.project = ''
+    globalParent.record.relations = [
+      makeRelation('other-project-child', 0.9),
+      makeRelation('same-project-child', 0.8),
+      makeRelation('global-child', 0.7)
+    ]
+    const otherProjChild = createMockCommandRecord({
+      id: 'other-project-child',
+      command: 'secret-other-project',
+      scope: 'project',
+      project: '/other/project',
+      embedding: [0.8, 0.2]
+    })
+    const sameProjChild = createMockCommandRecord({
+      id: 'same-project-child',
+      command: 'same-project-cmd',
+      scope: 'project',
+      project: PROJECT_ROOT,
+      embedding: [0.8, 0.2]
+    })
+    const globalChild = createMockCommandRecord({
+      id: 'global-child',
+      command: 'global-cmd',
+      scope: 'global',
+      project: '',
+      embedding: [0.8, 0.2]
+    })
+    mockedFetchRecordsByIds.mockResolvedValueOnce([otherProjChild, sameProjChild, globalChild])
+
+    const expanded = await expandViaRelations(
+      [globalParent],
+      DEFAULT_CONFIG,
+      { maxRelationHops: 1, maxRelationExpansions: 5, relationHopDecay: 0.8, enableEntityEdges: true },
+      { project: PROJECT_ROOT, ancestorProjects: [] }
+    )
+
+    const ids = expanded.map(item => item.record.id)
+    expect(ids).toContain('global-parent')
+    expect(ids).toContain('same-project-child')
+    expect(ids).toContain('global-child')
+    expect(ids).not.toContain('other-project-child')
+  })
 })

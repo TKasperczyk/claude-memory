@@ -371,13 +371,13 @@ async function searchMemories(
 
   // Start embedding the raw prompt concurrently with Haiku query planning so a slow
   // or timed-out Haiku call does not add another serial embedding roundtrip on top.
-  const rawEmbedPromise: Promise<{ query: string; embedding?: number[]; error?: unknown } | null> = rawSemanticQuery
+  // Never re-throw inside this floating promise's catch handler; otherwise an abort
+  // while generateRetrievalQueryPlan/loadEntityVocabulary is awaited triggers an
+  // unhandledRejection before Promise.all attaches.
+  const rawEmbedPromise: Promise<{ query: string; embedding?: number[]; error?: unknown; aborted?: boolean } | null> = rawSemanticQuery
     ? embed(rawSemanticQuery, config, { signal, timeoutMs: HOOK_EMBEDDING_TIMEOUT_MS })
         .then(embedding => ({ query: rawSemanticQuery, embedding }))
-        .catch(error => {
-          if (signal?.aborted) throw error
-          return { query: rawSemanticQuery, error }
-        })
+        .catch(error => ({ query: rawSemanticQuery, error, aborted: Boolean(signal?.aborted) }))
     : Promise.resolve(null)
 
   const queryPlanResult = settings.enableHaikuRetrieval
@@ -452,6 +452,9 @@ async function searchMemories(
     : Promise.resolve([])
 
   const [rawEmbedResult, extraEmbedResults] = await Promise.all([rawEmbedPromise, extraEmbedPromise])
+  if (rawEmbedResult?.aborted || (signal?.aborted && rawEmbedResult?.error)) {
+    throw rawEmbedResult?.error ?? new Error('Retrieval aborted')
+  }
   const embeddingResults = [
     ...(rawEmbedResult ? [rawEmbedResult] : []),
     ...extraEmbedResults
@@ -843,6 +846,11 @@ export async function expandViaRelations(
   }))
   const expanded: HybridSearchResult[] = []
 
+  const canonicalScopeProject = scope?.project ? canonicalizePath(scope.project) : undefined
+  const canonicalAncestorProjects = scope?.ancestorProjects
+    ? new Set(scope.ancestorProjects.map(ancestor => canonicalizePath(ancestor)))
+    : undefined
+
   for (let hop = 1; hop <= maxHops && expanded.length < maxExpansions; hop += 1) {
     const candidatesById = new Map<string, RelationExpansionCandidate>()
 
@@ -899,15 +907,18 @@ export async function expandViaRelations(
 
       const record = recordsById.get(candidate.targetId)
       if (!record || record.deprecated) continue
-      if (
-        scope?.project
-        && record.scope !== 'global'
-        && record.project
-        && record.project !== scope.project
-        && !(scope.ancestorProjects?.includes(record.project))
-        && !(candidate.parent.record.scope !== 'global' && candidate.parent.record.project === record.project)
-      ) {
-        continue
+      if (canonicalScopeProject && record.scope !== 'global' && record.project) {
+        const canonicalRecordProject = canonicalizePath(record.project)
+        const canonicalParentProject = candidate.parent.record.scope !== 'global' && candidate.parent.record.project
+          ? canonicalizePath(candidate.parent.record.project)
+          : undefined
+        if (
+          canonicalRecordProject !== canonicalScopeProject
+          && !(canonicalAncestorProjects?.has(canonicalRecordProject))
+          && canonicalParentProject !== canonicalRecordProject
+        ) {
+          continue
+        }
       }
 
       const result: HybridSearchResult = {

@@ -1,7 +1,9 @@
+import path from 'path'
 import { createLogger } from '../../logger.js'
-import { batchUpdateRecords, queryRecords, updateRecord } from '../../lancedb.js'
+import { batchUpdateRecords, fetchRecordsByIds, updateRecord } from '../../lancedb.js'
+import { canonicalizePath } from '../../paths.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
-import { buildCandidateRecord, buildRecordSnippet, escapeFilterValue, truncateSnippet } from '../../shared.js'
+import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from '../../types.js'
 import { consolidateCluster, findCrossTypeClusters, findSimilarClusters, llmVerifyConsolidation, pickConsolidationFallback, resolveMergeGroups } from '../consolidation.js'
 import { cleanupConsolidationNoMergeVerdicts, loadConsolidationNoMergeVerdict, saveConsolidationNoMergeVerdict, type ConsolidationVerdictMode } from '../consolidation-verdicts.js'
@@ -105,8 +107,11 @@ function buildContextUpdate(
   let changed = false
 
   for (const key of allowedKeys) {
-    const parsed = asNonEmptyString(candidate[key])
-    if (parsed === undefined) continue
+    const rawParsed = asNonEmptyString(candidate[key])
+    if (rawParsed === undefined) continue
+    const parsed = (key === 'project' || key === 'cwd') && path.isAbsolute(rawParsed)
+      ? canonicalizePath(rawParsed)
+      : rawParsed
     if (next[key] !== parsed) changed = true
     next[key] = parsed
   }
@@ -236,22 +241,20 @@ async function markConsolidationChecked(
   records: MemoryRecord[],
   checkedAt: number,
   config: Config,
-  field: 'lastConsolidationCheck' | 'lastCrossTypeConsolidationCheck' = 'lastConsolidationCheck'
+  field: 'lastConsolidationCheck' | 'lastCrossTypeConsolidationCheck' = 'lastConsolidationCheck',
+  options?: { reuseSnapshots?: boolean }
 ): Promise<number> {
   if (records.length === 0) return 0
 
   try {
-    // Reuse embeddings already present on records when all have them; otherwise fetch fresh.
-    const allHaveEmbeddings = records.every(r => Array.isArray(r.embedding) && r.embedding.length > 0)
-    let recordsWithEmbeddings = records
-    if (!allHaveEmbeddings) {
-      const ids = records.map(r => r.id)
-      const idList = ids.map(id => `'${escapeFilterValue(id)}'`).join(', ')
-      recordsWithEmbeddings = await queryRecords(
-        { filter: `id IN (${idList})`, includeEmbeddings: true },
-        config
-      )
-    }
+    // Only reuse in-memory snapshots when explicitly safe (unmutated singletons).
+    // Cluster records may have been deprecated/synthesized in LanceDB and MUST be re-fetched
+    // so batchUpdateRecords never resurrects deprecated records or reverts synthesis/supersedes.
+    const canReuseSnapshots = options?.reuseSnapshots === true
+      && records.every(r => Array.isArray(r.embedding) && r.embedding.length > 0)
+    const recordsWithEmbeddings = canReuseSnapshots
+      ? records
+      : await fetchRecordsByIds(records.map(r => r.id), config, { includeEmbeddings: true })
 
     if (recordsWithEmbeddings.length === 0) return records.length
 
@@ -587,7 +590,13 @@ export async function runConsolidation(
     }
 
     if (!dryRun && scannedSingletons.length > 0) {
-      const failed = await markConsolidationChecked(scannedSingletons, Date.now(), config, 'lastConsolidationCheck')
+      const failed = await markConsolidationChecked(
+        scannedSingletons,
+        Date.now(),
+        config,
+        'lastConsolidationCheck',
+        { reuseSnapshots: true }
+      )
       if (failed > 0) {
         counters.errors += failed
         logger.warn(`Failed to mark ${failed}/${scannedSingletons.length} singleton records as consolidation-checked`)
@@ -775,7 +784,13 @@ export async function runCrossTypeConsolidation(
     }
 
     if (!dryRun && scannedSingletons.length > 0) {
-      const failed = await markConsolidationChecked(scannedSingletons, Date.now(), config, 'lastCrossTypeConsolidationCheck')
+      const failed = await markConsolidationChecked(
+        scannedSingletons,
+        Date.now(),
+        config,
+        'lastCrossTypeConsolidationCheck',
+        { reuseSnapshots: true }
+      )
       if (failed > 0) {
         counters.errors += failed
         logger.warn(`Failed to mark ${failed}/${scannedSingletons.length} singleton records as cross-type consolidation-checked`)

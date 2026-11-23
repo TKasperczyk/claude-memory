@@ -108,6 +108,7 @@ const TOOL_SNIPPET_MAX_CHARS = 1000
 const MESSAGE_TEXT_MAX_CHARS = 60000
 const PARSE_WARN_LIMIT = 5
 const TRANSCRIPT_TURNS_TAIL_BYTES = 4 * 1024 * 1024
+const TRANSCRIPT_TURNS_FALLBACK_TAIL_BYTES = 16 * 1024 * 1024
 const MARKER_SCAN_CHUNK_BYTES = 256 * 1024
 
 export type TranscriptTurn = {
@@ -331,6 +332,47 @@ export async function parseTranscriptTurns(
 ): Promise<TranscriptTurn[]> {
   if (maxTurns <= 0 || signal?.aborted) return []
 
+  let fileSize: number
+  try {
+    const stats = await fs.promises.stat(transcriptPath)
+    fileSize = stats.size
+  } catch {
+    return []
+  }
+
+  const primaryTurns = await parseTranscriptTurnsWindow(
+    transcriptPath,
+    fileSize,
+    TRANSCRIPT_TURNS_TAIL_BYTES,
+    maxTurns,
+    signal
+  )
+  if (
+    primaryTurns.length > 0
+    || signal?.aborted
+    || fileSize <= TRANSCRIPT_TURNS_TAIL_BYTES
+  ) {
+    return primaryTurns
+  }
+
+  // If the last 4 MiB held a single oversized JSONL entry (e.g. massive tool dump)
+  // and yielded zero turns, widen once to a bounded 16 MiB tail window.
+  return parseTranscriptTurnsWindow(
+    transcriptPath,
+    fileSize,
+    TRANSCRIPT_TURNS_FALLBACK_TAIL_BYTES,
+    maxTurns,
+    signal
+  )
+}
+
+async function parseTranscriptTurnsWindow(
+  transcriptPath: string,
+  fileSize: number,
+  tailBytes: number,
+  maxTurns: number,
+  signal?: AbortSignal
+): Promise<TranscriptTurn[]> {
   const turns: TranscriptTurn[] = []
   let currentTurn: TranscriptTurn | null = null
 
@@ -340,18 +382,8 @@ export async function parseTranscriptTurns(
     if (turns.length > maxTurns) turns.shift()
   }
 
-  let startOffset = 0
-  let skipFirstLine = false
-  try {
-    const stats = await fs.promises.stat(transcriptPath)
-    if (stats.size > TRANSCRIPT_TURNS_TAIL_BYTES) {
-      // Start 1 byte earlier so we can check if the tail boundary falls right after '\n'.
-      startOffset = stats.size - TRANSCRIPT_TURNS_TAIL_BYTES - 1
-      skipFirstLine = true
-    }
-  } catch {
-    return []
-  }
+  const startOffset = fileSize > tailBytes ? fileSize - tailBytes - 1 : 0
+  let skipFirstLine = startOffset > 0
 
   const input = fs.createReadStream(transcriptPath, {
     encoding: 'utf-8',

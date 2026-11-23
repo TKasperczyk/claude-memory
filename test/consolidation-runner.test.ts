@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_CONFIG, type MemoryRecord } from '../src/lib/types.js'
 import { DEFAULT_MAINTENANCE_SETTINGS } from '../src/lib/settings-schema.js'
 import { runConsolidation, runCrossTypeConsolidation } from '../src/lib/maintenance/runners/consolidation-runners.js'
-import { batchUpdateRecords } from '../src/lib/lancedb.js'
-import { consolidateCluster, llmVerifyConsolidation, pickConsolidationFallback } from '../src/lib/maintenance/consolidation.js'
+import { batchUpdateRecords, fetchRecordsByIds } from '../src/lib/lancedb.js'
+import { consolidateCluster, findSimilarClusters, llmVerifyConsolidation, pickConsolidationFallback, resolveMergeGroups } from '../src/lib/maintenance/consolidation.js'
 import {
   cleanupConsolidationNoMergeVerdicts,
   loadConsolidationNoMergeVerdict,
@@ -13,6 +13,8 @@ import { createMockDiscoveryRecord } from './helpers.js'
 
 const mockState = vi.hoisted(() => ({
   clusters: [] as any[],
+  dbRecords: null as MemoryRecord[] | null,
+  singletons: [] as MemoryRecord[],
   cachedVerdict: null as any,
   verification: {
     shouldMerge: false,
@@ -22,14 +24,26 @@ const mockState = vi.hoisted(() => ({
 
 vi.mock('../src/lib/lancedb.js', () => ({
   batchUpdateRecords: vi.fn(async (records: MemoryRecord[]) => ({ updated: records.length, failed: 0 })),
+  fetchRecordsByIds: vi.fn(async (ids: string[]) => {
+    const source = mockState.dbRecords
+      ?? mockState.clusters.flatMap(cluster => cluster.members.map((member: any) => member.record))
+    const idSet = new Set(ids)
+    return source.filter(record => idSet.has(record.id))
+  }),
   queryRecords: vi.fn(async () => mockState.clusters.flatMap(cluster => cluster.members.map((member: any) => member.record))),
   updateRecord: vi.fn(async () => true)
 }))
 
 vi.mock('../src/lib/maintenance/consolidation.js', () => ({
   consolidateCluster: vi.fn(async () => null),
-  findCrossTypeClusters: vi.fn(async () => mockState.clusters),
-  findSimilarClusters: vi.fn(async () => mockState.clusters),
+  findCrossTypeClusters: vi.fn(async (_threshold, _config, _settings, options) => {
+    options?.onScannedSingletons?.(mockState.singletons)
+    return mockState.clusters
+  }),
+  findSimilarClusters: vi.fn(async (_threshold, _config, _settings, options) => {
+    options?.onScannedSingletons?.(mockState.singletons)
+    return mockState.clusters
+  }),
   llmVerifyConsolidation: vi.fn(async () => mockState.verification),
   pickConsolidationFallback: vi.fn(() => ({ shouldMerge: true, keptId: 'a', reason: 'fallback' })),
   resolveMergeGroups: vi.fn(() => [])
@@ -70,6 +84,8 @@ describe('consolidation runner no-merge verdict cache', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockState.clusters = [buildCluster()]
+    mockState.dbRecords = null
+    mockState.singletons = []
     mockState.cachedVerdict = null
     mockState.verification = {
       shouldMerge: false,
@@ -183,5 +199,87 @@ describe('consolidation runner no-merge verdict cache', () => {
       deprecated: 0,
       errors: 1
     })
+  })
+
+  it('re-fetches post-merge cluster records from DB even when pre-merge snapshots already carry embeddings', async () => {
+    const embedding = [0.1, 0.2, 0.3]
+    const preMergeKeeper = createMockDiscoveryRecord({
+      id: 'keeper',
+      what: 'Original keeper text',
+      deprecated: false,
+      embedding
+    })
+    const preMergeDup = createMockDiscoveryRecord({
+      id: 'dup',
+      what: 'Duplicate text',
+      deprecated: false,
+      embedding
+    })
+    const cluster = [preMergeKeeper, preMergeDup] as any
+    cluster.seedId = preMergeKeeper.id
+    cluster.members = [
+      { record: preMergeKeeper, similarity: 1 },
+      { record: preMergeDup, similarity: 0.92 }
+    ]
+    mockState.clusters = [cluster]
+
+    const postMergeKeeper: MemoryRecord = {
+      ...preMergeKeeper,
+      what: 'Synthesized merged fact',
+      relations: [{ targetId: 'dup', kind: 'supersedes', weight: 1, updatedAt: '2026-11-23T00:00:00.000Z' }]
+    }
+    const postMergeDup: MemoryRecord = {
+      ...preMergeDup,
+      deprecated: true,
+      deprecatedAt: 1700000000000,
+      deprecatedReason: 'consolidation:superseded-by:keeper',
+      supersedingRecordId: 'keeper'
+    }
+    mockState.dbRecords = [postMergeKeeper, postMergeDup]
+    mockState.verification = { shouldMerge: true, reason: 'Exact duplicates' } as any
+    vi.mocked(resolveMergeGroups).mockReturnValueOnce([{
+      keptId: 'keeper',
+      mergedIds: ['dup'],
+      reason: 'Exact duplicates',
+      synthesizedFields: { what: 'Synthesized merged fact' }
+    }])
+    vi.mocked(consolidateCluster).mockResolvedValueOnce({
+      keptId: 'keeper',
+      deprecatedIds: ['dup']
+    })
+
+    const result = await runConsolidation(false, DEFAULT_CONFIG, settings)
+
+    expect(result.summary).toMatchObject({ merged: 1, deprecated: 1, errors: 0 })
+    expect(fetchRecordsByIds).toHaveBeenCalledWith(['keeper', 'dup'], DEFAULT_CONFIG, { includeEmbeddings: true })
+    expect(batchUpdateRecords).toHaveBeenCalledWith(
+      [postMergeKeeper, postMergeDup],
+      { lastConsolidationCheck: expect.any(Number) },
+      DEFAULT_CONFIG
+    )
+    const written = vi.mocked(batchUpdateRecords).mock.calls[0][0]
+    expect(written.find(r => r.id === 'dup')?.deprecated).toBe(true)
+    expect((written.find(r => r.id === 'keeper') as any)?.what).toBe('Synthesized merged fact')
+  })
+
+  it('reuses in-memory snapshots for unmutated singletons that already have embeddings', async () => {
+    const singleton = createMockDiscoveryRecord({
+      id: 'singleton-1',
+      what: 'Unique fact',
+      embedding: [0.5, 0.5]
+    })
+    mockState.clusters = []
+    mockState.singletons = [singleton]
+
+    const result = await runConsolidation(false, DEFAULT_CONFIG, settings)
+
+    expect(result.summary.errors).toBe(0)
+    expect(findSimilarClusters).toHaveBeenCalledTimes(1)
+    expect(fetchRecordsByIds).not.toHaveBeenCalled()
+    expect(batchUpdateRecords).toHaveBeenCalledWith(
+      [singleton],
+      { lastConsolidationCheck: expect.any(Number) },
+      DEFAULT_CONFIG
+    )
   })
 })

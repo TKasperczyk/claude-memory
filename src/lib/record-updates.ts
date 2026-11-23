@@ -1,3 +1,5 @@
+import path from 'path'
+import { canonicalizePath } from './paths.js'
 import {
   asBoolean,
   asConfidence,
@@ -36,7 +38,9 @@ function sanitizeContextObject(
   for (const key of allowedKeys) {
     const parsed = asTrimmedString(candidate[key])
     if (parsed !== undefined) {
-      result[key] = parsed
+      result[key] = (key === 'project' || key === 'cwd') && path.isAbsolute(parsed)
+        ? canonicalizePath(parsed)
+        : parsed
     }
   }
   return Object.keys(result).length > 0 ? result : null

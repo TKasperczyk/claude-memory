@@ -289,6 +289,24 @@ describe('installer hook management', () => {
     expect(installed.UserPromptSubmit.configured).toBe(
       `${envPrefix} node "${path.join(realRoot, 'dist', 'hooks', 'pre-prompt.js')}"`
     )
+
+    // Also preserves prefix and canonicalizes symlinked hook paths when env values contain "node" or custom node path is used
+    const trickyPrefix = 'env NOTE="use node here" ANTHROPIC_BASE_URL=https://proxy.example'
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [{
+          hooks: [{
+            type: 'command',
+            command: `${trickyPrefix} /usr/bin/node "${path.join(linkRoot, 'dist', 'hooks', 'pre-prompt.js')}"`,
+            timeout: 15
+          }]
+        }]
+      }
+    }, null, 2), 'utf-8')
+    const reinstalled = installHooks(settingsPath, linkRoot)
+    expect(reinstalled.UserPromptSubmit.configured).toBe(
+      `${trickyPrefix} node "${path.join(realRoot, 'dist', 'hooks', 'pre-prompt.js')}"`
+    )
   })
 })
 

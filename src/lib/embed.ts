@@ -30,6 +30,20 @@ async function postJsonInsecureHttps(
       reject(new Error('Embedding request aborted'))
       return
     }
+    let settled = false
+    const resolveOnce = (value: { ok: boolean; status: number; statusText: string; json: () => Promise<unknown> }) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(value)
+    }
+    const rejectOnce = (error: unknown) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+
     const parsedUrl = new URL(url)
     const req = https.request({
       protocol: parsedUrl.protocol,
@@ -48,11 +62,10 @@ async function postJsonInsecureHttps(
         chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
       })
       res.on('end', () => {
-        cleanup()
         const status = res.statusCode ?? 0
         const statusText = res.statusMessage ?? ''
         const text = Buffer.concat(chunks).toString('utf-8')
-        resolve({
+        resolveOnce({
           ok: status >= 200 && status < 300,
           status,
           statusText,
@@ -60,8 +73,12 @@ async function postJsonInsecureHttps(
         })
       })
       res.on('error', (error) => {
-        cleanup()
-        reject(error)
+        rejectOnce(error)
+      })
+      res.on('close', () => {
+        if (!res.complete) {
+          rejectOnce(new Error('Embedding response connection closed prematurely'))
+        }
       })
     })
 
@@ -74,8 +91,7 @@ async function postJsonInsecureHttps(
 
     signal?.addEventListener('abort', onAbort, { once: true })
     req.on('error', (error) => {
-      cleanup()
-      reject(error)
+      rejectOnce(error)
     })
     req.write(body)
     req.end()
@@ -119,7 +135,7 @@ async function requestEmbeddings(
       model: cfg.embeddings.model,
       ...(cfg.embeddings.provider ? { provider: cfg.embeddings.provider } : {})
     })
-    const response = cfg.embeddings.insecure && endpoint.startsWith('https://')
+    const response = cfg.embeddings.insecure && /^https:\/\//i.test(endpoint)
       ? await postJsonInsecureHttps(endpoint, headers, payload, timeoutSignal)
       : await fetch(endpoint, {
           method: 'POST',

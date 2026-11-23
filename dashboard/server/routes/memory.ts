@@ -1,4 +1,5 @@
 import express from 'express'
+import path from 'path'
 import { randomUUID } from 'crypto'
 import {
   countRecords,
@@ -19,6 +20,7 @@ import { getStatsHistory } from '../../../src/lib/stats-snapshots.js'
 import type { TimeBucketPeriod } from '../../../src/lib/time-buckets.js'
 import { searchRankedCandidates } from '../../../src/lib/ranked-search.js'
 import { loadSettings } from '../../../src/lib/settings.js'
+import { canonicalizePath } from '../../../src/lib/paths.js'
 import { stripRecordEmbedding } from '../../../src/lib/shared.js'
 import { EMBEDDING_DIM } from '../../../src/lib/types.js'
 import {
@@ -139,7 +141,8 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 100), 1000)
       const offset = parseNonNegativeInt(req.query.offset, 0)
       const type = req.query.type as RecordType | undefined
-      const project = req.query.project as string | undefined
+      const rawProject = req.query.project as string | undefined
+      const project = canonicalizeOptionalPath(rawProject)
       const deprecated = req.query.deprecated === 'true'
 
       const filterParts: string[] = []
@@ -278,7 +281,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         scope,
         sourceSessionId: asTrimmedString(body.sourceSessionId),
         sourceExcerpt,
-        project: asTrimmedString(body.project),
+        project: canonicalizeOptionalPath(asTrimmedString(body.project)),
         successCount: asNumber(body.successCount) ?? undefined,
         failureCount: asNumber(body.failureCount) ?? undefined,
         retrievalCount: asNumber(body.retrievalCount) ?? undefined,
@@ -289,6 +292,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         lastGeneralizationCheck: asNumber(body.lastGeneralizationCheck) ?? undefined,
         lastGlobalCheck: asNumber(body.lastGlobalCheck) ?? undefined,
         lastConsolidationCheck: asNumber(body.lastConsolidationCheck) ?? undefined,
+        lastCrossTypeConsolidationCheck: asNumber(body.lastCrossTypeConsolidationCheck) ?? undefined,
         lastConflictCheck: asNumber(body.lastConflictCheck) ?? undefined,
         lastCurrentnessCheck: asNumber(body.lastCurrentnessCheck) ?? undefined,
         lastWarningSynthesisCheck: asNumber(body.lastWarningSynthesisCheck) ?? undefined,
@@ -303,8 +307,8 @@ export function createMemoryRouter(context: ServerContext): express.Router {
           const exitCode = asNumber(body.exitCode)
           const outcome = asOutcome(body.outcome)
           const contextInput = isPlainObject(body.context) ? body.context : undefined
-          const contextProject = asTrimmedString(contextInput?.project)
-          const contextCwd = asTrimmedString(contextInput?.cwd)
+          const contextProject = canonicalizeOptionalPath(asTrimmedString(contextInput?.project))
+          const contextCwd = canonicalizeOptionalPath(asTrimmedString(contextInput?.cwd))
           const contextIntent = asTrimmedString(contextInput?.intent)
 
           if (!command) {
@@ -343,7 +347,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
           const errorType = asTrimmedString(body.errorType)
           const resolution = asTrimmedString(body.resolution)
           const contextInput = isPlainObject(body.context) ? body.context : undefined
-          const contextProject = asTrimmedString(contextInput?.project)
+          const contextProject = canonicalizeOptionalPath(asTrimmedString(contextInput?.project))
 
           if (!errorText) {
             return res.status(400).json({ error: 'errorText required' })
@@ -409,7 +413,9 @@ export function createMemoryRouter(context: ServerContext): express.Router {
           const name = asTrimmedString(body.name)
           const steps = asStringArray(body.steps)
           const contextInput = isPlainObject(body.context) ? body.context : undefined
-          const contextProject = asTrimmedString(contextInput?.project) ?? asTrimmedString(body.project)
+          const contextProject = canonicalizeOptionalPath(
+            asTrimmedString(contextInput?.project) ?? asTrimmedString(body.project)
+          )
 
           if (!name) {
             return res.status(400).json({ error: 'name required' })
@@ -510,7 +516,8 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 20), 200)
       const offset = parseNonNegativeInt(req.query.offset, 0)
       const type = req.query.type as RecordType | undefined
-      const project = req.query.project as string | undefined
+      const rawProject = req.query.project as string | undefined
+      const project = canonicalizeOptionalPath(rawProject)
       const deprecated = req.query.deprecated === 'true'
 
       const windowLimit = offset + limit + 1
@@ -593,6 +600,13 @@ function parseTokenUsageSource(
     }
   }
   return fallback
+}
+
+function canonicalizeOptionalPath(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  return path.isAbsolute(trimmed) ? canonicalizePath(trimmed) : trimmed
 }
 
 function asNumberArray(value: unknown): number[] | undefined {

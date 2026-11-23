@@ -1870,6 +1870,82 @@ describe('maintenance routes', () => {
     expect(res.body.success).toBe(true)
     expect(res.body.record.deprecated).toBe(false)
   })
+
+  it('blocks dangling symlink escape on POST /api/maintenance/suggestions/apply even with overwrite=true', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-dangling-root-'))
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-dangling-outside-'))
+    const outsideTarget = path.join(outsideDir, 'pwned.sh')
+    try {
+      await fs.symlink(outsideTarget, path.join(tempRoot, 'link.md'))
+      const { app } = buildApp({
+        configRoot: tempRoot,
+        suggestionAllowedRoots: [tempRoot]
+      })
+
+      const res = await request(app).post('/api/maintenance/suggestions/apply').send({
+        recordId: 'rec-evil',
+        action: 'new',
+        targetFile: 'link.md',
+        overwrite: true,
+        diff: buildNewFileDiff('link.md', ['#!/bin/sh', 'echo pwned'])
+      })
+
+      expect(res.status).toBe(400)
+      expect(nodeFs.existsSync(outsideTarget)).toBe(false)
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true })
+      await fs.rm(outsideDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects preview-only operations with 403 on GET /api/maintenance/stream?dryRun=false', async () => {
+    const { app } = buildApp()
+    const res = await request(app).get('/api/maintenance/stream?dryRun=false&operation=promotion-suggestions')
+    expect(res.status).toBe(403)
+    expect(res.body).toEqual({ error: 'Operation is preview-only' })
+    expect(mockedRunMaintenanceOperation).not.toHaveBeenCalled()
+  })
+
+  it('canonicalizes symlinked project paths in GET /api/memories and POST /api/memories', async () => {
+    const tempBase = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-memory-symlink-proj-'))
+    const realProj = path.join(tempBase, 'real-proj')
+    const linkProj = path.join(tempBase, 'link-proj')
+    try {
+      await fs.mkdir(realProj, { recursive: true })
+      await fs.symlink(realProj, linkProj)
+      const canonicalRealProj = nodeFs.realpathSync(realProj)
+      const { app } = buildApp()
+
+      mockedQueryRecords.mockResolvedValueOnce([])
+      mockedCountRecords.mockResolvedValueOnce(0)
+      const listRes = await request(app).get('/api/memories').query({ project: linkProj })
+      expect(listRes.status).toBe(200)
+      expect(mockedQueryRecords).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filter: expect.stringContaining(`project = '${canonicalRealProj}'`)
+        }),
+        expect.anything()
+      )
+
+      mockedInsertRecord.mockResolvedValueOnce(undefined)
+      const postRes = await request(app).post('/api/memories').send({
+        type: 'command',
+        command: 'pnpm test',
+        exitCode: 0,
+        outcome: 'success',
+        project: linkProj,
+        sourceExcerpt: 'ran tests',
+        context: { project: linkProj, cwd: linkProj, intent: 'run tests' }
+      })
+      expect(postRes.status).toBe(201)
+      const inserted = mockedInsertRecord.mock.calls[0][0] as any
+      expect(inserted.project).toBe(canonicalRealProj)
+      expect(inserted.context.project).toBe(canonicalRealProj)
+      expect(inserted.context.cwd).toBe(canonicalRealProj)
+    } finally {
+      await fs.rm(tempBase, { recursive: true, force: true })
+    }
+  })
 })
 
 afterAll(() => {

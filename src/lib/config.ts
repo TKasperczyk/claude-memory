@@ -2,6 +2,7 @@ import path from 'path'
 import { DEFAULT_CONFIG, createConfig, type Config } from './types.js'
 import { readJsonFileSafe } from './json.js'
 import { isPlainObject } from './parsing.js'
+import { isValidTableName } from './shared.js'
 import { loadSettings } from './settings.js'
 import { CLAUDE_MEMORY_ROOT } from './paths.js'
 
@@ -12,7 +13,20 @@ function coercePartialConfig(value: unknown): Partial<Config> | null {
   if (!isPlainObject(value)) return null
   const partial: Partial<Config> = {}
   if (isPlainObject(value.lancedb)) {
-    partial.lancedb = value.lancedb as Config['lancedb']
+    const lancedb = { ...value.lancedb } as Record<string, unknown>
+    if (typeof lancedb.table === 'string') {
+      const trimmed = lancedb.table.trim()
+      if (!isValidTableName(trimmed)) {
+        delete lancedb.table
+      } else {
+        lancedb.table = trimmed
+      }
+    } else if ('table' in lancedb) {
+      delete lancedb.table
+    }
+    if (Object.keys(lancedb).length > 0) {
+      partial.lancedb = lancedb as Config['lancedb']
+    }
   }
   if (isPlainObject(value.embeddings)) {
     partial.embeddings = value.embeddings as Config['embeddings']

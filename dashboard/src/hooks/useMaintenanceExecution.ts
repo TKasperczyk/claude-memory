@@ -125,9 +125,10 @@ export function useMaintenanceExecution(
   }, [openStream])
 
   const finishStream = useCallback((resetCurrent: () => void) => {
-    if (activeStreamResetRef.current === resetCurrent) {
-      activeStreamResetRef.current = null
+    if (activeStreamResetRef.current !== resetCurrent) {
+      return
     }
+    activeStreamResetRef.current = null
     resetCurrent()
     closeStream()
   }, [closeStream])
@@ -144,9 +145,6 @@ export function useMaintenanceExecution(
   }, [])
 
   const handleRunOperation = useCallback(async (operation: MaintenanceOperation, dryRun: boolean) => {
-    setOperationRunning(operation, true)
-    setRunningMode(prev => ({ ...prev, [operation]: dryRun ? 'preview' : 'run' }))
-
     if (supportsOperationProgress(operation)) {
       const resetOperation = () => {
         setOperationRunning(operation, false)
@@ -157,6 +155,8 @@ export function useMaintenanceExecution(
         `/api/maintenance/stream?dryRun=${dryRun}&operation=${operation}`,
         resetOperation
       )
+      setOperationRunning(operation, true)
+      setRunningMode(prev => ({ ...prev, [operation]: dryRun ? 'preview' : 'run' }))
 
       eventSource.addEventListener('detailed-progress', event => {
         const data = parseSsePayload(event, 'detailed-progress')
@@ -216,6 +216,9 @@ export function useMaintenanceExecution(
 
       return
     }
+
+    setOperationRunning(operation, true)
+    setRunningMode(prev => ({ ...prev, [operation]: dryRun ? 'preview' : 'run' }))
 
     try {
       const result = await runMaintenance(operation, dryRun)

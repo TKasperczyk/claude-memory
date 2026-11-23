@@ -175,8 +175,7 @@ export function getLastMaintenanceRun(
   const runs = maintenanceLog.list(collection)
   for (const run of runs) {
     if (options.excludeDryRun && run.dryRun) continue
-    if (options.fullOnly && run.trigger !== 'auto' && run.operations.length < minOperations) continue
-    if (!options.fullOnly && minOperations > 0 && run.operations.length < minOperations) continue
+    if (minOperations > 0 && run.operations.length < minOperations) continue
     return run
   }
   return null

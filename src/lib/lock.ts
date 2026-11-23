@@ -66,6 +66,7 @@ function isStaleLock(lockPath: string, now: number, options: FileLockOptions): b
     if (options.staleStrategy === 'pid') {
       const pid = readLockPid(lockPath)
       if (pid !== null) {
+        if (pid <= 0) return true
         return !isProcessAlive(pid)
       }
     }

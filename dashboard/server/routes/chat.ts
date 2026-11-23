@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs'
+import path from 'path'
 import express from 'express'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
@@ -11,9 +12,11 @@ import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from '..
 import { CHAT_TOOLS, executeChatTool, type ChatToolName } from '../lib/chat-tools.js'
 import { loadSettings } from '../../../src/lib/settings.js'
 import { UNIFIED_SEMANTIC_WEIGHT } from '../../../src/lib/ranked-search.js'
-import { clampModelMaxTokens, getModelCapabilities, supportsEffort } from '../../../src/lib/model-capabilities.js'
+import { computeMaxTokensWithThinkingHeadroom, supportsEffort } from '../../../src/lib/model-capabilities.js'
 import type { Settings } from '../../../src/lib/settings.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
+import { canonicalizePath } from '../../../src/lib/paths.js'
+import { hasTokenUsage } from '../../../src/lib/token-usage.js'
 import { recordTokenUsageEventsAsync } from '../../../src/lib/token-usage-events.js'
 import type { Config, TokenUsage } from '../../../src/lib/types.js'
 import type { MemoryStatsSummary } from '../../../shared/types.js'
@@ -25,7 +28,6 @@ const STATIC_PROMPT = readFileSync(
 )
 
 const CHAT_MAX_TOKENS = 10000
-const CHAT_THINKING_HEADROOM_TOKENS = 16000
 const MAX_TOOL_ROUNDS = 50
 
 type ChatMessage = {
@@ -140,7 +142,11 @@ export function createChatRouter(context: ServerContext): express.Router {
       }
 
       const config = await ensureConfigInitialized(req, getBaseConfig())
-      const dynamicSystemContext = await buildDynamicSystemContext(config, typeof project === 'string' ? project.trim() : undefined)
+      const rawProject = typeof project === 'string' ? project.trim() : ''
+      const canonicalProject = rawProject
+        ? (path.isAbsolute(rawProject) ? canonicalizePath(rawProject) : rawProject)
+        : undefined
+      const dynamicSystemContext = await buildDynamicSystemContext(config, canonicalProject)
 
       const conversation: Array<{ role: 'user' | 'assistant'; content: unknown }> = normalizedMessages.map(message => ({
         role: message.role,
@@ -153,10 +159,6 @@ export function createChatRouter(context: ServerContext): express.Router {
         rounds += 1
 
         const { chatModel } = loadSettings()
-        const capabilities = getModelCapabilities(chatModel)
-        const requestedMaxTokens = capabilities.thinkingStyle === 'always_on' || capabilities.thinkingStyle === 'adaptive'
-          ? CHAT_MAX_TOKENS + CHAT_THINKING_HEADROOM_TOKENS
-          : CHAT_MAX_TOKENS
         logger.info(`Using chat model: ${chatModel}`)
         const systemBlocks: Array<Record<string, unknown>> = [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
@@ -167,7 +169,7 @@ export function createChatRouter(context: ServerContext): express.Router {
         }
         const createParams: Record<string, unknown> = {
           model: chatModel,
-          max_tokens: clampModelMaxTokens(chatModel, requestedMaxTokens),
+          max_tokens: computeMaxTokensWithThinkingHeadroom(chatModel, CHAT_MAX_TOKENS),
           system: systemBlocks,
           messages: conversation,
           tools: CHAT_TOOLS,
@@ -182,7 +184,7 @@ export function createChatRouter(context: ServerContext): express.Router {
         )
 
         const { contentBlocks, toolUses, tokenUsage } = await consumeChatStream(responseStream, stream)
-        if (tokenUsage.inputTokens > 0 || tokenUsage.outputTokens > 0) {
+        if (hasTokenUsage(tokenUsage)) {
           recordTokenUsageEventsAsync([{
             timestamp: Date.now(),
             source: 'chat',
@@ -216,7 +218,7 @@ export function createChatRouter(context: ServerContext): express.Router {
           try {
             const execution = await executeChatTool(toolUse.name as ChatToolName, toolUse.input, {
               config,
-              project: typeof project === 'string' ? project.trim() : undefined
+              project: canonicalProject
             })
             executionResult = execution.result
             isError = Boolean(execution.isError)
@@ -403,7 +405,8 @@ async function consumeChatStream(
       return block.text.trim().length > 0
     }
     if (block.type === 'thinking') {
-      return Boolean(block.thinking || block.signature)
+      // Anthropic rejects assistant thinking blocks replayed without a valid signature.
+      return Boolean(block.signature)
     }
     return true
   })

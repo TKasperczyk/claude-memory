@@ -42,20 +42,35 @@ function reverseToolNameTransform(name: string): string {
   return name.charAt(0).toLowerCase() + name.slice(1)
 }
 
-function mutateToolUseNames(value: unknown): boolean {
+function reverseToolNameForRequest(
+  name: string,
+  renamedTools: ReadonlyMap<string, string>,
+  trackedRequestTools: boolean
+): string {
+  const mapped = renamedTools.get(name)
+  if (mapped !== undefined) return mapped
+  if (trackedRequestTools) return name
+  return reverseToolNameTransform(name)
+}
+
+function mutateToolUseNames(
+  value: unknown,
+  renamedTools: ReadonlyMap<string, string>,
+  trackedRequestTools: boolean
+): boolean {
   if (!value || typeof value !== 'object') return false
   let changed = false
 
   if (Array.isArray(value)) {
     for (const entry of value) {
-      if (mutateToolUseNames(entry)) changed = true
+      if (mutateToolUseNames(entry, renamedTools, trackedRequestTools)) changed = true
     }
     return changed
   }
 
   const record = value as Record<string, unknown>
   if (record.type === 'tool_use' && typeof record.name === 'string') {
-    const original = reverseToolNameTransform(record.name)
+    const original = reverseToolNameForRequest(record.name, renamedTools, trackedRequestTools)
     if (original !== record.name) {
       record.name = original
       changed = true
@@ -63,13 +78,17 @@ function mutateToolUseNames(value: unknown): boolean {
   }
 
   for (const key of Object.keys(record)) {
-    if (mutateToolUseNames(record[key])) changed = true
+    if (mutateToolUseNames(record[key], renamedTools, trackedRequestTools)) changed = true
   }
 
   return changed
 }
 
-function transformSseEvent(event: string): string {
+function transformSseEvent(
+  event: string,
+  renamedTools: ReadonlyMap<string, string>,
+  trackedRequestTools: boolean
+): string {
   if (!event.includes('data:')) return event
   const lines = event.split('\n')
   const transformed = lines.map(line => {
@@ -80,7 +99,7 @@ function transformSseEvent(event: string): string {
     if (!data || data === '[DONE]') return line
     try {
       const parsed = JSON.parse(data) as unknown
-      if (mutateToolUseNames(parsed)) {
+      if (mutateToolUseNames(parsed, renamedTools, trackedRequestTools)) {
         return `${prefix}${JSON.stringify(parsed)}`
       }
       return line
@@ -91,13 +110,20 @@ function transformSseEvent(event: string): string {
   return transformed.join('\n')
 }
 
+function cloneHeadersForDecodedBody(headers: Headers): Headers {
+  const cloned = new Headers(headers)
+  cloned.delete('content-encoding')
+  cloned.delete('content-length')
+  return cloned
+}
+
 /**
  * Create a fetch wrapper for OAuth requests that:
  * 1. Adds ?beta=true to /v1/messages requests
  * 2. Transforms tool names to satisfy OAuth validation (capitalize first letter)
  * 3. Transforms tool names back in responses
  */
-function createOAuthFetch(): typeof fetch {
+export function createOAuthFetch(): typeof fetch {
   return async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> => {
     let requestUrl: URL
     if (typeof input === 'string') {
@@ -112,6 +138,17 @@ function createOAuthFetch(): typeof fetch {
       requestUrl.searchParams.set('beta', 'true')
     }
 
+    const renamedTools = new Map<string, string>()
+    let trackedRequestTools = false
+
+    const mapOutboundToolName = (originalName: string): string => {
+      const transformed = transformToolNameForOAuth(originalName)
+      if (transformed !== originalName) {
+        renamedTools.set(transformed, originalName)
+      }
+      return transformed
+    }
+
     // Transform tool names in request body
     let modifiedInit = init
     if (init?.body && typeof init.body === 'string') {
@@ -121,9 +158,10 @@ function createOAuthFetch(): typeof fetch {
 
         // Transform tools array
         if (parsed.tools && Array.isArray(parsed.tools)) {
+          trackedRequestTools = true
           parsed.tools = (parsed.tools as Array<{ name?: string }>).map(tool => {
             if (tool.name) {
-              const transformed = transformToolNameForOAuth(tool.name)
+              const transformed = mapOutboundToolName(tool.name)
               if (transformed !== tool.name) modified = true
               return { ...tool, name: transformed }
             }
@@ -134,7 +172,7 @@ function createOAuthFetch(): typeof fetch {
         // Transform tool_choice.name if present
         const toolChoice = parsed.tool_choice as { name?: string } | undefined
         if (toolChoice?.name) {
-          const transformed = transformToolNameForOAuth(toolChoice.name)
+          const transformed = mapOutboundToolName(toolChoice.name)
           if (transformed !== toolChoice.name) {
             parsed.tool_choice = { ...toolChoice, name: transformed }
             modified = true
@@ -154,7 +192,7 @@ function createOAuthFetch(): typeof fetch {
                 && typeof (block as { name?: unknown }).name === 'string'
               ) {
                 const originalName = (block as { name: string }).name
-                const transformed = transformToolNameForOAuth(originalName)
+                const transformed = mapOutboundToolName(originalName)
                 if (transformed !== originalName) {
                   messageModified = true
                   modified = true
@@ -181,6 +219,7 @@ function createOAuthFetch(): typeof fetch {
     const contentType = response.headers.get('content-type') || ''
     if (contentType.includes('application/json') && !contentType.includes('stream')) {
       const text = await response.text()
+      const decodedHeaders = cloneHeadersForDecodedBody(response.headers)
       try {
         const parsed = JSON.parse(text) as Record<string, unknown>
         let modified = false
@@ -189,7 +228,7 @@ function createOAuthFetch(): typeof fetch {
         if (parsed.content && Array.isArray(parsed.content)) {
           parsed.content = (parsed.content as Array<{ type?: string; name?: string }>).map(block => {
             if (block.type === 'tool_use' && block.name) {
-              const original = reverseToolNameTransform(block.name)
+              const original = reverseToolNameForRequest(block.name, renamedTools, trackedRequestTools)
               if (original !== block.name) modified = true
               return { ...block, name: original }
             }
@@ -201,14 +240,14 @@ function createOAuthFetch(): typeof fetch {
         return new Response(newBody, {
           status: response.status,
           statusText: response.statusText,
-          headers: response.headers
+          headers: decodedHeaders
         })
       } catch {
         // Return a fresh Response with the buffered text instead of the already-drained original
         return new Response(text, {
           status: response.status,
           statusText: response.statusText,
-          headers: response.headers
+          headers: decodedHeaders
         })
       }
     }
@@ -224,8 +263,9 @@ function createOAuthFetch(): typeof fetch {
         async pull(controller) {
           const { done, value } = await reader.read()
           if (done) {
+            buffer += decoder.decode()
             if (buffer.length > 0) {
-              const flushed = transformSseEvent(buffer)
+              const flushed = transformSseEvent(buffer, renamedTools, trackedRequestTools)
               controller.enqueue(encoder.encode(flushed))
               buffer = ''
             }
@@ -237,7 +277,9 @@ function createOAuthFetch(): typeof fetch {
           const events = buffer.split(/\r?\n\r?\n/)
           buffer = events.pop() ?? ''
           if (events.length > 0) {
-            const transformed = events.map(transformSseEvent).join('\n\n') + '\n\n'
+            const transformed = events
+              .map(event => transformSseEvent(event, renamedTools, trackedRequestTools))
+              .join('\n\n') + '\n\n'
             controller.enqueue(encoder.encode(transformed))
           }
         },
@@ -249,7 +291,7 @@ function createOAuthFetch(): typeof fetch {
       return new Response(stream, {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers
+        headers: cloneHeadersForDecodedBody(response.headers)
       })
     }
 
@@ -415,26 +457,99 @@ async function refreshAccessToken(refreshToken: string): Promise<OAuthCredential
   }
 }
 
-async function getFreshCredentials(): Promise<{ creds: OAuthCredentials; source: CredentialSource } | null> {
+const OAUTH_REFRESH_LOCK_MAX_WAIT_MS = 10_000
+const OAUTH_REFRESH_LOCK_RETRY_MS = 100
+let inFlightOAuthRefresh: Promise<{ creds: OAuthCredentials; source: CredentialSource } | null> | null = null
+
+function sleepAsync(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isCredentialsFresh(creds: OAuthCredentials): boolean {
+  return Boolean(creds.apiKey) || creds.expiresAt >= Date.now() + TOKEN_REFRESH_BUFFER_MS
+}
+
+async function acquireOAuthRefreshLockAsync(
+  lockPath: string,
+  maxWaitMs: number,
+  retryDelayMs: number
+): Promise<
+  | { status: 'acquired'; lockHandle: NonNullable<ReturnType<typeof acquireFileLock>> }
+  | { status: 'fresh'; loaded: { creds: OAuthCredentials; source: CredentialSource } }
+  | { status: 'timeout' }
+> {
+  const deadline = Date.now() + maxWaitMs
+
+  while (true) {
+    let lockHandle: ReturnType<typeof acquireFileLock> = null
+    try {
+      lockHandle = acquireFileLock(lockPath, {
+        staleAfterMs: 60_000,
+        staleStrategy: 'pid',
+        ensureDir: true,
+        proceedOnError: false,
+        write: { data: () => `${process.pid}\n${Date.now()}`, ignoreErrors: true }
+      })
+    } catch (error) {
+      console.error('[claude-memory] Failed to acquire OAuth refresh lock:', error)
+      return { status: 'timeout' }
+    }
+
+    if (lockHandle) {
+      return { status: 'acquired', lockHandle }
+    }
+
+    const reloaded = loadCredentials()
+    if (reloaded && isCredentialsFresh(reloaded.creds)) {
+      return { status: 'fresh', loaded: reloaded }
+    }
+
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) {
+      return { status: 'timeout' }
+    }
+
+    await sleepAsync(Math.min(retryDelayMs, remainingMs))
+  }
+}
+
+export async function getFreshCredentials(options?: {
+  lockMaxWaitMs?: number
+  lockRetryMs?: number
+}): Promise<{ creds: OAuthCredentials; source: CredentialSource } | null> {
   const loaded = loadCredentials()
   if (!loaded) return null
 
-  let { creds, source } = loaded
+  // If we have an API key or unexpired access token, return as-is.
+  if (isCredentialsFresh(loaded.creds)) return loaded
 
-  // If we have an API key, return as-is
-  if (creds.apiKey) return { creds, source }
+  // Coalesce concurrent refreshes within the same process so we never deadlock
+  // our own event loop on the cross-process file lock or double-spend a refresh token.
+  if (inFlightOAuthRefresh) {
+    return inFlightOAuthRefresh
+  }
 
-  // Refresh if expired or near expiry, serialized across concurrent processes
-  // so single-use refresh tokens cannot race and revoke each other.
-  if (creds.expiresAt < Date.now() + TOKEN_REFRESH_BUFFER_MS) {
-    const lockHandle = acquireFileLock(join(LOCKS_DIR, 'oauth-refresh.lock'), {
-      staleAfterMs: 60_000,
-      staleStrategy: 'pid',
-      ensureDir: true,
-      proceedOnError: true,
-      wait: { maxWaitMs: 10_000, retryDelayMs: 100 },
-      write: { data: () => `${process.pid}\n${Date.now()}`, ignoreErrors: true }
-    })
+  const refreshPromise = (async (): Promise<{ creds: OAuthCredentials; source: CredentialSource } | null> => {
+    let { creds, source } = loaded
+    const lockPath = join(LOCKS_DIR, 'oauth-refresh.lock')
+    const acquisition = await acquireOAuthRefreshLockAsync(
+      lockPath,
+      options?.lockMaxWaitMs ?? OAUTH_REFRESH_LOCK_MAX_WAIT_MS,
+      options?.lockRetryMs ?? OAUTH_REFRESH_LOCK_RETRY_MS
+    )
+
+    if (acquisition.status === 'fresh') {
+      return acquisition.loaded
+    }
+    if (acquisition.status === 'timeout') {
+      // One final check in case the holder just finished writing refreshed creds.
+      const finalCheck = loadCredentials()
+      if (finalCheck && isCredentialsFresh(finalCheck.creds)) {
+        return finalCheck
+      }
+      console.error('[claude-memory] Timed out waiting for OAuth refresh lock; refusing unlocked token refresh')
+      return null
+    }
 
     try {
       // Re-read after acquiring lock in case another process already refreshed.
@@ -442,7 +557,7 @@ async function getFreshCredentials(): Promise<{ creds: OAuthCredentials; source:
       if (reloaded) {
         creds = reloaded.creds
         source = reloaded.source
-        if (creds.apiKey || creds.expiresAt >= Date.now() + TOKEN_REFRESH_BUFFER_MS) {
+        if (isCredentialsFresh(creds)) {
           return { creds, source }
         }
       }
@@ -452,12 +567,20 @@ async function getFreshCredentials(): Promise<{ creds: OAuthCredentials; source:
 
       saveCredentials(refreshed, source)
       creds = refreshed
+      return { creds, source }
     } finally {
-      lockHandle?.release()
+      acquisition.lockHandle.release()
+    }
+  })()
+
+  inFlightOAuthRefresh = refreshPromise
+  try {
+    return await refreshPromise
+  } finally {
+    if (inFlightOAuthRefresh === refreshPromise) {
+      inFlightOAuthRefresh = null
     }
   }
-
-  return { creds, source }
 }
 
 export async function createAnthropicClient(): Promise<Anthropic | null> {

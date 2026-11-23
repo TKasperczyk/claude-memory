@@ -17,6 +17,10 @@ const mockState = vi.hoisted(() => ({
 
 vi.mock('../src/lib/lancedb.js', () => ({
   batchUpdateRecords: vi.fn(async () => ({ updated: mockState.records.length, failed: 0 })),
+  fetchRecordsByIds: vi.fn(async (ids: string[]) => {
+    const idSet = new Set(ids)
+    return mockState.records.filter(record => idSet.has(record.id))
+  }),
   buildFilter: vi.fn((filters: { project?: string; type?: string; excludeId?: string; excludeDeprecated?: boolean }) => {
     const parts: string[] = []
     if (filters.project) parts.push(`project = '${filters.project}'`)

@@ -1,5 +1,6 @@
 import { DEFAULT_CONFIG, type Config } from './types.js'
 import { findGitRoot } from './context.js'
+import { canonicalizePath } from './paths.js'
 import { buildPromotionDiffs } from './promotions.js'
 import { buildRecordSnippet, truncateSnippet } from './shared.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from './settings.js'
@@ -242,7 +243,7 @@ async function runPromotionSuggestions(config: Config): Promise<MaintenanceRunRe
   let errors = 0
 
   try {
-    const root = findGitRoot(process.cwd()) ?? process.cwd()
+    const root = findGitRoot(process.cwd()) ?? canonicalizePath(process.cwd())
     const { skillDiffs, claudeMdDiffs, skillCandidates: skillCount, claudeMdCandidates: claudeCount } =
       await buildPromotionDiffs(config, root)
 
