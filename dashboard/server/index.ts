@@ -25,7 +25,6 @@ const logger = createLogger('server')
 const app = express()
 const HOST = process.env.HOST ?? '127.0.0.1'
 const PORT = Number(process.env.PORT ?? 3001)
-const context = createServerContext()
 
 try {
   const settingsMigration = migrateSettingsIfNeeded()
@@ -40,6 +39,8 @@ try {
 } catch (error) {
   logger.warn('Settings migration check failed', error)
 }
+
+const context = createServerContext()
 
 startStatsSnapshotScheduler(context.config)
 

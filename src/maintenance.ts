@@ -106,7 +106,7 @@ function logMigrationResult(result: DataMigrationsResult, dryRun: boolean): void
     }
   } else if (result.status === 'would-run' && result.pendingIds.length > 0) {
     console.error(`[claude-memory] ${prefix}Pending data migrations (${result.pendingIds.length}): ${result.pendingIds.join(', ')}`)
-  } else if (result.status === 'skipped' && result.skipReason === 'locked') {
+  } else if (result.status === 'skipped' && result.skipReason === 'locked' && result.pendingIds.length > 0) {
     console.error('[claude-memory] Data migrations skipped (locked by another process).')
   } else if (result.status === 'failed') {
     console.error(`[claude-memory] Data migrations failed: ${result.error ?? 'unknown error'}`)

@@ -71,7 +71,7 @@ export interface DataMigrationStepResult {
 }
 
 export type DataMigrationsStatus = 'up-to-date' | 'would-run' | 'applied' | 'skipped' | 'failed'
-export type DataMigrationsSkipReason = 'locked' | 'table-not-found'
+export type DataMigrationsSkipReason = 'locked' | 'table-not-found' | 'invalid-settings'
 
 export interface DataMigrationsResult {
   status: DataMigrationsStatus
@@ -349,18 +349,36 @@ function finalizeMigrationResult(
     return merged
   }
 
+  const lanceSkippedNoTable = base.status === 'skipped' && base.skipReason === 'table-not-found'
+
   if (settingsMigration.status === 'migrated') {
-    if (base.status === 'up-to-date' || (base.status === 'skipped' && base.skipReason === 'table-not-found')) {
+    if (base.status === 'up-to-date' || lanceSkippedNoTable) {
       merged.status = 'applied'
       delete merged.skipReason
+      if (lanceSkippedNoTable) {
+        merged.pendingIds = []
+      }
     }
     return merged
   }
 
   if (settingsMigration.status === 'would-run') {
-    if (base.status === 'up-to-date' || (base.status === 'skipped' && base.skipReason === 'table-not-found')) {
+    if (base.status === 'up-to-date' || lanceSkippedNoTable) {
       merged.status = 'would-run'
       delete merged.skipReason
+      if (lanceSkippedNoTable) {
+        merged.pendingIds = []
+      }
+    }
+    return merged
+  }
+
+  if (settingsMigration.status === 'skipped' && base.status === 'up-to-date') {
+    merged.status = 'skipped'
+    if (settingsMigration.skipReason === 'locked') {
+      merged.skipReason = 'locked'
+    } else if (settingsMigration.skipReason === 'invalid-file') {
+      merged.skipReason = 'invalid-settings'
     }
     return merged
   }

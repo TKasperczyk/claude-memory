@@ -1,4 +1,4 @@
-import { spawnSync } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import express from 'express'
 import fs from 'fs'
 import os from 'os'
@@ -204,6 +204,21 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
       expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true)
       expect(fs.statSync(realTarget).mode & 0o777).toBe(0o600)
       expect(loadSettings({ settingsPath: linkPath }).maxRecords).toBe(12)
+
+      // resetSettings through symlink preserves symlink and target mode while clearing overrides
+      resetSettings({ settingsPath: linkPath })
+      expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true)
+      expect(fs.statSync(realTarget).mode & 0o777).toBe(0o600)
+      expect(JSON.parse(fs.readFileSync(realTarget, 'utf-8'))).toEqual({
+        settingsVersion: CURRENT_SETTINGS_VERSION
+      })
+      expect(loadSettings({ settingsPath: linkPath })).toEqual(DEFAULT_SETTINGS)
+
+      // resetSettings on a dangling symlink leaves symlink intact without creating target
+      fs.unlinkSync(realTarget)
+      resetSettings({ settingsPath: linkPath })
+      expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true)
+      expect(fs.existsSync(realTarget)).toBe(false)
     })
 
     it('resetSettings removes settings.json and is idempotent when missing', () => {
@@ -227,9 +242,9 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
         topicChangeThreshold: -0
       })
       expect(sparse).toEqual({ settingsVersion: CURRENT_SETTINGS_VERSION })
-      expect(Object.is(validateSettingValue('topicChangeThreshold', -0), false)).toBe(false)
       const validated = validateSettingValue('topicChangeThreshold', -0)
       expect(validated.ok && Object.is(validated.normalized, 0)).toBe(true)
+      expect(validated.ok && Object.is(validated.normalized, -0)).toBe(false)
     })
   })
 
@@ -350,6 +365,7 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
         retrieval: {
           maxRecords: 6,
           usageRatioWeight: 0.2,
+          staleDays: 30,
           oldNestedJunk: 'ignore-me'
         },
         maintenance: {
@@ -365,6 +381,7 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
       expect(res.droppedKeys).toContain('usageRatioWeight')
       expect(res.droppedKeys).toContain('consolidationThreshold')
       expect(res.droppedKeys).toContain('retrieval.oldNestedJunk')
+      expect(res.droppedKeys).toContain('retrieval.staleDays')
 
       expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))).toEqual({
         settingsVersion: CURRENT_SETTINGS_VERSION,
@@ -392,10 +409,14 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
       })
     })
 
-    it('does not downgrade future settingsVersion files (e.g., settingsVersion: 3)', () => {
+    it('does not downgrade future settingsVersion files (e.g., settingsVersion: 3) on migrate or save', () => {
       const dir = makeTempDir('cm-settings-future-', tempDirs)
       const settingsPath = path.join(dir, 'settings.json')
-      const raw = JSON.stringify({ settingsVersion: 3, usageRatioWeight: 0.2 }, null, 2)
+      const raw = JSON.stringify({
+        settingsVersion: 3,
+        usageRatioWeight: 0.2,
+        futureExperimentalFlag: true
+      }, null, 2)
       fs.writeFileSync(settingsPath, raw, 'utf-8')
 
       const res = migrateSettingsIfNeeded({ settingsPath })
@@ -403,6 +424,14 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
       expect(res.fromVersion).toBe(3)
       expect(fs.readFileSync(settingsPath, 'utf-8')).toBe(raw)
       expect(loadSettings({ settingsPath }).usageRatioWeight).toBe(0.2)
+
+      saveSettings({ maxRecords: 10 }, { settingsPath })
+      expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))).toEqual({
+        settingsVersion: 3,
+        maxRecords: 10,
+        usageRatioWeight: 0.2,
+        futureExperimentalFlag: true
+      })
     })
 
     it('migrates legacy file before applying patch in saveSettings(), preventing stale defaults from sticking', () => {
@@ -491,6 +520,58 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
         settingsVersion: CURRENT_SETTINGS_VERSION
       })
     })
+
+    it('serializes concurrent OS subprocesses running migrateSettingsIfNeeded() and saveSettings() on settings.lock', async () => {
+      const dir = makeTempDir('cm-settings-race-', tempDirs)
+      const settingsPath = path.join(dir, 'settings.json')
+      const lockPath = path.join(dir, 'locks', 'settings.lock')
+
+      fs.writeFileSync(settingsPath, JSON.stringify({
+        usageRatioWeight: 0.2,
+        suppressionMode: 'soft',
+        maxSemanticQueryChars: 3000,
+        extractionModel: 'claude-opus-5-5'
+      }, null, 2), 'utf-8')
+
+      const runSnippet = (code: string): Promise<{ status: number | null; stdout: string; stderr: string }> =>
+        new Promise((resolve, reject) => {
+          const proc = spawn(LOCAL_TSX_BIN, ['-e', code], {
+            cwd: process.cwd(),
+            stdio: ['ignore', 'pipe', 'pipe']
+          })
+          let stdout = ''
+          let stderr = ''
+          proc.stdout.on('data', chunk => { stdout += chunk.toString() })
+          proc.stderr.on('data', chunk => { stderr += chunk.toString() })
+          proc.on('error', reject)
+          proc.on('close', status => resolve({ status, stdout: stdout.trim(), stderr: stderr.trim() }))
+        })
+
+      const [migProc, saveProc] = await Promise.all([
+        runSnippet(
+          `import { migrateSettingsIfNeeded } from './src/lib/settings.ts';`
+          + `console.log(JSON.stringify(migrateSettingsIfNeeded({ settingsPath: ${JSON.stringify(settingsPath)}, lockPath: ${JSON.stringify(lockPath)} })));`
+        ),
+        runSnippet(
+          `import { saveSettings } from './src/lib/settings.ts';`
+          + `saveSettings({ maxRecords: 11 }, { settingsPath: ${JSON.stringify(settingsPath)}, lockPath: ${JSON.stringify(lockPath)} });`
+          + `console.log('SAVED');`
+        )
+      ])
+
+      expect(migProc.status).toBe(0)
+      expect(saveProc.status).toBe(0)
+      const migResult = JSON.parse(migProc.stdout) as { status: string }
+      expect(['migrated', 'up-to-date']).toContain(migResult.status)
+
+      expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))).toEqual({
+        settingsVersion: CURRENT_SETTINGS_VERSION,
+        maxRecords: 11,
+        extractionModel: 'claude-opus-5-5'
+      })
+      const backupFiles = fs.readdirSync(dir).filter(name => name.startsWith('settings.json.bak-pre-v2'))
+      expect(backupFiles).toEqual(['settings.json.bak-pre-v2'])
+    })
   })
 
   describe('integration with runPendingMigrations and CLI runners', () => {
@@ -561,13 +642,70 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
         maxRecords: 4
       }, null, 2))
 
+      // Dry-run when LanceDB table does not exist must report only settings migration (no phantom pendingIds).
+      const dryRes = await runPendingMigrations(config, { dryRun: true, statePath, lockPath, settingsPath })
+      expect(dryRes.status).toBe('would-run')
+      expect(dryRes.pendingIds).toEqual([])
+      expect(dryRes.steps).toEqual([])
+      expect(dryRes.settingsMigration?.status).toBe('would-run')
+
       const res = await runPendingMigrations(config, { statePath, lockPath, settingsPath })
       expect(res.status).toBe('applied')
+      expect(res.pendingIds).toEqual([])
+      expect(res.steps).toEqual([])
       expect(res.settingsMigration?.status).toBe('migrated')
       expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))).toEqual({
         settingsVersion: CURRENT_SETTINGS_VERSION,
         maxRecords: 4
       })
+    })
+
+    it('reports skipped (not up-to-date) when LanceDB is up-to-date but settings migration is skipped for corrupt JSON or lock', async () => {
+      const dir = makeTempDir('cm-mig-settings-skipped-', tempDirs)
+      const settingsPath = path.join(dir, 'settings.json')
+      const settingsLockPath = path.join(dir, 'locks', 'settings.lock')
+      const statePath = path.join(dir, 'migrations-state.json')
+      const lockPath = path.join(dir, 'locks', 'migrations.lock')
+      const config: Config = {
+        ...DEFAULT_CONFIG,
+        lancedb: { directory: path.join(dir, 'lancedb'), table: 'already_done_skip' }
+      }
+
+      const collectionKey = getMigrationCollectionKey(config)
+      const applied: Record<string, { appliedAt: number; scanned: number; updated: number }> = {}
+      for (const migration of DATA_MIGRATIONS) {
+        applied[migration.id] = { appliedAt: Date.now(), scanned: 10, updated: 0 }
+      }
+      saveMigrationsState({ version: 1, collections: { [collectionKey]: { applied, updatedAt: Date.now() } } }, statePath)
+
+      // 1. Corrupt settings.json -> top-level status='skipped', skipReason='invalid-settings'
+      fs.writeFileSync(settingsPath, '{corrupt json', 'utf-8')
+      const corruptRes = await runPendingMigrations(config, {
+        statePath,
+        lockPath,
+        settingsPath,
+        settingsLockPath
+      })
+      expect(corruptRes.status).toBe('skipped')
+      expect(corruptRes.skipReason).toBe('invalid-settings')
+      expect(corruptRes.settingsMigration?.status).toBe('skipped')
+      expect(corruptRes.settingsMigration?.skipReason).toBe('invalid-file')
+
+      // 2. Live lock on settings.lock -> top-level status='skipped', skipReason='locked'
+      fs.writeFileSync(settingsPath, JSON.stringify({ usageRatioWeight: 0.2 }), 'utf-8')
+      fs.mkdirSync(path.dirname(settingsLockPath), { recursive: true })
+      fs.writeFileSync(settingsLockPath, `${process.pid}\n${Date.now()}`)
+      const lockedRes = await runPendingMigrations(config, {
+        statePath,
+        lockPath,
+        settingsPath,
+        settingsLockPath
+      })
+      fs.unlinkSync(settingsLockPath)
+      expect(lockedRes.status).toBe('skipped')
+      expect(lockedRes.skipReason).toBe('locked')
+      expect(lockedRes.settingsMigration?.status).toBe('skipped')
+      expect(lockedRes.settingsMigration?.skipReason).toBe('locked')
     })
 
     it('wires settings migration cleanly through self-update CLI (--dry-run and real run)', () => {
@@ -593,7 +731,16 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
         CC_MEMORIES_SETTING_AUTO_REBUILD_ENABLED: 'false'
       }
 
-      // 1. Dry-run must NOT mutate settings.json.
+      // 1. Dry-run (text + JSON) must NOT mutate settings.json or report phantom LanceDB migrations.
+      const dryTextProc = spawnSync(LOCAL_TSX_BIN, ['src/self-update.ts', '--dry-run'], {
+        cwd: process.cwd(),
+        encoding: 'utf-8',
+        env
+      })
+      expect(dryTextProc.status).toBe(0)
+      expect(dryTextProc.stderr).toContain('Migrations: would-run (settings v1->v2:')
+      expect(dryTextProc.stderr).not.toContain('3 pending:')
+
       const dryProc = spawnSync(LOCAL_TSX_BIN, ['src/self-update.ts', '--dry-run', '--json'], {
         cwd: process.cwd(),
         encoding: 'utf-8',
@@ -604,11 +751,13 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
         status: string
         migrations?: {
           status: string
+          pendingIds: string[]
           settingsMigration?: { status: string; keptKeys: string[]; droppedKeys: string[] }
         }
       }
       expect(dryJson.status).toBe('completed')
       expect(dryJson.migrations?.status).toBe('would-run')
+      expect(dryJson.migrations?.pendingIds).toEqual([])
       expect(dryJson.migrations?.settingsMigration?.status).toBe('would-run')
       expect(dryJson.migrations?.settingsMigration?.keptKeys).toEqual(['extractionModel'])
       expect(dryJson.migrations?.settingsMigration?.droppedKeys.length).toBe(ALL_SETTINGS_FIELDS.length - 1)
@@ -625,11 +774,13 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
         status: string
         migrations?: {
           status: string
+          pendingIds: string[]
           settingsMigration?: { status: string; backupPath?: string; keptKeys: string[] }
         }
       }
       expect(runJson.status).toBe('completed')
       expect(runJson.migrations?.status).toBe('applied')
+      expect(runJson.migrations?.pendingIds).toEqual([])
       expect(runJson.migrations?.settingsMigration?.status).toBe('migrated')
       expect(runJson.migrations?.settingsMigration?.backupPath).toBe(`${settingsPath}.bak-pre-v2`)
       expect(fs.existsSync(`${settingsPath}.bak-pre-v2`)).toBe(true)
@@ -637,6 +788,31 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
         settingsVersion: CURRENT_SETTINGS_VERSION,
         extractionModel: 'claude-opus-5-5'
       })
+
+      // 3. Corrupt settings.json when LanceDB is up-to-date reports skipped + warning (never up-to-date).
+      const collectionKey = getMigrationCollectionKey({
+        ...DEFAULT_CONFIG,
+        lancedb: { directory: path.join(dir, 'lancedb'), table: 'self_update_settings_test' }
+      })
+      const applied: Record<string, { appliedAt: number; scanned: number; updated: number }> = {}
+      for (const migration of DATA_MIGRATIONS) {
+        applied[migration.id] = { appliedAt: Date.now(), scanned: 0, updated: 0 }
+      }
+      saveMigrationsState(
+        { version: 1, collections: { [collectionKey]: { applied, updatedAt: Date.now() } } },
+        path.join(dir, 'migrations-state.json')
+      )
+      fs.writeFileSync(settingsPath, '{corrupt json', 'utf-8')
+
+      const corruptProc = spawnSync(LOCAL_TSX_BIN, ['src/self-update.ts', '--dry-run'], {
+        cwd: process.cwd(),
+        encoding: 'utf-8',
+        env
+      })
+      expect(corruptProc.status).toBe(0)
+      expect(corruptProc.stderr).toContain('Migrations: skipped (settings skipped (invalid-file))')
+      expect(corruptProc.stderr).toContain('Warning: settings.json is not valid JSON')
+      expect(corruptProc.stderr).not.toContain('Migrations: up-to-date')
     })
 
     it('reports pending settings migration in maintenance CLI --dry-run without mutating settings.json', () => {
@@ -666,6 +842,7 @@ describe('sparse settings persistence and legacy v1->v2 migration', () => {
 
       expect(proc.status).toBe(0)
       expect(proc.stderr).toContain('[DRY RUN] Pending settings migration v1->v2:')
+      expect(proc.stderr).not.toContain('Pending data migrations (3)')
       expect(fs.readFileSync(settingsPath, 'utf-8')).toBe(originalRaw)
       expect(fs.existsSync(`${settingsPath}.bak-pre-v2`)).toBe(false)
     })

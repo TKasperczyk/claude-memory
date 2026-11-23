@@ -160,6 +160,9 @@ function formatResult(
   }
   if (migrations) {
     lines.push(formatMigrationsLine(migrations))
+    if (migrations.settingsMigration?.status === 'skipped' && migrations.settingsMigration.error) {
+      lines.push(`Warning: ${migrations.settingsMigration.error}`)
+    }
   }
   if (result.rollback) {
     lines.push(
@@ -241,8 +244,10 @@ function formatMigrationsLine(migrations: DataMigrationsResult): string {
       return `Migrations: applied (${parts.join(', ')})`
     }
     case 'skipped': {
+      const onlySettingsSkipped = migrations.pendingIds.length === 0
+        && migrations.settingsMigration?.status === 'skipped'
       const parts = [
-        `reason=${migrations.skipReason ?? 'unknown'}`,
+        ...(!onlySettingsSkipped ? [`reason=${migrations.skipReason ?? 'unknown'}`] : []),
         ...(settingsDetail ? [settingsDetail] : [])
       ]
       return `Migrations: skipped (${parts.join('; ')})`

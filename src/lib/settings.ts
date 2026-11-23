@@ -31,6 +31,11 @@ const SETTINGS_LOCK_WAIT_MS = 2_000
 const MAX_SYMLINK_DEPTH = 16
 
 const KNOWN_SETTING_KEYS = new Set<string>(ALL_SETTINGS_FIELDS.map(field => field.key))
+const SECTION_SETTING_KEYS: Record<string, ReadonlySet<string>> = {
+  retrieval: new Set<string>(RETRIEVAL_FIELDS.map(field => field.key)),
+  maintenance: new Set<string>(MAINTENANCE_FIELDS.map(field => field.key)),
+  models: new Set<string>(MODEL_FIELDS.map(field => field.key))
+}
 
 export type PersistedSettingsFile = {
   settingsVersion: number
@@ -224,12 +229,12 @@ function planLegacyMigration(raw: Record<string, unknown>): LegacyMigrationPlan 
     keptKeys.push(field.key)
   }
 
-  const nestedSectionKeys = new Set(['retrieval', 'maintenance', 'models'])
   for (const [key, value] of Object.entries(raw)) {
     if (key === 'settingsVersion' || KNOWN_SETTING_KEYS.has(key)) continue
-    if (nestedSectionKeys.has(key) && isPlainObject(value)) {
+    const sectionKeys = SECTION_SETTING_KEYS[key]
+    if (sectionKeys && isPlainObject(value)) {
       for (const nestedKey of Object.keys(value)) {
-        if (!KNOWN_SETTING_KEYS.has(nestedKey)) {
+        if (!sectionKeys.has(nestedKey)) {
           droppedKeys.push(`${key}.${nestedKey}`)
         }
       }
@@ -305,6 +310,9 @@ function writeSettingsFileAtomic(settingsPath: string, payload: PersistedSetting
       `${JSON.stringify(payload, null, 2)}\n`,
       { encoding: 'utf-8', flag: 'wx', ...(mode !== undefined ? { mode } : {}) }
     )
+    if (mode !== undefined) {
+      fs.chmodSync(tmpPath, mode)
+    }
     fs.renameSync(tmpPath, destinationPath)
   } catch (error) {
     try {
@@ -610,6 +618,8 @@ export function saveSettings(settings: Partial<Settings>, options?: SettingsFile
     const defaults = getDefaultSettings()
     const raw = readRawSettingsFile(settingsPath)
     let current = defaults
+    let futureVersion: number | undefined
+    let preservedFutureFields: Record<string, unknown> | undefined
 
     if (raw.kind === 'io-error') {
       throw raw.error
@@ -623,6 +633,15 @@ export function saveSettings(settings: Partial<Settings>, options?: SettingsFile
       const version = readSettingsVersion(raw.parsed)
       if (version !== undefined && version >= CURRENT_SETTINGS_VERSION) {
         current = { ...defaults, ...extractV2Overrides(raw.parsed) }
+        if (version > CURRENT_SETTINGS_VERSION) {
+          futureVersion = version
+          preservedFutureFields = {}
+          for (const [key, value] of Object.entries(raw.parsed)) {
+            if (key !== 'settingsVersion' && !KNOWN_SETTING_KEYS.has(key)) {
+              preservedFutureFields[key] = value
+            }
+          }
+        }
       } else {
         const plan = planLegacyMigration(raw.parsed)
         createExclusiveBackup(settingsPath, raw.rawText)
@@ -632,7 +651,10 @@ export function saveSettings(settings: Partial<Settings>, options?: SettingsFile
 
     const merged = coerceSettings({ ...current, ...settings }, current)
     const sparse = buildSparseSettingsFile(merged)
-    writeSettingsFileAtomic(settingsPath, sparse)
+    const payload: PersistedSettingsFile = futureVersion !== undefined
+      ? { ...sparse, settingsVersion: futureVersion, ...preservedFutureFields }
+      : sparse
+    writeSettingsFileAtomic(settingsPath, payload)
   } finally {
     lockHandle.release()
   }
@@ -653,6 +675,22 @@ export function resetSettings(options?: SettingsFileOptions): void {
   }
 
   try {
+    let stat: fs.Stats
+    try {
+      stat = fs.lstatSync(settingsPath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+
+    if (stat.isSymbolicLink()) {
+      const destinationPath = resolveWriteTargetPath(settingsPath)
+      if (fs.existsSync(destinationPath)) {
+        writeSettingsFileAtomic(settingsPath, { settingsVersion: CURRENT_SETTINGS_VERSION })
+      }
+      return
+    }
+
     fs.unlinkSync(settingsPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
