@@ -1,9 +1,10 @@
 import { embed, ensureEmbeddingDim } from './embed.js'
 import { getRecordSupplementalEmbeddingParts } from './record-fields.js'
-import { buildExactText, stripRecordEmbedding } from './shared.js'
+import { buildExactText, buildSearchText, stripRecordEmbedding } from './shared.js'
 import {
   CONTENT_MAX_LENGTH,
   EXACT_TEXT_MAX_LENGTH,
+  SEARCH_TEXT_MAX_LENGTH,
   SOURCE_EXCERPT_MAX_LENGTH,
   SOURCE_SESSION_ID_MAX_LENGTH
 } from './lancedb-schema.js'
@@ -26,6 +27,8 @@ export async function buildLanceRow(record: MemoryRecord, config: Config): Promi
 
   const exactTextRaw = buildExactText(normalized)
   const exactText = truncateString(exactTextRaw, EXACT_TEXT_MAX_LENGTH)
+  const searchTextRaw = buildSearchText(normalized) || exactTextRaw
+  const searchText = truncateString(searchTextRaw, SEARCH_TEXT_MAX_LENGTH)
   const sourceSessionId = normalizeOptionalString(normalized.sourceSessionId)
   const sourceExcerpt = normalizeOptionalString(normalized.sourceExcerpt)
 
@@ -41,6 +44,7 @@ export async function buildLanceRow(record: MemoryRecord, config: Config): Promi
     type: normalized.type,
     content,
     exact_text: exactText,
+    search_text: searchText,
     project: normalized.project ?? '',
     scope: normalized.scope,
     timestamp: toInt64(normalized.timestamp, Date.now()),
@@ -48,6 +52,7 @@ export async function buildLanceRow(record: MemoryRecord, config: Config): Promi
     failure_count: toInt64(normalized.failureCount, 0),
     retrieval_count: toInt64(normalized.retrievalCount, 0),
     usage_count: toInt64(normalized.usageCount, 0),
+    last_retrieved_at: toInt64(normalized.lastRetrievedAt, 0),
     last_used: toInt64(normalized.lastUsed, normalized.timestamp ?? Date.now()),
     deprecated: Boolean(normalized.deprecated),
     deprecated_at: normalized.deprecatedAt ?? null,
@@ -113,6 +118,7 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
     failureCount: toInt64((row.failure_count as number | string | undefined) ?? parsed.failureCount, 0),
     retrievalCount: toInt64((row.retrieval_count as number | string | undefined) ?? parsed.retrievalCount, 0),
     usageCount: toInt64((row.usage_count as number | string | undefined) ?? parsed.usageCount, 0),
+    lastRetrievedAt: toInt64((row.last_retrieved_at as number | string | undefined) ?? parsed.lastRetrievedAt, 0),
     lastUsed: toInt64((row.last_used as number | string | undefined) ?? parsed.lastUsed, 0),
     deprecated: toBoolean(row.deprecated ?? parsed.deprecated, false),
     deprecatedAt: toOptionalInt64((row.deprecated_at as number | string | bigint | null | undefined) ?? parsed.deprecatedAt),
@@ -246,6 +252,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const failureCount = toInt64(record.failureCount, 0)
   const retrievalCount = toInt64(record.retrievalCount, 0)
   const usageCount = toInt64(record.usageCount, 0)
+  const lastRetrievedAt = toInt64(record.lastRetrievedAt, 0)
   const lastUsed = toInt64(record.lastUsed, timestamp)
   const deprecated = Boolean(record.deprecated ?? false)
   const deprecatedAt = toOptionalInt64(record.deprecatedAt)
@@ -271,6 +278,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     failureCount,
     retrievalCount,
     usageCount,
+    lastRetrievedAt,
     lastUsed,
     deprecated,
     deprecatedAt,

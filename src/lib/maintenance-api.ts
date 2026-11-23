@@ -19,6 +19,7 @@ import {
   runRelationDiscovery,
   runGlobalPromotion,
   runWarningSynthesis,
+  runStaticDocReconciliation,
   type MaintenanceRunResult
 } from './maintenance/runners/index.js'
 import type {
@@ -112,6 +113,12 @@ export const MAINTENANCE_OPERATION_DEFINITIONS = [
     label: 'Promotion Suggestions',
     description: 'Generate CLAUDE.md and skill recommendations',
     allowExecute: false
+  },
+  {
+    key: 'static-doc-reconcile',
+    label: 'Static Doc Reconciliation',
+    description: 'Deprecate memories already covered in CLAUDE.md/AGENTS.md and surface graduation candidates',
+    allowExecute: true
   }
 ] as const satisfies MaintenanceOperationInfo[]
 
@@ -129,11 +136,8 @@ export const AUTO_MAINTENANCE_OPERATIONS: MaintenanceOperation[] = [
   'conflict-resolution',
   'currentness-check',
   'quality-deprecation',
-  'relation-discovery',
   'warning-synthesis',
-  'global-promotion',
-  'stale-check',
-  'stale-unused-deprecation'
+  'stale-check'
 ]
 
 export type MaintenanceProgressCallback = (progress: MaintenanceProgress) => void
@@ -232,6 +236,8 @@ async function runOperation(
       return runGlobalPromotion(dryRun, config, settings)
     case 'promotion-suggestions':
       return runPromotionSuggestions(config)
+    case 'static-doc-reconcile':
+      return runStaticDocReconciliation(dryRun, config)
   }
 }
 

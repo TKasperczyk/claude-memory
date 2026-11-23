@@ -28,6 +28,20 @@ export function readStdinSync(): string {
   return Buffer.concat(chunks, totalBytes).toString('utf8')
 }
 
+const NATIVE_CLAUDE_MEMORY_FILE_REGEX = /(?:^|\/)\.claude\/projects\/[^/]+\/memory\/[^/]+\.md$|(?:^|\/)MEMORY\.md$/
+
+export function isNativeAutoMemoryFileWrite(parsed: Record<string, unknown>): boolean {
+  const toolName = parsed.tool_name
+  if (toolName !== 'Write' && toolName !== 'Edit') return false
+  const input = isPlainObject(parsed.tool_input) ? parsed.tool_input : null
+  const filePath = typeof input?.file_path === 'string'
+    ? input.file_path
+    : typeof input?.path === 'string'
+      ? input.path
+      : ''
+  return NATIVE_CLAUDE_MEMORY_FILE_REGEX.test(filePath)
+}
+
 export function captureMemoryWriteHint(raw: string): boolean {
   if (!raw.trim()) return false
 
@@ -38,7 +52,10 @@ export function captureMemoryWriteHint(raw: string): boolean {
     return false
   }
   if (!isPlainObject(parsed)) return false
-  if (parsed.hook_event_name !== 'PostToolUse' || parsed.tool_name !== 'memory_write') return false
+  if (parsed.hook_event_name !== 'PostToolUse') return false
+  const isMemoryWriteTool = parsed.tool_name === 'memory_write'
+  const isNativeFileWrite = isNativeAutoMemoryFileWrite(parsed)
+  if (!isMemoryWriteTool && !isNativeFileWrite) return false
   if (!loadSettings().enableMemoryWriteHints) return false
 
   const event = createMemoryWriteHint(parsed)

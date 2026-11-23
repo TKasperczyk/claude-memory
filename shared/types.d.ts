@@ -1,5 +1,6 @@
 export type RecordType = 'command' | 'error' | 'discovery' | 'procedure' | 'warning'
-export type RecordScope = 'global' | 'project'
+export type RecordScope = 'global' | 'environment' | 'project'
+export type RecordVolatility = 'stable' | 'evolving' | 'ephemeral'
 export type RelationKind = 'relates_to' | 'supersedes' | 'shares_entity'
 
 export interface Relation {
@@ -23,6 +24,7 @@ export interface BaseRecord {
   failureCount?: number
   retrievalCount?: number
   usageCount?: number
+  lastRetrievedAt?: number
   lastUsed?: number
   deprecated?: boolean
   deprecatedAt?: number
@@ -42,6 +44,10 @@ export interface BaseRecord {
   relations?: Relation[]
   /** Normalized entity anchors (file paths, hostnames, services, tools, projects) extracted from record content */
   entities?: string[]
+  /** Durability class: stable invariants, evolving workflow/config, or ephemeral workarounds */
+  volatility?: RecordVolatility
+  /** Optional expiry horizon in days (primarily for ephemeral/time-bounded records) */
+  ttlDays?: number
 }
 
 export interface CommandRecord extends BaseRecord {
@@ -114,6 +120,8 @@ export interface MemoryStats {
 
 export interface MemoryStatsSummary {
   total: number
+  active?: number
+  totalAll?: number
   byType: Record<string, number>
   byProject: Record<string, number>
   byScope: Record<string, number>
@@ -148,7 +156,7 @@ export interface RetrievalActivity {
   buckets: RetrievalActivityBucket[]
 }
 
-export type TokenUsageSource = 'extraction' | 'haiku-query' | 'usefulness-rating' | 'maintenance' | 'review' | 'chat'
+export type TokenUsageSource = 'extraction' | 'haiku-query' | 'rerank' | 'reconcile' | 'usefulness-rating' | 'maintenance' | 'review' | 'chat'
 
 export interface TokenUsageEvent {
   timestamp: number
@@ -190,7 +198,7 @@ export interface InjectedMemoryEntry {
   score?: number
 }
 
-export type InjectionStatus = 'injected' | 'no_matches' | 'empty_prompt' | 'timeout' | 'error'
+export type InjectionStatus = 'injected' | 'no_matches' | 'empty_prompt' | 'trivial_prompt' | 'timeout' | 'error'
 
 export interface InjectionPromptEntry {
   text: string
@@ -216,6 +224,9 @@ export interface InjectionSessionRecord {
   lastPromptAt?: string
   retrievalStateVersion?: number
   retrievalCounted?: boolean
+  countedMemoryCount?: number
+  ratedMemoryCount?: number
+  ratedMemoryIds?: string[]
 }
 
 export interface MemoryWriteHintEvent {
@@ -242,6 +253,7 @@ export interface SearchResult {
   score: number
   similarity: number
   keywordMatch: boolean
+  bm25Score?: number
   suppression?: SuppressionDiagnostic
   via?: {
     parentId: string
@@ -256,7 +268,7 @@ export type ScoredRecord = SearchResult
 export interface ExclusionReason {
   reason: 'score_below_threshold' | 'similarity_below_threshold' | 'semantic_only_score_below_threshold'
     | 'mmr_diversity_penalty' | 'exceeded_max_records' | 'exceeded_token_budget'
-    | 'semantic_anchor_gate' | 'recently_injected_suppression'
+    | 'semantic_anchor_gate' | 'recently_injected_suppression' | 'rerank_abstained'
   threshold: number
   actual: number
   gap: number
@@ -289,6 +301,12 @@ export interface RetrievalSettings {
   suppressionPenalty: number
   enableHaikuRetrieval: boolean
   haikuExpansionCount: number
+  enablePostRetrievalRerank: boolean
+  stage1MinSimilarity: number
+  rerankCandidateLimit: number
+  rerankMaxRecords: number
+  rerankTimeoutMs: number
+  enableWarmDaemon: boolean
   enableRelationExpansion: boolean
   maxRelationHops: number
   maxRelationExpansions: number
@@ -318,6 +336,7 @@ export interface MaintenanceSettings {
   consolidationRecheckDays: number
   consolidationNoMergeBackoffDays: number
   currentnessRecheckDays: number
+  currentnessNoChangeBackoffDays: number
   crossTypeConsolidationThreshold: number
   enableConsolidationLlmVerification: boolean
   conflictSimilarityThreshold: number
@@ -337,6 +356,8 @@ export interface MaintenanceSettings {
   extractionMinTokens: number
   maxTranscriptChars: number
   extractionDedupThreshold: number
+  enableWriteReconciliation: boolean
+  writeReconciliationThreshold: number
   reviewSimilarThreshold: number
   reviewDuplicateWarningThreshold: number
   extractionLogRetentionDays: number
@@ -345,10 +366,12 @@ export interface MaintenanceSettings {
   autoUpdateIntervalHours: number
   autoRebuildEnabled: boolean
   extractionContextOverlapTurns: number
+  idleSessionSweepHours: number
 }
 
 export interface ModelSettings {
   extractionModel: string
+  maintenanceModel: string
   reviewModel: string
   chatModel: string
 }
@@ -587,7 +610,7 @@ export interface MaintenanceRun {
   hasErrors: boolean
 }
 
-export type HookEvent = 'UserPromptSubmit' | 'SessionEnd' | 'PreCompact' | 'PostToolUse'
+export type HookEvent = 'UserPromptSubmit' | 'SessionEnd' | 'PreCompact' | 'PostToolUse' | 'PostToolUseFailure'
 
 export interface HookStatus {
   installed: boolean

@@ -1,4 +1,5 @@
 import { CLAUDE_CODE_SYSTEM_PROMPT } from '../../anthropic.js'
+import { buildCacheControl } from '../../prompt-cache.js'
 import { batchUpdateRecords, buildFilter, fetchRecordsByIds, vectorSearchSimilar } from '../../lancedb.js'
 import { createLogger } from '../../logger.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../../parsing.js'
@@ -6,7 +7,12 @@ import { buildToolCallParams } from '../../model-capabilities.js'
 import { recordTokenUsageFromResponse } from '../../token-usage-events.js'
 import { buildCandidateRecord, buildRecordSnippet } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type DiscoveryRecord, type MemoryRecord } from '../../types.js'
-import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
+import { resolveMaintenanceModel, resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
+import {
+  cleanupCurrentnessNoChangeVerdicts,
+  loadCurrentnessNoChangeVerdict,
+  saveCurrentnessNoChangeVerdict
+} from '../currentness-verdicts.js'
 import {
   CURRENTNESS_MAX_TOKENS,
   CURRENTNESS_PROMPT,
@@ -64,6 +70,7 @@ export async function runCurrentnessCheck(
   let candidates = 0
   let clusters = 0
   let checked = 0
+  let cachedHits = 0
   let current = 0
   let historical = 0
   let deprecated = 0
@@ -72,6 +79,12 @@ export async function runCurrentnessCheck(
 
   try {
     logger.info('Starting currentness check')
+    if (!dryRun) {
+      cleanupCurrentnessNoChangeVerdicts({
+        collection: config.lancedb.table,
+        backoffDays: maintenance.currentnessNoChangeBackoffDays
+      })
+    }
     const currentnessResult = await findCurrentnessClusters(config, maintenance)
     candidates = currentnessResult.candidates
     const currentnessClusters = currentnessResult.clusters
@@ -103,9 +116,28 @@ export async function runCurrentnessCheck(
       }
 
       try {
+        const cachedVerdict = loadCurrentnessNoChangeVerdict(cluster.records, {
+          collection: config.lancedb.table,
+          backoffDays: maintenance.currentnessNoChangeBackoffDays,
+          deleteInvalid: !dryRun
+        })
+        if (cachedVerdict) {
+          cachedHits += 1
+          historical += cluster.records.length
+          if (!dryRun) {
+            const failed = await markCurrentnessChecked(cluster.records, Date.now(), config)
+            if (failed > 0) {
+              errors += failed
+              logger.warn(`Currentness cluster ${cluster.id}: failed to mark ${failed}/${cluster.records.length} cached records as checked`)
+            }
+          }
+          continue
+        }
+
         const verdicts = await checkCurrentnessCluster(cluster.records, config)
         checked += cluster.records.length
         const checkedAt = Date.now()
+        let clusterDeprecated = 0
 
         for (const verdict of verdicts) {
           if (verdict.verdict === 'current') {
@@ -144,10 +176,19 @@ export async function runCurrentnessCheck(
               supersedingRecordId
             })
           )
-          if (applied) deprecated += 1
+          if (applied) {
+            deprecated += 1
+            clusterDeprecated += 1
+          }
         }
 
         if (!dryRun) {
+          if (clusterDeprecated === 0) {
+            saveCurrentnessNoChangeVerdict(cluster.records, resolveMaintenanceModel(), {
+              collection: config.lancedb.table,
+              now: checkedAt
+            })
+          }
           const failed = await markCurrentnessChecked(cluster.records, checkedAt, config)
           if (failed > 0) {
             errors += failed
@@ -170,16 +211,16 @@ export async function runCurrentnessCheck(
   } catch (error) {
     return buildErrorResult(
       actions,
-      { candidates, clusters, singletons, checked, current, historical, deprecated, errors },
+      { candidates, clusters, singletons, checked, cachedHits, current, historical, deprecated, errors },
       candidateGroups,
       error
     )
   }
 
-  logger.info(`Currentness check complete: ${deprecated} deprecated, ${historical} historical, ${current} current, ${errors} errors`)
+  logger.info(`Currentness check complete: ${deprecated} deprecated, ${historical} historical, ${current} current, ${cachedHits} cached, ${errors} errors`)
   return buildResult(
     actions,
-    { candidates, clusters, singletons, checked, current, historical, deprecated, errors },
+    { candidates, clusters, singletons, checked, cachedHits, current, historical, deprecated, errors },
     candidateGroups
   )
 }
@@ -314,18 +355,19 @@ async function checkCurrentnessCluster(
     throw new Error('No authentication available for currentness check. Set ANTHROPIC_API_KEY or run kira login.')
   }
 
+  const model = resolveMaintenanceModel()
   const payload = JSON.stringify(buildCurrentnessInput(records), null, 2)
   const response = await client.messages.create({
-    model: config.extraction.model,
+    model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: CURRENTNESS_PROMPT, cache_control: { type: 'ephemeral' } }
+      { type: 'text', text: CURRENTNESS_PROMPT, cache_control: buildCacheControl('5m') }
     ],
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CURRENTNESS_TOOL],
-    ...buildToolCallParams(config.extraction.model, CURRENTNESS_TOOL_NAME, Math.min(CURRENTNESS_MAX_TOKENS, config.extraction.maxTokens))
+    ...buildToolCallParams(model, CURRENTNESS_TOOL_NAME, Math.min(CURRENTNESS_MAX_TOKENS, config.extraction.maxTokens))
   })
-  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+  recordTokenUsageFromResponse('maintenance', model, response, {
     collection: config.lancedb.table
   })
 

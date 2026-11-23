@@ -1,9 +1,9 @@
 import fs from 'fs'
 import path from 'path'
-import { escapeFilterValue, MEMORY_ID_PREFIX_LENGTH } from './shared.js'
+import { buildExactText, buildSearchText, escapeFilterValue, MEMORY_ID_PREFIX_LENGTH } from './shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
-import { OUTPUT_FIELDS } from './lancedb-schema.js'
-import { ensureClient, closeLanceDB, initLanceDB, resolveDirectory } from './lancedb-client.js'
+import { OUTPUT_FIELDS, SEARCH_TEXT_MAX_LENGTH } from './lancedb-schema.js'
+import { ensureClient, ensureFtsIndex, closeLanceDB, initLanceDB, resolveDirectory } from './lancedb-client.js'
 import { escapeLikeValue } from './lancedb-search.js'
 import { getCollectionKey } from './file-store.js'
 import { CLAUDE_MEMORY_ROOT } from './paths.js'
@@ -96,15 +96,17 @@ export async function incrementRecordCounters(
     if (!existing) return false
 
     const updates: Partial<MemoryRecord> = {}
+    const now = Date.now()
     if (typeof deltas.retrievalCount === 'number' && deltas.retrievalCount !== 0) {
       updates.retrievalCount = (existing.retrievalCount ?? 0) + deltas.retrievalCount
+      updates.lastRetrievedAt = now
     }
     if (typeof deltas.usageCount === 'number' && deltas.usageCount !== 0) {
       updates.usageCount = (existing.usageCount ?? 0) + deltas.usageCount
+      updates.lastUsed = now
     }
 
     if (Object.keys(updates).length === 0) return true
-    updates.lastUsed = Date.now()
 
     const merged = mergeRecords(existing, updates)
     merged.id = id
@@ -235,6 +237,8 @@ function clearFilesystemStorage(table?: string): void {
     'token-usage-events',
     'stats-snapshots',
     'consolidation-verdicts',
+    'currentness-verdicts',
+    'pre-prompt-telemetry',
     'maintenance-runs'
   ]
 
@@ -589,6 +593,73 @@ export async function batchUpdateRecords(
     console.error('[claude-memory] batchUpdateRecords failed:', error)
     throw error
   }
+}
+
+export interface BackfillSearchTextResult {
+  scanned: number
+  updated: number
+  failed: number
+  ftsRebuilt: boolean
+}
+
+/**
+ * Populate expanded `search_text` (including intent, cause, resolution,
+ * evidence, entities) for existing rows without re-embedding, then rebuild the
+ * LanceDB native BM25 FTS index.
+ */
+export async function backfillSearchText(
+  config: Config = DEFAULT_CONFIG,
+  options: { filter?: string; forceRebuildIndex?: boolean } = {}
+): Promise<BackfillSearchTextResult> {
+  const { table } = await ensureClient(config)
+  const fields = Array.from(new Set([...OUTPUT_FIELDS, 'embedding', 'search_text']))
+  const toUpdate: MemoryRecord[] = []
+  let scanned = 0
+  let offset = 0
+
+  while (true) {
+    const query = table.query()
+    if (options.filter) query.where(options.filter)
+    const rows = await query
+      .select(fields)
+      .offset(offset)
+      .limit(QUERY_PAGE_SIZE)
+      .toArray()
+
+    if (!rows || rows.length === 0) break
+
+    for (const row of rows) {
+      scanned += 1
+      const rowObj = row as Record<string, unknown>
+      const record = parseRecordFromRow(rowObj)
+      if (!record || !record.embedding || record.embedding.length === 0) continue
+      const desiredRaw = buildSearchText(record) || buildExactText(record)
+      const desired = desiredRaw.length > SEARCH_TEXT_MAX_LENGTH
+        ? desiredRaw.slice(0, SEARCH_TEXT_MAX_LENGTH)
+        : desiredRaw
+      const current = typeof rowObj.search_text === 'string' ? rowObj.search_text : ''
+      if (current !== desired) {
+        toUpdate.push(record)
+      }
+    }
+
+    if (rows.length < QUERY_PAGE_SIZE) break
+    offset += rows.length
+  }
+
+  let updated = 0
+  let failed = 0
+  if (toUpdate.length > 0) {
+    const result = await batchUpdateRecords(toUpdate, {}, config)
+    updated = result.updated
+    failed = result.failed
+  }
+
+  const ftsRebuilt = await ensureFtsIndex(table, {
+    forceRebuild: Boolean(options.forceRebuildIndex || updated > 0)
+  })
+
+  return { scanned, updated, failed, ftsRebuilt }
 }
 
 async function getRecordById(

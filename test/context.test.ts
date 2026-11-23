@@ -351,14 +351,14 @@ describe('buildContext', () => {
       const lines = context.split('\n').filter(line => line.startsWith('- '))
 
       expect(lines).toEqual([
-        '- command: npm run build | outcome: success | exit: 0 | id: 11111111',
-        '- error: TypeError: x is undefined | resolution: Check null before access | id: 22222222',
-        '- discovery: Uses ESM | where: package.json | confidence: verified | id: 33333333',
-        '- procedure: Deploy | steps: pnpm build; pnpm test; ssh deploy | id: 44444444'
+        '- [project] command: npm run build | outcome: success | exit: 0 | id: 11111111',
+        '- [project] error: TypeError: x is undefined | resolution: Check null before access | id: 22222222',
+        '- [project] discovery: Uses ESM | where: package.json | confidence: verified | id: 33333333',
+        '- [project] procedure: Deploy | steps: pnpm build; pnpm test; ssh deploy | id: 44444444'
       ])
     })
 
-    it('appends the short ID after the recorded-age field', () => {
+    it('formats compact [project/scope | age] provenance and appends the short ID', () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date('2026-02-01T12:00:00Z'))
       const record = makeRecord<DiscoveryRecord>({
@@ -370,7 +370,7 @@ describe('buildContext', () => {
       const { context } = buildContext([record], defaultConfig)
       const line = context.split('\n').find(candidate => candidate.startsWith('- '))
 
-      expect(line).toBe('- discovery: Uses ESM | where: package.json | confidence: verified | recorded: 1h ago | id: abcdef12')
+      expect(line).toBe('- [project | 1h ago] discovery: Uses ESM | where: package.json | confidence: verified | id: abcdef12')
       vi.useRealTimers()
     })
   })
@@ -425,17 +425,17 @@ describe('buildContext', () => {
       const { context } = buildContext(records, config)
 
       expect(context).toContain('age-just-now')
-      expect(context).toContain('recorded: just now')
+      expect(context).toContain('[project | just now]')
       expect(context).toContain('age-minutes')
-      expect(context).toContain('recorded: 6m ago')
+      expect(context).toContain('[project | 6m ago]')
       expect(context).toContain('age-hours')
-      expect(context).toContain('recorded: 2h ago')
+      expect(context).toContain('[project | 2h ago]')
       expect(context).toContain('age-days')
-      expect(context).toContain('recorded: 3d ago')
+      expect(context).toContain('[project | 3d ago]')
       expect(context).toContain('age-weeks')
-      expect(context).toContain('recorded: 2w ago')
+      expect(context).toContain('[project | 2w ago]')
       expect(context).toContain('age-months')
-      expect(context).toContain('recorded: 2mo ago')
+      expect(context).toContain('[project | 2mo ago]')
 
       vi.useRealTimers()
     })
@@ -462,8 +462,8 @@ describe('buildContext', () => {
       const futureLine = context.split('\n').find(line => line.includes('age-future')) ?? ''
       const fallbackLine = context.split('\n').find(line => line.includes('age-fallback-last-used')) ?? ''
 
-      expect(futureLine).not.toContain('recorded:')
-      expect(fallbackLine).toContain('recorded: 1h ago')
+      expect(futureLine).toContain('[project] command: age-future')
+      expect(fallbackLine).toContain('[project | 1h ago] command: age-fallback-last-used')
 
       vi.useRealTimers()
     })
@@ -521,10 +521,13 @@ describe('buildContext', () => {
       expect(context).not.toContain('<prior-knowledge>')
     })
 
-    it('appends a short ID to the exact warning injection line', () => {
+    it('includes compact [project/scope | age] provenance and short ID on warning injection lines', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-02-01T12:00:00Z'))
       const warning = makeRecord<WarningRecord>({
         type: 'warning',
         id: 'fedcba98-rest-of-id',
+        timestamp: Date.now() - (2 * 24 * 60 * 60_000),
         avoid: 'using eval',
         useInstead: 'safer alternatives',
         reason: 'security risk',
@@ -534,7 +537,8 @@ describe('buildContext', () => {
       const { context } = buildContext([warning], defaultConfig)
       const line = context.split('\n').find(candidate => candidate.startsWith('- '))
 
-      expect(line).toBe("- 🚨 Don't: using eval → Use: safer alternatives (security risk) | id: fedcba98")
+      expect(line).toBe("- 🚨 [project | 2d ago] Don't: using eval → Use: safer alternatives (security risk) | id: fedcba98")
+      vi.useRealTimers()
     })
 
     it('counts both the warning id field and emitted bullet against its budget', () => {

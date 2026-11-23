@@ -4,6 +4,7 @@ import {
   type InjectionStatus,
   type RecordScope,
   type RecordType,
+  type RecordVolatility,
   type WarningSeverity
 } from './types.js'
 
@@ -106,6 +107,7 @@ export function asInjectionStatus(value: unknown): InjectionStatus | undefined {
     value === 'injected'
     || value === 'no_matches'
     || value === 'empty_prompt'
+    || value === 'trivial_prompt'
     || value === 'timeout'
     || value === 'error'
   ) {
@@ -139,13 +141,13 @@ export function asSeverity(value: unknown): WarningSeverity | undefined {
 }
 
 export function isValidScope(value: unknown): value is RecordScope {
-  return value === 'global' || value === 'project'
+  return value === 'global' || value === 'environment' || value === 'project'
 }
 
 export function asScope(value: unknown): RecordScope | undefined {
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase()
-    if (normalized === 'global' || normalized === 'project') {
+    if (normalized === 'global' || normalized === 'environment' || normalized === 'project') {
       return normalized as RecordScope
     }
   }
@@ -155,6 +157,18 @@ export function asScope(value: unknown): RecordScope | undefined {
 
 export function normalizeScope(value: unknown, fallback: RecordScope = 'project'): RecordScope {
   return asScope(value) ?? fallback
+}
+
+export function isValidVolatility(value: unknown): value is RecordVolatility {
+  return value === 'stable' || value === 'evolving' || value === 'ephemeral'
+}
+
+export function asVolatility(value: unknown): RecordVolatility | undefined {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (isValidVolatility(normalized)) return normalized
+  }
+  return isValidVolatility(value) ? value : undefined
 }
 
 /**

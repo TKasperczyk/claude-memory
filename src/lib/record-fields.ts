@@ -28,6 +28,7 @@ export type RecordFieldSource = {
   severity?: string
   sourceRecordIds?: string[]
   context?: unknown
+  entities?: string[]
 }
 
 export type RecordTextGroups = {
@@ -36,6 +37,13 @@ export type RecordTextGroups = {
   exact: Array<string | undefined>
   searchable: Array<string | undefined>
   supplementalEmbedding: Array<string | undefined>
+  fts: Array<string | undefined>
+}
+
+function readContextString(context: unknown, key: string): string | undefined {
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return undefined
+  const value = (context as Record<string, unknown>)[key]
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
 type RecordFieldView = {
@@ -46,8 +54,10 @@ type RecordFieldView = {
 }
 
 export function getRecordFieldView(record: RecordFieldSource): RecordFieldView {
+  const entityText = record.entities && record.entities.length > 0 ? record.entities.join(' ') : undefined
   switch (record.type) {
     case 'command': {
+      const intent = readContextString(record.context, 'intent')
       const fields = {
         command: record.command,
         exitCode: record.exitCode,
@@ -64,11 +74,14 @@ export function getRecordFieldView(record: RecordFieldSource): RecordFieldView {
           secondary: [record.resolution, record.truncatedOutput],
           exact: [record.command],
           searchable: [record.command, record.truncatedOutput, record.resolution],
-          supplementalEmbedding: [record.resolution]
+          supplementalEmbedding: [record.resolution],
+          fts: [record.command, intent, record.resolution, record.truncatedOutput?.slice(0, 600), entityText]
         }
       }
     }
     case 'error': {
+      const file = readContextString(record.context, 'file')
+      const tool = readContextString(record.context, 'tool')
       const fields = {
         errorText: record.errorText,
         errorType: record.errorType,
@@ -84,7 +97,8 @@ export function getRecordFieldView(record: RecordFieldSource): RecordFieldView {
           secondary: [record.resolution, record.cause],
           exact: [record.errorText],
           searchable: [record.errorText, record.resolution, record.cause],
-          supplementalEmbedding: [record.cause, record.resolution]
+          supplementalEmbedding: [record.cause, record.resolution],
+          fts: [record.errorText, record.errorType, record.cause, record.resolution, file, tool, entityText]
         }
       }
     }
@@ -103,7 +117,8 @@ export function getRecordFieldView(record: RecordFieldSource): RecordFieldView {
           secondary: [record.where, record.evidence],
           exact: [record.what, record.where],
           searchable: [record.what, record.evidence, record.where],
-          supplementalEmbedding: [record.evidence]
+          supplementalEmbedding: [record.evidence],
+          fts: [record.what, record.where, record.evidence, entityText]
         }
       }
     }
@@ -123,7 +138,8 @@ export function getRecordFieldView(record: RecordFieldSource): RecordFieldView {
           secondary: [...(record.steps ?? []), record.verification, ...(record.prerequisites ?? [])],
           exact: [record.name, ...(record.steps ?? [])],
           searchable: [record.name, ...(record.steps ?? []), record.verification, ...(record.prerequisites ?? [])],
-          supplementalEmbedding: [record.prerequisites?.join('\n'), record.verification]
+          supplementalEmbedding: [record.prerequisites?.join('\n'), record.verification],
+          fts: [record.name, ...(record.steps ?? []), record.verification, ...(record.prerequisites ?? []), entityText]
         }
       }
     }
@@ -144,7 +160,8 @@ export function getRecordFieldView(record: RecordFieldSource): RecordFieldView {
           secondary: [record.useInstead, record.reason],
           exact: [record.avoid, record.useInstead, record.reason],
           searchable: [record.avoid, record.useInstead, record.reason],
-          supplementalEmbedding: []
+          supplementalEmbedding: [],
+          fts: [record.avoid, record.useInstead, record.reason, entityText]
         }
       }
     }
@@ -181,6 +198,10 @@ export function getRecordSearchableTextParts(record: RecordFieldSource): Array<s
 
 export function getRecordSupplementalEmbeddingParts(record: RecordFieldSource): Array<string | undefined> {
   return getRecordTextGroups(record).supplementalEmbedding
+}
+
+export function getRecordFtsTextParts(record: RecordFieldSource): Array<string | undefined> {
+  return getRecordTextGroups(record).fts
 }
 
 function joinTextParts(parts: Array<string | undefined>): string {

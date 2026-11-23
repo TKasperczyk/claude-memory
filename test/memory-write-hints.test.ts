@@ -103,8 +103,43 @@ describe('memory_write hint normalization and storage', () => {
       tool_name: 'Bash',
       tool_use_id: 'bash-tool'
     })))).toBe(false)
+    expect(captureMemoryWriteHint(JSON.stringify(probePayload({
+      tool_name: 'Write',
+      tool_use_id: 'normal-write',
+      tool_input: { file_path: '/tmp/project/src/index.ts', content: 'export const x = 1\n' }
+    })))).toBe(false)
+    expect(captureMemoryWriteHint(JSON.stringify(probePayload({
+      tool_name: 'Write',
+      tool_use_id: 'native-auto-mem-write',
+      tool_input: {
+        file_path: '/home/user/.claude/projects/-tmp-project/memory/debugging.md',
+        content: [
+          '---',
+          'name: db-migrations',
+          'description: Always preview migrations first',
+          'type: feedback',
+          '---',
+          '',
+          'Always run migrations with --dry-run first.'
+        ].join('\n')
+      }
+    })))).toBe(true)
+    expect(captureMemoryWriteHint(JSON.stringify(probePayload({
+      tool_name: 'Edit',
+      tool_use_id: 'native-auto-mem-edit',
+      tool_input: {
+        file_path: '/home/user/.claude/projects/-tmp-project/memory/notes.md',
+        old_string: 'old',
+        new_string: 'new'
+      }
+    })))).toBe(true)
     expect(captureMemoryWriteHint('{')).toBe(false)
-    expect(hints.loadMemoryWriteHints('probe-session')).toHaveLength(1)
+    const saved = hints.loadMemoryWriteHints('probe-session')
+    expect(saved).toHaveLength(3)
+    expect(saved[1]?.name).toBe('db-migrations')
+    expect(saved[1]?.description).toBe('Always preview migrations first')
+    expect(saved[1]?.nativeMemoryType).toBe('feedback')
+    expect(saved[2]?.name).toBe('/home/user/.claude/projects/-tmp-project/memory/notes.md')
   })
 
   it('tolerates malformed JSONL lines while retaining valid events', () => {

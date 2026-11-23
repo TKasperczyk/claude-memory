@@ -61,6 +61,8 @@ function asTokenUsageSource(value: unknown): TokenUsageSource | null {
   if (
     value === 'extraction'
     || value === 'haiku-query'
+    || value === 'rerank'
+    || value === 'reconcile'
     || value === 'usefulness-rating'
     || value === 'maintenance'
     || value === 'review'

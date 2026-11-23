@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { getRecordExactTextParts } from './record-fields.js'
+import { getRecordExactTextParts, getRecordFtsTextParts } from './record-fields.js'
 import { getRecordSummary, type RecordSummarySource } from './record-summary.js'
 import { type HybridSearchResult, type MemoryRecord, type RecordType } from './types.js'
 
@@ -41,6 +41,13 @@ export function normalizeStep(step: string): string {
 
 export function buildExactText(record: MemoryRecord): string {
   return getRecordExactTextParts(record).filter(Boolean).join('\n')
+}
+
+export function buildSearchText(record: MemoryRecord): string {
+  return getRecordFtsTextParts(record)
+    .map(part => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean)
+    .join('\n')
 }
 
 export function normalizeExactText(value: string): string {

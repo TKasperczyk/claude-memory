@@ -6,6 +6,7 @@ export const STATUS_STYLES: Record<InjectionStatus, { badge: string; label: stri
   injected: { badge: 'bg-success/15 text-success', label: 'Injected' },
   no_matches: { badge: 'bg-muted-foreground/15 text-muted-foreground', label: 'No matches' },
   empty_prompt: { badge: 'bg-muted-foreground/15 text-muted-foreground', label: 'Empty' },
+  trivial_prompt: { badge: 'bg-muted-foreground/15 text-muted-foreground', label: 'Trivial' },
   timeout: { badge: 'bg-destructive/15 text-destructive', label: 'Timeout' },
   error: { badge: 'bg-destructive/15 text-destructive', label: 'Error' }
 }

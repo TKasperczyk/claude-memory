@@ -95,6 +95,12 @@ export function resolveMaintenanceSettings(settings?: MaintenanceSettings): Main
   return settings ?? loadSettings()
 }
 
+export function resolveMaintenanceModel(): string {
+  const envOverride = process.env.CC_MAINTENANCE_MODEL?.trim()
+  if (envOverride) return envOverride
+  return loadSettings().maintenanceModel
+}
+
 export function saveSettings(settings: Partial<Settings>): void {
   const current = loadPersistedSettings()
   const merged = coerceSettings({ ...current, ...settings }, current)

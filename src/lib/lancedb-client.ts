@@ -1,10 +1,12 @@
 import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
-import { connect, type Connection, type Table } from '@lancedb/lancedb'
+import { connect, Index, type Connection, type Table } from '@lancedb/lancedb'
 import { DEFAULT_CONFIG, type Config } from './types.js'
 import { buildTableSchema, ensureSchemaFields } from './lancedb-schema.js'
 import { CLAUDE_MEMORY_ROOT } from './paths.js'
+
+export const FTS_INDEX_COLUMN = 'search_text'
 
 type LanceContext = {
   conn: Connection
@@ -51,9 +53,40 @@ const COMPACTION_VERSION_RETENTION_MS = 24 * 60 * 60 * 1000
  * new fragment and version, so without this the table degrades into thousands
  * of tiny files that every search has to open.
  */
+export async function ensureFtsIndex(
+  table: Table,
+  options: { forceRebuild?: boolean } = {}
+): Promise<boolean> {
+  try {
+    if (!options.forceRebuild && typeof table.listIndices === 'function') {
+      const indices = await table.listIndices()
+      const hasFts = indices.some(idx =>
+        idx.indexType === 'FTS' && Array.isArray(idx.columns) && idx.columns.includes(FTS_INDEX_COLUMN)
+      )
+      if (hasFts) return false
+    }
+    if (typeof table.createIndex !== 'function') return false
+    await table.createIndex(FTS_INDEX_COLUMN, {
+      config: Index.fts({
+        baseTokenizer: 'simple',
+        lowercase: true,
+        stem: true,
+        removeStopWords: true,
+        asciiFolding: true
+      }),
+      replace: true
+    })
+    return true
+  } catch (error) {
+    console.error('[claude-memory] Failed to ensure LanceDB FTS index:', error)
+    return false
+  }
+}
+
 export async function compactTable(config: Config = DEFAULT_CONFIG): Promise<void> {
   const { table } = await ensureClient(config)
   await table.optimize({ cleanupOlderThan: new Date(Date.now() - COMPACTION_VERSION_RETENTION_MS) })
+  await ensureFtsIndex(table, { forceRebuild: true })
 }
 
 async function createInitializedClient(config: Config): Promise<LanceContext> {
@@ -78,6 +111,7 @@ async function createInitializedClient(config: Config): Promise<LanceContext> {
 
   const table = await conn.openTable(tableName)
   await ensureSchemaFields(table, config)
+  await ensureFtsIndex(table)
 
   return { conn, table }
 }

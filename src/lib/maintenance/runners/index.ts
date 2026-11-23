@@ -29,3 +29,9 @@ export { runRelationDiscovery } from './relations.js'
 export { runEntityOverlapDiscovery } from './entities.js'
 
 export { runWarningSynthesis } from './warning-synthesis-runner.js'
+
+export {
+  runStaticDocReconciliation,
+  migrateCatchAllScopeRecords,
+  type CatchAllScopeMigrationResult
+} from './static-doc-runner.js'

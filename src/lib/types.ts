@@ -34,6 +34,7 @@ export type {
   RelationKind,
   RecordScope,
   RecordType,
+  RecordVolatility,
   RetrievalActivity,
   RetrievalActivityBucket,
   RetrievalActivityPeriod,
@@ -59,8 +60,13 @@ export interface HybridSearchParamsBase {
   limit?: number
   project?: string
   ancestorProjects?: string[]
+  linkedWorkspaces?: string[]
+  /** When true and project is absent (catch-all cwd), restrict to global + environment scopes only. */
+  onlySharedScopes?: boolean
   type?: RecordType
   excludeDeprecated?: boolean
+  /** Strict causal upper bound: only match records with timestamp < maxTimestamp. */
+  maxTimestamp?: number
   embedding?: number[]
   vectorWeight?: number
   keywordWeight?: number
@@ -144,6 +150,16 @@ export interface PostToolUseInput extends HookInput {
   duration_ms: number
 }
 
+export interface PostToolUseFailureInput extends HookInput {
+  hook_event_name: 'PostToolUseFailure'
+  tool_name: string
+  tool_input: unknown
+  error?: string
+  tool_response?: unknown
+  tool_use_id?: string
+  is_interrupt?: boolean
+}
+
 /** Input for extraction hooks - either SessionEnd or PreCompact */
 export type ExtractionHookInput = SessionEndInput | PreCompactInput
 
@@ -174,6 +190,8 @@ export interface Config {
     maxRecords: number
     maxTokens: number
   }
+  /** Optional sibling/related repo root paths that share project-scoped recall with this project. */
+  linkedWorkspaces?: string[]
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -205,6 +223,9 @@ export function createConfig(overrides: Partial<Config> = {}): Config {
     lancedb: { ...DEFAULT_CONFIG.lancedb, ...overrides.lancedb },
     embeddings: { ...DEFAULT_CONFIG.embeddings, ...overrides.embeddings },
     extraction: { ...DEFAULT_CONFIG.extraction, ...overrides.extraction },
-    injection: { ...DEFAULT_CONFIG.injection, ...overrides.injection }
+    injection: { ...DEFAULT_CONFIG.injection, ...overrides.injection },
+    ...(overrides.linkedWorkspaces && overrides.linkedWorkspaces.length > 0
+      ? { linkedWorkspaces: overrides.linkedWorkspaces }
+      : {})
   }
 }

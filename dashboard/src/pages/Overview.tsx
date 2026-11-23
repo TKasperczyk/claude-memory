@@ -129,6 +129,7 @@ function TopList({
 
 const SCOPE_CONFIG: Record<string, { label: string; color: string }> = {
   project: { label: 'Project', color: 'hsl(var(--muted-foreground))' },
+  environment: { label: 'Environment', color: TYPE_COLORS.procedure },
   global: { label: 'Global', color: TYPE_COLORS.discovery },
 }
 
@@ -319,7 +320,7 @@ export default function Overview() {
   }
 
   const typeData = data
-    ? (['command', 'error', 'discovery', 'procedure'] as const).map(type => ({
+    ? (['command', 'error', 'discovery', 'procedure', 'warning'] as const).map(type => ({
         type,
         count: data.byType[type] ?? 0,
       }))
@@ -327,6 +328,7 @@ export default function Overview() {
 
   const projectData = data
     ? Object.entries(data.byProject)
+        .filter(([name]) => name.trim() !== '')
         .map(([name, value]) => ({ name, value }))
         .sort((a, b) => b.value - a.value)
     : []

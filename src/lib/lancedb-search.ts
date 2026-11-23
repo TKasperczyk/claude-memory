@@ -17,7 +17,7 @@ import {
   type RecordType
 } from './types.js'
 import { OUTPUT_FIELDS } from './lancedb-schema.js'
-import { ensureClient } from './lancedb-client.js'
+import { ensureClient, FTS_INDEX_COLUMN } from './lancedb-client.js'
 import {
   buildEmbeddingInput,
   parseRecordFromRow,
@@ -68,29 +68,36 @@ export async function hybridSearch(
     const baseFilter = buildFilter({
       project: params.project,
       ancestorProjects: params.ancestorProjects,
+      linkedWorkspaces: params.linkedWorkspaces,
       includeGlobal: Boolean(params.project),
+      onlySharedScopes: params.onlySharedScopes,
       type: params.type,
-      excludeDeprecated: params.excludeDeprecated
+      excludeDeprecated: params.excludeDeprecated,
+      maxTimestamp: params.maxTimestamp
     })
 
     const outputFields = params.includeEmbeddings
       ? [...OUTPUT_FIELDS, 'embedding']
       : OUTPUT_FIELDS
 
-    const combined = new Map<string, { record: MemoryRecord; similarity: number; keywordMatch: boolean }>()
+    const combined = new Map<string, { record: MemoryRecord; similarity: number; keywordMatch: boolean; bm25Score?: number }>()
     const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
     const buildScoredRecord = (
-      entry: { record: MemoryRecord; similarity: number; keywordMatch: boolean }
-    ): HybridSearchResult => {
+      entry: { record: MemoryRecord; similarity: number; keywordMatch: boolean; bm25Score?: number }
+    ): { scored: HybridSearchResult; relevance: number } => {
       const baseScore = (entry.keywordMatch ? keywordWeight : 0) + (entry.similarity * vectorWeight)
-      const usageRatio = computeUsageRatio(entry.record)
+      const usageRatio = computeSmoothedUsageRatio(entry.record)
       const score = baseScore + (usageRatio * usageRatioWeight)
       return {
-        record: entry.record,
-        similarity: entry.similarity,
-        keywordMatch: entry.keywordMatch,
-        score
+        relevance: baseScore,
+        scored: {
+          record: entry.record,
+          similarity: entry.similarity,
+          keywordMatch: entry.keywordMatch,
+          ...(entry.bm25Score !== undefined ? { bm25Score: entry.bm25Score } : {}),
+          score
+        }
       }
     }
 
@@ -110,9 +117,25 @@ export async function hybridSearch(
       if (abortSignal?.aborted) {
         throw new Error('Search aborted')
       }
-      const addKeywordRecord = (record: MemoryRecord): boolean => {
-        if (combined.has(record.id)) return false
-        combined.set(record.id, { record, similarity: 0, keywordMatch: true })
+      const extractBm25Score = (row: unknown): number | undefined => {
+        const rawScore = (row as { _score?: unknown })?._score
+        return typeof rawScore === 'number' && Number.isFinite(rawScore) ? rawScore : undefined
+      }
+
+      const addKeywordRecord = (record: MemoryRecord, bm25Score?: number): boolean => {
+        const existing = combined.get(record.id)
+        if (existing) {
+          if (bm25Score !== undefined) {
+            existing.bm25Score = Math.max(existing.bm25Score ?? 0, bm25Score)
+          }
+          return false
+        }
+        combined.set(record.id, {
+          record,
+          similarity: 0,
+          keywordMatch: true,
+          ...(bm25Score !== undefined ? { bm25Score } : {})
+        })
         return true
       }
 
@@ -120,7 +143,7 @@ export async function hybridSearch(
         for (const row of rows ?? []) {
           const record = parseRecordFromRow(row as Record<string, unknown>)
           if (!record) continue
-          addKeywordRecord(record)
+          addKeywordRecord(record, extractBm25Score(row))
         }
       }
 
@@ -134,19 +157,48 @@ export async function hybridSearch(
             if (!row) continue
             const record = parseRecordFromRow(row as Record<string, unknown>)
             if (!record) continue
-            if (addKeywordRecord(record)) added++
+            if (addKeywordRecord(record, extractBm25Score(row))) added++
           }
         }
       }
 
-      if (effectiveKeywordQueries.length === 1) {
-        const keywordFilter = buildKeywordFilter(effectiveKeywordQueries, baseFilter)
-        const query = table
-          .query()
+      const runKeywordQuery = async (needle: string, rowLimit: number): Promise<unknown[]> => {
+        const query = table.query()
+        const ftsCapable = query as typeof query & {
+          fullTextSearch?: (q: string, options?: { columns?: string | string[] }) => typeof query
+        }
+        if (typeof ftsCapable.fullTextSearch === 'function') {
+          try {
+            let builder = ftsCapable.fullTextSearch(needle, { columns: [FTS_INDEX_COLUMN] })
+            if (baseFilter) builder = builder.where(baseFilter)
+            const rows = await builder
+              .select([...outputFields, '_score'])
+              .limit(rowLimit)
+              .toArray()
+            return rows ?? []
+          } catch (ftsError) {
+            logger.debug(`LanceDB BM25 FTS failed for "${needle.slice(0, 60)}", falling back to SQL LIKE:`, ftsError)
+            const fallbackFilter = buildKeywordFilter(needle, baseFilter)
+            const fallbackRows = await table
+              .query()
+              .where(fallbackFilter)
+              .select(outputFields)
+              .limit(rowLimit)
+              .toArray()
+            return fallbackRows ?? []
+          }
+        }
+        const keywordFilter = buildKeywordFilter(needle, baseFilter)
+        const keywordRows = await query
           .where(keywordFilter)
           .select(outputFields)
-          .limit(keywordLimit)
-        const keywordRows = await query.toArray()
+          .limit(rowLimit)
+          .toArray()
+        return keywordRows ?? []
+      }
+
+      if (effectiveKeywordQueries.length === 1) {
+        const keywordRows = await runKeywordQuery(effectiveKeywordQueries[0], keywordLimit)
         addKeywordRows(keywordRows)
       } else {
         const keywordRowBatches: unknown[][] = []
@@ -157,14 +209,8 @@ export async function hybridSearch(
           if (abortSignal?.aborted) {
             throw new Error('Search aborted')
           }
-          const keywordFilter = buildKeywordFilter(keywordQuery, baseFilter)
-          const query = table
-            .query()
-            .where(keywordFilter)
-            .select(outputFields)
-            .limit(perNeedleLimit)
-          const keywordRows = await query.toArray()
-          keywordRowBatches.push(keywordRows ?? [])
+          const keywordRows = await runKeywordQuery(keywordQuery, perNeedleLimit)
+          keywordRowBatches.push(keywordRows)
         }
         addInterleavedKeywordRows(keywordRowBatches, keywordLimit)
       }
@@ -198,7 +244,7 @@ export async function hybridSearch(
 	            const record = parseRecordFromRow(row as Record<string, unknown>)
 	            if (!record) continue
             if (!combined.has(record.id)) {
-              const scored = buildScoredRecord({ record, similarity, keywordMatch: false })
+              const { scored } = buildScoredRecord({ record, similarity, keywordMatch: false })
               addNearMiss(
                 scored,
                 buildExclusionReason('similarity_below_threshold', minSimilarity, similarity)
@@ -219,27 +265,29 @@ export async function hybridSearch(
       }
     }
 
-    const results: HybridSearchResult[] = Array.from(combined.values()).map(buildScoredRecord)
+    const scoredEntries = Array.from(combined.values()).map(buildScoredRecord)
 
-    results.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score
-      return b.similarity - a.similarity
+    scoredEntries.sort((a, b) => {
+      if (b.scored.score !== a.scored.score) return b.scored.score - a.scored.score
+      return b.scored.similarity - a.scored.similarity
     })
 
     if (diagnostic && shouldApplyMinScore) {
-      for (const result of results) {
-        if (result.score < minScore) {
+      for (const entry of scoredEntries) {
+        if (entry.relevance < minScore) {
           addNearMiss(
-            result,
-            buildExclusionReason('score_below_threshold', minScore, result.score)
+            entry.scored,
+            buildExclusionReason('score_below_threshold', minScore, entry.relevance)
           )
         }
       }
     }
 
-    const qualified = results
-      .filter(r => !shouldApplyMinScore || r.score >= minScore)
+    // Gate strictly on query-document relevance; smoothed utility only nudges ordering among survivors.
+    const qualified = scoredEntries
+      .filter(entry => !shouldApplyMinScore || entry.relevance >= minScore)
       .slice(0, limit)
+      .map(entry => entry.scored)
 
     if (diagnostic) {
       for (const result of qualified) {
@@ -263,7 +311,8 @@ export async function findSimilar(
   similarityThreshold: number = SIMILARITY_THRESHOLDS.EXTRACTION_DEDUP,
   limit: number = 5,
   config: Config = DEFAULT_CONFIG,
-  extraFilter?: string
+  extraFilter?: string,
+  options?: { crossType?: boolean; includeSharedScopes?: boolean }
 ): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
   try {
     const { table } = await ensureClient(config)
@@ -271,9 +320,12 @@ export async function findSimilar(
     const vector = record.embedding ?? await embed(buildEmbeddingInput(record), config)
     ensureEmbeddingDim(vector)
 
+    const project = resolveProject(record)
     const baseFilter = buildFilter({
-      project: resolveProject(record),
-      type: record.type,
+      project,
+      includeGlobal: options?.includeSharedScopes === true,
+      onlySharedScopes: options?.includeSharedScopes === true && !project,
+      type: options?.crossType === true ? undefined : record.type,
       excludeId: record.id,
       excludeDeprecated: true
     })
@@ -355,6 +407,97 @@ export async function vectorSearchSimilar(
   }
 }
 
+export async function bm25Search(
+  params: {
+    query: string
+    limit?: number
+    project?: string
+    ancestorProjects?: string[]
+    linkedWorkspaces?: string[]
+    includeGlobal?: boolean
+    onlySharedScopes?: boolean
+    type?: RecordType
+    types?: RecordType[]
+    excludeDeprecated?: boolean
+    maxTimestamp?: number
+    includeEmbeddings?: boolean
+    signal?: AbortSignal
+  },
+  config: Config = DEFAULT_CONFIG
+): Promise<HybridSearchResult[]> {
+  const trimmed = params.query.trim()
+  if (!trimmed) return []
+  if (params.signal?.aborted) {
+    throw new Error('Search aborted')
+  }
+
+  const { table } = await ensureClient(config)
+  const limit = Math.max(1, params.limit ?? 20)
+  const baseFilter = buildFilter({
+    project: params.project,
+    ancestorProjects: params.ancestorProjects,
+    linkedWorkspaces: params.linkedWorkspaces,
+    includeGlobal: params.includeGlobal ?? Boolean(params.project),
+    onlySharedScopes: params.onlySharedScopes,
+    type: params.type,
+    types: params.types,
+    excludeDeprecated: params.excludeDeprecated ?? true,
+    maxTimestamp: params.maxTimestamp
+  })
+  const outputFields = params.includeEmbeddings
+    ? [...OUTPUT_FIELDS, 'embedding']
+    : OUTPUT_FIELDS
+
+  const query = table.query()
+  const ftsCapable = query as typeof query & {
+    fullTextSearch?: (q: string, options?: { columns?: string | string[] }) => typeof query
+  }
+
+  let rows: unknown[] = []
+  if (typeof ftsCapable.fullTextSearch === 'function') {
+    try {
+      let builder = ftsCapable.fullTextSearch(trimmed, { columns: [FTS_INDEX_COLUMN] })
+      if (baseFilter) builder = builder.where(baseFilter)
+      rows = (await builder
+        .select([...outputFields, '_score'])
+        .limit(limit)
+        .toArray()) ?? []
+    } catch (error) {
+      logger.debug(`bm25Search FTS failed for "${trimmed.slice(0, 60)}", falling back to SQL LIKE:`, error)
+      const fallbackFilter = buildKeywordFilter(trimmed, baseFilter)
+      rows = (await table
+        .query()
+        .where(fallbackFilter)
+        .select(outputFields)
+        .limit(limit)
+        .toArray()) ?? []
+    }
+  } else {
+    const keywordFilter = buildKeywordFilter(trimmed, baseFilter)
+    rows = (await query
+      .where(keywordFilter)
+      .select(outputFields)
+      .limit(limit)
+      .toArray()) ?? []
+  }
+
+  const results: HybridSearchResult[] = []
+  for (const row of rows) {
+    const record = parseRecordFromRow(row as Record<string, unknown>)
+    if (!record) continue
+    const rawScore = (row as { _score?: unknown })?._score
+    const bm25Score = typeof rawScore === 'number' && Number.isFinite(rawScore) ? rawScore : 1
+    results.push({
+      record,
+      similarity: 0,
+      keywordMatch: true,
+      bm25Score,
+      score: bm25Score
+    })
+  }
+  return results
+}
+
 export function escapeLikeValue(value: string): string {
   // Escape SQL LIKE wildcards. We also escape backslashes since we use backslash as the escape char.
   const escapedSlashes = value.replace(/\\/g, '\\\\')
@@ -365,27 +508,50 @@ export function escapeLikeValue(value: string): string {
 export function buildFilter(filters: {
   project?: string
   ancestorProjects?: string[]
+  linkedWorkspaces?: string[]
   includeGlobal?: boolean
+  includeEnvironment?: boolean
+  onlySharedScopes?: boolean
   type?: RecordType
+  types?: RecordType[]
   excludeId?: string
   excludeDeprecated?: boolean
+  maxTimestamp?: number
 }): string | undefined {
   const parts: string[] = []
+  const includeEnv = filters.includeEnvironment ?? filters.includeGlobal
 
   if (filters.project) {
-    const allProjects = [filters.project, ...(filters.ancestorProjects ?? [])]
+    const allProjects = Array.from(new Set([
+      filters.project,
+      ...(filters.ancestorProjects ?? []),
+      ...(filters.linkedWorkspaces ?? [])
+    ].filter(Boolean)))
     const projectClause = allProjects.length === 1
       ? `project = '${escapeFilterValue(allProjects[0])}'`
       : `project IN (${allProjects.map(p => `'${escapeFilterValue(p)}'`).join(', ')})`
-    if (filters.includeGlobal) {
+    if (filters.includeGlobal && includeEnv) {
+      parts.push(`(${projectClause} OR scope = 'global' OR scope = 'environment')`)
+    } else if (filters.includeGlobal) {
       parts.push(`(${projectClause} OR scope = 'global')`)
+    } else if (includeEnv) {
+      parts.push(`(${projectClause} OR scope = 'environment')`)
     } else {
       parts.push(projectClause)
     }
+  } else if (filters.onlySharedScopes) {
+    parts.push(filters.includeEnvironment !== false ? `(scope = 'global' OR scope = 'environment')` : `scope = 'global'`)
   }
 
   if (filters.type) {
     parts.push(`type = '${escapeFilterValue(filters.type)}'`)
+  } else if (filters.types && filters.types.length > 0) {
+    const uniqueTypes = Array.from(new Set(filters.types))
+    parts.push(
+      uniqueTypes.length === 1
+        ? `type = '${escapeFilterValue(uniqueTypes[0])}'`
+        : `type IN (${uniqueTypes.map(t => `'${escapeFilterValue(t)}'`).join(', ')})`
+    )
   }
 
   if (filters.excludeId) {
@@ -394,6 +560,10 @@ export function buildFilter(filters: {
 
   if (filters.excludeDeprecated) {
     parts.push('deprecated = false')
+  }
+
+  if (typeof filters.maxTimestamp === 'number' && Number.isFinite(filters.maxTimestamp)) {
+    parts.push(`timestamp < ${Math.trunc(filters.maxTimestamp)}`)
   }
 
   if (parts.length === 0) return undefined
@@ -416,9 +586,26 @@ export function buildKeywordFilter(query: string | string[], baseFilter?: string
   return `${baseFilter} AND ${keywordClause}`
 }
 
+const USAGE_BAYES_PRIOR_MEAN = 0.1
+const USAGE_BAYES_PRIOR_STRENGTH = 5
+
 export function computeUsageRatio(record: MemoryRecord): number {
   const retrievalCount = record.retrievalCount ?? 0
   const usageCount = record.usageCount ?? 0
   if (usageCount <= 0) return 0
   return Math.min(usageCount / Math.max(retrievalCount, 1), 1)
+}
+
+/**
+ * Empirical-Bayes smoothed utility: (usage + m * p0) / (retrievals + m).
+ * Prevents small-sample lucky records (1/1 -> 1.0) from dominating while
+ * keeping unseen records (0/0 -> p0) neutral instead of penalized to 0.
+ */
+export function computeSmoothedUsageRatio(record: MemoryRecord): number {
+  const retrievalCount = Math.max(0, record.retrievalCount ?? 0)
+  const usageCount = Math.max(0, record.usageCount ?? 0)
+  const effectiveRetrievals = Math.max(retrievalCount, usageCount)
+  const smoothed = (usageCount + USAGE_BAYES_PRIOR_STRENGTH * USAGE_BAYES_PRIOR_MEAN)
+    / (effectiveRetrievals + USAGE_BAYES_PRIOR_STRENGTH)
+  return Math.max(0, Math.min(smoothed, 1))
 }

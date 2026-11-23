@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import { buildCacheControl } from './prompt-cache.js'
 import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from './anthropic-stream.js'
 import {
   buildToolCallParams,
@@ -58,7 +59,7 @@ export async function executeReview<TInput, TPayload>(
     model: frameworkConfig.model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: frameworkConfig.systemPrompt, cache_control: { type: 'ephemeral' } }
+      { type: 'text', text: frameworkConfig.systemPrompt, cache_control: buildCacheControl('1h') }
     ],
     messages: [{ role: 'user', content: prompt }],
     tools: [tool],
@@ -134,7 +135,7 @@ IMPORTANT: You MUST call the ${frameworkConfig.toolName} tool to submit your rev
     max_tokens: maxTokens,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: systemPromptWithToolInstruction, cache_control: { type: 'ephemeral' } }
+      { type: 'text', text: systemPromptWithToolInstruction, cache_control: buildCacheControl('1h') }
     ],
     messages: [{ role: 'user', content: prompt }],
     tools: [tool],

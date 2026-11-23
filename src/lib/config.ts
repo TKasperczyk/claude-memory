@@ -1,10 +1,10 @@
 import path from 'path'
 import { DEFAULT_CONFIG, createConfig, type Config } from './types.js'
 import { readJsonFileSafe } from './json.js'
-import { isPlainObject } from './parsing.js'
+import { asStringArray, isPlainObject } from './parsing.js'
 import { isValidTableName } from './shared.js'
 import { loadSettings } from './settings.js'
-import { CLAUDE_MEMORY_ROOT } from './paths.js'
+import { canonicalizePath, CLAUDE_MEMORY_ROOT } from './paths.js'
 
 const GLOBAL_CONFIG_PATH = path.join(CLAUDE_MEMORY_ROOT, 'config.json')
 const PROJECT_CONFIG_FILENAME = '.claude-memory.json'
@@ -37,15 +37,27 @@ function coercePartialConfig(value: unknown): Partial<Config> | null {
   if (isPlainObject(value.injection)) {
     partial.injection = value.injection as Config['injection']
   }
+  if (Array.isArray(value.linkedWorkspaces)) {
+    const workspaces = asStringArray(value.linkedWorkspaces, { trim: true, filterEmpty: true, unique: true })
+      .map(entry => canonicalizePath(entry))
+    if (workspaces.length > 0) {
+      partial.linkedWorkspaces = Array.from(new Set(workspaces))
+    }
+  }
   return Object.keys(partial).length > 0 ? partial : null
 }
 
 function mergeConfig(base: Config, override: Partial<Config>): Config {
+  const linkedWorkspaces = Array.from(new Set([
+    ...(base.linkedWorkspaces ?? []),
+    ...(override.linkedWorkspaces ?? [])
+  ]))
   return {
     lancedb: { ...base.lancedb, ...override.lancedb },
     embeddings: { ...base.embeddings, ...override.embeddings },
     extraction: { ...base.extraction, ...override.extraction },
-    injection: { ...base.injection, ...override.injection }
+    injection: { ...base.injection, ...override.injection },
+    ...(linkedWorkspaces.length > 0 ? { linkedWorkspaces } : {})
   }
 }
 

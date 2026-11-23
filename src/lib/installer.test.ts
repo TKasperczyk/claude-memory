@@ -115,7 +115,7 @@ describe('installer hook management', () => {
       hooks?: { PostToolUse?: Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }> }
     }
     const memoryWriteEntries = (settings.hooks?.PostToolUse ?? [])
-      .filter(entry => entry.matcher === 'memory_write')
+      .filter(entry => entry.matcher === 'memory_write|Write|Edit')
     expect(memoryWriteEntries).toHaveLength(1)
     expect(memoryWriteEntries[0].hooks).toEqual([{
       type: 'command',
@@ -130,7 +130,7 @@ describe('installer hook management', () => {
     expect(uninstalled.PostToolUse.installed).toBe(false)
   })
 
-  it('installs all hooks idempotently with the exact memory_write matcher', () => {
+  it('installs all hooks idempotently with the exact memory_write|Write|Edit matcher', () => {
     const configRoot = path.join(tempDir, 'config-root')
     installHooks(settingsPath, configRoot)
     const first = fs.readFileSync(settingsPath, 'utf-8')
@@ -145,7 +145,7 @@ describe('installer hook management', () => {
     }
     expect(settings.hooks.PostToolUse).toEqual([
       {
-        matcher: 'memory_write',
+        matcher: 'memory_write|Write|Edit',
         hooks: [{ type: 'command', command: status.PostToolUse.expected, timeout: 5 }]
       }
     ])
@@ -175,7 +175,7 @@ describe('installer hook management', () => {
       hooks: { PostToolUse: Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }> }
     }
     const bashEntry = after.hooks.PostToolUse.find(entry => entry.matcher === 'Bash')
-    const memoryEntry = after.hooks.PostToolUse.find(entry => entry.matcher === 'memory_write')
+    const memoryEntry = after.hooks.PostToolUse.find(entry => entry.matcher === 'memory_write|Write|Edit')
     expect(bashEntry?.hooks).toEqual([{ type: 'command', command: customCommand, timeout: 10 }])
     expect(memoryEntry?.hooks).toEqual([{
       type: 'command',

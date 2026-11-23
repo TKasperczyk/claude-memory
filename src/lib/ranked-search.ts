@@ -1,14 +1,27 @@
 import { buildExclusionReason, mergeNearMisses } from './diagnostics.js'
-import { computeUsageRatio, hybridSearch } from './lancedb.js'
+import { hybridSearch } from './lancedb.js'
 import type { RetrievalSettings } from './settings.js'
 import type {
   Config,
   DiagnosticSearchResults,
   HybridSearchParams,
   HybridSearchResult,
+  MemoryRecord,
   NearMissRecord,
   RecordType
 } from './types.js'
+
+const USAGE_BAYES_PRIOR_MEAN = 0.1
+const USAGE_BAYES_PRIOR_STRENGTH = 5
+
+function computeSmoothedUtility(record: MemoryRecord): number {
+  const retrievalCount = Math.max(0, record.retrievalCount ?? 0)
+  const usageCount = Math.max(0, record.usageCount ?? 0)
+  const effectiveRetrievals = Math.max(retrievalCount, usageCount)
+  const smoothed = (usageCount + USAGE_BAYES_PRIOR_STRENGTH * USAGE_BAYES_PRIOR_MEAN)
+    / (effectiveRetrievals + USAGE_BAYES_PRIOR_STRENGTH)
+  return Math.max(0, Math.min(smoothed, 1))
+}
 
 /**
  * Fixed weight for semantic similarity in the unified scoring formula.
@@ -28,6 +41,8 @@ export interface UnifiedScoreInputs {
 export interface UnifiedScoreBreakdown {
   semantic: number
   keywordBonus: number
+  /** Pure query-document relevance used for admission gating (decoupled from usage/project nudges). */
+  relevance: number
   usage: number
   projectBoost: number
   total: number
@@ -40,14 +55,16 @@ export function computeUnifiedScore(inputs: UnifiedScoreInputs): UnifiedScoreBre
     : 1.0
   const semantic = similarity * UNIFIED_SEMANTIC_WEIGHT
   const keywordBonus = keywordMatch ? settings.keywordBonus * similarityScale : 0
+  const relevance = semantic + keywordBonus
   const usage = usageRatio * settings.usageRatioWeight
   const projectBoost = projectMatch ? settings.projectMatchBonus : 0
   return {
     semantic,
     keywordBonus,
+    relevance,
     usage,
     projectBoost,
-    total: semantic + keywordBonus + usage + projectBoost
+    total: relevance + usage + projectBoost
   }
 }
 
@@ -56,15 +73,21 @@ export interface RankedCandidateSearchResult {
   nearMisses: NearMissRecord[]
   rawKeywordMatchIds: Set<string>
   rawKeywordQualificationScores: Map<string, number>
+  /** Candidates matched specifically by error/command signal needles (eligible for exact-recall bypass). */
+  signalKeywordMatchIds: Set<string>
 }
 
 export interface RankedCandidateSearchOptions {
   rawKeywordQueries: string[]
+  /** Subset of raw keyword needles derived directly from error/command signals. */
+  signalKeywordQueries?: string[]
   plannedKeywordQueries?: string[]
   config: Config
   settings: RetrievalSettings
   project?: string
   ancestorProjects?: string[]
+  linkedWorkspaces?: string[]
+  onlySharedScopes?: boolean
   /** Omit for cross-project semantic recall; set to project for a hard semantic scope. */
   semanticProject?: string
   semanticAncestorProjects?: string[]
@@ -72,6 +95,7 @@ export interface RankedCandidateSearchOptions {
   rawPromptEmbedding?: number[]
   type?: RecordType
   excludeDeprecated?: boolean
+  maxTimestamp?: number
   /** Per-channel candidate window fetched before merging and unified scoring. */
   sourceLimit: number
   /** Number of ranked candidates returned after unified score filtering. */
@@ -107,16 +131,20 @@ export async function searchRankedCandidates(
 ): Promise<RankedCandidateSearchResult> {
   const {
     rawKeywordQueries,
+    signalKeywordQueries = [],
     plannedKeywordQueries = [],
     config,
     settings,
     project,
     ancestorProjects = [],
+    linkedWorkspaces = [],
+    onlySharedScopes = false,
     semanticProject,
     semanticAncestorProjects = [],
     embeddings = [],
     rawPromptEmbedding,
     type,
+    maxTimestamp,
     sourceLimit,
     resultLimit,
     signal
@@ -125,7 +153,9 @@ export async function searchRankedCandidates(
   const diagnostic = options.diagnostic === true
   const resultsById = new Map<string, HybridSearchResult>()
   const rawKeywordMatchIds = new Set<string>()
+  const signalKeywordMatchIds = new Set<string>()
   const rawKeywordQualificationScores = new Map<string, number>()
+  const gateScores = new Map<string, number>()
   const nearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
 
   console.error(`[claude-memory] Search scope: keywords=${rawKeywordQueries.length + plannedKeywordQueries.length}, project=${project ?? 'none'}${ancestorProjects.length ? `, ancestors=${ancestorProjects.join(',')}` : ''}`)
@@ -141,9 +171,15 @@ export async function searchRankedCandidates(
     }
   }
 
+  const signalQueryLower = new Set(signalKeywordQueries.map(q => q.trim().toLowerCase()).filter(Boolean))
+  const nonSignalRawQueries = signalQueryLower.size > 0
+    ? rawKeywordQueries.filter(q => !signalQueryLower.has(q.trim().toLowerCase()))
+    : rawKeywordQueries
+
   const keywordSearches = [
-    { queries: rawKeywordQueries, raw: true },
-    { queries: plannedKeywordQueries, raw: false }
+    { queries: signalKeywordQueries, raw: true, signalMatch: true },
+    { queries: nonSignalRawQueries, raw: true, signalMatch: false },
+    { queries: plannedKeywordQueries, raw: false, signalMatch: false }
   ].filter(search => search.queries.length > 0)
   const keywordResultSets = await Promise.all(keywordSearches.map(async search => ({
     ...search,
@@ -153,8 +189,11 @@ export async function searchRankedCandidates(
       limit: sourceLimit,
       project,
       ancestorProjects,
+      linkedWorkspaces,
+      onlySharedScopes,
       type,
       excludeDeprecated,
+      maxTimestamp,
       vectorWeight: 0,
       keywordWeight: 1,
       keywordLimit: sourceLimit * search.queries.length,
@@ -167,6 +206,7 @@ export async function searchRankedCandidates(
     for (const item of keywordResults.result.results) {
       upsertResult(item)
       if (keywordResults.raw) rawKeywordMatchIds.add(item.record.id)
+      if (keywordResults.signalMatch) signalKeywordMatchIds.add(item.record.id)
     }
     if (diagnostic && nearMisses) {
       mergeNearMisses(nearMisses, keywordResults.result.nearMisses)
@@ -181,8 +221,11 @@ export async function searchRankedCandidates(
         limit: sourceLimit,
         project: semanticProject,
         ancestorProjects: semanticAncestorProjects,
+        linkedWorkspaces: semanticProject ? linkedWorkspaces : undefined,
+        onlySharedScopes: !semanticProject && onlySharedScopes,
         type,
         excludeDeprecated,
+        maxTimestamp,
         vectorWeight: 1,
         keywordWeight: 0,
         minSimilarity: settings.minSemanticSimilarity,
@@ -217,51 +260,68 @@ export async function searchRankedCandidates(
       if (item.similarity === 0 && item.keywordMatch && candidateEmbedding && candidateEmbedding.length > 0) {
         item.similarity = maxCosineSimilarity(scoringEmbeddings, candidateEmbedding)
       }
-      const rankingScore = computeUnifiedScore({
+      const smoothedUtility = computeSmoothedUtility(item.record)
+      const isProjectMatch = Boolean(project && item.record.project === project)
+      const rankingBreakdown = computeUnifiedScore({
         similarity: item.similarity,
         keywordMatch: item.keywordMatch,
-        usageRatio: computeUsageRatio(item.record),
-        projectMatch: Boolean(project && item.record.project === project),
+        usageRatio: smoothedUtility,
+        projectMatch: isProjectMatch,
         settings
-      }).total
+      })
 
       if (!rawKeywordMatchIds.has(item.record.id)) {
-        item.score = rankingScore
+        item.score = rankingBreakdown.total
+        gateScores.set(item.record.id, rankingBreakdown.relevance)
         continue
       }
 
-      let qualificationScore = rankingScore
+      let qualificationBreakdown = rankingBreakdown
       if (rawPromptEmbedding && candidateEmbedding && candidateEmbedding.length > 0) {
         const rawSimilarity = cosineSimilarity(rawPromptEmbedding, candidateEmbedding)
-        qualificationScore = computeUnifiedScore({
+        qualificationBreakdown = computeUnifiedScore({
           similarity: rawSimilarity,
           keywordMatch: true,
-          usageRatio: computeUsageRatio(item.record),
-          projectMatch: Boolean(project && item.record.project === project),
+          usageRatio: smoothedUtility,
+          projectMatch: isProjectMatch,
           settings
-        }).total
+        })
         item.similarity = Math.max(item.similarity, rawSimilarity)
       }
-      rawKeywordQualificationScores.set(item.record.id, qualificationScore)
-      item.score = Math.max(rankingScore, qualificationScore)
+      // Decouple admission gating from usageRatio & projectMatchBonus: gate on
+      // pure query-document relevance, then apply smoothed utility & project
+      // match strictly as a small post-gate rerank nudge.
+      rawKeywordQualificationScores.set(item.record.id, qualificationBreakdown.relevance)
+      gateScores.set(
+        item.record.id,
+        Math.max(rankingBreakdown.relevance, qualificationBreakdown.relevance)
+      )
+      item.score = Math.max(rankingBreakdown.total, qualificationBreakdown.total)
     }
   }
   // Explicit fail-open path: without a query embedding, keyword candidates
-  // retain their raw exact-match/usage scores and remain searchable.
+  // retain their raw exact-match scores and remain searchable.
+
+  const passesRelevanceGate = (result: HybridSearchResult): boolean => {
+    if (signalKeywordMatchIds.has(result.record.id)) return true
+    const gateScore = gateScores.get(result.record.id) ?? result.score
+    return gateScore >= settings.minScore
+  }
 
   if (diagnostic && nearMisses) {
     for (const item of allCandidates) {
-      if (item.score < settings.minScore) {
+      if (!passesRelevanceGate(item)) {
+        const actual = gateScores.get(item.record.id) ?? item.score
         nearMisses.set(item.record.id, {
           record: item,
-          exclusionReasons: [buildExclusionReason('score_below_threshold', settings.minScore, item.score)]
+          exclusionReasons: [buildExclusionReason('score_below_threshold', settings.minScore, actual)]
         })
       }
     }
   }
 
   const rankedResults = sortByScore(
-    allCandidates.filter(result => result.score >= settings.minScore)
+    allCandidates.filter(passesRelevanceGate)
   ).slice(0, resultLimit)
   if (diagnostic && nearMisses) {
     for (const result of rankedResults) {
@@ -273,7 +333,8 @@ export async function searchRankedCandidates(
     results: rankedResults,
     nearMisses: Array.from(nearMisses?.values() ?? []),
     rawKeywordMatchIds,
-    rawKeywordQualificationScores
+    rawKeywordQualificationScores,
+    signalKeywordMatchIds
   }
 }
 

@@ -4,8 +4,10 @@ import fs from 'fs'
 import { homedir } from 'os'
 import path from 'path'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import { buildCacheControl } from './prompt-cache.js'
 import { queryRecords } from './lancedb.js'
 import { buildToolCallParams } from './model-capabilities.js'
+import { resolveMaintenanceModel } from './settings.js'
 import { recordTokenUsageFromResponse } from './token-usage-events.js'
 import { asString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { looksLikeCommand, normalizeStep, readFileIfExists, truncateWithTail } from './shared.js'
@@ -766,17 +768,18 @@ async function requestPromotionDecisions(
   prompt: string,
   config: Config
 ): Promise<PromotionDecision[]> {
+  const model = resolveMaintenanceModel()
   const response = await client.messages.create({
-    model: config.extraction.model,
+    model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: PROMOTION_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
+      { type: 'text', text: PROMOTION_SYSTEM_PROMPT, cache_control: buildCacheControl('5m') }
     ],
     messages: [{ role: 'user', content: prompt }],
     tools: [PROMOTION_TOOL],
-    ...buildToolCallParams(config.extraction.model, PROMOTION_TOOL_NAME, Math.min(PROMOTION_MAX_TOKENS, config.extraction.maxTokens))
+    ...buildToolCallParams(model, PROMOTION_TOOL_NAME, Math.min(PROMOTION_MAX_TOKENS, config.extraction.maxTokens))
   })
-  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+  recordTokenUsageFromResponse('maintenance', model, response, {
     collection: config.lancedb.table
   })
 

@@ -97,10 +97,22 @@ function report() {
     throw new Error(`Baseline arm '${BASELINE_ARM}' missing from replay data.`)
   }
 
-  // ---- per-arm aggregates ----
+  // ---- per-arm aggregates (micro + session-level macro) ----
+  type SessionBucket = {
+    prompts: number
+    abstained: number
+    injected: number
+    repeats: number
+    judged: number
+    relevant: number
+    partial: number
+    seenIds: Set<string>
+  }
   type ArmStats = {
     prompts: number
+    abstainedPrompts: number
     injectedTotal: number
+    exactRepeats: number
     judged: number
     relevant: number
     partial: number
@@ -110,10 +122,12 @@ function report() {
     durations: number[]
     goldJudged: number
     goldHelpful: number
+    sessions: Map<string, SessionBucket>
   }
   const stats = new Map<string, ArmStats>(armNames.map(name => [name, {
-    prompts: 0, injectedTotal: 0, judged: 0, relevant: 0, partial: 0, irrelevant: 0,
-    entityEdgeInjections: 0, relatesToInjections: 0, durations: [], goldJudged: 0, goldHelpful: 0
+    prompts: 0, abstainedPrompts: 0, injectedTotal: 0, exactRepeats: 0, judged: 0, relevant: 0, partial: 0, irrelevant: 0,
+    entityEdgeInjections: 0, relatesToInjections: 0, durations: [], goldJudged: 0, goldHelpful: 0,
+    sessions: new Map()
   }]))
 
   const discoveries: Discovery[] = []
@@ -121,27 +135,52 @@ function report() {
   const goldDiscoveries = new Map<string, number>(armNames.map(name => [name, 0]))
   const overlaps = new Map<string, number[]>()
 
-  for (const line of lines) {
+  const orderedLines = [...lines].sort((a, b) => a.timestamp - b.timestamp)
+  for (const line of orderedLines) {
     const injectedByArm = new Map<string, Set<string>>()
     for (const armName of armNames) {
       const capture = line.arms[armName]
       if (!capture) continue
       const armStats = stats.get(armName)!
+      let bucket = armStats.sessions.get(line.sessionId)
+      if (!bucket) {
+        bucket = { prompts: 0, abstained: 0, injected: 0, repeats: 0, judged: 0, relevant: 0, partial: 0, seenIds: new Set() }
+        armStats.sessions.set(line.sessionId, bucket)
+      }
       armStats.prompts += 1
+      bucket.prompts += 1
+      if (capture.injected.length === 0) {
+        armStats.abstainedPrompts += 1
+        bucket.abstained += 1
+      }
       armStats.durations.push(capture.durationMs)
       injectedByArm.set(armName, new Set(capture.injected.map(entry => entry.id)))
 
       for (const entry of capture.injected) {
         armStats.injectedTotal += 1
+        bucket.injected += 1
+        if (bucket.seenIds.has(entry.id)) {
+          armStats.exactRepeats += 1
+          bucket.repeats += 1
+        } else {
+          bucket.seenIds.add(entry.id)
+        }
         if (entry.via?.kind === 'shares_entity') armStats.entityEdgeInjections += 1
         if (entry.via?.kind === 'relates_to') armStats.relatesToInjections += 1
 
         const verdict = verdicts.get(`${line.promptKey}:${entry.id}`)
         if (verdict) {
           armStats.judged += 1
-          if (verdict.verdict === 'relevant') armStats.relevant += 1
-          else if (verdict.verdict === 'partially_relevant') armStats.partial += 1
-          else if (verdict.verdict === 'irrelevant') armStats.irrelevant += 1
+          bucket.judged += 1
+          if (verdict.verdict === 'relevant') {
+            armStats.relevant += 1
+            bucket.relevant += 1
+          } else if (verdict.verdict === 'partially_relevant') {
+            armStats.partial += 1
+            bucket.partial += 1
+          } else if (verdict.verdict === 'irrelevant') {
+            armStats.irrelevant += 1
+          }
         }
         const goldRow = gold.get(`${line.promptKey}:${entry.id}`)
         if (goldRow) {
@@ -202,18 +241,31 @@ function report() {
   const per100 = (count: number, prompts: number) => prompts > 0 ? (100 * count / prompts).toFixed(1) : '0.0'
   const pct = (numerator: number, denominator: number) => denominator > 0 ? (100 * numerator / denominator).toFixed(1) + '%' : 'n/a'
 
+  const computeMacroPrecision = (s: ArmStats, lenient: boolean): number | null => {
+    const rates: number[] = []
+    for (const bucket of s.sessions.values()) {
+      if (bucket.judged <= 0) continue
+      const num = lenient ? (bucket.relevant + bucket.partial) : bucket.relevant
+      rates.push(num / bucket.judged)
+    }
+    if (rates.length === 0) return null
+    return rates.reduce((sum, v) => sum + v, 0) / rates.length
+  }
+  const fmtRate = (rate: number | null) => rate === null ? 'n/a' : `${(rate * 100).toFixed(1)}%`
+
   const md: string[] = []
-  md.push(`# Entity A/B Eval Report — run '${runId}'`)
+  md.push(`# Retrieval A/B Eval Report — run '${runId}'`)
   md.push('')
-  md.push(`Prompts replayed: ${promptCount} | judged verdict rows: ${verdicts.size} | gold rows: ${gold.size}`)
+  const uniqueSessions = new Set(lines.map(l => l.sessionId)).size
+  md.push(`Prompts replayed: ${promptCount} across ${uniqueSessions} sessions | judged verdict rows: ${verdicts.size} | gold rows: ${gold.size}`)
   md.push('')
-  md.push('## Per-arm summary')
+  md.push('## Per-arm summary (micro + session-level macro)')
   md.push('')
-  md.push('| Arm | Prompts | Injected | Judged | Precision (strict) | Precision (lenient) | shares_entity inj. | relates_to inj. | p50 ms | p95 ms |')
-  md.push('|---|---|---|---|---|---|---|---|---|---|')
+  md.push('| Arm | Prompts | Abstain% | Injected | Repeats% | Micro Strict | Micro Lenient | Macro Strict | Macro Lenient | p50 ms | p95 ms |')
+  md.push('|---|---|---|---|---|---|---|---|---|---|---|')
   for (const armName of armNames) {
     const s = stats.get(armName)!
-    md.push(`| ${armName} | ${s.prompts} | ${s.injectedTotal} | ${s.judged} | ${pct(s.relevant, s.judged)} | ${pct(s.relevant + s.partial, s.judged)} | ${s.entityEdgeInjections} | ${s.relatesToInjections} | ${percentile(s.durations, 50)} | ${percentile(s.durations, 95)} |`)
+    md.push(`| ${armName} | ${s.prompts} | ${pct(s.abstainedPrompts, s.prompts)} | ${s.injectedTotal} | ${pct(s.exactRepeats, s.injectedTotal)} | ${pct(s.relevant, s.judged)} | ${pct(s.relevant + s.partial, s.judged)} | ${fmtRate(computeMacroPrecision(s, false))} | ${fmtRate(computeMacroPrecision(s, true))} | ${percentile(s.durations, 50)} | ${percentile(s.durations, 95)} |`)
   }
   md.push('')
 
@@ -287,7 +339,11 @@ function report() {
     promptCount,
     arms: Object.fromEntries(Array.from(stats.entries()).map(([name, s]) => [name, {
       ...s,
+      sessions: undefined,
       durations: undefined,
+      sessionCount: s.sessions.size,
+      macroPrecisionStrict: computeMacroPrecision(s, false),
+      macroPrecisionLenient: computeMacroPrecision(s, true),
       p50: percentile(s.durations, 50),
       p95: percentile(s.durations, 95)
     }])),

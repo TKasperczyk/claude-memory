@@ -69,7 +69,7 @@ const CREATE_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
   required: ['type'],
   properties: {
     type: { type: 'string', enum: ['command', 'error', 'discovery', 'procedure', 'warning'] },
-    scope: { type: 'string', enum: ['global', 'project'], description: 'Memory scope (default: project).' },
+    scope: { type: 'string', enum: ['global', 'environment', 'project'], description: 'Memory scope (default: project).' },
     project: { type: 'string', description: 'Project root path. Auto-filled from context if omitted.' },
     // command fields
     command: { type: 'string', description: 'Command text. Required for command records.' },
@@ -124,7 +124,7 @@ const UPDATE_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
   properties: {
     id: { type: 'string', description: 'Memory record ID to update.' },
     deprecated: { type: 'boolean', description: 'Mark record as deprecated.' },
-    scope: { type: 'string', enum: ['global', 'project'], description: 'Set memory scope.' },
+    scope: { type: 'string', enum: ['global', 'environment', 'project'], description: 'Set memory scope.' },
     command: { type: 'string', description: 'Command text (command records only).' },
     exitCode: { type: 'number', description: 'Command exit code (command records only).' },
     outcome: { type: 'string', enum: ['success', 'failure', 'partial'], description: 'Command outcome.' },

@@ -10,7 +10,7 @@
  *   npx tsx scripts/eval-clone-table.ts --table my_eval  # custom eval table name
  */
 
-import { buildLanceRow, countRecords, initLanceDB, iterateRecords, resetCollection } from '../src/lib/lancedb.js'
+import { buildLanceRow, countRecords, ensureFtsIndex, initLanceDB, iterateRecords, resetCollection } from '../src/lib/lancedb.js'
 import { ensureClient } from '../src/lib/lancedb-client.js'
 import { argNumber, buildEvalConfig, hasFlag, loadProdConfig } from './eval-shared.js'
 
@@ -69,6 +69,7 @@ async function clone() {
     if (rows.length >= BATCH_SIZE) await flush()
   }
   await flush()
+  await ensureFtsIndex(table, { forceRebuild: true })
   console.log()
 
   const evalCount = await countRecords({}, evalConfig)

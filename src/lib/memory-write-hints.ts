@@ -78,6 +78,8 @@ function parseFrontmatter(content: string): NativeMemoryMetadata {
     if (key === 'description' && indent === 0 && scalar) result.description = scalar
     if ((key === 'metadata.type' || (inMetadata && key === 'type')) && scalar) {
       result.nativeMemoryType = scalar
+    } else if (indent === 0 && key === 'type' && scalar && !result.nativeMemoryType) {
+      result.nativeMemoryType = scalar
     }
   }
   return result
@@ -91,7 +93,8 @@ function readNativeMemoryMetadata(toolInput: unknown, content: string | undefine
   return {
     name: boundedString(toolInput.name, NAME_MAX_CHARS)
       ?? boundedString(frontmatter.name, NAME_MAX_CHARS)
-      ?? boundedString(toolInput.path, NAME_MAX_CHARS),
+      ?? boundedString(toolInput.path, NAME_MAX_CHARS)
+      ?? boundedString(toolInput.file_path, NAME_MAX_CHARS),
     description: boundedString(toolInput.description, DESCRIPTION_MAX_CHARS)
       ?? boundedString(frontmatter.description, DESCRIPTION_MAX_CHARS),
     nativeMemoryType: boundedString(metadata?.type, NATIVE_TYPE_MAX_CHARS)

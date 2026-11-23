@@ -242,12 +242,12 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'usageRatioWeight',
     label: 'Usage ratio weight',
-    description: 'Boost memories with high usefulness ratings.',
+    description: 'Post-gate rerank nudge for memories with strong Empirical-Bayes smoothed usefulness.',
     step: 0.01,
     min: 0,
     max: 1,
     kind: 'float',
-    default: 0.2,
+    default: 0.05,
     group: RETRIEVAL_GROUPS.ranking
   },
   {
@@ -283,31 +283,31 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'topicChangeThreshold',
     label: 'Topic change threshold',
-    description: 'Cosine similarity below this value clears the recently injected window for the session.',
+    description: 'Cosine similarity below this value clears the session injection ledger. Default 0 keeps hard suppression active for the entire compaction epoch until PreCompact resets it.',
     step: 0.01,
     min: 0,
     max: 1,
     kind: 'float',
-    default: 0.3,
+    default: 0,
     group: RETRIEVAL_GROUPS.suppression
   },
   {
     key: 'recentlyInjectedWindow',
     label: 'Recently injected window',
-    description: 'Maximum number of recently injected memory IDs kept per session. Set to 0 to disable suppression.',
+    description: 'Maximum number of injected memory IDs retained in the per-session ledger between compactions. Set to 0 to disable suppression.',
     step: 1,
     min: 0,
-    max: 100,
+    max: 500,
     kind: 'int',
-    default: 20,
+    default: 200,
     group: RETRIEVAL_GROUPS.suppression
   },
   {
     key: 'suppressionMode',
     label: 'Suppression mode',
-    description: 'Hard excludes recently injected memories; soft keeps them but reduces their score.',
+    description: 'Hard excludes already-injected memories for the compaction epoch; soft keeps them but reduces their score.',
     kind: 'text',
-    default: 'soft',
+    default: 'hard',
     options: [
       { value: 'soft', label: 'Soft' },
       { value: 'hard', label: 'Hard' }
@@ -396,9 +396,9 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'fallbackKeywordSemanticFloor',
     label: 'Semantic floor for fallback keywords',
-    description: 'On prompts with no error/command signals, require keyword-matched candidates to meet minSemanticSimilarity like everything else. Signal-derived keyword matches keep their exact-recall bypass.',
+    description: 'Require non-signal candidates to meet minSemanticSimilarity. Only candidates that directly matched an error/command signal keep an exact-recall bypass.',
     kind: 'bool',
-    default: false,
+    default: true,
     group: RETRIEVAL_GROUPS.similarity
   },
   {
@@ -419,6 +419,66 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
     kind: 'int',
     default: 3,
     group: RETRIEVAL_GROUPS.haiku
+  },
+  {
+    key: 'enablePostRetrievalRerank',
+    label: 'Post-retrieval listwise reranker',
+    description: 'Flip retrieval to Stage-1 fast local high-recall (BM25 FTS + single raw embedding) followed by a Stage-2 Haiku listwise reranker and abstention gate returning 0–3 high-confidence memories.',
+    kind: 'bool',
+    default: true,
+    group: RETRIEVAL_GROUPS.haiku
+  },
+  {
+    key: 'stage1MinSimilarity',
+    label: 'Stage-1 recall similarity floor',
+    description: 'Relaxed semantic similarity floor used by Stage-1 high-recall search before Stage-2 listwise reranking.',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    kind: 'float',
+    default: 0.45,
+    group: RETRIEVAL_GROUPS.haiku
+  },
+  {
+    key: 'rerankCandidateLimit',
+    label: 'Reranker candidate pool size',
+    description: 'Maximum deduplicated Stage-1 candidates sent to the Stage-2 listwise reranker.',
+    step: 1,
+    min: 3,
+    max: 40,
+    kind: 'int',
+    default: 18,
+    group: RETRIEVAL_GROUPS.haiku
+  },
+  {
+    key: 'rerankMaxRecords',
+    label: 'Reranker max injected records',
+    description: 'Maximum high-confidence records the Stage-2 reranker may select (0–N, allowing clean abstention).',
+    step: 1,
+    min: 1,
+    max: 10,
+    kind: 'int',
+    default: 3,
+    group: RETRIEVAL_GROUPS.haiku
+  },
+  {
+    key: 'rerankTimeoutMs',
+    label: 'Reranker timeout (ms)',
+    description: 'Timeout budget for the Stage-2 listwise reranker LLM call before falling back to strict local gating.',
+    step: 100,
+    min: 500,
+    max: 15000,
+    kind: 'int',
+    default: 4000,
+    group: RETRIEVAL_GROUPS.timeouts
+  },
+  {
+    key: 'enableWarmDaemon',
+    label: 'Use warm local daemon',
+    description: 'Route hook lookups through a warm local Unix-socket daemon when running, with immediate direct fallback.',
+    kind: 'bool',
+    default: true,
+    group: RETRIEVAL_GROUPS.timeouts
   },
   {
     key: 'maxKeywordQueries',
@@ -453,11 +513,11 @@ export const RETRIEVAL_FIELDS: SettingsFieldDefinition<keyof RetrievalSettings>[
   {
     key: 'maxSemanticQueryChars',
     label: 'Max semantic query chars',
-    description: 'Max characters allowed in the semantic query.',
+    description: 'Max characters allowed in the semantic query. Default 1200 prevents long pasted prompts from stalling local embedding models past the hook timeout.',
     step: 50,
     min: 1,
     kind: 'int',
-    default: 3000,
+    default: 1200,
     group: RETRIEVAL_GROUPS.query
   },
   {
@@ -656,6 +716,16 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.currentness
   },
   {
+    key: 'currentnessNoChangeBackoffDays',
+    label: 'Currentness no-change backoff (days)',
+    description: 'Days before re-verifying an unchanged discovery cluster whose previous currentness check made no deprecations.',
+    step: 1,
+    min: 1,
+    kind: 'int',
+    default: 90,
+    group: MAINTENANCE_GROUPS_META.currentness
+  },
+  {
     key: 'crossTypeConsolidationThreshold',
     label: 'Cross-type consolidation threshold',
     description: 'Higher similarity threshold for cross-type merges (0-1).',
@@ -839,14 +909,44 @@ export const MAINTENANCE_FIELDS: SettingsFieldDefinition<keyof MaintenanceSettin
     group: MAINTENANCE_GROUPS_META.extraction
   },
   {
+    key: 'idleSessionSweepHours',
+    label: 'Idle session sweep (hours)',
+    description: 'Sweep abandoned sessions inactive for at least this many hours during auto-maintenance. Set to 0 to disable.',
+    step: 1,
+    min: 0,
+    max: 168,
+    kind: 'int',
+    default: 6,
+    group: MAINTENANCE_GROUPS_META.extraction
+  },
+  {
     key: 'extractionDedupThreshold',
     label: 'Extraction dedup threshold',
-    description: 'Similarity for dedup during extraction.',
+    description: 'Similarity for dedup during extraction (used when write reconciliation is disabled or unavailable).',
     step: 0.01,
     min: 0,
     max: 1,
     kind: 'float',
     default: SIMILARITY_THRESHOLDS.EXTRACTION_DEDUP,
+    group: MAINTENANCE_GROUPS_META.similarityThresholds
+  },
+  {
+    key: 'enableWriteReconciliation',
+    label: 'Write-time reconciliation',
+    description: 'Reconcile extracted memories against top semantic neighbors (ADD / UPDATE / SUPERSEDE / NOOP) at write time.',
+    kind: 'bool',
+    default: true,
+    group: MAINTENANCE_GROUPS_META.extraction
+  },
+  {
+    key: 'writeReconciliationThreshold',
+    label: 'Reconciliation neighbor threshold',
+    description: 'Minimum cosine similarity to pull existing neighbors for write-time ADD/UPDATE/SUPERSEDE/NOOP reconciliation.',
+    step: 0.01,
+    min: 0.5,
+    max: 0.99,
+    kind: 'float',
+    default: 0.7,
     group: MAINTENANCE_GROUPS_META.similarityThresholds
   },
   {
@@ -920,7 +1020,17 @@ export const MODEL_FIELDS: SettingsFieldDefinition<keyof ModelSettings>[] = [
   {
     key: 'extractionModel',
     label: 'Extraction model',
-    description: 'Model used for extraction, query generation, and maintenance operations.',
+    description: 'Model used for transcript extraction and usefulness rating.',
+    kind: 'text',
+    default: 'claude-sonnet-5-5',
+    group: MODEL_GROUPS_META.models,
+    options: MODEL_OPTIONS,
+    allowCustom: true
+  },
+  {
+    key: 'maintenanceModel',
+    label: 'Maintenance model',
+    description: 'Model used for maintenance operations (consolidation, conflicts, currentness, global promotion, warning synthesis).',
     kind: 'text',
     default: 'claude-sonnet-5-5',
     group: MODEL_GROUPS_META.models,

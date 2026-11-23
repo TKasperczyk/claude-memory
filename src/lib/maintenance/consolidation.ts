@@ -1,4 +1,5 @@
 import { CLAUDE_CODE_SYSTEM_PROMPT } from '../anthropic.js'
+import { buildCacheControl } from '../prompt-cache.js'
 import {
   DEFAULT_CONFIG,
   type Config,
@@ -6,7 +7,7 @@ import {
   type RecordType
 } from '../types.js'
 import { buildFilter, queryRecords, updateRecord, vectorSearchSimilar } from '../lancedb.js'
-import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
+import { resolveMaintenanceModel, resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildRecordSnippet, escapeFilterValue } from '../shared.js'
 import { buildToolCallParams } from '../model-capabilities.js'
@@ -557,17 +558,18 @@ export async function llmVerifyConsolidation(
   const crossType = options.crossType ?? false
   const payload = JSON.stringify(buildConsolidationVerificationInput(cluster, crossType), null, 2)
 
+  const model = resolveMaintenanceModel()
   const response = await client.messages.create({
-    model: config.extraction.model,
+    model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: CONSOLIDATION_VERIFICATION_PROMPT, cache_control: { type: 'ephemeral' } }
+      { type: 'text', text: CONSOLIDATION_VERIFICATION_PROMPT, cache_control: buildCacheControl('5m') }
     ],
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CONSOLIDATION_VERIFICATION_TOOL],
-    ...buildToolCallParams(config.extraction.model, CONSOLIDATION_VERIFICATION_TOOL_NAME, Math.min(CONSOLIDATION_VERIFICATION_MAX_TOKENS, config.extraction.maxTokens))
+    ...buildToolCallParams(model, CONSOLIDATION_VERIFICATION_TOOL_NAME, Math.min(CONSOLIDATION_VERIFICATION_MAX_TOKENS, config.extraction.maxTokens))
   })
-  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+  recordTokenUsageFromResponse('maintenance', model, response, {
     collection: config.lancedb.table
   })
 

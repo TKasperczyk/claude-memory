@@ -121,6 +121,114 @@ describe('machine-generated task notification gate', () => {
     expect(isMachineGeneratedTaskNotification(boundaryPrompt, transcriptPath)).toBe(true)
   })
 
+  it('matches a proven task notification followed by trailing non-conversation bookkeeping lines', async () => {
+    const trailing = [
+      transcriptEntry(),
+      JSON.stringify({ type: 'attachment', isSidechain: false, attachment: { type: 'model' } }),
+      JSON.stringify({ type: 'queue-operation', operation: 'dequeue', timestamp: '2026-11-23T17:29:59.071Z' }),
+      JSON.stringify({ type: 'progress', data: { status: 'running' } }),
+      JSON.stringify({ type: 'last-prompt', lastPrompt: prompt }),
+      JSON.stringify({ type: 'ai-title', title: 'Background task' }),
+      JSON.stringify({ type: 'mode', mode: 'default' }),
+      JSON.stringify({ type: 'permission-mode', permissionMode: 'default' }),
+      JSON.stringify({ type: 'atis-latch' }),
+      JSON.stringify({ type: 'file-history-snapshot' })
+    ].join('\n')
+    await fs.writeFile(transcriptPath, `${trailing}\n`)
+
+    expect(isMachineGeneratedTaskNotification(prompt, transcriptPath)).toBe(true)
+  })
+
+  it('matches a mid-turn queued_command task-notification attachment with or without trailing queue bookkeeping', async () => {
+    const queuedAttachment = JSON.stringify({
+      type: 'attachment',
+      isSidechain: false,
+      attachment: {
+        type: 'queued_command',
+        prompt,
+        commandMode: 'task-notification',
+        origin: { kind: 'task-notification', producer: 'session-task' }
+      }
+    })
+    await fs.writeFile(transcriptPath, `${queuedAttachment}\n`)
+    expect(isMachineGeneratedTaskNotification(prompt, transcriptPath)).toBe(true)
+
+    await fs.writeFile(
+      transcriptPath,
+      `${queuedAttachment}\n${JSON.stringify({ type: 'queue-operation', operation: 'remove', content: prompt })}\n${JSON.stringify({ type: 'last-prompt' })}\n`
+    )
+    expect(isMachineGeneratedTaskNotification(prompt, transcriptPath)).toBe(true)
+  })
+
+  it.each([
+    ['assistant turn followed by bookkeeping', async () => {
+      await fs.writeFile(transcriptPath, [
+        transcriptEntry(),
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'prior response' } }),
+        JSON.stringify({ type: 'last-prompt' }),
+        JSON.stringify({ type: 'progress' })
+      ].join('\n') + '\n')
+      return transcriptPath
+    }],
+    ['malformed JSON between proven entry and bookkeeping', async () => {
+      await fs.writeFile(transcriptPath, [
+        transcriptEntry(),
+        '{corrupt-line',
+        JSON.stringify({ type: 'last-prompt' })
+      ].join('\n') + '\n')
+      return transcriptPath
+    }],
+    ['human queued_command attachment pasting notification text', async () => {
+      await fs.writeFile(transcriptPath, JSON.stringify({
+        type: 'attachment',
+        isSidechain: false,
+        attachment: {
+          type: 'queued_command',
+          prompt,
+          commandMode: 'prompt',
+          origin: { kind: 'human' },
+          humanTurn: true
+        }
+      }) + '\n')
+      return transcriptPath
+    }],
+    ['human queued_command following an earlier system task notification', async () => {
+      await fs.writeFile(transcriptPath, [
+        JSON.stringify({
+          type: 'attachment',
+          isSidechain: false,
+          attachment: {
+            type: 'queued_command',
+            prompt,
+            commandMode: 'task-notification',
+            origin: { kind: 'task-notification', producer: 'session-task' }
+          }
+        }),
+        JSON.stringify({
+          type: 'attachment',
+          isSidechain: false,
+          attachment: {
+            type: 'queued_command',
+            prompt: 'user typed something else',
+            commandMode: 'prompt',
+            origin: { kind: 'human' },
+            humanTurn: true
+          }
+        })
+      ].join('\n') + '\n')
+      return transcriptPath
+    }],
+    ['unattributed queue-operation enqueue without provenance entry', async () => {
+      await fs.writeFile(transcriptPath, [
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'working' } }),
+        JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: prompt })
+      ].join('\n') + '\n')
+      return transcriptPath
+    }]
+  ])('still fails open for %s', async (_label, arrange) => {
+    expect(isMachineGeneratedTaskNotification(prompt, await arrange())).toBe(false)
+  })
+
   it('skips retrieval through the hook entrypoint for a proven task notification', async () => {
     await fs.writeFile(transcriptPath, `${transcriptEntry()}\n`)
     const harness = entrypointHarness(hookPayload())

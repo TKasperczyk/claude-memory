@@ -3,9 +3,10 @@ import { DEFAULT_MAINTENANCE_SETTINGS, DEFAULT_RETRIEVAL_SETTINGS, RETRIEVAL_FIE
 import { validateSettingValue } from '../src/lib/settings.js'
 
 describe('retrieval and maintenance setting defaults', () => {
-  it('uses the empirically selected semantic thresholds', () => {
+  it('uses the empirically selected semantic thresholds and query cap', () => {
     expect(DEFAULT_RETRIEVAL_SETTINGS.minSemanticSimilarity).toBe(0.65)
     expect(DEFAULT_RETRIEVAL_SETTINGS.semanticAnchorThreshold).toBe(0.65)
+    expect(DEFAULT_RETRIEVAL_SETTINGS.maxSemanticQueryChars).toBe(1200)
     expect(RETRIEVAL_FIELDS.find(field => field.key === 'semanticAnchorThreshold')?.description).toContain(
       'qualified raw-keyword matches survive'
     )

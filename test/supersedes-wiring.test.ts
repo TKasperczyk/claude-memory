@@ -133,9 +133,10 @@ describe('supersedes wiring', () => {
     expect(mockedFindSimilar).toHaveBeenCalledWith(
       replacement,
       expect.any(Number),
-      1,
+      expect.any(Number),
       DEFAULT_CONFIG,
-      `id <> '${oldRecord.id}'`
+      `id <> '${oldRecord.id}'`,
+      expect.anything()
     )
     expect(mockedInsertRecord).toHaveBeenCalledWith(
       expect.objectContaining({ id: replacement.id, supersedes: oldRecord.id }),

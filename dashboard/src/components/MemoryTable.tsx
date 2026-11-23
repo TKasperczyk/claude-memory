@@ -54,7 +54,7 @@ export default function MemoryTable({
             <TableHead className="w-16 px-4">Type</TableHead>
             <TableHead className="px-4">Summary</TableHead>
             <TableHead className="w-32 px-4">Project</TableHead>
-            <TableHead className="w-20 px-4">Scope</TableHead>
+            <TableHead className="w-28 px-4">Scope</TableHead>
             {hasRestorableRows && (
               <TableHead className="w-36 px-4 text-right whitespace-nowrap">Actions</TableHead>
             )}
@@ -87,9 +87,15 @@ export default function MemoryTable({
                   <div className="font-medium text-foreground truncate">{summary}</div>
                 </TableCell>
                 <TableCell className={`px-4 py-2.5 text-muted-foreground truncate text-[13px] ${dimmed}`}>
-                  {record.project ?? '—'}
+                  {record.project || '—'}
                 </TableCell>
-                <TableCell className={`px-4 py-2.5 truncate text-[13px] ${record.scope === 'global' ? 'text-type-discovery font-medium' : 'text-muted-foreground'} ${dimmed}`}>
+                <TableCell className={`px-4 py-2.5 truncate text-[13px] ${
+                  record.scope === 'global'
+                    ? 'text-type-discovery font-medium'
+                    : record.scope === 'environment'
+                      ? 'text-type-procedure font-medium'
+                      : 'text-muted-foreground'
+                } ${dimmed}`}>
                   {record.scope ?? 'project'}
                 </TableCell>
                 {hasRestorableRows && (

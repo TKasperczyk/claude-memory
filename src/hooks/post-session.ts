@@ -15,9 +15,12 @@ import { findGitRoot } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, escapeFilterValue, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/lancedb.js'
 import { markDeprecated } from '../lib/maintenance/operations.js'
+import { resolveAttributionScope } from '../lib/scope-attribution.js'
 import { loadSettings } from '../lib/settings.js'
 import { isProcessEntrypoint } from '../lib/shared.js'
+import { findStaticDocOverlap, loadStaticProjectDocs } from '../lib/static-docs.js'
 import { parseTranscript, computeIncrementalStartIndex, sliceTranscript, type Transcript } from '../lib/transcript.js'
+import { reconcileIncomingRecord } from '../lib/write-reconciliation.js'
 import {
   DEFAULT_CONFIG,
   type Config,
@@ -30,6 +33,9 @@ import {
   type TokenUsage
 } from '../lib/types.js'
 import { canonicalizePath, CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE } from '../lib/paths.js'
+import { loadConfig } from '../lib/config.js'
+import { resetSessionInjectionLedger } from '../lib/session-tracking.js'
+import { addTokenUsage } from '../lib/token-usage.js'
 import type { ExtractionTimingStage } from '../lib/extraction-timings.js'
 import { POST_SESSION_WORKER_SCRIPT } from '../lib/runtime-artifacts.js'
 
@@ -64,6 +70,10 @@ export interface PostSessionResult {
   extractedEventCount?: number
   isIncremental?: boolean
   hasRememberMarker?: boolean
+  /** Helpful injected memory IDs rated during the merged extraction LLM call. */
+  helpfulMemoryIds?: string[]
+  /** True when usefulness rating already ran inside extractRecords (skips duplicate LLM call). */
+  usefulnessRatedDuringExtraction?: boolean
   timings?: PostSessionTimings
   diagnostics?: PostSessionDiagnostic[]
 }
@@ -221,9 +231,18 @@ export async function handlePostSession(
     }
   }
 
-  const projectRoot = findGitRoot(input.cwd) ?? (input.cwd ? canonicalizePath(input.cwd) : input.cwd)
+  const gitRoot = findGitRoot(input.cwd)
+  const attribution = resolveAttributionScope(input.cwd, gitRoot)
+  const projectRoot = attribution.isCatchAll ? undefined : attribution.project
+  const staticDocs = loadStaticProjectDocs(projectRoot, input.cwd)
   const llmStart = Date.now()
-  const { records: extractedRecords, tokenUsage, error } = await extractRecords(transcript, {
+  const {
+    records: extractedRecords,
+    helpfulMemoryIds,
+    usefulnessRated,
+    tokenUsage,
+    error
+  } = await extractRecords(transcript, {
     sessionId: input.session_id,
     runId: options.plannedRunId,
     cwd: input.cwd,
@@ -231,6 +250,7 @@ export async function handlePostSession(
     transcriptPath: input.transcript_path,
     injectedMemories: options.injectedMemories,
     memoryWriteHints,
+    staticDocsDigest: staticDocs.digest || undefined,
     isIncremental,
     maxTranscriptChars: settings.maxTranscriptChars
   }, config)
@@ -255,6 +275,7 @@ export async function handlePostSession(
       extractedEventCount: totalEventCount,
       isIncremental: isIncremental || undefined,
       hasRememberMarker: hasRememberMarker || undefined,
+      ...(usefulnessRated ? { helpfulMemoryIds, usefulnessRatedDuringExtraction: true } : {}),
       tokenUsage,
       extractionError: error,
       timings
@@ -290,6 +311,9 @@ export async function handlePostSession(
   let unembeddedFailureCause = embeddingResult.error
 
   const storeStart = Date.now()
+  let totalTokenUsage = tokenUsage
+  const useWriteReconciliation = settings.enableWriteReconciliation !== false
+  const reconcileThreshold = settings.writeReconciliationThreshold ?? 0.70
   for (const record of records) {
     if (skipUnembeddedRecords && (!record.embedding || record.embedding.length === 0)) {
       failed += 1
@@ -299,44 +323,223 @@ export async function handlePostSession(
       continue
     }
     try {
+      // Tier-0 static doc dedup: skip non-/remember records already verbatim-covered in CLAUDE.md/AGENTS.md.
+      if (!hasRememberMarker && staticDocs.entries.length > 0) {
+        const staticOverlap = findStaticDocOverlap(record, staticDocs, 0.80, 6)
+        if (staticOverlap) {
+          skipped += 1
+          recordOutcomes.push(buildRecordOutcome(record, 'skipped'))
+          console.error(`[claude-memory] Skipped record already covered by Tier-0 doc ${staticOverlap.matchedLabel} (overlap=${staticOverlap.overlapRatio})`)
+          continue
+        }
+      }
+
       const dedupFilter = record.supersedes
         ? `id <> '${escapeFilterValue(record.supersedes)}'`
         : undefined
-      const matches = await findSimilar(record, settings.extractionDedupThreshold, 1, config, dedupFilter)
+      const searchThreshold = useWriteReconciliation
+        ? Math.min(reconcileThreshold, settings.extractionDedupThreshold)
+        : settings.extractionDedupThreshold
+      const searchLimit = useWriteReconciliation ? 5 : 1
+      const matches = await findSimilar(
+        record,
+        searchThreshold,
+        searchLimit,
+        config,
+        dedupFilter,
+        useWriteReconciliation ? { crossType: true, includeSharedScopes: true } : undefined
+      )
+
       if (matches.length > 0) {
-        const match = matches[0]
-        const existing = match.record
-        const updates = buildUpdates(existing, record)
-        if (Object.keys(updates).length > 0) {
-          const stored = await updateRecord(existing.id, updates, config, { flush: flushMode })
-          if (!stored) {
-            failed += 1
-            recordOutcomes.push({
-              id: record.id,
-              outcome: 'failed',
-              storeError: 'record disappeared during update'
-            })
-            console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}: record disappeared during update`)
-            continue
-          }
-          updated += 1
-          updatedIds.push(existing.id)
-          const outcome = buildRecordOutcome(record, 'updated', {
-            storedRecordId: existing.id,
-            dedupSimilarity: match.similarity
-          })
-          recordOutcomes.push(outcome)
-          await applySupersedesWithOutcome(outcome, record, existing.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
-        } else {
+        const topMatch = matches[0]
+        const sameTypeMatch = matches.find(m => m.record.type === record.type)
+        const deterministicUpdates = sameTypeMatch ? buildUpdates(sameTypeMatch.record, record) : null
+
+        // Fast-path 1: truly identical same-type duplicate -> NOOP without LLM spend
+        const coreIdentical = Boolean(sameTypeMatch && hasIdenticalCoreStatement(sameTypeMatch.record, record))
+        if (sameTypeMatch && coreIdentical && deterministicUpdates && Object.keys(deterministicUpdates).length === 0 && sameTypeMatch.similarity >= searchThreshold) {
           skipped += 1
           const outcome = buildRecordOutcome(record, 'skipped', {
-            storedRecordId: existing.id,
-            dedupSimilarity: match.similarity
+            storedRecordId: sameTypeMatch.record.id,
+            dedupSimilarity: sameTypeMatch.similarity
           })
           recordOutcomes.push(outcome)
-          await applySupersedesWithOutcome(outcome, record, existing.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+          await applySupersedesWithOutcome(outcome, record, sameTypeMatch.record.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+          continue
         }
-        continue
+
+        // Fast-path 2: high-similarity pure empty-field enrichment on identical core statement -> UPDATE without LLM spend
+        const isPureEnrichment = Boolean(
+          sameTypeMatch
+          && coreIdentical
+          && sameTypeMatch.similarity >= settings.extractionDedupThreshold
+          && deterministicUpdates
+          && Object.keys(deterministicUpdates).length > 0
+        )
+
+        if (!isPureEnrichment && useWriteReconciliation) {
+          const decision = await reconcileIncomingRecord(record, matches, config, {
+            sessionId: input.session_id,
+            runId: options.plannedRunId
+          })
+
+          if (decision) {
+            if (decision.tokenUsage) {
+              totalTokenUsage = addTokenUsage(totalTokenUsage, decision.tokenUsage)
+            }
+            if (decision.action === 'NOOP' && decision.targetRecord) {
+              skipped += 1
+              const outcome = buildRecordOutcome(record, 'skipped', {
+                storedRecordId: decision.targetRecord.id,
+                dedupSimilarity: decision.targetSimilarity
+              })
+              recordOutcomes.push(outcome)
+              await applySupersedesWithOutcome(outcome, record, decision.targetRecord.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+              continue
+            }
+
+            if (decision.action === 'UPDATE' && decision.targetRecord) {
+              const target = decision.targetRecord
+              const baseUpdates = target.type === record.type ? buildUpdates(target, record) : {}
+              const substantiveUpdates = {
+                ...baseUpdates,
+                ...(decision.mergedUpdates ?? {})
+              } as Partial<MemoryRecord>
+              if (Object.keys(substantiveUpdates).length === 0) {
+                skipped += 1
+                const outcome = buildRecordOutcome(record, 'skipped', {
+                  storedRecordId: target.id,
+                  dedupSimilarity: decision.targetSimilarity
+                })
+                recordOutcomes.push(outcome)
+                await applySupersedesWithOutcome(outcome, record, target.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+                continue
+              }
+              const mergedUpdates = {
+                ...substantiveUpdates,
+                lastUsed: Date.now()
+              } as Partial<MemoryRecord>
+              const stored = await updateRecord(target.id, mergedUpdates, config, { flush: flushMode })
+              if (!stored) {
+                failed += 1
+                recordOutcomes.push({ id: record.id, outcome: 'failed', storeError: 'record disappeared during update' })
+                continue
+              }
+              updated += 1
+              updatedIds.push(target.id)
+              const outcome = buildRecordOutcome(record, 'updated', {
+                storedRecordId: target.id,
+                dedupSimilarity: decision.targetSimilarity
+              })
+              recordOutcomes.push(outcome)
+              await applySupersedesWithOutcome(outcome, record, target.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+              continue
+            }
+
+            if (decision.action === 'SUPERSEDE' && decision.targetRecord) {
+              const prepared = applyUsageCounters({
+                ...record,
+                supersedes: record.supersedes ?? decision.targetRecord.id
+              })
+              await insertRecord(prepared, config, { flush: flushMode })
+              inserted += 1
+              insertedIds.push(prepared.id)
+              const outcome = buildRecordOutcome(prepared, 'inserted', {
+                storedRecordId: prepared.id,
+                dedupSimilarity: decision.targetSimilarity
+              })
+              recordOutcomes.push(outcome)
+              await applySupersedesWithOutcome(outcome, prepared, prepared.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+              if (record.supersedes && record.supersedes !== decision.targetRecord.id) {
+                try {
+                  const deprecatedNeighbor = await markDeprecated(decision.targetRecord.id, config, {
+                    supersedingRecordId: prepared.id,
+                    reason: `write-reconcile:superseded-by:${prepared.id}`
+                  })
+                  if (!deprecatedNeighbor) {
+                    supersedesMissing += 1
+                  }
+                } catch (deprecateError) {
+                  console.error(`[claude-memory] Failed to deprecate reconciled neighbor ${decision.targetRecord.id}:`, deprecateError)
+                }
+              }
+              continue
+            }
+
+            // decision.action === 'ADD': fall through to insertRecord below
+          } else if (sameTypeMatch && sameTypeMatch.similarity >= settings.extractionDedupThreshold) {
+            // Fallback to threshold dedup if reconciliation LLM is unavailable
+            const existing = sameTypeMatch.record
+            const updates = buildUpdates(existing, record)
+            if (Object.keys(updates).length > 0) {
+              const stored = await updateRecord(existing.id, updates, config, { flush: flushMode })
+              if (!stored) {
+                failed += 1
+                recordOutcomes.push({ id: record.id, outcome: 'failed', storeError: 'record disappeared during update' })
+                continue
+              }
+              updated += 1
+              updatedIds.push(existing.id)
+              const outcome = buildRecordOutcome(record, 'updated', {
+                storedRecordId: existing.id,
+                dedupSimilarity: sameTypeMatch.similarity
+              })
+              recordOutcomes.push(outcome)
+              await applySupersedesWithOutcome(outcome, record, existing.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+              continue
+            }
+            skipped += 1
+            const outcome = buildRecordOutcome(record, 'skipped', {
+              storedRecordId: existing.id,
+              dedupSimilarity: sameTypeMatch.similarity
+            })
+            recordOutcomes.push(outcome)
+            await applySupersedesWithOutcome(outcome, record, existing.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+            continue
+          }
+        } else if (sameTypeMatch && (isPureEnrichment || !useWriteReconciliation)) {
+          const existing = sameTypeMatch.record
+          const updates = buildUpdates(existing, record)
+          if (Object.keys(updates).length > 0) {
+            const stored = await updateRecord(existing.id, updates, config, { flush: flushMode })
+            if (!stored) {
+              failed += 1
+              recordOutcomes.push({
+                id: record.id,
+                outcome: 'failed',
+                storeError: 'record disappeared during update'
+              })
+              console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}: record disappeared during update`)
+              continue
+            }
+            updated += 1
+            updatedIds.push(existing.id)
+            const outcome = buildRecordOutcome(record, 'updated', {
+              storedRecordId: existing.id,
+              dedupSimilarity: sameTypeMatch.similarity
+            })
+            recordOutcomes.push(outcome)
+            await applySupersedesWithOutcome(outcome, record, existing.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+          } else {
+            skipped += 1
+            const outcome = buildRecordOutcome(record, 'skipped', {
+              storedRecordId: existing.id,
+              dedupSimilarity: sameTypeMatch.similarity
+            })
+            recordOutcomes.push(outcome)
+            await applySupersedesWithOutcome(outcome, record, existing.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
+          }
+          continue
+        }
+        // If no same-type match and write reconciliation disabled, skip only if topMatch >= threshold
+        if (!useWriteReconciliation && topMatch.similarity >= settings.extractionDedupThreshold) {
+          skipped += 1
+          recordOutcomes.push(buildRecordOutcome(record, 'skipped', {
+            storedRecordId: topMatch.record.id,
+            dedupSimilarity: topMatch.similarity
+          }))
+          continue
+        }
       }
 
       const prepared = applyUsageCounters(record)
@@ -368,12 +571,54 @@ export async function handlePostSession(
 
   return {
     inserted, updated, skipped, failed, supersedesMissing, records, recordOutcomes, insertedIds, updatedIds,
-    transcript: fullTranscript, tokenUsage, extractionError: error,
+    transcript: fullTranscript, tokenUsage: totalTokenUsage, extractionError: error,
     extractedEventCount: totalEventCount,
     isIncremental: isIncremental || undefined,
     hasRememberMarker: hasRememberMarker || undefined,
+    ...(usefulnessRated ? { helpfulMemoryIds, usefulnessRatedDuringExtraction: true } : {}),
     timings,
     diagnostics: diagnostics.length > 0 ? diagnostics : undefined
+  }
+}
+
+function sameStringList(a: string[] | undefined, b: string[] | undefined): boolean {
+  const left = a ?? []
+  const right = b ?? []
+  return left.length === right.length && left.every((item, idx) => item === right[idx])
+}
+
+function hasIdenticalCoreStatement(existing: MemoryRecord, incoming: MemoryRecord): boolean {
+  if (existing.type !== incoming.type) return false
+  switch (existing.type) {
+    case 'discovery': {
+      const inc = incoming as typeof existing
+      return existing.what === inc.what
+        && existing.where === inc.where
+        && (!inc.evidence || existing.evidence === inc.evidence)
+    }
+    case 'command': {
+      const inc = incoming as typeof existing
+      return existing.command === inc.command
+        && existing.outcome === inc.outcome
+        && (!inc.resolution || existing.resolution === inc.resolution)
+    }
+    case 'error': {
+      const inc = incoming as typeof existing
+      return existing.errorText === inc.errorText
+        && existing.resolution === inc.resolution
+        && (!inc.cause || existing.cause === inc.cause)
+    }
+    case 'procedure': {
+      const inc = incoming as typeof existing
+      return existing.name === inc.name && sameStringList(existing.steps, inc.steps)
+    }
+    case 'warning': {
+      const inc = incoming as typeof existing
+      return existing.avoid === inc.avoid
+        && existing.useInstead === inc.useInstead
+        && existing.severity === inc.severity
+        && (!inc.reason || existing.reason === inc.reason)
+    }
   }
 }
 
@@ -487,7 +732,8 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
     updates.scope = 'global'
   }
 
-  if (!existing.project && incoming.project) updates.project = incoming.project
+  const isSharedScope = existing.scope === 'environment' || existing.scope === 'global'
+  if (!isSharedScope && !existing.project && incoming.project) updates.project = incoming.project
   if (!existing.sourceSessionId && incoming.sourceSessionId) updates.sourceSessionId = incoming.sourceSessionId
   if (!existing.sourceExcerpt && incoming.sourceExcerpt) updates.sourceExcerpt = incoming.sourceExcerpt
   if (incoming.supersedes && incoming.supersedes !== existing.id && existing.supersedes !== incoming.supersedes) {
@@ -497,7 +743,7 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
   if (existing.type === 'command' && incoming.type === 'command') {
     const commandUpdates = updates as Partial<typeof existing>
     const contextUpdates: Partial<typeof existing.context> = {}
-    if (incoming.context.project) contextUpdates.project = incoming.context.project
+    if (!isSharedScope && incoming.context.project) contextUpdates.project = incoming.context.project
     if (incoming.context.cwd) contextUpdates.cwd = incoming.context.cwd
     if (incoming.context.intent) contextUpdates.intent = incoming.context.intent
     if (Object.keys(contextUpdates).length > 0) {
@@ -521,7 +767,7 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
   if (existing.type === 'procedure' && incoming.type === 'procedure') {
     const procedureUpdates = updates as Partial<typeof existing>
     const contextUpdates: Partial<typeof existing.context> = {}
-    if (incoming.context.project) contextUpdates.project = incoming.context.project
+    if (!isSharedScope && incoming.context.project) contextUpdates.project = incoming.context.project
     if (Object.keys(contextUpdates).length > 0) {
       procedureUpdates.context = { ...existing.context, ...contextUpdates }
     }
@@ -535,7 +781,9 @@ export function buildUpdates(existing: MemoryRecord, incoming: MemoryRecord): Pa
     if (!existing.evidence && incoming.evidence) discoveryUpdates.evidence = incoming.evidence
   }
 
-  if (Object.keys(updates).length > 0) {
+  // Only bump lastUsed on verified success or substantive field updates (not pure failure-only bumps).
+  const hasSubstantiveUpdate = Object.keys(updates).some(key => key !== 'failureCount')
+  if (hasSubstantiveUpdate) {
     updates.lastUsed = Date.now()
   }
 
@@ -613,6 +861,21 @@ function launcherMain(): void {
   if (!input.trim()) {
     debugLog('Empty input, exiting')
     return
+  }
+
+  // Immediately reset the compaction-scoped injection ledger on PreCompact so
+  // any prompt submitted right after compaction starts fresh without racing the worker.
+  try {
+    const parsed = JSON.parse(input) as { hook_event_name?: unknown; session_id?: unknown; cwd?: unknown }
+    if (parsed.hook_event_name === 'PreCompact' && typeof parsed.session_id === 'string' && parsed.session_id) {
+      const cwd = typeof parsed.cwd === 'string' ? parsed.cwd : ''
+      const configRoot = (cwd ? findGitRoot(cwd) : undefined) ?? (cwd ? canonicalizePath(cwd) : process.cwd())
+      const config = loadConfig(configRoot)
+      resetSessionInjectionLedger(parsed.session_id, config.lancedb.table)
+      debugLog(`Reset compaction injection ledger for session=${parsed.session_id}`)
+    }
+  } catch {
+    // Non-fatal: worker will also reset ledger on PreCompact.
   }
 
   // Write to temp file

@@ -1,4 +1,5 @@
 import { CLAUDE_CODE_SYSTEM_PROMPT } from '../anthropic.js'
+import { buildCacheControl } from '../prompt-cache.js'
 import { embed } from '../embed.js'
 import {
   DEFAULT_CONFIG,
@@ -12,7 +13,7 @@ import {
 } from '../types.js'
 import type { MaintenanceCandidateGroup } from '../../../shared/types.js'
 import { batchUpdateRecords, buildEmbeddingInput, buildFilter, getRecord, updateRecord, vectorSearchSimilar } from '../lancedb.js'
-import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
+import { resolveMaintenanceModel, resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../shared.js'
 import { buildToolCallParams, computeMaxTokensWithThinkingHeadroom } from '../model-capabilities.js'
@@ -101,19 +102,20 @@ export async function checkGlobalPromotion(
 
   const payload = JSON.stringify(buildGeneralizationInput(record), null, 2)
 
+  const model = resolveMaintenanceModel()
   const response = await client.messages.create({
-    model: config.extraction.model,
+    model,
     max_tokens: computeMaxTokensWithThinkingHeadroom(
-      config.extraction.model,
+      model,
       Math.min(GLOBAL_PROMOTION_MAX_TOKENS, config.extraction.maxTokens)
     ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: GLOBAL_PROMOTION_PROMPT, cache_control: { type: 'ephemeral' } }
+      { type: 'text', text: GLOBAL_PROMOTION_PROMPT, cache_control: buildCacheControl('5m') }
     ],
     messages: [{ role: 'user', content: `Record:\n${payload}` }]
   })
-  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+  recordTokenUsageFromResponse('maintenance', model, response, {
     collection: config.lancedb.table
   })
 
@@ -264,17 +266,18 @@ async function synthesizeWarning(
     }))
   }, null, 2)
 
+  const model = resolveMaintenanceModel()
   const response = await client.messages.create({
-    model: config.extraction.model,
+    model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: WARNING_SYNTHESIS_PROMPT, cache_control: { type: 'ephemeral' } }
+      { type: 'text', text: WARNING_SYNTHESIS_PROMPT, cache_control: buildCacheControl('5m') }
     ],
     messages: [{ role: 'user', content: `Failure records:\n${payload}` }],
     tools: [WARNING_SYNTHESIS_TOOL],
-    ...buildToolCallParams(config.extraction.model, WARNING_SYNTHESIS_TOOL_NAME, Math.min(WARNING_SYNTHESIS_MAX_TOKENS, config.extraction.maxTokens))
+    ...buildToolCallParams(model, WARNING_SYNTHESIS_TOOL_NAME, Math.min(WARNING_SYNTHESIS_MAX_TOKENS, config.extraction.maxTokens))
   })
-  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+  recordTokenUsageFromResponse('maintenance', model, response, {
     collection: config.lancedb.table
   })
 

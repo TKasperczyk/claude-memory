@@ -100,12 +100,81 @@ export function saveSessionTracking(record: InjectionSessionRecord, collection?:
   }
 }
 
-export function markSessionRetrievalCounted(sessionId: string, collection?: string): void {
+export function markSessionRetrievalCounted(sessionId: string, collection?: string, countedMemoryCount?: number): void {
   if (!sessionId) return
   withSessionLock(sessionId, () => {
     const existing = loadSessionTracking(sessionId, collection)
-    if (!existing || existing.retrievalCounted) return
-    saveSessionTracking({ ...existing, retrievalCounted: true }, collection)
+    if (!existing) return
+    const nextCount = countedMemoryCount ?? existing.memories.length
+    if (existing.retrievalCounted && (existing.countedMemoryCount ?? existing.memories.length) >= nextCount) return
+    saveSessionTracking({
+      ...existing,
+      retrievalCounted: true,
+      countedMemoryCount: nextCount
+    }, collection)
+  }, collection)
+}
+
+export function markSessionMemoriesRated(
+  sessionId: string,
+  ratedIds: string[],
+  collection?: string,
+  options: { countedMemoryCount?: number; ratedMemoryCount?: number } = {}
+): InjectionSessionRecord | null {
+  if (!sessionId) return null
+  return withSessionLock(sessionId, () => {
+    const existing = loadSessionTracking(sessionId, collection)
+    if (!existing) return null
+    const mergedRated = Array.from(new Set([
+      ...(existing.ratedMemoryIds ?? []),
+      ...ratedIds.map(id => id.trim()).filter(Boolean)
+    ]))
+    const next: InjectionSessionRecord = {
+      ...existing,
+      ratedMemoryIds: mergedRated,
+      ...(options.countedMemoryCount !== undefined
+        ? { countedMemoryCount: Math.max(existing.countedMemoryCount ?? 0, options.countedMemoryCount) }
+        : {}),
+      ...(options.ratedMemoryCount !== undefined
+        ? { ratedMemoryCount: Math.max(existing.ratedMemoryCount ?? 0, options.ratedMemoryCount) }
+        : {})
+    }
+    saveSessionTracking(next, collection)
+    return next
+  }, collection)
+}
+
+/**
+ * Reset the compaction-scoped injection suppression ledger on PreCompact while
+ * preserving session.memories for usefulness rating and audit history.
+ * When expectedVersion is provided, skips reset if post-compaction prompts have
+ * already advanced retrievalStateVersion (preventing async workers from wiping
+ * newly injected post-compaction entries).
+ */
+export function resetSessionInjectionLedger(
+  sessionId: string,
+  collection?: string,
+  options: { expectedVersion?: number } = {}
+): InjectionSessionRecord | null {
+  if (!sessionId) return null
+  return withSessionLock(sessionId, () => {
+    const existing = loadSessionTracking(sessionId, collection)
+    if (!existing) return null
+    const currentVersion = existing.retrievalStateVersion ?? 0
+    if (options.expectedVersion !== undefined && currentVersion !== options.expectedVersion) {
+      return existing
+    }
+    if ((existing.recentlyInjectedIds?.length ?? 0) === 0 && existing.previousPromptEmbedding === null) {
+      return existing
+    }
+    const next: InjectionSessionRecord = {
+      ...existing,
+      recentlyInjectedIds: [],
+      previousPromptEmbedding: null,
+      retrievalStateVersion: currentVersion + 1
+    }
+    saveSessionTracking(next, collection)
+    return next
   }, collection)
 }
 
@@ -190,7 +259,10 @@ export function updateSessionRetrievalState(
         : existing?.previousPromptEmbedding ?? null,
       lastPromptAt: update.lastPromptAt ?? existing?.lastPromptAt,
       retrievalStateVersion: currentVersion + 1,
-      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {})
+      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {}),
+      ...(existing?.countedMemoryCount !== undefined ? { countedMemoryCount: existing.countedMemoryCount } : {}),
+      ...(existing?.ratedMemoryCount !== undefined ? { ratedMemoryCount: existing.ratedMemoryCount } : {}),
+      ...(existing?.ratedMemoryIds?.length ? { ratedMemoryIds: existing.ratedMemoryIds } : {})
     }
     saveSessionTracking(record, collection)
     return record
@@ -230,7 +302,10 @@ export function updateSessionPromptStateIfVersion(
       previousPromptEmbedding: update.previousPromptEmbedding,
       lastPromptAt: update.lastPromptAt,
       retrievalStateVersion: currentVersion + 1,
-      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {})
+      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {}),
+      ...(existing?.countedMemoryCount !== undefined ? { countedMemoryCount: existing.countedMemoryCount } : {}),
+      ...(existing?.ratedMemoryCount !== undefined ? { ratedMemoryCount: existing.ratedMemoryCount } : {}),
+      ...(existing?.ratedMemoryIds?.length ? { ratedMemoryIds: existing.ratedMemoryIds } : {})
     }
     saveSessionTracking(record, collection)
     return record
@@ -276,7 +351,10 @@ export function updateSessionRetrievalStateAtomic(
       previousPromptEmbedding: existing?.previousPromptEmbedding ?? null,
       lastPromptAt: existing?.lastPromptAt,
       retrievalStateVersion: currentVersion + 1,
-      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {})
+      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {}),
+      ...(existing?.countedMemoryCount !== undefined ? { countedMemoryCount: existing.countedMemoryCount } : {}),
+      ...(existing?.ratedMemoryCount !== undefined ? { ratedMemoryCount: existing.ratedMemoryCount } : {}),
+      ...(existing?.ratedMemoryIds?.length ? { ratedMemoryIds: existing.ratedMemoryIds } : {})
     }
     saveSessionTracking(record, collection)
     return record
@@ -339,7 +417,10 @@ export function appendSessionTracking(
       previousPromptEmbedding: existing?.previousPromptEmbedding ?? null,
       lastPromptAt: existing?.lastPromptAt,
       retrievalStateVersion: existing?.retrievalStateVersion ?? 0,
-      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {})
+      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {}),
+      ...(existing?.countedMemoryCount !== undefined ? { countedMemoryCount: existing.countedMemoryCount } : {}),
+      ...(existing?.ratedMemoryCount !== undefined ? { ratedMemoryCount: existing.ratedMemoryCount } : {}),
+      ...(existing?.ratedMemoryIds?.length ? { ratedMemoryIds: existing.ratedMemoryIds } : {})
     }
     saveSessionTracking(record, collection)
     return record
@@ -424,6 +505,13 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
 
   const hasReview = asBoolean(record.hasReview)
   const retrievalCounted = asBoolean(record.retrievalCounted)
+  const countedMemoryCount = asInteger(record.countedMemoryCount)
+  const ratedMemoryCount = asInteger(record.ratedMemoryCount)
+  const ratedMemoryIds = asStringArray(record.ratedMemoryIds, {
+    trim: true,
+    filterEmpty: true,
+    unique: true
+  })
 
   return {
     sessionId: asString(record.sessionId) ?? sessionId,
@@ -440,7 +528,10 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
     previousPromptEmbedding,
     lastPromptAt: asString(record.lastPromptAt),
     retrievalStateVersion: asInteger(record.retrievalStateVersion) ?? 0,
-    ...(retrievalCounted ? { retrievalCounted: true } : {})
+    ...(retrievalCounted ? { retrievalCounted: true } : {}),
+    ...(countedMemoryCount !== null ? { countedMemoryCount } : {}),
+    ...(ratedMemoryCount !== null ? { ratedMemoryCount } : {}),
+    ...(ratedMemoryIds.length > 0 ? { ratedMemoryIds } : {})
   }
 }
 

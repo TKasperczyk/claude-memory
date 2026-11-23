@@ -9,6 +9,7 @@ import {
   asSeverity,
   asStringArray,
   asTrimmedString,
+  asVolatility,
   isPlainObject
 } from './parsing.js'
 import type { MemoryRecord } from './types.js'
@@ -67,6 +68,26 @@ export function sanitizeRecordUpdates(
       const scope = asScope(rawValue)
       if (scope) {
         updates.scope = scope
+      } else {
+        rejectedFields.push(key)
+      }
+      continue
+    }
+
+    if (key === 'volatility') {
+      const volatility = asVolatility(rawValue)
+      if (volatility) {
+        updates.volatility = volatility
+      } else {
+        rejectedFields.push(key)
+      }
+      continue
+    }
+
+    if (key === 'ttlDays') {
+      const parsed = asNumber(rawValue)
+      if (parsed !== null && parsed >= 1 && parsed <= 3650) {
+        updates.ttlDays = Math.trunc(parsed)
       } else {
         rejectedFields.push(key)
       }

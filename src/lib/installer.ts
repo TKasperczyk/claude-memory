@@ -43,6 +43,7 @@ export class ClaudeSettingsError extends Error {
 
 const CLAUDE_HOOK_TIMEOUT_SECONDS = 15
 const MEMORY_WRITE_HOOK_TIMEOUT_SECONDS = 5
+const POST_TOOL_FAILURE_HOOK_TIMEOUT_SECONDS = 3
 const MCP_SERVER_NAME = 'claude-memory'
 const CLAUDE_MEMORY_HOOK_PATH_SUFFIXES = [
   ...new Set(
@@ -222,7 +223,11 @@ function buildHookDefinitions(configRoot: string): Record<HookEvent, HookDefinit
       script,
       command: `node "${getHookScriptPath(canonicalRoot, script)}"`,
       matcher: (HOOK_MATCHERS as Partial<Record<HookEvent, string>>)[eventName],
-      timeout: eventName === 'PostToolUse' ? MEMORY_WRITE_HOOK_TIMEOUT_SECONDS : undefined
+      timeout: eventName === 'PostToolUse'
+        ? MEMORY_WRITE_HOOK_TIMEOUT_SECONDS
+        : eventName === 'PostToolUseFailure'
+          ? POST_TOOL_FAILURE_HOOK_TIMEOUT_SECONDS
+          : undefined
     }
   }
   return definitions

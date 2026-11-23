@@ -19,9 +19,11 @@ import type { Transcript, TranscriptEvent } from './transcript.js'
 import { REMEMBER_MARKER } from './claude-commands.js'
 import { stripNoiseWords } from './context.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import { buildCacheControl } from './prompt-cache.js'
 import { getRecordSchemaOneOf } from './record-schema.js'
 import { normalizeEntities } from './entities.js'
-import { asConfidence, asOutcome, asScope, asSeverity, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { asConfidence, asOutcome, asScope, asSeverity, asVolatility, isToolUseBlock, type ToolUseBlock } from './parsing.js'
+import { isCatchAllDirectory } from './scope-attribution.js'
 import { emptyTokenUsage, extractTokenUsage } from './token-usage.js'
 import { recordTokenUsageEventsAsync } from './token-usage-events.js'
 import { buildToolCallParams, clampModelMaxTokens } from './model-capabilities.js'
@@ -41,6 +43,8 @@ export interface ExtractionContext {
   maxTranscriptChars?: number
   /** Native memory_write calls captured outside the transcript and used as attention cues. */
   memoryWriteHints?: MemoryWriteHintEvent[]
+  /** Compact Tier-0 static docs digest (CLAUDE.md / AGENTS.md / skills) already always in context. */
+  staticDocsDigest?: string
 }
 
 function sanitizeFailureMessage(message: string): string {
@@ -85,7 +89,7 @@ const USEFULNESS_TOOL_NAME = 'emit_usefulness'
 // exceed a model's token limit. extractRecords re-truncates and retries when the API
 // rejects the prompt as too long, so this stays generous rather than pessimistic.
 const MAX_TRANSCRIPT_CHARS = 3200000
-const MAX_USEFULNESS_TRANSCRIPT_CHARS = 300000
+const MAX_USEFULNESS_TRANSCRIPT_CHARS = MAX_TRANSCRIPT_CHARS
 const MAX_INTENT_CHARS = 400
 const MAX_TRUNCATED_OUTPUT_CHARS = 20000
 const MAX_TOOL_INPUT_CHARS = 12000
@@ -191,18 +195,26 @@ Skip trivial commands:
 - Only extract commands that required problem-solving, had non-obvious flags/options, or produced unexpected results that led to learning.
 - A command is worth extracting if a future session would benefit from knowing "this specific invocation worked" or "this flag combination solved a problem".
 
-Scope guidance:
-Set scope: "global" for knowledge that applies across projects:
-- General CLI flags, common error patterns, language features
-- Shared infrastructure: observability, CI/CD, deployment systems, monitoring
-- Corporate tooling and services used across multiple projects
-- External service endpoints, credentials, and configurations
-- Platform/environment knowledge (Kubernetes, cloud providers, internal tools)
+Durability & Not-in-Code Gate (CRITICAL):
+- Do NOT extract facts already clearly documented in the supplied "Tier-0 static docs" (CLAUDE.md, AGENTS.md, or project skills) — those files are loaded into every session automatically.
+- Do NOT extract trivial facts easily read from local source code (function names, line numbers, file inventories, standard framework usage) unless they capture a non-obvious WHY, gotcha, or runtime constraint.
+- Do NOT extract ephemeral status snapshots: current test counts, open PR/issue counts, temporary TODO lists, or one-off debug counts that will go stale immediately.
+- Assign "volatility" to every extracted record:
+  - "stable": long-lived invariants, hardware/OS/kernel quirks, architecture constraints, external tool bugs.
+  - "evolving": active configuration, workflow conventions, service endpoints that may change over months (default).
+  - "ephemeral": temporary workarounds, migration flags, or short-lived operational state — set "ttlDays" (e.g. 7 to 30) so it expires automatically.
 
-Keep scope: "project" (default) for:
-- Project-specific architecture decisions and file locations
-- Project-specific integrations or configurations
-- Knowledge that only makes sense in context of this codebase
+3-Tier Scope Guidance (CRITICAL):
+Set scope: "global" for universal knowledge valid on any machine:
+- General CLI flags, common error patterns, language/library features, external tool bugs.
+
+Set scope: "environment" for knowledge tied to THIS local machine, OS, hardware, network, or user-wide tooling shared across projects:
+- Local GPU/passthrough/kernel/EDID/systemd/proxy/SSH/Tailscale setups, local credentials/endpoints, shared workstation services.
+- Leave "project" empty for environment scope.
+
+Set scope: "project" for knowledge specific to one git repository/workspace:
+- Project-specific architecture decisions, runtime constraints, integrations, or configurations.
+- NEVER attribute a project-scoped record to catch-all directories like "/home/<user>", "/tmp", or "/tmp/*" — use "environment" or "global" instead.
 `
 
 const USEFULNESS_SYSTEM_PROMPT = `You evaluate which injected memories were actually used or helpful.
@@ -216,7 +228,7 @@ Rules:
 
 const EMIT_RECORDS_TOOL: Anthropic.Tool = {
   name: TOOL_NAME,
-  description: 'Emit extracted technical knowledge records.',
+  description: 'Emit extracted technical knowledge records and optionally rate helpful injected memories.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
@@ -227,6 +239,11 @@ const EMIT_RECORDS_TOOL: Anthropic.Tool = {
         items: {
           oneOf: getRecordSchemaOneOf()
         }
+      },
+      helpfulMemoryIds: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'UUIDs from the Prior knowledge section that clearly helped or influenced the solution in this session. Omit or leave empty if none helped.'
       }
     }
   }
@@ -284,7 +301,7 @@ async function streamExtractionWithRetry(
         model: config.extraction.model,
         system: [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-          { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
+          { type: 'text', text: SYSTEM_PROMPT, cache_control: buildCacheControl('1h') }
         ],
         messages: [{ role: 'user', content: userPrompt }],
         tools: [EMIT_RECORDS_TOOL],
@@ -306,7 +323,13 @@ export async function extractRecords(
   transcript: Transcript,
   context: ExtractionContext,
   config: Config = DEFAULT_CONFIG
-): Promise<{ records: MemoryRecord[]; tokenUsage: TokenUsage; error?: ExtractionFailure }> {
+): Promise<{
+  records: MemoryRecord[]
+  helpfulMemoryIds?: string[]
+  usefulnessRated?: boolean
+  tokenUsage: TokenUsage
+  error?: ExtractionFailure
+}> {
   const derivedIntent = context.intent ?? inferIntent(transcript) ?? 'unknown'
   const resolvedContext: ExtractionContext = {
     ...context,
@@ -365,8 +388,15 @@ export async function extractRecords(
         error: extractionError ?? { kind: 'parse_error', message: 'Extraction tool input was not an object.' }
       }
     }
+    const injected = context.injectedMemories ?? []
+    const allowedInjectedIds = new Set(injected.map(entry => entry.id))
+    const hasMergedUsefulness = injected.length > 0 && !extractionError
+    const helpfulMemoryIds = hasMergedUsefulness
+      ? coerceHelpfulIds((toolInput as Record<string, unknown>).helpfulMemoryIds, allowedInjectedIds)
+      : undefined
     return {
       records: coerceExtractionResult(toolInput, resolvedContext),
+      ...(hasMergedUsefulness ? { helpfulMemoryIds, usefulnessRated: true } : {}),
       tokenUsage,
       ...(extractionError ? { error: extractionError } : {})
     }
@@ -411,7 +441,7 @@ async function streamUsefulnessWithRetry(
         model: config.extraction.model,
         system: [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-          { type: 'text', text: USEFULNESS_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
+          { type: 'text', text: USEFULNESS_SYSTEM_PROMPT, cache_control: buildCacheControl('1h') }
         ],
         messages: [{ role: 'user', content: userPrompt }],
         tools: [EMIT_USEFULNESS_TOOL],
@@ -493,6 +523,9 @@ function buildUserPrompt(transcript: Transcript, context: ExtractionContext): st
   const transcriptText = formatTranscript(transcript.events, context.maxTranscriptChars ?? MAX_TRANSCRIPT_CHARS)
   const priorKnowledgeSection = buildPriorKnowledgeSection(context.injectedMemories)
   const memoryWriteHintSection = buildMemoryWriteHintSection(context.memoryWriteHints)
+  const staticDocsSection = context.staticDocsDigest?.trim()
+    ? `\nTier-0 static docs (already always loaded in CLAUDE.md / AGENTS.md — DO NOT re-extract facts already covered here):\n${context.staticDocsDigest.trim()}\n`
+    : ''
 
   const incrementalNote = context.isIncremental
     ? `\nNote: This is an incremental extraction of a resumed session. The beginning of this transcript is context from a prior extraction -- focus on extracting NEW knowledge from the later portion. Records from the earlier context were already extracted.\n`
@@ -504,7 +537,7 @@ function buildUserPrompt(transcript: Transcript, context: ExtractionContext): st
 - cwd: ${cwd}
 - transcript_path: ${context.transcriptPath ?? 'unknown'}
 - intent: ${context.intent ?? 'unknown'}
-${priorKnowledgeSection}${incrementalNote}${memoryWriteHintSection}
+${priorKnowledgeSection}${staticDocsSection}${incrementalNote}${memoryWriteHintSection}
 Extraction guidance:
 1) CommandRecord: for notable shell commands with meaningful outcomes. Skip routine commands
    like "pnpm build" or "git status" unless they revealed something important.
@@ -651,6 +684,9 @@ If the transcript shows that any of the above prior knowledge is now OUTDATED, I
 - Keep sourceExcerpt as a verbatim transcript quote - do NOT put the supersedes ID there
 - Example: if prior knowledge [b5049b3a-...] says "uses individual updateRecord calls" but transcript shows batch updates,
   extract a discovery with supersedes: "b5049b3a-..." and sourceExcerpt quoting the relevant transcript text
+
+IMPORTANT - Usefulness rating:
+In the same "${TOOL_NAME}" tool call, also populate "helpfulMemoryIds" with the exact full UUID(s) from the Prior knowledge list above that clearly influenced or helped the solution in this session. Omit any memory you are unsure about (return [] if none clearly helped).
 `
 }
 
@@ -881,6 +917,7 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
   if (!name || steps.length === 0 || !sourceExcerpt) return null
 
   const contextInput = isPlainObject(input.context) ? input.context : {}
+  const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
 
   const record: ProcedureRecord = {
     id: randomUUID(),
@@ -888,13 +925,10 @@ function coerceProcedureRecord(input: Record<string, unknown>, context: Extracti
     name,
     steps,
     sourceExcerpt,
-    context: {}
+    context: project ? { project } : {}
   }
 
   applyCommonOptionalFields(record, input)
-
-  const project = pickProject(asString((contextInput as Record<string, unknown>).project), context)
-  if (project) record.context.project = project
 
   const prerequisites = coerceStringArray(input.prerequisites)
   if (prerequisites.length > 0) record.prerequisites = prerequisites
@@ -939,11 +973,41 @@ function applyCommonOptionalFields(record: MemoryRecord, input: Record<string, u
   const project = asString(input.project)
   if (project) record.project = project
 
+  const volatility = asVolatility(input.volatility)
+  if (volatility) record.volatility = volatility
+
+  const ttlRaw = asNumber(input.ttlDays)
+  if (ttlRaw !== null && ttlRaw >= 1 && ttlRaw <= 3650) {
+    record.ttlDays = Math.trunc(ttlRaw)
+  }
+
   const supersedes = asString(input.supersedes)
   if (supersedes) record.supersedes = supersedes
 
   const entities = normalizeEntities(coerceStringArray(input.entities))
   if (entities.length > 0) record.entities = entities
+
+  // Environment-scoped memories are host/workstation-wide, not tied to one repo.
+  if (record.scope === 'environment') {
+    record.project = ''
+    if ('context' in record && record.context && 'project' in record.context) {
+      record.context.project = ''
+    }
+    return
+  }
+
+  // Catch-all safeguard: never attribute memories to /home/<user> or /tmp/*.
+  const effectiveProject = record.project
+    ?? ('context' in record && record.context && 'project' in record.context ? record.context.project : undefined)
+  if (!effectiveProject || isCatchAllDirectory(effectiveProject)) {
+    if (record.scope !== 'global') {
+      record.scope = 'environment'
+    }
+    record.project = ''
+    if ('context' in record && record.context && 'project' in record.context) {
+      record.context.project = ''
+    }
+  }
 }
 
 function inferIntent(transcript: Transcript): string | undefined {
@@ -996,8 +1060,11 @@ function coerceStringArray(value: unknown): string[] {
 
 function coerceUsefulnessResult(input: unknown, allowedIds: Set<string>): string[] {
   if (!isPlainObject(input)) return []
+  return coerceHelpfulIds((input as Record<string, unknown>).helpfulIds, allowedIds)
+}
 
-  const rawIds = coerceStringArray((input as Record<string, unknown>).helpfulIds)
+function coerceHelpfulIds(raw: unknown, allowedIds: Set<string>): string[] {
+  const rawIds = coerceStringArray(raw)
   const result: string[] = []
   const seen = new Set<string>()
 

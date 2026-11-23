@@ -7,11 +7,20 @@
 import fs, { appendFileSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { basename, dirname, join } from 'path'
-import { isProcessEntrypoint } from '../lib/shared.js'
+import { isProcessEntrypoint, sanitizeSessionId } from '../lib/shared.js'
 import { batchUpdateRecords, closeLanceDB, fetchRecordsByIds, flushCollection, initLanceDB } from '../lib/lancedb.js'
 import { rateInjectedMemories, sanitizeExtractionFailure } from '../lib/extract.js'
 import { fileContainsMarker, parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
-import { cleanupStaleSessions, dedupeInjectedMemories, loadSessionTracking, markSessionRetrievalCounted, removeSessionTracking } from '../lib/session-tracking.js'
+import {
+  cleanupStaleSessions,
+  dedupeInjectedMemories,
+  loadSessionTracking,
+  markSessionMemoriesRated,
+  markSessionRetrievalCounted,
+  removeSessionTracking,
+  resetSessionInjectionLedger
+} from '../lib/session-tracking.js'
+import { sweepIdleSessions } from '../lib/idle-session-sweep.js'
 import { loadConfig } from '../lib/config.js'
 import { buildExtractionRecordSummaries, getLastExtractionRunForSession, saveExtractionRun } from '../lib/extraction-log.js'
 import { runAllMaintenance } from '../lib/maintenance-api.js'
@@ -31,6 +40,7 @@ import { canonicalizePath, CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE, LOCKS_DIR } from 
 import { formatExtractionFailureSummary, isExtractionRunFailure } from '../lib/extraction-status.js'
 import { formatStageTimings } from '../lib/extraction-timings.js'
 import { runSelfUpdate } from '../lib/self-update.js'
+import { runPendingMigrations } from '../lib/data-migrations.js'
 import {
   cleanupMemoryWriteHints,
   deleteMemoryWriteHints,
@@ -141,8 +151,71 @@ export function trimLogsOnce(): void {
   trimLogFile(AUDIT_LOG_FILE)
 }
 
+const MAX_PENDING_HANDOFF_ITERATIONS = 5
+
+function getPendingPayloadPath(sessionId: string): string {
+  return join(LOCKS_DIR, `${sanitizeSessionId(sessionId)}.pending.json`)
+}
+
+/**
+ * Queue an incoming extraction hook payload when another worker already holds
+ * the session lock (e.g., SessionEnd arriving while PreCompact is still running).
+ * SessionEnd always takes precedence over PreCompact so final extraction & cleanup
+ * are never lost.
+ */
+export function enqueuePendingPayload(sessionId: string, payload: ExtractionHookInput): boolean {
+  const pendingPath = getPendingPayloadPath(sessionId)
+  try {
+    fs.mkdirSync(LOCKS_DIR, { recursive: true })
+    if (payload.hook_event_name === 'PreCompact' && fs.existsSync(pendingPath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(pendingPath, 'utf-8')) as Partial<ExtractionHookInput>
+        if (existing.hook_event_name === 'SessionEnd') {
+          return true
+        }
+      } catch {
+        // Overwrite corrupt pending file.
+      }
+    }
+    const tmpPath = `${pendingPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+    fs.writeFileSync(tmpPath, JSON.stringify(payload), { encoding: 'utf-8', flag: 'wx' })
+    fs.renameSync(tmpPath, pendingPath)
+    return true
+  } catch (error) {
+    console.error('[claude-memory] Failed to enqueue pending session payload:', error)
+    return false
+  }
+}
+
+export function consumePendingPayload(sessionId: string): ExtractionHookInput | null {
+  const pendingPath = getPendingPayloadPath(sessionId)
+  if (!fs.existsSync(pendingPath)) return null
+  const claimPath = `${pendingPath}.claim.${process.pid}.${Date.now()}`
+  try {
+    fs.renameSync(pendingPath, claimPath)
+  } catch {
+    return null
+  }
+  try {
+    const raw = fs.readFileSync(claimPath, 'utf-8')
+    const parsed = JSON.parse(raw) as ExtractionHookInput
+    if (parsed && (parsed.hook_event_name === 'SessionEnd' || parsed.hook_event_name === 'PreCompact')) {
+      return parsed
+    }
+    return null
+  } catch {
+    return null
+  } finally {
+    try {
+      fs.unlinkSync(claimPath)
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function acquireWorkerLock(sessionId: string): ReturnType<typeof acquireFileLock> {
-  const lockFile = `${LOCKS_DIR}/${sessionId}.lock`
+  const lockFile = `${LOCKS_DIR}/${sanitizeSessionId(sessionId)}.lock`
   return acquireFileLock(lockFile, {
     staleAfterMs: LOCK_STALE_MS,
     staleStrategy: 'pid',
@@ -316,6 +389,21 @@ async function maybeRunAutoMaintenance(config: Config): Promise<void> {
       operations: results.map(result => result.operation)
     })
     saveMaintenanceRun(run, config.lancedb.table)
+    if (settings.idleSessionSweepHours > 0) {
+      try {
+        const sweep = await sweepIdleSessions(config, {
+          idleHours: settings.idleSessionSweepHours,
+          onRecoverSession: async (syntheticPayload) => {
+            await processSingleSessionPayload(syntheticPayload, config, config.lancedb.table, randomUUID(), Date.now())
+          }
+        })
+        if (sweep.recovered > 0 || sweep.cleanedWithoutTranscript > 0) {
+          debugLog(`Idle session sweep: recovered=${sweep.recovered}, cleaned=${sweep.cleanedWithoutTranscript}, errors=${sweep.errors}`)
+        }
+      } catch (error) {
+        console.error('[claude-memory] Idle session sweep failed:', error)
+      }
+    }
     if (typeof cleanupStaleSessions === 'function') {
       cleanupStaleSessions(config.lancedb.table)
     }
@@ -382,8 +470,6 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
     let runSaved = false
     debugLog(`Parsed payload: event=${payload.hook_event_name}, session=${payload.session_id}`)
     auditLog(`START event=${payload.hook_event_name} session=${payload.session_id} transcript=${payload.transcript_path}`)
-    const hintSettings = loadSettings()
-    const storedMemoryWriteHints = loadMemoryWriteHints(payload.session_id)
     try {
       const retentionMs = MEMORY_WRITE_HINT_RETENTION_DAYS * 24 * 60 * 60 * 1000
       cleanupMemoryWriteHints(Date.now() - retentionMs)
@@ -395,185 +481,67 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
       config = loadConfig(configRoot)
       collection = config.lancedb.table
 
-      // Try to acquire lock - prevents duplicate extractions when hook fires multiple times
-      const lockHandle = acquireWorkerLock(payload.session_id)
+      // Try to acquire lock - if another worker holds it (e.g. PreCompact running
+      // when SessionEnd arrives), queue the payload for the active holder instead
+      // of silently dropping SessionEnd.
+      let lockHandle = acquireWorkerLock(payload.session_id)
+      let initialPayload: ExtractionHookInput = payload
       if (!lockHandle) {
-        debugLog('Skipping: lock already held by another process')
-        auditLog(`SKIP reason=locked session=${payload.session_id}`)
-        return
+        enqueuePendingPayload(payload.session_id, payload)
+        auditLog(`QUEUED reason=locked event=${payload.hook_event_name} session=${payload.session_id}`)
+        debugLog('Lock held by another process; queued payload for handoff')
+        // Close TOCTOU window: re-check lock once after queuing in case the holder
+        // exited right before our pending file landed.
+        lockHandle = acquireWorkerLock(payload.session_id)
+        if (!lockHandle) {
+          return
+        }
+        const claimed = consumePendingPayload(payload.session_id)
+        if (!claimed) {
+          lockHandle.release()
+          return
+        }
+        initialPayload = claimed
       }
 
       try {
-        // Skip extraction if session was cleared
-        if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
-          debugLog('Skipping: reason=clear')
-          auditLog(`SKIP reason=clear session=${payload.session_id}`)
-          console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
-          removeSessionTracking(payload.session_id, collection)
-          deleteMemoryWriteHintsSafely(payload.session_id)
-          return
-        }
-
-        if (!payload.transcript_path) {
-          debugLog('Skipping: no transcript_path')
-          auditLog(`SKIP reason=no_transcript session=${payload.session_id}`)
-          console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
-          if (payload.hook_event_name === 'SessionEnd') {
-            removeSessionTracking(payload.session_id, collection)
-          }
-          return
-        }
-
-        // Check for skip-extraction marker in transcript via bounded streaming scan
-        if (fs.existsSync(payload.transcript_path)) {
-          if (await fileContainsMarker(payload.transcript_path, SKIP_EXTRACTION_MARKER)) {
-            debugLog('Skipping: skip-extraction marker found in transcript')
-            auditLog(`SKIP reason=skip_requested session=${payload.session_id}`)
-            console.error('[claude-memory] Skip-extraction marker found; skipping extraction.')
-            removeSessionTracking(payload.session_id, collection)
-            if (payload.hook_event_name === 'SessionEnd') {
-              deleteMemoryWriteHintsSafely(payload.session_id)
-            }
-            return
-          }
-        }
-
-        debugLog('Initializing LanceDB...')
-        await initLanceDB(config)
-        debugLog('LanceDB initialized')
-
-        // Load session tracking to get injected memories for change detection
-        const session = loadSessionTracking(payload.session_id, collection)
-        const injectedMemories = session ? dedupeInjectedMemories(session.memories) : []
-        debugLog(`Loaded ${injectedMemories.length} injected memories for change detection`)
-
-        // Check for prior extraction of this session (incremental extraction)
-        const priorRun = getLastExtractionRunForSession(payload.session_id, collection)
-        const previousEventCount = priorRun?.extractedEventCount
-        const priorHintIdentities = new Set(
-          (priorRun?.memoryWriteHints ?? []).map(memoryWriteHintIdentity)
-        )
-        const memoryWriteHints = hintSettings.enableMemoryWriteHints
-          ? storedMemoryWriteHints.filter(hint => !priorHintIdentities.has(memoryWriteHintIdentity(hint)))
-          : []
-        debugLog(`Loaded ${memoryWriteHints.length} unprocessed memory_write hints`)
-        if (previousEventCount) {
-          debugLog(`Found prior extraction run ${priorRun.runId} with ${previousEventCount} events`)
-          auditLog(`INCREMENTAL prior_run=${priorRun.runId} prior_events=${previousEventCount} session=${payload.session_id}`)
-        }
-
-        let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
-        let shouldFlush = false
-        const extractionStart = Date.now()
-        let extractionDuration = 0
-        let runTokenUsage = emptyTokenUsage()
-        let usefulnessDuration: number | undefined
-        let extractionThrown: unknown
-        let extractionDidThrow = false
-        try {
-          debugLog('Running extraction...')
-          result = await handlePostSession(payload, config, {
-            flush: 'end-of-batch',
-            injectedMemories,
-            previousExtractionEventCount: previousEventCount,
-            plannedRunId,
-            memoryWriteHints,
-            recordAugmenter: (record, transcript) => ({
-              ...record,
-              sourceSessionId: payload.session_id,
-              // Prefer LLM-provided sourceExcerpt, fall back to heuristic search
-              sourceExcerpt: record.sourceExcerpt ?? buildSourceExcerpt(record, transcript)
-            })
-          })
-          debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${result.isIncremental ? ' (incremental)' : ''}`)
-          shouldFlush = (result.inserted + result.updated) > 0
-          extractionDuration = Date.now() - extractionStart
-          if (result.tokenUsage) {
-            runTokenUsage = addTokenUsage(runTokenUsage, result.tokenUsage)
-          }
-        } catch (error) {
-          extractionThrown = error
-          extractionDidThrow = true
-        } finally {
-          debugLog('Running usefulness rating...')
-          const usefulnessStart = Date.now()
-          let usefulness: Awaited<ReturnType<typeof processUsefulnessRating>>
-          try {
-            usefulness = await processUsefulnessRating(payload, config, result?.transcript, getUsefulnessRunId(result, plannedRunId))
-          } catch (error) {
-            usefulness = {
-              updated: false,
-              tokenUsage: emptyTokenUsage(),
-              ran: true,
-              error: sanitizeErrorMessage(error)
-            }
-          }
-          if (usefulness.ran) {
-            usefulnessDuration = Date.now() - usefulnessStart
-          }
-          shouldFlush = usefulness.updated || shouldFlush
-          runTokenUsage = addTokenUsage(runTokenUsage, usefulness.tokenUsage)
-          if (usefulness.error) {
-            auditLog(`WARN session=${payload.session_id} runId=${plannedRunId} stage=usefulness_rating${usefulnessDuration !== undefined ? ` duration=${usefulnessDuration}ms` : ''} cause=${quoteLogValue(usefulness.error)}`)
-          }
-          debugLog('Usefulness rating done')
-        }
-
-        if (extractionDidThrow) throw extractionThrown
-
-        if (result) {
-          auditDiagnostics(payload, plannedRunId, result.diagnostics)
-          const stageTimings = usefulnessDuration !== undefined
-            ? { ...result.timings, usefulness: usefulnessDuration }
-            : result.timings
-          runSaved = saveRunLog(
-            payload,
-            result,
-            plannedRunId,
-            extractionDuration,
-            runTokenUsage,
+        let currentPayload: ExtractionHookInput | null = initialPayload
+        let currentRunId = plannedRunId
+        let currentStart = runStart
+        let iteration = 0
+        while (currentPayload && iteration < MAX_PENDING_HANDOFF_ITERATIONS) {
+          iteration += 1
+          const savedThisPass = await processSingleSessionPayload(
+            currentPayload,
+            config,
             collection,
-            stageTimings,
-            memoryWriteHints
+            currentRunId,
+            currentStart
           )
+          runSaved = runSaved || savedThisPass
+          const nextPending = consumePendingPayload(payload.session_id)
+          if (!nextPending) break
+          auditLog(`HANDOFF event=${nextPending.hook_event_name} session=${nextPending.session_id} iteration=${iteration + 1}`)
+          currentPayload = nextPending
+          currentRunId = randomUUID()
+          currentStart = Date.now()
         }
-
-        if (shouldFlush) {
-          debugLog('Flushing writes (no-op for LanceDB)...')
-          await flushCollection(config)
-        }
-
-        if (!result) return
-
-        if (shouldDeleteMemoryWriteHints(payload, result, runSaved)) {
-          deleteMemoryWriteHintsSafely(payload.session_id)
-        }
-
-        if (result.reason === 'no_transcript') {
-          console.warn(`[claude-memory] Transcript not found; skipping extraction. path=${payload.transcript_path}`)
-          return
-        }
-
-        if (result.reason === 'no_new_events') {
-          debugLog('Skipping: no new events since last extraction')
-          auditLog(`SKIP reason=no_new_events session=${payload.session_id} events=${result.extractedEventCount}`)
-          console.error('[claude-memory] No new events since last extraction; skipping.')
-          return
-        }
-
-        if (result.reason === 'no_records') {
-          console.error('[claude-memory] No records extracted.')
-          return
-        }
-
-        const incrementalLabel = result.isIncremental ? ' (incremental)' : ''
-        const supersedesMissingLabel = result.supersedesMissing ? `, supersedesMissing=${result.supersedesMissing}` : ''
-        console.error(
-          `[claude-memory] Extraction complete${incrementalLabel}: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${supersedesMissingLabel}`
-        )
-        debugLog('COMPLETE')
       } finally {
         lockHandle.release()
+      }
+
+      try {
+        const migrationResult = await runPendingMigrations(config)
+        if (migrationResult.status === 'applied') {
+          const totalUpdated = migrationResult.steps.reduce((sum, step) => sum + step.updated, 0)
+          debugLog(
+            `Data migrations applied: count=${migrationResult.steps.length} updated=${totalUpdated} compacted=${migrationResult.compacted}`
+          )
+        } else if (migrationResult.status === 'failed') {
+          console.error('[claude-memory] Data migrations failed:', migrationResult.error ?? 'unknown error')
+        }
+      } catch (error) {
+        console.error('[claude-memory] Data migrations failed:', error)
       }
 
       try {
@@ -609,6 +577,203 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
       console.error('[claude-memory] Self-update failed:', error)
     }
   }
+}
+
+async function processSingleSessionPayload(
+  payload: ExtractionHookInput,
+  config: Config,
+  collection: string,
+  plannedRunId: string,
+  _runStart: number
+): Promise<boolean> {
+  const hintSettings = loadSettings()
+  const storedMemoryWriteHints = loadMemoryWriteHints(payload.session_id)
+
+  // Skip extraction if session was cleared
+  if (payload.hook_event_name === 'SessionEnd' && payload.reason === 'clear') {
+    debugLog('Skipping: reason=clear')
+    auditLog(`SKIP reason=clear session=${payload.session_id}`)
+    console.error('[claude-memory] SessionEnd reason=clear; skipping extraction.')
+    removeSessionTracking(payload.session_id, collection)
+    deleteMemoryWriteHintsSafely(payload.session_id)
+    return false
+  }
+
+  if (!payload.transcript_path) {
+    debugLog('Skipping: no transcript_path')
+    auditLog(`SKIP reason=no_transcript session=${payload.session_id}`)
+    console.warn('[claude-memory] Transcript not found; skipping extraction. path=missing')
+    if (payload.hook_event_name === 'SessionEnd') {
+      removeSessionTracking(payload.session_id, collection)
+    }
+    return false
+  }
+
+  // Check for skip-extraction marker in transcript via bounded streaming scan
+  if (fs.existsSync(payload.transcript_path)) {
+    if (await fileContainsMarker(payload.transcript_path, SKIP_EXTRACTION_MARKER)) {
+      debugLog('Skipping: skip-extraction marker found in transcript')
+      auditLog(`SKIP reason=skip_requested session=${payload.session_id}`)
+      console.error('[claude-memory] Skip-extraction marker found; skipping extraction.')
+      removeSessionTracking(payload.session_id, collection)
+      if (payload.hook_event_name === 'SessionEnd') {
+        deleteMemoryWriteHintsSafely(payload.session_id)
+      }
+      return false
+    }
+  }
+
+  debugLog('Initializing LanceDB...')
+  await initLanceDB(config)
+  debugLog('LanceDB initialized')
+
+  // Load session tracking to get injected memories for change detection + merged usefulness rating.
+  // Snapshot the current length & version before async extraction so post-compaction prompts arriving
+  // during PreCompact extraction are never swallowed or wiped from the new epoch's ledger.
+  const session = loadSessionTracking(payload.session_id, collection)
+  const snapshotMemoryCount = session?.memories.length ?? 0
+  const snapshotRetrievalStateVersion = session?.retrievalStateVersion ?? 0
+  const injectedMemories = session ? selectUnratedMemories(session, snapshotMemoryCount) : []
+  debugLog(`Loaded ${injectedMemories.length} unrated injected memories for change detection & usefulness rating`)
+
+  // Check for prior extraction of this session (incremental extraction)
+  const priorRun = getLastExtractionRunForSession(payload.session_id, collection)
+  const previousEventCount = priorRun?.extractedEventCount
+  const priorHintIdentities = new Set(
+    (priorRun?.memoryWriteHints ?? []).map(memoryWriteHintIdentity)
+  )
+  const memoryWriteHints = hintSettings.enableMemoryWriteHints
+    ? storedMemoryWriteHints.filter(hint => !priorHintIdentities.has(memoryWriteHintIdentity(hint)))
+    : []
+  debugLog(`Loaded ${memoryWriteHints.length} unprocessed memory_write hints`)
+  if (previousEventCount) {
+    debugLog(`Found prior extraction run ${priorRun.runId} with ${previousEventCount} events`)
+    auditLog(`INCREMENTAL prior_run=${priorRun.runId} prior_events=${previousEventCount} session=${payload.session_id}`)
+  }
+
+  let result: Awaited<ReturnType<typeof handlePostSession>> | null = null
+  let shouldFlush = false
+  const extractionStart = Date.now()
+  let extractionDuration = 0
+  let runTokenUsage = emptyTokenUsage()
+  let usefulnessDuration: number | undefined
+  let extractionThrown: unknown
+  let extractionDidThrow = false
+  let runSaved = false
+  try {
+    debugLog('Running extraction...')
+    result = await handlePostSession(payload, config, {
+      flush: 'end-of-batch',
+      injectedMemories,
+      previousExtractionEventCount: previousEventCount,
+      plannedRunId,
+      memoryWriteHints,
+      recordAugmenter: (record, transcript) => ({
+        ...record,
+        sourceSessionId: payload.session_id,
+        // Prefer LLM-provided sourceExcerpt, fall back to heuristic search
+        sourceExcerpt: record.sourceExcerpt ?? buildSourceExcerpt(record, transcript)
+      })
+    })
+    debugLog(`Extraction done: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${result.isIncremental ? ' (incremental)' : ''}`)
+    shouldFlush = (result.inserted + result.updated) > 0
+    extractionDuration = Date.now() - extractionStart
+    if (result.tokenUsage) {
+      runTokenUsage = addTokenUsage(runTokenUsage, result.tokenUsage)
+    }
+  } catch (error) {
+    extractionThrown = error
+    extractionDidThrow = true
+  } finally {
+    debugLog('Running usefulness rating...')
+    const usefulnessStart = Date.now()
+    let usefulness: Awaited<ReturnType<typeof processUsefulnessRating>>
+    try {
+      usefulness = await processUsefulnessRating(
+        payload,
+        config,
+        result?.transcript,
+        getUsefulnessRunId(result, plannedRunId),
+        {
+          preRatedHelpfulIds: result?.helpfulMemoryIds,
+          usefulnessRatedDuringExtraction: result?.usefulnessRatedDuringExtraction,
+          snapshotMemoryCount: payload.hook_event_name === 'PreCompact' ? snapshotMemoryCount : undefined,
+          snapshotRetrievalStateVersion
+        }
+      )
+    } catch (error) {
+      usefulness = {
+        updated: false,
+        tokenUsage: emptyTokenUsage(),
+        ran: true,
+        error: sanitizeErrorMessage(error)
+      }
+    }
+    if (usefulness.ran) {
+      usefulnessDuration = Date.now() - usefulnessStart
+    }
+    shouldFlush = usefulness.updated || shouldFlush
+    runTokenUsage = addTokenUsage(runTokenUsage, usefulness.tokenUsage)
+    if (usefulness.error) {
+      auditLog(`WARN session=${payload.session_id} runId=${plannedRunId} stage=usefulness_rating${usefulnessDuration !== undefined ? ` duration=${usefulnessDuration}ms` : ''} cause=${quoteLogValue(usefulness.error)}`)
+    }
+    debugLog('Usefulness rating done')
+  }
+
+  if (extractionDidThrow) throw extractionThrown
+
+  if (result) {
+    auditDiagnostics(payload, plannedRunId, result.diagnostics)
+    const stageTimings = usefulnessDuration !== undefined
+      ? { ...result.timings, usefulness: usefulnessDuration }
+      : result.timings
+    runSaved = saveRunLog(
+      payload,
+      result,
+      plannedRunId,
+      extractionDuration,
+      runTokenUsage,
+      collection,
+      stageTimings,
+      memoryWriteHints
+    )
+  }
+
+  if (shouldFlush) {
+    debugLog('Flushing writes (no-op for LanceDB)...')
+    await flushCollection(config)
+  }
+
+  if (!result) return runSaved
+
+  if (shouldDeleteMemoryWriteHints(payload, result, runSaved)) {
+    deleteMemoryWriteHintsSafely(payload.session_id)
+  }
+
+  if (result.reason === 'no_transcript') {
+    console.warn(`[claude-memory] Transcript not found; skipping extraction. path=${payload.transcript_path}`)
+    return runSaved
+  }
+
+  if (result.reason === 'no_new_events') {
+    debugLog('Skipping: no new events since last extraction')
+    auditLog(`SKIP reason=no_new_events session=${payload.session_id} events=${result.extractedEventCount}`)
+    console.error('[claude-memory] No new events since last extraction; skipping.')
+    return runSaved
+  }
+
+  if (result.reason === 'no_records') {
+    console.error('[claude-memory] No records extracted.')
+    return runSaved
+  }
+
+  const incrementalLabel = result.isIncremental ? ' (incremental)' : ''
+  const supersedesMissingLabel = result.supersedesMissing ? `, supersedesMissing=${result.supersedesMissing}` : ''
+  console.error(
+    `[claude-memory] Extraction complete${incrementalLabel}: inserted=${result.inserted}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}${supersedesMissingLabel}`
+  )
+  debugLog('COMPLETE')
+  return runSaved
 }
 
 export function saveRunLog(
@@ -676,40 +841,85 @@ export function saveRunLog(
   return runSaved
 }
 
+function selectUnratedMemories(
+  session: { memories: InjectedMemoryEntry[]; ratedMemoryCount?: number; ratedMemoryIds?: string[] },
+  maxLength?: number
+): InjectedMemoryEntry[] {
+  const scoped = maxLength !== undefined ? session.memories.slice(0, maxLength) : session.memories
+  if (session.ratedMemoryCount !== undefined) {
+    return dedupeInjectedMemories(scoped.slice(Math.max(0, session.ratedMemoryCount)))
+  }
+  const ratedSet = new Set(session.ratedMemoryIds ?? [])
+  return dedupeInjectedMemories(scoped).filter(entry => !ratedSet.has(entry.id))
+}
+
 export async function processUsefulnessRating(
   payload: ExtractionHookInput,
   config: Config,
   transcript?: Transcript,
-  runId?: string
+  runId?: string,
+  options: {
+    preRatedHelpfulIds?: string[]
+    usefulnessRatedDuringExtraction?: boolean
+    snapshotMemoryCount?: number
+    snapshotRetrievalStateVersion?: number
+  } = {}
 ): Promise<{ updated: boolean; tokenUsage: TokenUsage; ran: boolean; error?: string }> {
-  if (payload.hook_event_name !== 'SessionEnd') {
+  if (payload.hook_event_name !== 'SessionEnd' && payload.hook_event_name !== 'PreCompact') {
     return { updated: false, tokenUsage: emptyTokenUsage(), ran: false }
   }
 
+  const isPreCompact = payload.hook_event_name === 'PreCompact'
   const collection = config.lancedb.table
   const session = loadSessionTracking(payload.session_id, collection)
+  const resetOptions = options.snapshotRetrievalStateVersion !== undefined
+    ? { expectedVersion: options.snapshotRetrievalStateVersion }
+    : undefined
+
   if (!session || session.memories.length === 0) {
-    removeSessionTracking(payload.session_id, collection)
+    if (isPreCompact) {
+      if (typeof resetSessionInjectionLedger === 'function') {
+        resetSessionInjectionLedger(payload.session_id, collection, resetOptions)
+      }
+    } else {
+      removeSessionTracking(payload.session_id, collection)
+    }
     return { updated: false, tokenUsage: emptyTokenUsage(), ran: false }
   }
 
-  const memories = session.memories
+  // On PreCompact, bound rating/counting to memories already present before extraction started
+  // so memories injected by post-compaction prompts arriving mid-extraction are preserved for later rating.
+  const maxScopedLength = isPreCompact && options.snapshotMemoryCount !== undefined
+    ? Math.min(session.memories.length, options.snapshotMemoryCount)
+    : session.memories.length
+  const memories = session.memories.slice(0, maxScopedLength)
   if (memories.length === 0) {
-    removeSessionTracking(payload.session_id, collection)
+    if (isPreCompact) {
+      if (typeof resetSessionInjectionLedger === 'function') {
+        resetSessionInjectionLedger(payload.session_id, collection, resetOptions)
+      }
+    } else {
+      removeSessionTracking(payload.session_id, collection)
+    }
     return { updated: false, tokenUsage: emptyTokenUsage(), ran: false }
   }
 
   let updated = false
   let tokenUsage = emptyTokenUsage()
   let failure: string | undefined
-  if (!session.retrievalCounted) {
+
+  const previouslyCounted = session.countedMemoryCount !== undefined
+    ? session.countedMemoryCount
+    : (session.retrievalCounted ? memories.length : 0)
+  const uncountedMemories = memories.slice(previouslyCounted)
+  if (uncountedMemories.length > 0) {
     try {
-      const retrievalDeltas = countRetrievalDeltas(memories)
+      const retrievalDeltas = countRetrievalDeltas(uncountedMemories)
       if (retrievalDeltas.size > 0) {
         const incremented = await batchIncrementRecordCounters(retrievalDeltas, 'retrievalCount', config)
         updated = incremented || updated
         if (incremented && typeof markSessionRetrievalCounted === 'function') {
-          markSessionRetrievalCounted(payload.session_id, collection)
+          markSessionRetrievalCounted(payload.session_id, collection, memories.length)
         }
       }
     } catch (error) {
@@ -717,30 +927,42 @@ export async function processUsefulnessRating(
     }
   }
 
-  const deduped = dedupeInjectedMemories(memories)
+  const deduped = selectUnratedMemories(session, maxScopedLength)
   if (deduped.length === 0) {
-    removeSessionTracking(payload.session_id, collection)
+    if (isPreCompact) {
+      if (typeof resetSessionInjectionLedger === 'function') {
+        resetSessionInjectionLedger(payload.session_id, collection, resetOptions)
+      }
+    } else {
+      removeSessionTracking(payload.session_id, collection)
+    }
     return { updated, tokenUsage, ran: false }
   }
 
-  let shouldRemove = false
+  let shouldFinalize = false
 
   try {
-    let resolvedTranscript = transcript
-    if (!resolvedTranscript) {
-      if (!payload.transcript_path || !fs.existsSync(payload.transcript_path)) {
-        console.error('[claude-memory] Transcript missing for usefulness rating; keeping session tracking file.')
-        return { updated, tokenUsage, ran: true, error: 'transcript missing for usefulness rating' }
+    let helpfulIds: string[]
+    if (options.usefulnessRatedDuringExtraction) {
+      const allowedIds = new Set(deduped.map(entry => entry.id))
+      helpfulIds = (options.preRatedHelpfulIds ?? []).filter(id => allowedIds.has(id))
+    } else {
+      let resolvedTranscript = transcript
+      if (!resolvedTranscript) {
+        if (!payload.transcript_path || !fs.existsSync(payload.transcript_path)) {
+          console.error('[claude-memory] Transcript missing for usefulness rating; keeping session tracking file.')
+          return { updated, tokenUsage, ran: true, error: 'transcript missing for usefulness rating' }
+        }
+        resolvedTranscript = await parseTranscript(payload.transcript_path)
       }
-      resolvedTranscript = await parseTranscript(payload.transcript_path)
-    }
 
-    const rating = await rateInjectedMemories(resolvedTranscript, deduped, config, {
-      sessionId: payload.session_id,
-      runId
-    })
-    tokenUsage = addTokenUsage(tokenUsage, rating.tokenUsage)
-    const helpfulIds = rating.helpfulIds
+      const rating = await rateInjectedMemories(resolvedTranscript, deduped, config, {
+        sessionId: payload.session_id,
+        runId
+      })
+      tokenUsage = addTokenUsage(tokenUsage, rating.tokenUsage)
+      helpfulIds = rating.helpfulIds
+    }
 
     if (helpfulIds.length > 0) {
       // NOTE: Best-effort counters; concurrent sessions can drop increments.
@@ -748,12 +970,24 @@ export async function processUsefulnessRating(
       updated = await batchIncrementRecordCounters(usageDeltas, 'usageCount', config) || updated
     }
 
-    shouldRemove = true
+    shouldFinalize = true
   } catch (error) {
     console.error('[claude-memory] Usefulness rating failed:', error)
     failure = sanitizeErrorMessage(error)
   } finally {
-    if (shouldRemove) {
+    if (isPreCompact) {
+      if (shouldFinalize && typeof markSessionMemoriesRated === 'function') {
+        markSessionMemoriesRated(
+          payload.session_id,
+          deduped.map(entry => entry.id),
+          collection,
+          { countedMemoryCount: memories.length, ratedMemoryCount: memories.length }
+        )
+      }
+      if (typeof resetSessionInjectionLedger === 'function') {
+        resetSessionInjectionLedger(payload.session_id, collection, resetOptions)
+      }
+    } else if (shouldFinalize) {
       removeSessionTracking(payload.session_id, collection)
     }
   }
@@ -778,11 +1012,12 @@ async function batchIncrementRecordCounters(
   const records = await fetchRecordsByIds(Array.from(deltas.keys()), config, { includeEmbeddings: true })
   if (records.length === 0) return false
 
-  const lastUsed = Date.now()
+  const now = Date.now()
   const updatedRecords = records.map(record => ({
     ...record,
     [counter]: (record[counter] ?? 0) + (deltas.get(record.id) ?? 0),
-    lastUsed
+    // Separate lastRetrievedAt from lastUsed: only verified usefulness bumps lastUsed.
+    ...(counter === 'retrievalCount' ? { lastRetrievedAt: now } : { lastUsed: now })
   }))
   const result = await batchUpdateRecords(updatedRecords, {}, config, { continueOnBatchError: true })
   if (result.failed > 0) {

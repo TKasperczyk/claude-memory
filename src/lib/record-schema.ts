@@ -21,9 +21,24 @@ interface RecordTypeDefinition {
 const COMMON_OPTIONAL_PROPERTIES = {
   project: {
     type: 'string',
-    description: 'Full absolute path to the project root (e.g., /home/user/projects/myapp). Infer from file paths and commands in the transcript if different from the context project.'
+    description: 'Full absolute path to the project root (e.g., /home/user/projects/myapp). Never use /home/<user> or /tmp/* as a project — use scope "environment" or "global" instead.'
   },
-  scope: { type: 'string', enum: ['global', 'project'] },
+  scope: {
+    type: 'string',
+    enum: ['global', 'environment', 'project'],
+    description: 'project = specific repository/workspace; environment = this local host/OS/hardware/proxy/tooling shared across projects; global = universal tool/library knowledge.'
+  },
+  volatility: {
+    type: 'string',
+    enum: ['stable', 'evolving', 'ephemeral'],
+    description: 'Durability class: stable = long-lived invariant/quirk; evolving = active config/workflow; ephemeral = temporary workaround or short-lived state.'
+  },
+  ttlDays: {
+    type: 'integer',
+    minimum: 1,
+    maximum: 3650,
+    description: 'Optional expiry horizon in days for ephemeral or time-bounded knowledge (e.g. 7-30 days for temporary workarounds).'
+  },
   supersedes: {
     type: 'string',
     description: 'Full UUID of a prior knowledge memory that this record supersedes/invalidates. Only set when this extraction corrects outdated information from an injected memory.'

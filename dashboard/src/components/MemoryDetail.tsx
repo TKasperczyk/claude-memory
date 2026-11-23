@@ -431,9 +431,15 @@ export default function MemoryDetail({
 
               {/* Metadata */}
               <div className="grid grid-cols-2 gap-4">
-                <Field label="Project">{displayRecord.project ?? '—'}</Field>
+                <Field label="Project">{displayRecord.project || '—'}</Field>
                 <Field label="Scope">
-                  <span className={displayRecord.scope === 'global' ? 'text-type-discovery font-medium' : ''}>
+                  <span className={
+                    displayRecord.scope === 'global'
+                      ? 'text-type-discovery font-medium'
+                      : displayRecord.scope === 'environment'
+                        ? 'text-type-procedure font-medium'
+                        : ''
+                  }>
                     {displayRecord.scope ?? 'project'}
                   </span>
                 </Field>
@@ -441,6 +447,18 @@ export default function MemoryDetail({
                 <Field label="Last used">
                   {formatRelativeTimeLong(displayRecord.lastUsed ?? displayRecord.timestamp)}
                 </Field>
+                {displayRecord.lastRetrievedAt ? (
+                  <Field label="Last retrieved">
+                    {formatRelativeTimeLong(displayRecord.lastRetrievedAt)}
+                  </Field>
+                ) : null}
+                {displayRecord.volatility ? (
+                  <Field label="Volatility">
+                    {displayRecord.volatility}{displayRecord.ttlDays ? ` (TTL ${displayRecord.ttlDays}d)` : ''}
+                  </Field>
+                ) : displayRecord.ttlDays ? (
+                  <Field label="TTL">{displayRecord.ttlDays}d</Field>
+                ) : null}
               </div>
 
               {/* Usage stats */}

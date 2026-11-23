@@ -11,6 +11,7 @@ import { EMBEDDING_DIM, type Config } from './types.js'
 
 export const CONTENT_MAX_LENGTH = 16384
 export const EXACT_TEXT_MAX_LENGTH = 4096
+export const SEARCH_TEXT_MAX_LENGTH = 8192
 export const SOURCE_SESSION_ID_MAX_LENGTH = 128
 export const SOURCE_EXCERPT_MAX_LENGTH = 4000
 
@@ -19,6 +20,7 @@ export const OUTPUT_FIELDS = [
   'type',
   'content',
   'exact_text',
+  'search_text',
   'project',
   'scope',
   'timestamp',
@@ -26,6 +28,7 @@ export const OUTPUT_FIELDS = [
   'failure_count',
   'retrieval_count',
   'usage_count',
+  'last_retrieved_at',
   'last_used',
   'deprecated',
   'deprecated_at',
@@ -49,6 +52,7 @@ export function buildTableSchema(): Schema {
     new Field('type', new Utf8(), false),
     new Field('content', new Utf8(), false),
     new Field('exact_text', new Utf8(), false),
+    new Field('search_text', new Utf8(), false),
     new Field('project', new Utf8(), false),
     new Field('scope', new Utf8(), false),
     new Field('timestamp', new Int64(), false),
@@ -56,6 +60,7 @@ export function buildTableSchema(): Schema {
     new Field('failure_count', new Int64(), false),
     new Field('retrieval_count', new Int64(), false),
     new Field('usage_count', new Int64(), false),
+    new Field('last_retrieved_at', new Int64(), false),
     new Field('last_used', new Int64(), false),
     new Field('deprecated', new Bool(), false),
     new Field('deprecated_at', new Int64(), true),
@@ -76,8 +81,10 @@ export function buildTableSchema(): Schema {
 }
 
 export const MIGRATION_COLUMNS: Array<{ name: string; valueSql: string }> = [
+  { name: 'search_text', valueSql: "COALESCE(exact_text, '')" },
   { name: 'retrieval_count', valueSql: '0' },
   { name: 'usage_count', valueSql: '0' },
+  { name: 'last_retrieved_at', valueSql: '0' },
   { name: 'scope', valueSql: "'project'" },
   { name: 'generalized', valueSql: 'false' },
   { name: 'last_generalization_check', valueSql: '0' },

@@ -6,6 +6,7 @@ describe('model settings', () => {
   it('uses the current default models and keeps legacy options selectable', () => {
     expect(DEFAULT_MODEL_SETTINGS).toEqual({
       extractionModel: 'claude-sonnet-5-5',
+      maintenanceModel: 'claude-sonnet-5-5',
       reviewModel: 'claude-opus-5-5',
       chatModel: 'claude-opus-5-5'
     })

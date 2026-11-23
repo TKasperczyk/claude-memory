@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import fs from 'fs'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from './anthropic.js'
+import { buildCacheControl } from './prompt-cache.js'
 import { clampModelMaxTokens } from './model-capabilities.js'
 import { asStringArray, asTrimmedString, isPlainObject, isToolUseBlock, type ToolUseBlock } from './parsing.js'
 import { truncateText, withTimeout } from './shared.js'
@@ -153,7 +154,7 @@ export async function generateRetrievalQueryPlan(
         max_tokens: clampModelMaxTokens(HAIKU_MODEL, QUERY_MAX_TOKENS),
         system: [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-          { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
+          { type: 'text', text: SYSTEM_PROMPT, cache_control: buildCacheControl('1h') }
         ],
         messages: [{ role: 'user', content: userPrompt }],
         tools: [buildQueryTool(semanticVariantCount)],

@@ -1,4 +1,5 @@
 import { CLAUDE_CODE_SYSTEM_PROMPT } from '../anthropic.js'
+import { buildCacheControl } from '../prompt-cache.js'
 import { createLogger } from '../logger.js'
 import {
   DEFAULT_CONFIG,
@@ -6,7 +7,7 @@ import {
   type MemoryRecord
 } from '../types.js'
 import { batchUpdateRecords, fetchRecordsByIds, findSimilar } from '../lancedb.js'
-import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
+import { resolveMaintenanceModel, resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildToolCallParams } from '../model-capabilities.js'
 import { recordTokenUsageFromResponse } from '../token-usage-events.js'
@@ -84,17 +85,18 @@ async function resolveConflictWithLLM(
 
   const payload = JSON.stringify(buildConflictAdjudicationInput(pair), null, 2)
 
+  const model = resolveMaintenanceModel()
   const response = await client.messages.create({
-    model: config.extraction.model,
+    model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: CONFLICT_ADJUDICATION_PROMPT, cache_control: { type: 'ephemeral' } }
+      { type: 'text', text: CONFLICT_ADJUDICATION_PROMPT, cache_control: buildCacheControl('5m') }
     ],
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CONFLICT_ADJUDICATION_TOOL],
-    ...buildToolCallParams(config.extraction.model, CONFLICT_ADJUDICATION_TOOL_NAME, Math.min(CONFLICT_ADJUDICATION_MAX_TOKENS, config.extraction.maxTokens))
+    ...buildToolCallParams(model, CONFLICT_ADJUDICATION_TOOL_NAME, Math.min(CONFLICT_ADJUDICATION_MAX_TOKENS, config.extraction.maxTokens))
   })
-  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
+  recordTokenUsageFromResponse('maintenance', model, response, {
     collection: config.lancedb.table
   })
 

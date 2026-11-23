@@ -268,7 +268,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const hasScope = Object.prototype.hasOwnProperty.call(body, 'scope')
       const scope = hasScope ? asScope(body.scope) : undefined
       if (hasScope && !scope) {
-        return res.status(400).json({ error: 'scope must be global or project' })
+        return res.status(400).json({ error: 'scope must be global, environment, or project' })
       }
 
       // Build the record with defaults
@@ -591,6 +591,8 @@ function parseTokenUsageSource(
       normalized === 'all'
       || normalized === 'extraction'
       || normalized === 'haiku-query'
+      || normalized === 'rerank'
+      || normalized === 'reconcile'
       || normalized === 'usefulness-rating'
       || normalized === 'maintenance'
       || normalized === 'review'

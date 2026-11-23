@@ -63,8 +63,8 @@ describe('Injection E2E', () => {
         outcome: 'success'
       })
       const hybridSemanticRecord = createMockErrorRecord({
-        errorText: 'kubectl get pods failed: pod not found',
-        resolution: 'Check namespace with kubectl get ns'
+        errorText: 'Container orchestrator failed to list cluster workload instances',
+        resolution: 'Verify cluster context and active tenant scope'
       })
 
       await insertRecord(keywordRecord, TEST_CONFIG)

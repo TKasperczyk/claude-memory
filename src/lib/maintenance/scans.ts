@@ -92,15 +92,52 @@ interface ValidityResult {
   reason?: string
 }
 
+const DEFAULT_EPHEMERAL_TTL_DAYS = 14
+const DAY_MS = 24 * 60 * 60 * 1000
+
+export function resolveEffectiveTtlDays(record: MemoryRecord): number | null {
+  if (typeof record.ttlDays === 'number' && Number.isFinite(record.ttlDays) && record.ttlDays > 0) {
+    return record.ttlDays
+  }
+  if (record.volatility === 'ephemeral') {
+    return DEFAULT_EPHEMERAL_TTL_DAYS
+  }
+  return null
+}
+
+export function isRecordTtlExpired(record: MemoryRecord, nowMs: number = Date.now()): { expired: boolean; ttlDays?: number } {
+  const ttlDays = resolveEffectiveTtlDays(record)
+  if (ttlDays === null) return { expired: false }
+  const anchor = record.lastUsed ?? record.timestamp ?? 0
+  if (!anchor) return { expired: false }
+  return {
+    expired: nowMs - anchor > ttlDays * DAY_MS,
+    ttlDays
+  }
+}
+
 export async function findStaleRecords(
   config: Config = DEFAULT_CONFIG,
   settings?: MaintenanceSettings
 ): Promise<MemoryRecord[]> {
   const maintenance = resolveMaintenanceSettings(settings)
-  const cutoff = Date.now() - maintenance.staleDays * 24 * 60 * 60 * 1000
-  // Only command and procedure records have executable validity checks; other types always pass checkValidity().
-  const filter = `deprecated = false AND (type = 'command' OR type = 'procedure') AND last_used < ${Math.trunc(cutoff)}`
-  return fetchRecords(filter, config, false)
+  const now = Date.now()
+  const cutoff = now - maintenance.staleDays * DAY_MS
+  // Executable command/procedure staleness check
+  const execFilter = `deprecated = false AND (type = 'command' OR type = 'procedure') AND last_used < ${Math.trunc(cutoff)}`
+  const execStale = await fetchRecords(execFilter, config, false)
+
+  // Also include any active record whose explicit ttlDays / ephemeral volatility has expired
+  const seenIds = new Set(execStale.map(r => r.id))
+  const allActive = await fetchRecords('deprecated = false', config, false)
+  for (const record of allActive) {
+    if (seenIds.has(record.id)) continue
+    if (isRecordTtlExpired(record, now).expired) {
+      execStale.push(record)
+      seenIds.add(record.id)
+    }
+  }
+  return execStale
 }
 
 export async function findGlobalCandidates(
@@ -119,7 +156,7 @@ export async function findGlobalCandidates(
   const records = await fetchRecords(filter, config, false)
 
   for (const record of records) {
-    if (record.scope === 'global') continue
+    if (record.scope === 'global' || record.scope === 'environment') continue
     if (record.deprecated) continue
     if (isGlobalCandidate(record, maintenance)) {
       candidates.push(record)
@@ -178,6 +215,10 @@ export async function findStaleUnusedRecords(
 }
 
 export async function checkValidity(record: MemoryRecord, settings?: MaintenanceSettings): Promise<ValidityResult> {
+  const ttlCheck = isRecordTtlExpired(record)
+  if (ttlCheck.expired) {
+    return { valid: false, reason: `ttl-expired:${ttlCheck.ttlDays}d` }
+  }
   const maintenance = resolveMaintenanceSettings(settings)
   switch (record.type) {
     case 'command': {

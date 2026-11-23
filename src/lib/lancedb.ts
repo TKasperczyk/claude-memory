@@ -8,12 +8,13 @@ export type { MemoryStats } from '../../shared/types.js'
 
 export { escapeFilterValue } from './shared.js'
 
-export { initLanceDB, closeLanceDB, compactTable, resolveDirectory } from './lancedb-client.js'
+export { initLanceDB, closeLanceDB, compactTable, ensureFtsIndex, resolveDirectory } from './lancedb-client.js'
 
 export {
   insertRecord,
   updateRecord,
   batchUpdateRecords,
+  backfillSearchText,
   incrementRecordCounters,
   deleteRecord,
   deleteByFilter,
@@ -29,6 +30,7 @@ export {
   countRecords
 } from './lancedb-crud.js'
 export type {
+  BackfillSearchTextResult,
   BatchUpdateFailure,
   BatchUpdateOptions,
   BatchUpdateResult,
@@ -39,12 +41,14 @@ export type {
 
 export {
   hybridSearch,
+  bm25Search,
   findSimilar,
   vectorSearchSimilar,
   buildFilter,
   buildKeywordFilter,
   escapeLikeValue,
-  computeUsageRatio
+  computeUsageRatio,
+  computeSmoothedUsageRatio
 } from './lancedb-search.js'
 
 export { buildLanceRow, buildEmbeddingInput } from './lancedb-records.js'

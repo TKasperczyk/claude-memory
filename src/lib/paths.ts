@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { fileURLToPath } from 'url'
+export { isCatchAllDirectory, resolveAttributionScope, type ScopeAttribution } from './scope-attribution.js'
 
 export function canonicalizePath(targetPath: string): string {
   const resolvedPath = path.resolve(targetPath)

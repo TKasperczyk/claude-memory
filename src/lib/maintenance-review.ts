@@ -40,7 +40,8 @@ const OPERATION_PROMPTS: Record<string, string> = {
   'global-promotion': 'This operation elevates project-scoped records to global scope. Goal: Share universal knowledge. Key question: Are promoted records truly universal?',
   'relation-discovery': 'This operation discovers relates_to edges from session co-injection and prunes stale/broken relation links. Goal: Build high-signal relation edges without creating noisy graph hubs.',
   'entity-overlap-discovery': 'This operation builds shares_entity relation edges between records that reference shared high-specificity technical entities. Goal: Connect genuinely related memories without linking unrelated topics via overly generic terms.',
-  'promotion-suggestions': 'This operation generates CLAUDE.md and skill file suggestions. Goal: Surface high-value memories for documentation.'
+  'promotion-suggestions': 'This operation generates CLAUDE.md and skill file suggestions. Goal: Surface high-value memories for documentation.',
+  'static-doc-reconcile': 'This operation reconciles active memories against Tier-0 static docs (CLAUDE.md, AGENTS.md, project skills), deprecating verbatim duplicates and surfacing high-usage graduation candidates.'
 }
 
 const OPERATION_SETTINGS: Record<string, Array<keyof Settings>> = {
@@ -63,7 +64,7 @@ const OPERATION_SETTINGS: Record<string, Array<keyof Settings>> = {
     'consolidationNoMergeBackoffDays'
   ],
   'conflict-resolution': ['conflictSimilarityThreshold', 'conflictCheckBatchSize'],
-  'currentness-check': ['currentnessRecheckDays'],
+  'currentness-check': ['currentnessRecheckDays', 'currentnessNoChangeBackoffDays'],
   'warning-synthesis': [
     'warningSynthesisMinFailures',
     'warningClusterSimilarityThreshold',
@@ -80,7 +81,8 @@ const OPERATION_SETTINGS: Record<string, Array<keyof Settings>> = {
   ],
   'relation-discovery': ['maxRelationsPerRecord'],
   'entity-overlap-discovery': [],
-  'promotion-suggestions': []
+  'promotion-suggestions': [],
+  'static-doc-reconcile': []
 }
 
 const REVIEW_SYSTEM_PROMPT = `You are reviewing a maintenance operation result.

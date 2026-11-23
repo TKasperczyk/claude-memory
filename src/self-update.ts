@@ -1,5 +1,8 @@
 #!/usr/bin/env -S npx tsx
 
+import { loadConfig } from './lib/config.js'
+import { runPendingMigrations, type DataMigrationsResult } from './lib/data-migrations.js'
+import { closeLanceDB } from './lib/lancedb.js'
 import {
   runSelfUpdate,
   type SelfUpdateOptions,
@@ -96,7 +99,11 @@ function parseArgs(args: string[]): CliOptions {
   }
 }
 
-function formatResult(result: SelfUpdateResult, dryRun: boolean): string[] {
+function formatResult(
+  result: SelfUpdateResult,
+  dryRun: boolean,
+  migrations?: DataMigrationsResult
+): string[] {
   const lines: string[] = []
   if (result.recovery.restored) {
     lines.push(
@@ -146,6 +153,9 @@ function formatResult(result: SelfUpdateResult, dryRun: boolean): string[] {
   if (result.dashboard.status !== 'not-needed') {
     lines.push(`Dashboard: ${result.dashboard.status}`)
   }
+  if (migrations) {
+    lines.push(formatMigrationsLine(migrations))
+  }
   if (result.rollback) {
     lines.push(
       `Rollback: ${result.rollback.status}`
@@ -169,15 +179,41 @@ function formatResult(result: SelfUpdateResult, dryRun: boolean): string[] {
     result.build.error,
     result.dashboard.error,
     result.rollback?.error,
+    migrations?.error,
     result.error
   ])) {
     if (error) lines.push(`Error: ${error}`)
   }
-  lines.push(`Result: ${result.status}${dryRun ? ' (dry run)' : ''}`)
+  const overallStatus = result.status === 'failed' || migrations?.status === 'failed'
+    ? 'failed'
+    : result.status
+  lines.push(`Result: ${overallStatus}${dryRun ? ' (dry run)' : ''}`)
   return lines
 }
 
-function main(): void {
+function formatMigrationsLine(migrations: DataMigrationsResult): string {
+  switch (migrations.status) {
+    case 'up-to-date':
+      return 'Migrations: up-to-date'
+    case 'would-run':
+      return `Migrations: would-run (${migrations.pendingIds.length} pending: ${migrations.pendingIds.join(', ')})`
+    case 'applied': {
+      const totalUpdated = migrations.steps.reduce((sum, step) => sum + step.updated, 0)
+      const parts = [
+        `${migrations.steps.length} ran`,
+        `${totalUpdated} updated`,
+        ...(migrations.compacted ? ['compacted'] : [])
+      ]
+      return `Migrations: applied (${parts.join(', ')})`
+    }
+    case 'skipped':
+      return `Migrations: skipped (reason=${migrations.skipReason ?? 'unknown'})`
+    case 'failed':
+      return 'Migrations: failed'
+  }
+}
+
+async function main(): Promise<void> {
   const cli = parseArgs(process.argv.slice(2))
   if (cli.help) {
     console.log(USAGE)
@@ -185,22 +221,48 @@ function main(): void {
   }
 
   const result = runSelfUpdate(cli.selfUpdate)
+  let migrations: DataMigrationsResult | undefined
+  const shouldRunMigrations = result.status !== 'failed'
+    && !cli.selfUpdate.rollback
+    && !cli.selfUpdate.clearHold
+
+  if (shouldRunMigrations) {
+    try {
+      const config = loadConfig(process.cwd())
+      migrations = await runPendingMigrations(config, {
+        dryRun: cli.selfUpdate.dryRun ?? false
+      })
+    } catch (error) {
+      migrations = {
+        status: 'failed',
+        collectionKey: 'unknown',
+        pendingIds: [],
+        steps: [],
+        mutated: false,
+        compacted: false,
+        error: toErrorMessage(error)
+      }
+    } finally {
+      await closeLanceDB()
+    }
+  }
+
   if (cli.json) {
-    console.log(JSON.stringify(result, null, 2))
+    console.log(JSON.stringify(migrations ? { ...result, migrations } : result, null, 2))
   } else {
-    for (const line of formatResult(result, cli.selfUpdate.dryRun ?? false)) {
+    for (const line of formatResult(result, cli.selfUpdate.dryRun ?? false, migrations)) {
       console.error(`[claude-memory] ${line}`)
     }
   }
-  if (result.status === 'failed') process.exitCode = 2
+  if (result.status === 'failed' || migrations?.status === 'failed') {
+    process.exitCode = 2
+  }
 }
 
 if (isProcessEntrypoint(import.meta.url)) {
-  try {
-    main()
-  } catch (error) {
+  main().catch(error => {
     console.error(`[claude-memory] self-update failed: ${toErrorMessage(error)}`)
     console.error(USAGE)
     process.exitCode = 2
-  }
+  })
 }

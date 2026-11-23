@@ -9,14 +9,14 @@
  */
 
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { loadConfig } from '../src/lib/config.js'
 import { findGitRoot } from '../src/lib/context.js'
+import { CLAUDE_MEMORY_ROOT } from '../src/lib/paths.js'
 import type { Config } from '../src/lib/types.js'
 
 export const EVAL_TABLE_DEFAULT = 'cc_memories_eval'
-export const EVAL_DATA_DIR = path.join(os.homedir(), '.claude-memory', 'eval')
+export const EVAL_DATA_DIR = path.join(CLAUDE_MEMORY_ROOT, 'eval')
 
 export function loadProdConfig(): Config {
   const configRoot = findGitRoot(process.cwd()) ?? process.cwd()

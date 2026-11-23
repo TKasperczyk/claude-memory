@@ -7,8 +7,12 @@
  *
  * Defaults to --dry-run. Pass --apply to persist updates and compact the table.
  */
-import path from 'path'
 import { loadConfig } from '../src/lib/config.js'
+import {
+  applyCanonicalPathAndRestorePlan,
+  inspectCanonicalPathAndRestoreRecord,
+  type CanonicalPathAndRestorePlan
+} from '../src/lib/data-migrations.js'
 import {
   batchUpdateRecords,
   closeLanceDB,
@@ -18,73 +22,10 @@ import {
   iterateRecords
 } from '../src/lib/lancedb.js'
 import { compactTableSafely } from '../src/lib/maintenance-api.js'
-import { canonicalizePath } from '../src/lib/paths.js'
 import { isProcessEntrypoint } from '../src/lib/shared.js'
 import type { MemoryRecord } from '../src/lib/types.js'
 
 const BATCH_SIZE = 200
-
-function canonicalizeIfAbsolute(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  if (!trimmed || !path.isAbsolute(trimmed)) return undefined
-  const canonical = canonicalizePath(trimmed)
-  return canonical !== value ? canonical : undefined
-}
-
-interface RecordMigrationPlan {
-  id: string
-  pathChanges: Array<{ field: string; before: string; after: string }>
-  clearStaleDeprecation: boolean
-}
-
-function inspectRecord(record: MemoryRecord): RecordMigrationPlan | null {
-  const pathChanges: Array<{ field: string; before: string; after: string }> = []
-
-  const nextProject = canonicalizeIfAbsolute(record.project)
-  if (nextProject && record.project) {
-    pathChanges.push({ field: 'project', before: record.project, after: nextProject })
-  }
-
-  if ('context' in record && record.context && typeof record.context === 'object') {
-    const ctx = record.context as Record<string, unknown>
-    const nextCtxProject = canonicalizeIfAbsolute(ctx.project)
-    if (nextCtxProject && typeof ctx.project === 'string') {
-      pathChanges.push({ field: 'context.project', before: ctx.project, after: nextCtxProject })
-    }
-    const nextCtxCwd = canonicalizeIfAbsolute(ctx.cwd)
-    if (nextCtxCwd && typeof ctx.cwd === 'string') {
-      pathChanges.push({ field: 'context.cwd', before: ctx.cwd, after: nextCtxCwd })
-    }
-  }
-
-  const clearStaleDeprecation = !record.deprecated && (
-    record.deprecatedAt !== undefined
-    || record.deprecatedReason !== undefined
-    || record.supersedingRecordId !== undefined
-  )
-
-  if (pathChanges.length === 0 && !clearStaleDeprecation) return null
-  return { id: record.id, pathChanges, clearStaleDeprecation }
-}
-
-function applyPlan(record: MemoryRecord, plan: RecordMigrationPlan): void {
-  for (const change of plan.pathChanges) {
-    if (change.field === 'project') {
-      record.project = change.after
-    } else if (change.field === 'context.project' && 'context' in record && record.context) {
-      (record.context as Record<string, unknown>).project = change.after
-    } else if (change.field === 'context.cwd' && 'context' in record && record.context) {
-      (record.context as Record<string, unknown>).cwd = change.after
-    }
-  }
-
-  if (plan.clearStaleDeprecation) {
-    delete record.deprecatedAt
-    delete record.deprecatedReason
-    delete record.supersedingRecordId
-  }
-}
 
 function parseArgs(argv: string[]): { apply: boolean; table?: string } {
   let apply = false
@@ -111,7 +52,7 @@ async function main(): Promise<void> {
   await initLanceDB(config)
   try {
     const totalBefore = await countRecords({}, config)
-    const plans: RecordMigrationPlan[] = []
+    const plans: CanonicalPathAndRestorePlan[] = []
     let scanned = 0
     let pathFixCount = 0
     let staleDeprecationFixCount = 0
@@ -120,7 +61,7 @@ async function main(): Promise<void> {
 
     for await (const record of iterateRecords({ includeEmbeddings: false }, config)) {
       scanned += 1
-      const plan = inspectRecord(record)
+      const plan = inspectCanonicalPathAndRestoreRecord(record)
       if (!plan) continue
       plans.push(plan)
       if (plan.pathChanges.length > 0) {
@@ -188,7 +129,7 @@ async function main(): Promise<void> {
       for (const record of hydrated) {
         const plan = planById.get(record.id)
         if (!plan) continue
-        applyPlan(record, plan)
+        applyCanonicalPathAndRestorePlan(record, plan)
         toPersist.push(record)
       }
 

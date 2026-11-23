@@ -1,12 +1,14 @@
 import { truncateText, withTimeout } from './shared.js'
-import { closeLanceDB, initLanceDB, fetchRecordsByIds, iterateRecords } from './lancedb.js'
+import { closeLanceDB, fetchRecordsByIds, hybridSearch, initLanceDB, iterateRecords } from './lancedb.js'
 import { ENTITY_TOKEN_PATTERN, extractEntityNeedles } from './entities.js'
 import { buildContext, extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embed } from './embed.js'
 import { canonicalizePath } from './paths.js'
+import { isStrictCatchAllRoot, resolveRetrievalScope } from './scope-attribution.js'
 import { mergeNearMisses, buildExclusionReason } from './diagnostics.js'
-import { cosineSimilarity, searchRankedCandidates, sortByScore } from './ranked-search.js'
+import { computeUnifiedScore, cosineSimilarity, searchRankedCandidates, sortByScore } from './ranked-search.js'
 import { generateRetrievalQueryPlan } from './retrieval-query-generator.js'
+import { rerankRetrievedCandidates } from './retrieval-reranker.js'
 import { recordTokenUsageEventsAsync } from './token-usage-events.js'
 import { loadSettings, type RetrievalSettings } from './settings.js'
 import { loadSessionTracking, updateSessionPromptStateIfVersion, updateSessionRetrievalState } from './session-tracking.js'
@@ -155,11 +157,19 @@ const FALLBACK_TOKEN_PATTERN = ENTITY_TOKEN_PATTERN
 const ENTITY_NEEDLE_CAP = 3
 // A hung embedding provider must cost one query variant, not the whole
 // pre-prompt budget; searchMemories already continues with partial embeddings.
-const HOOK_EMBEDDING_TIMEOUT_MS = 3000
+const HOOK_EMBEDDING_TIMEOUT_MS = 4500
+const MAX_SCALED_EMBEDDING_TIMEOUT_MS = 15000
 // Reserve headroom inside prePromptTimeoutMs so LanceDB search + MMR always
 // have time to complete after Haiku and embedding calls.
 const RETRIEVAL_POST_HAIKU_HEADROOM_MS = 2500
 const RETRIEVAL_SEARCH_HEADROOM_MS = 1000
+
+function computeEmbeddingTimeoutMs(prePromptTimeoutMs: number): number {
+  if (!Number.isFinite(prePromptTimeoutMs) || prePromptTimeoutMs <= 10_000) {
+    return HOOK_EMBEDDING_TIMEOUT_MS
+  }
+  return Math.min(MAX_SCALED_EMBEDDING_TIMEOUT_MS, Math.max(HOOK_EMBEDDING_TIMEOUT_MS, prePromptTimeoutMs - 5_500))
+}
 
 function applySettingsToConfig(config: Config, settings: RetrievalSettings): Config {
   return {
@@ -178,6 +188,24 @@ export interface RetrievalRequest {
   transcriptPath?: string
   sessionId?: string
   skipSuppressionWriteback?: boolean
+  /** Causal upper bound (exclusive): only records with timestamp < maxTimestamp are eligible. */
+  maxTimestamp?: number
+}
+
+export interface RetrievalTelemetry {
+  pipeline: 'stage2-rerank' | 'legacy'
+  project?: string
+  stage1CandidateCount: number
+  bm25HitCount: number
+  vectorHitCount: number
+  suppressedCount: number
+  rerankerCalled: boolean
+  rerankerAbstained: boolean
+  rerankerFallback: boolean
+  abstainReason?: string
+  stage1EmbedMs?: number
+  stage1SearchMs?: number
+  stage2RerankMs?: number
 }
 
 export interface RetrievalResult {
@@ -188,6 +216,9 @@ export interface RetrievalResult {
   timedOut: boolean
   diagnostics?: RetrievalDiagnostics
   suppressionWritebackVersion?: number
+  telemetry?: RetrievalTelemetry
+  /** Top Stage-1 recall pool (before Stage-2 reranking) for offline recall evaluation. */
+  stage1Candidates?: HybridSearchResult[]
 }
 
 export interface RetrievalDiagnostics {
@@ -257,6 +288,7 @@ export async function retrieveContext(
           transcriptPath: input.transcriptPath,
           sessionId: input.sessionId,
           skipSuppressionWriteback: input.skipSuppressionWriteback,
+          maxTimestamp: input.maxTimestamp,
           deadlineMs
         }
       )
@@ -273,6 +305,8 @@ export async function retrieveContext(
           results,
           injectedRecords,
           suppressionWritebackVersion,
+          telemetry: searchResult.telemetry,
+          stage1Candidates: searchResult.stage1Candidates,
           diagnostics: searchResult.diagnostics
             ? { search: searchResult.diagnostics.search, context: contextResult }
             : undefined
@@ -281,12 +315,26 @@ export async function retrieveContext(
 
       if (results.length === 0) {
         const suppressionWritebackVersion = updateRetrievalPromptState(input.sessionId, searchResult, settings, runtimeConfig.lancedb.table, input.skipSuppressionWriteback)
-        return { context: null, results, injectedRecords: [], suppressionWritebackVersion }
+        return {
+          context: null,
+          results,
+          injectedRecords: [],
+          suppressionWritebackVersion,
+          telemetry: searchResult.telemetry,
+          stage1Candidates: searchResult.stage1Candidates
+        }
       }
 
       const { context, records: injectedRecords } = buildContext(results, runtimeConfig)
       const suppressionWritebackVersion = updateRetrievalPromptState(input.sessionId, searchResult, settings, runtimeConfig.lancedb.table, input.skipSuppressionWriteback)
-      return { context: context || null, results, injectedRecords, suppressionWritebackVersion }
+      return {
+        context: context || null,
+        results,
+        injectedRecords,
+        suppressionWritebackVersion,
+        telemetry: searchResult.telemetry,
+        stage1Candidates: searchResult.stage1Candidates
+      }
     } finally {
       unregister()
     }
@@ -316,7 +364,9 @@ export async function retrieveContext(
     injectedRecords: result.value?.injectedRecords ?? [],
     timedOut: false,
     diagnostics: result.value?.diagnostics,
-    suppressionWritebackVersion: result.value?.suppressionWritebackVersion
+    suppressionWritebackVersion: result.value?.suppressionWritebackVersion,
+    telemetry: result.value?.telemetry,
+    stage1Candidates: result.value?.stage1Candidates
   }
 }
 
@@ -346,6 +396,451 @@ type SearchMemoriesResult = {
   promptEmbedding?: number[]
   suppressionStateVersion: number
   diagnostics?: SearchMemoriesDiagnostics
+  telemetry?: RetrievalTelemetry
+  stage1Candidates?: HybridSearchResult[]
+}
+
+const STAGE1_POOL_LIMIT = 25
+const RRF_K = 60
+const USAGE_BAYES_PRIOR_MEAN = 0.1
+const USAGE_BAYES_PRIOR_STRENGTH = 5
+
+function computeSmoothedUtilityForStage1(record: MemoryRecord): number {
+  const retrievalCount = Math.max(0, record.retrievalCount ?? 0)
+  const usageCount = Math.max(0, record.usageCount ?? 0)
+  const effectiveRetrievals = Math.max(retrievalCount, usageCount)
+  const smoothed = (usageCount + USAGE_BAYES_PRIOR_STRENGTH * USAGE_BAYES_PRIOR_MEAN)
+    / (effectiveRetrievals + USAGE_BAYES_PRIOR_STRENGTH)
+  return Math.max(0, Math.min(smoothed, 1))
+}
+
+async function runStage1Stage2Retrieval(args: {
+  prompt: string
+  cleanPrompt: string
+  signals: ContextSignals
+  config: Config
+  settings: RetrievalSettings
+  cwd: string
+  project?: string
+  ancestorProjects: string[]
+  linkedWorkspaces: string[]
+  onlySharedScopes: boolean
+  session: ReturnType<typeof loadSessionTracking>
+  suppressionStateVersion: number
+  signal?: AbortSignal
+  options: {
+    diagnostic?: boolean
+    transcriptPath?: string
+    sessionId?: string
+    skipSuppressionWriteback?: boolean
+    maxTimestamp?: number
+    deadlineMs?: number
+  }
+}): Promise<SearchMemoriesResult> {
+  const {
+    prompt,
+    cleanPrompt,
+    signals,
+    config,
+    settings,
+    cwd,
+    project,
+    ancestorProjects,
+    linkedWorkspaces,
+    onlySharedScopes,
+    session,
+    signal,
+    options
+  } = args
+  const diagnostic = options.diagnostic === true
+  let suppressionStateVersion = args.suppressionStateVersion
+
+  const stage1MinSimilarity = settings.stage1MinSimilarity ?? 0.45
+  const rerankCandidateLimit = settings.rerankCandidateLimit ?? 18
+  const rerankMaxRecords = Math.min(
+    settings.rerankMaxRecords ?? 3,
+    Math.max(1, config.injection.maxRecords)
+  )
+  const rerankTimeoutMs = settings.rerankTimeoutMs ?? 4000
+
+  const rawSemanticQuery = buildSemanticQuery(cleanPrompt, signals, settings)
+  const signalNeedles = [
+    ...signals.errors.slice(0, settings.maxKeywordErrors),
+    ...signals.commands.slice(0, settings.maxKeywordCommands)
+  ].slice(0, settings.maxKeywordQueries)
+  const broadBm25Query = truncateText(cleanPrompt, 400).trim()
+  const bm25QueryLabels: string[] = [
+    ...signalNeedles,
+    ...(broadBm25Query ? [broadBm25Query] : [])
+  ]
+
+  // Stage 1: Fire single raw-prompt embedding and local BM25 FTS concurrently.
+  const embeddingTimeoutMs = computeEmbeddingTimeoutMs(settings.prePromptTimeoutMs)
+  const embedStartMs = Date.now()
+  let stage1EmbedMs = 0
+  const rawEmbedPromise: Promise<{ embedding?: number[]; error?: unknown; aborted?: boolean }> = rawSemanticQuery
+    ? embed(rawSemanticQuery, config, { signal, timeoutMs: embeddingTimeoutMs })
+        .then(embedding => {
+          stage1EmbedMs = Date.now() - embedStartMs
+          return { embedding }
+        })
+        .catch(error => {
+          stage1EmbedMs = Date.now() - embedStartMs
+          return { error, aborted: Boolean(signal?.aborted) }
+        })
+    : Promise.resolve({})
+
+  const searchStartMs = Date.now()
+  const signalBm25Promise: Promise<HybridSearchResult[]> = signalNeedles.length > 0
+    ? hybridSearch({
+        query: signalNeedles[0],
+        keywordQueries: signalNeedles,
+        limit: 20,
+        keywordLimit: 20,
+        project,
+        ancestorProjects,
+        linkedWorkspaces,
+        onlySharedScopes,
+        excludeDeprecated: true,
+        maxTimestamp: options.maxTimestamp,
+        vectorWeight: 0,
+        keywordWeight: 1,
+        usageRatioWeight: 0,
+        includeEmbeddings: true,
+        signal
+      }, config).catch(error => {
+        if (signal?.aborted) throw error
+        console.error('[claude-memory] Stage-1 signal BM25 search failed:', error)
+        return []
+      })
+    : Promise.resolve([])
+
+  const broadBm25Promise: Promise<HybridSearchResult[]> = broadBm25Query
+    ? hybridSearch({
+        query: broadBm25Query,
+        keywordQueries: [broadBm25Query],
+        limit: STAGE1_POOL_LIMIT,
+        keywordLimit: STAGE1_POOL_LIMIT,
+        project,
+        ancestorProjects,
+        linkedWorkspaces,
+        onlySharedScopes,
+        excludeDeprecated: true,
+        maxTimestamp: options.maxTimestamp,
+        vectorWeight: 0,
+        keywordWeight: 1,
+        usageRatioWeight: 0,
+        includeEmbeddings: true,
+        signal
+      }, config).catch(error => {
+        if (signal?.aborted) throw error
+        console.error('[claude-memory] Stage-1 prompt BM25 search failed:', error)
+        return []
+      })
+    : Promise.resolve([])
+
+  const [embedOutcome, signalBm25Results, broadBm25Results] = await Promise.all([
+    rawEmbedPromise,
+    signalBm25Promise,
+    broadBm25Promise
+  ])
+  if (embedOutcome.aborted || (signal?.aborted && embedOutcome.error)) {
+    throw embedOutcome.error ?? new Error('Retrieval aborted')
+  }
+  const rawPromptEmbedding = embedOutcome.embedding
+  if (embedOutcome.error) {
+    console.error('[claude-memory] Stage-1 embedding failed; continuing with BM25 candidates:', embedOutcome.error)
+  }
+
+  let vectorResults: HybridSearchResult[] = []
+  if (rawPromptEmbedding) {
+    try {
+      vectorResults = await hybridSearch({
+        query: '',
+        embedding: rawPromptEmbedding,
+        limit: STAGE1_POOL_LIMIT,
+        project,
+        ancestorProjects,
+        linkedWorkspaces,
+        onlySharedScopes,
+        excludeDeprecated: true,
+        maxTimestamp: options.maxTimestamp,
+        vectorWeight: 1,
+        keywordWeight: 0,
+        minSimilarity: stage1MinSimilarity,
+        minScore: 0,
+        usageRatioWeight: 0,
+        includeEmbeddings: true,
+        signal
+      }, config)
+    } catch (error) {
+      if (signal?.aborted) throw error
+      console.error('[claude-memory] Stage-1 vector search failed:', error)
+    }
+  }
+  const stage1SearchMs = Date.now() - searchStartMs
+
+  const suppressionResolution = resolveSuppressedIds({
+    sessionId: options.sessionId,
+    session,
+    embedding: rawPromptEmbedding,
+    settings,
+    collection: config.lancedb.table,
+    skipWriteback: options.skipSuppressionWriteback === true,
+    stateVersion: suppressionStateVersion
+  })
+  const suppressedIds = suppressionResolution.ids
+  suppressionStateVersion = suppressionResolution.stateVersion
+
+  // Merge BM25 + Vector candidates via Reciprocal Rank Fusion (RRF).
+  type Stage1Entry = {
+    item: HybridSearchResult
+    vecRank?: number
+    bm25Rank?: number
+    signalMatch: boolean
+    fusionScore: number
+    relevance: number
+  }
+  const merged = new Map<string, Stage1Entry>()
+  const signalBm25Ids = new Set<string>()
+  const bm25HitIds = new Set<string>()
+  const vectorHitIds = new Set<string>()
+
+  const upsertBm25 = (list: HybridSearchResult[], isSignal: boolean): void => {
+    list.forEach((hit, rank) => {
+      const id = hit.record.id
+      bm25HitIds.add(id)
+      if (isSignal) signalBm25Ids.add(id)
+      const existing = merged.get(id)
+      if (existing) {
+        existing.item.keywordMatch = true
+        if (hit.bm25Score !== undefined) {
+          existing.item.bm25Score = Math.max(existing.item.bm25Score ?? 0, hit.bm25Score)
+        }
+        existing.bm25Rank = existing.bm25Rank === undefined ? rank : Math.min(existing.bm25Rank, rank)
+        existing.signalMatch = existing.signalMatch || isSignal
+      } else {
+        merged.set(id, {
+          item: { ...hit, keywordMatch: true },
+          bm25Rank: rank,
+          signalMatch: isSignal,
+          fusionScore: 0,
+          relevance: 0
+        })
+      }
+    })
+  }
+
+  upsertBm25(signalBm25Results, true)
+  upsertBm25(broadBm25Results, false)
+
+  vectorResults.forEach((hit, rank) => {
+    const id = hit.record.id
+    vectorHitIds.add(id)
+    const existing = merged.get(id)
+    if (existing) {
+      existing.item.similarity = Math.max(existing.item.similarity, hit.similarity)
+      existing.vecRank = existing.vecRank === undefined ? rank : Math.min(existing.vecRank, rank)
+    } else {
+      merged.set(id, {
+        item: { ...hit },
+        vecRank: rank,
+        signalMatch: false,
+        fusionScore: 0,
+        relevance: 0
+      })
+    }
+  })
+
+  for (const entry of merged.values()) {
+    const rec = entry.item.record
+    if (entry.item.similarity === 0 && rawPromptEmbedding && rec.embedding && rec.embedding.length > 0) {
+      entry.item.similarity = cosineSimilarity(rawPromptEmbedding, rec.embedding)
+    }
+    const smoothedUtility = computeSmoothedUtilityForStage1(rec)
+    const isProjectMatch = Boolean(project && rec.project === project)
+    const isLinkedMatch = Boolean(!isProjectMatch && rec.project && linkedWorkspaces.includes(rec.project))
+    const unified = computeUnifiedScore({
+      similarity: entry.item.similarity,
+      keywordMatch: entry.item.keywordMatch,
+      usageRatio: smoothedUtility,
+      projectMatch: isProjectMatch || isLinkedMatch,
+      settings
+    })
+    entry.item.score = unified.total
+    entry.relevance = unified.relevance
+
+    const vecRrf = entry.vecRank !== undefined ? 1 / (RRF_K + entry.vecRank + 1) : 0
+    const bm25Rrf = entry.bm25Rank !== undefined ? 1 / (RRF_K + entry.bm25Rank + 1) : 0
+    const signalBoost = entry.signalMatch ? 0.015 : 0
+    const projectNudge = isProjectMatch ? 0.006 : isLinkedMatch ? 0.003 : 0
+    const utilityNudge = smoothedUtility * 0.002
+    entry.fusionScore = vecRrf + bm25Rrf + signalBoost + projectNudge + utilityNudge
+  }
+
+  const stage1Sorted = Array.from(merged.values())
+    .sort((a, b) => {
+      if (b.fusionScore !== a.fusionScore) return b.fusionScore - a.fusionScore
+      return b.item.similarity - a.item.similarity
+    })
+  const stage1Candidates = stage1Sorted.map(entry => entry.item)
+
+  const searchNearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
+
+  // Apply compaction-scoped session ledger suppression BEFORE Stage-2 reranking
+  // so already-injected memories never waste rerank slots or trigger unnecessary LLM calls.
+  let remaining = stage1Candidates
+  let suppressedCount = 0
+  if (suppressedIds.size > 0 && remaining.length > 0) {
+    const suppressionResult = applyRecentlyInjectedSuppression(remaining, suppressedIds, settings)
+    remaining = suppressionResult.results
+    suppressedCount = suppressionResult.exclusions.length
+    if (diagnostic && searchNearMisses) {
+      mergeNearMisses(searchNearMisses, suppressionResult.exclusions)
+    }
+  }
+
+  let finalResults: HybridSearchResult[] = []
+  let rerankerCalled = false
+  let rerankerAbstained = false
+  let rerankerFallback = false
+  let abstainReason: string | undefined
+  let stage2RerankMs: number | undefined
+
+  if (remaining.length === 0) {
+    rerankerAbstained = true
+    abstainReason = stage1Candidates.length > 0 ? 'all_candidates_suppressed' : 'no_stage1_candidates'
+  } else {
+    const maxSimilarity = remaining.reduce((max, c) => Math.max(max, c.similarity), 0)
+    const maxBm25 = remaining.reduce((max, c) => Math.max(max, c.bm25Score ?? 0), 0)
+    const hasSignalHit = remaining.some(c => signalBm25Ids.has(c.record.id))
+
+    if (rawPromptEmbedding && !hasSignalHit && maxSimilarity < stage1MinSimilarity && maxBm25 < 2.5) {
+      rerankerAbstained = true
+      abstainReason = 'below_stage1_floor'
+      if (diagnostic && searchNearMisses) {
+        for (const item of remaining) {
+          searchNearMisses.set(item.record.id, {
+            record: item,
+            exclusionReasons: [buildExclusionReason('similarity_below_threshold', stage1MinSimilarity, item.similarity)]
+          })
+        }
+      }
+    } else {
+      const rerankPool = remaining.slice(0, rerankCandidateLimit)
+      const remainingBudgetMs = options.deadlineMs !== undefined
+        ? options.deadlineMs - Date.now()
+        : rerankTimeoutMs + 500
+      const MIN_STAGE2_RERANK_BUDGET_MS = 850
+
+      let rerankOutcome: Awaited<ReturnType<typeof rerankRetrievedCandidates>> = null
+      if (remainingBudgetMs >= MIN_STAGE2_RERANK_BUDGET_MS) {
+        const effectiveRerankTimeoutMs = Math.min(rerankTimeoutMs, remainingBudgetMs - 300)
+        rerankerCalled = true
+        rerankOutcome = await rerankRetrievedCandidates({
+          prompt,
+          cwd,
+          project,
+          transcriptPath: options.transcriptPath,
+          candidates: rerankPool,
+          maxRecords: rerankMaxRecords,
+          timeoutMs: effectiveRerankTimeoutMs,
+          signal
+        })
+      }
+
+      if (rerankOutcome) {
+        stage2RerankMs = rerankOutcome.durationMs
+        if (rerankOutcome.tokenUsage) {
+          recordTokenUsageEventsAsync([{
+            timestamp: Date.now(),
+            source: 'rerank',
+            model: rerankOutcome.model,
+            ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+            inputTokens: rerankOutcome.tokenUsage.inputTokens,
+            outputTokens: rerankOutcome.tokenUsage.outputTokens,
+            cacheCreationInputTokens: rerankOutcome.tokenUsage.cacheCreationInputTokens,
+            cacheReadInputTokens: rerankOutcome.tokenUsage.cacheReadInputTokens
+          }], { collection: config.lancedb.table })
+        }
+        finalResults = rerankOutcome.selected
+        rerankerAbstained = rerankOutcome.abstained
+        abstainReason = rerankOutcome.abstainReason
+        if (diagnostic && searchNearMisses) {
+          const selectedSet = new Set(finalResults.map(item => item.record.id))
+          for (const candidate of rerankPool) {
+            if (!selectedSet.has(candidate.record.id)) {
+              searchNearMisses.set(candidate.record.id, {
+                record: candidate,
+                exclusionReasons: [buildExclusionReason('rerank_abstained', 1, 0)]
+              })
+            }
+          }
+        }
+      } else {
+        // Fail-safe local fallback when Stage-2 reranker times out or is unavailable.
+        rerankerFallback = true
+        const fallbackCandidates = remaining.filter(candidate => {
+          if (signalBm25Ids.has(candidate.record.id)) return true
+          if (!rawPromptEmbedding) return candidate.keywordMatch
+          const entry = merged.get(candidate.record.id)
+          const relevance = entry?.relevance ?? candidate.score
+          return candidate.similarity >= settings.minSemanticSimilarity && relevance >= settings.minScore
+        })
+        finalResults = fallbackCandidates.length > 1
+          ? applyMMR(fallbackCandidates, settings.mmrLambda, rerankMaxRecords)
+          : fallbackCandidates.slice(0, rerankMaxRecords)
+        if (finalResults.length === 0) {
+          rerankerAbstained = true
+          abstainReason = 'reranker_fallback_empty'
+        }
+      }
+    }
+  }
+
+  const telemetry: RetrievalTelemetry = {
+    pipeline: 'stage2-rerank',
+    project,
+    stage1CandidateCount: stage1Candidates.length,
+    bm25HitCount: bm25HitIds.size,
+    vectorHitCount: vectorHitIds.size,
+    suppressedCount,
+    rerankerCalled,
+    rerankerAbstained,
+    rerankerFallback,
+    ...(abstainReason ? { abstainReason } : {}),
+    stage1EmbedMs,
+    stage1SearchMs,
+    ...(stage2RerankMs !== undefined ? { stage2RerankMs } : {})
+  }
+
+  const queryInfo: DiagnosticQueryInfo | undefined = diagnostic
+    ? {
+        semanticQuery: rawSemanticQuery || '',
+        keywordQueries: bm25QueryLabels,
+        effectivePrompt: cleanPrompt,
+        haikuUsed: rerankerCalled
+      }
+    : undefined
+
+  return {
+    results: finalResults,
+    promptEmbedding: rawPromptEmbedding,
+    suppressionStateVersion,
+    telemetry,
+    stage1Candidates,
+    diagnostics: diagnostic
+      ? {
+          search: {
+            qualified: finalResults,
+            nearMisses: Array.from(searchNearMisses?.values() ?? [])
+              .sort((a, b) => b.record.similarity - a.record.similarity),
+            queryInfo
+          },
+          mmrExclusions: []
+        }
+      : undefined
+  }
 }
 
 async function searchMemories(
@@ -355,7 +850,7 @@ async function searchMemories(
   settings: RetrievalSettings,
   cwd: string,
   signal?: AbortSignal,
-  options: { diagnostic?: boolean; transcriptPath?: string; sessionId?: string; skipSuppressionWriteback?: boolean; deadlineMs?: number } = {}
+  options: { diagnostic?: boolean; transcriptPath?: string; sessionId?: string; skipSuppressionWriteback?: boolean; maxTimestamp?: number; deadlineMs?: number } = {}
 ): Promise<SearchMemoriesResult> {
   const cleanPrompt = stripNoiseWords(prompt)
   const diagnostic = options.diagnostic === true
@@ -363,6 +858,35 @@ async function searchMemories(
     ? loadSessionTracking(options.sessionId, config.lancedb.table)
     : null
   let suppressionStateVersion = session?.retrievalStateVersion ?? 0
+
+  const attribution = resolveRetrievalScope(cwd, signals.projectRoot)
+  const project = attribution.isCatchAll ? undefined : attribution.project
+  const ancestorProjects = project
+    ? findAncestorProjects(project).filter(ancestor => !isStrictCatchAllRoot(ancestor))
+    : []
+  const linkedWorkspaces = (config.linkedWorkspaces ?? [])
+    .map(workspace => canonicalizePath(workspace))
+    .filter(workspace => workspace && workspace !== project && !isStrictCatchAllRoot(workspace))
+  const onlySharedScopes = attribution.isCatchAll
+
+  if (settings.enablePostRetrievalRerank === true) {
+    return runStage1Stage2Retrieval({
+      prompt,
+      cleanPrompt,
+      signals,
+      config,
+      settings,
+      cwd,
+      project,
+      ancestorProjects,
+      linkedWorkspaces,
+      onlySharedScopes,
+      session,
+      suppressionStateVersion,
+      signal,
+      options
+    })
+  }
 
   const rawSemanticQuery = buildSemanticQuery(cleanPrompt, signals, settings)
   const effectiveHaikuTimeoutMs = settings.prePromptTimeoutMs > RETRIEVAL_POST_HAIKU_HEADROOM_MS + 500
@@ -374,8 +898,9 @@ async function searchMemories(
   // Never re-throw inside this floating promise's catch handler; otherwise an abort
   // while generateRetrievalQueryPlan/loadEntityVocabulary is awaited triggers an
   // unhandledRejection before Promise.all attaches.
+  const embeddingTimeoutMs = computeEmbeddingTimeoutMs(settings.prePromptTimeoutMs)
   const rawEmbedPromise: Promise<{ query: string; embedding?: number[]; error?: unknown; aborted?: boolean } | null> = rawSemanticQuery
-    ? embed(rawSemanticQuery, config, { signal, timeoutMs: HOOK_EMBEDDING_TIMEOUT_MS })
+    ? embed(rawSemanticQuery, config, { signal, timeoutMs: embeddingTimeoutMs })
         .then(embedding => ({ query: rawSemanticQuery, embedding }))
         .catch(error => ({ query: rawSemanticQuery, error, aborted: Boolean(signal?.aborted) }))
     : Promise.resolve(null)
@@ -411,6 +936,10 @@ async function searchMemories(
   const entityVocabulary = settings.enableEntityKeywords
     ? await loadEntityVocabulary(config)
     : undefined
+  const signalKeywordQueries = [
+    ...signals.errors.slice(0, settings.maxKeywordErrors),
+    ...signals.commands.slice(0, settings.maxKeywordCommands)
+  ].slice(0, settings.maxKeywordQueries)
   const rawKeywordQueries = buildKeywordQueries(signals, cleanPrompt, settings, entityVocabulary)
   const plannedKeywordQueries = queryPlan
     ? normalizeKeywordQueries(queryPlan.keywordQueries, effectivePrompt, settings, queryPlan.resolvedQuery)
@@ -422,8 +951,6 @@ async function searchMemories(
     ? normalizeSemanticQueries(queryPlan.semanticQueries, signals, settings)
     : normalizeSemanticQueries([buildSemanticQuery(cleanPrompt, signals, settings)], signals, settings)
   const semanticQuery = semanticQueries.join('\n')
-  const project = signals.projectRoot ?? (cwd ? canonicalizePath(cwd) : cwd)
-  const ancestorProjects = project ? findAncestorProjects(project) : []
 
   // Embed any Haiku-expanded queries that differ from rawSemanticQuery using the
   // remaining timeout budget (preserving headroom for LanceDB + MMR).
@@ -434,9 +961,9 @@ async function searchMemories(
   const extraQueries = embeddingQueries.filter(query => query !== rawSemanticQuery)
   const remainingMs = options.deadlineMs !== undefined
     ? options.deadlineMs - Date.now()
-    : HOOK_EMBEDDING_TIMEOUT_MS + RETRIEVAL_SEARCH_HEADROOM_MS
+    : embeddingTimeoutMs + RETRIEVAL_SEARCH_HEADROOM_MS
   const extraEmbedBudgetMs = Math.min(
-    HOOK_EMBEDDING_TIMEOUT_MS,
+    embeddingTimeoutMs,
     Math.max(0, remainingMs - RETRIEVAL_SEARCH_HEADROOM_MS)
   )
 
@@ -493,35 +1020,42 @@ async function searchMemories(
   const candidateLimit = Math.max(config.injection.maxRecords * 3, config.injection.maxRecords)
   let searchQualifiedResult = await searchRankedCandidates({
     rawKeywordQueries,
+    signalKeywordQueries,
     plannedKeywordQueries,
     config,
     settings,
     project,
     ancestorProjects,
+    linkedWorkspaces,
+    onlySharedScopes,
     // Hook retrieval deliberately leaves semantic search unscoped and relies
     // on the same-project score bonus. Explicit search callers can hard-scope
     // semantic candidates through the service's separate semanticProject.
     embeddings,
     rawPromptEmbedding,
+    maxTimestamp: options.maxTimestamp,
     sourceLimit: candidateLimit,
     resultLimit: candidateLimit,
     signal,
     diagnostic
   })
   let results = searchQualifiedResult.results
+  const signalKeywordMatchIds = searchQualifiedResult.signalKeywordMatchIds ?? new Set<string>()
   const searchNearMisses = diagnostic ? new Map<string, NearMissRecord>() : null
   if (diagnostic && searchNearMisses) {
     mergeNearMisses(searchNearMisses, searchQualifiedResult.nearMisses)
   }
 
-  // On prompts with no error/command signals every keyword needle is a
-  // fallback token, and fallback-keyword matches below the semantic floor are
-  // overwhelmingly irrelevant (9% strict precision in the offline eval).
-  // Hold ALL candidates to minSemanticSimilarity on such prompts; genuine
-  // signal needles keep their exact-recall bypass.
-  const signalsPresent = signals.errors.length > 0 || signals.commands.length > 0
-  if (settings.fallbackKeywordSemanticFloor && !signalsPresent && settings.minSemanticSimilarity > 0) {
-    const floored = results.filter(result => result.similarity >= settings.minSemanticSimilarity)
+  // Per-candidate signal-bypass gating: hold every candidate to
+  // minSemanticSimilarity unless that specific candidate matched a genuine
+  // error or command signal needle. Fallback and planned keywords never bypass
+  // the semantic floor, even when another part of the prompt had a signal.
+  const hasAnyEmbedding = Boolean(rawPromptEmbedding || embeddings.length > 0)
+  if (settings.fallbackKeywordSemanticFloor && hasAnyEmbedding && settings.minSemanticSimilarity > 0) {
+    const floored = results.filter(result =>
+      result.similarity >= settings.minSemanticSimilarity
+      || signalKeywordMatchIds.has(result.record.id)
+    )
     if (diagnostic && searchNearMisses) {
       for (const result of results) {
         if (!floored.includes(result)) {
@@ -569,12 +1103,20 @@ async function searchMemories(
       const rawKeywordMatchIds = searchQualifiedResult.rawKeywordMatchIds ?? new Set<string>()
       const rawKeywordQualificationScores = searchQualifiedResult.rawKeywordQualificationScores ?? new Map<string, number>()
       const survivors = results.filter(result =>
-        rawKeywordMatchIds.has(result.record.id) &&
-        (rawKeywordQualificationScores.get(result.record.id) ?? 0) >= settings.minScore &&
         (
-          result.record.project === project ||
-          (result.record.project ? ancestorProjects.includes(result.record.project) : false) ||
-          result.record.scope === 'global'
+          signalKeywordMatchIds.has(result.record.id)
+          || (
+            rawKeywordMatchIds.has(result.record.id)
+            && (rawKeywordQualificationScores.get(result.record.id) ?? 0) >= settings.minScore
+            && (!settings.fallbackKeywordSemanticFloor || (rawSimilarities.get(result.record.id) ?? 0) >= settings.minSemanticSimilarity)
+          )
+        )
+        && (
+          result.record.project === project
+          || (result.record.project ? ancestorProjects.includes(result.record.project) : false)
+          || (result.record.project ? linkedWorkspaces.includes(result.record.project) : false)
+          || result.record.scope === 'global'
+          || result.record.scope === 'environment'
         )
       )
       const suppressed = results.filter(result => !survivors.includes(result))
@@ -604,7 +1146,12 @@ async function searchMemories(
   }
 
   if (results.length > 0 && settings.enableRelationExpansion) {
-    results = await expandViaRelations(results, config, settings, { project, ancestorProjects })
+    results = await expandViaRelations(results, config, settings, {
+      project,
+      ancestorProjects,
+      linkedWorkspaces,
+      maxTimestamp: options.maxTimestamp
+    })
     if (settings.minExpandedScore > 0) {
       if (diagnostic && searchNearMisses) {
         for (const result of results) {
@@ -673,6 +1220,18 @@ async function searchMemories(
     results: finalResults,
     promptEmbedding: suppressionEmbedding,
     suppressionStateVersion,
+    stage1Candidates: searchQualifiedResult.results,
+    telemetry: {
+      pipeline: 'legacy',
+      project,
+      stage1CandidateCount: searchQualifiedResult.results.length,
+      bm25HitCount: searchQualifiedResult.results.filter(r => r.keywordMatch).length,
+      vectorHitCount: searchQualifiedResult.results.filter(r => r.similarity > 0).length,
+      suppressedCount: suppressionExclusions.length,
+      rerankerCalled: false,
+      rerankerAbstained: finalResults.length === 0,
+      rerankerFallback: false
+    },
     diagnostics: diagnostic
       ? {
           search: searchDiagnostics ?? { qualified: [], nearMisses: [] },
@@ -689,8 +1248,17 @@ function updateRetrievalPromptState(
   collection?: string,
   skipWriteback?: boolean
 ): number | undefined {
+  if (skipWriteback || !sessionId || !settings.enableTopicSuppression) return undefined
+
+  // In compaction-scoped ledger mode (topicChangeThreshold <= 0), we do not
+  // track prompt-embedding drift; return the current version so pre-prompt
+  // still appends newly injected IDs to the session ledger.
+  if (settings.topicChangeThreshold <= 0) {
+    return searchResult.suppressionStateVersion
+  }
+
   const embedding = searchResult.promptEmbedding
-  if (skipWriteback || !sessionId || !settings.enableTopicSuppression || !embedding) return undefined
+  if (!embedding) return undefined
 
   try {
     const record = updateSessionPromptStateIfVersion(sessionId, {
@@ -715,10 +1283,24 @@ function resolveSuppressedIds(args: {
   stateVersion: number
 }): { ids: Set<string>; stateVersion: number } {
   const { sessionId, session, embedding, settings, collection, skipWriteback } = args
-  if (!sessionId || !settings.enableTopicSuppression || !embedding) {
+  if (!sessionId || !settings.enableTopicSuppression) {
     return { ids: new Set(), stateVersion: args.stateVersion }
   }
   if (settings.recentlyInjectedWindow <= 0) {
+    return { ids: new Set(), stateVersion: args.stateVersion }
+  }
+
+  // Compaction-scoped session ledger (default: topicChangeThreshold === 0):
+  // hard-suppress every memory already injected in this compaction epoch until
+  // PreCompact explicitly resets the ledger, independent of prompt similarity.
+  if (settings.topicChangeThreshold <= 0) {
+    return {
+      ids: new Set((session?.recentlyInjectedIds ?? []).slice(-settings.recentlyInjectedWindow)),
+      stateVersion: args.stateVersion
+    }
+  }
+
+  if (!embedding) {
     return { ids: new Set(), stateVersion: args.stateVersion }
   }
 
@@ -826,7 +1408,7 @@ export async function expandViaRelations(
   initialResults: HybridSearchResult[],
   config: Config,
   settings: Pick<RetrievalSettings, 'maxRelationHops' | 'maxRelationExpansions' | 'relationHopDecay' | 'enableEntityEdges'>,
-  scope?: { project?: string; ancestorProjects?: string[] }
+  scope?: { project?: string; ancestorProjects?: string[]; linkedWorkspaces?: string[]; maxTimestamp?: number }
 ): Promise<HybridSearchResult[]> {
   const maxHops = Math.max(0, Math.trunc(settings.maxRelationHops))
   const maxExpansions = Math.max(0, Math.trunc(settings.maxRelationExpansions))
@@ -849,6 +1431,9 @@ export async function expandViaRelations(
   const canonicalScopeProject = scope?.project ? canonicalizePath(scope.project) : undefined
   const canonicalAncestorProjects = scope?.ancestorProjects
     ? new Set(scope.ancestorProjects.map(ancestor => canonicalizePath(ancestor)))
+    : undefined
+  const canonicalLinkedWorkspaces = scope?.linkedWorkspaces
+    ? new Set(scope.linkedWorkspaces.map(workspace => canonicalizePath(workspace)))
     : undefined
 
   for (let hop = 1; hop <= maxHops && expanded.length < maxExpansions; hop += 1) {
@@ -907,14 +1492,23 @@ export async function expandViaRelations(
 
       const record = recordsById.get(candidate.targetId)
       if (!record || record.deprecated) continue
-      if (canonicalScopeProject && record.scope !== 'global' && record.project) {
+      if (
+        typeof scope?.maxTimestamp === 'number'
+        && Number.isFinite(scope.maxTimestamp)
+        && typeof record.timestamp === 'number'
+        && record.timestamp >= scope.maxTimestamp
+      ) {
+        continue
+      }
+      if (canonicalScopeProject && record.scope !== 'global' && record.scope !== 'environment' && record.project) {
         const canonicalRecordProject = canonicalizePath(record.project)
-        const canonicalParentProject = candidate.parent.record.scope !== 'global' && candidate.parent.record.project
+        const canonicalParentProject = candidate.parent.record.scope !== 'global' && candidate.parent.record.scope !== 'environment' && candidate.parent.record.project
           ? canonicalizePath(candidate.parent.record.project)
           : undefined
         if (
           canonicalRecordProject !== canonicalScopeProject
           && !(canonicalAncestorProjects?.has(canonicalRecordProject))
+          && !(canonicalLinkedWorkspaces?.has(canonicalRecordProject))
           && canonicalParentProject !== canonicalRecordProject
         ) {
           continue

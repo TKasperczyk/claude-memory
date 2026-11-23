@@ -2,7 +2,7 @@ import path from 'path'
 import { createLogger } from '../../logger.js'
 import { batchUpdateRecords, fetchRecordsByIds, updateRecord } from '../../lancedb.js'
 import { canonicalizePath } from '../../paths.js'
-import { resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
+import { resolveMaintenanceModel, resolveMaintenanceSettings, type MaintenanceSettings } from '../../settings.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../../shared.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from '../../types.js'
 import { consolidateCluster, findCrossTypeClusters, findSimilarClusters, llmVerifyConsolidation, pickConsolidationFallback, resolveMergeGroups } from '../consolidation.js'
@@ -396,7 +396,7 @@ async function verifyConsolidationWithCache(args: {
       mode,
       records,
       verification.reason,
-      config.extraction.model,
+      resolveMaintenanceModel(),
       { collection: config.lancedb.table, now: checkedAt }
     )
     if (!saved) {
