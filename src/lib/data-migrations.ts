@@ -1,6 +1,5 @@
 import fs from 'fs'
 import path from 'path'
-import { readJsonFileSafe, writeJsonFile } from './json.js'
 import {
   backfillSearchText,
   batchUpdateRecords,
@@ -13,12 +12,33 @@ import {
 import { acquireFileLock } from './lock.js'
 import { migrateCatchAllScopeRecords } from './maintenance/runners/static-doc-runner.js'
 import { toErrorMessage } from './maintenance/runners/shared.js'
-import { asInteger, isPlainObject } from './parsing.js'
-import { canonicalizePath, CLAUDE_MEMORY_ROOT, LOCKS_DIR } from './paths.js'
+import {
+  clearCollectionMigrationState,
+  getMigrationCollectionKey,
+  getMigrationsLockPath,
+  getMigrationsStatePath,
+  loadMigrationsState,
+  MIGRATIONS_LOCK_STALE_MS,
+  saveMigrationsState,
+  type AppliedMigrationEntry,
+  type CollectionMigrationState,
+  type MigrationsStateFile
+} from './migrations-state.js'
+import { canonicalizePath } from './paths.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 
-const MIGRATIONS_LOCK_STALE_MS = 15 * 60 * 1000
 const CANONICAL_PATH_BATCH_SIZE = 200
+
+export {
+  clearCollectionMigrationState,
+  getMigrationCollectionKey,
+  getMigrationsLockPath,
+  getMigrationsStatePath,
+  loadMigrationsState,
+  type AppliedMigrationEntry,
+  type CollectionMigrationState,
+  type MigrationsStateFile
+}
 
 export const MIGRATION_IDS = {
   CANONICAL_PATHS_AND_RESTORES: '2026-11-v0.2-canonical-paths-and-restores',
@@ -27,23 +47,6 @@ export const MIGRATION_IDS = {
 } as const
 
 export type DataMigrationId = typeof MIGRATION_IDS[keyof typeof MIGRATION_IDS]
-
-export interface AppliedMigrationEntry {
-  appliedAt: number
-  scanned?: number
-  updated?: number
-  details?: Record<string, number>
-}
-
-export interface CollectionMigrationState {
-  applied: Record<string, AppliedMigrationEntry>
-  updatedAt: number
-}
-
-export interface MigrationsStateFile {
-  version: 1
-  collections: Record<string, CollectionMigrationState>
-}
 
 export interface DataMigrationStepOutcome {
   scanned: number
@@ -100,19 +103,6 @@ export interface CanonicalPathsAndRestoresResult {
   staleDeprecationFixCount: number
   skippedMissingEmbedding: number
   failed: number
-}
-
-export function getMigrationsStatePath(): string {
-  return path.join(CLAUDE_MEMORY_ROOT, 'migrations-state.json')
-}
-
-export function getMigrationsLockPath(): string {
-  return path.join(LOCKS_DIR, 'migrations.lock')
-}
-
-export function getMigrationCollectionKey(config: Config = DEFAULT_CONFIG): string {
-  const dir = canonicalizePath(resolveDirectory(config.lancedb.directory))
-  return `${dir}::${config.lancedb.table}`
 }
 
 function lancedbTableExistsOnDisk(config: Config): boolean {
@@ -312,66 +302,6 @@ export const DATA_MIGRATIONS: readonly DataMigrationDefinition[] = [
     }
   }
 ]
-
-function emptyMigrationsState(): MigrationsStateFile {
-  return { version: 1, collections: {} }
-}
-
-function coerceAppliedEntry(value: unknown): AppliedMigrationEntry | null {
-  if (!isPlainObject(value)) return null
-  const appliedAt = asInteger(value.appliedAt)
-  if (appliedAt === null) return null
-
-  const entry: AppliedMigrationEntry = { appliedAt }
-  const scanned = asInteger(value.scanned)
-  if (scanned !== null) entry.scanned = scanned
-  const updated = asInteger(value.updated)
-  if (updated !== null) entry.updated = updated
-
-  if (isPlainObject(value.details)) {
-    const details: Record<string, number> = {}
-    for (const [k, v] of Object.entries(value.details)) {
-      const intVal = asInteger(v)
-      if (intVal !== null) details[k] = intVal
-    }
-    if (Object.keys(details).length > 0) entry.details = details
-  }
-
-  return entry
-}
-
-function coerceCollectionState(value: unknown): CollectionMigrationState | null {
-  if (!isPlainObject(value) || !isPlainObject(value.applied)) return null
-  const applied: Record<string, AppliedMigrationEntry> = {}
-  for (const [id, rawEntry] of Object.entries(value.applied)) {
-    const coerced = coerceAppliedEntry(rawEntry)
-    if (coerced) applied[id] = coerced
-  }
-  const updatedAt = asInteger(value.updatedAt) ?? 0
-  return { applied, updatedAt }
-}
-
-function coerceMigrationsStateFile(value: unknown): MigrationsStateFile | null {
-  if (!isPlainObject(value) || !isPlainObject(value.collections)) return null
-  const collections: Record<string, CollectionMigrationState> = {}
-  for (const [key, rawState] of Object.entries(value.collections)) {
-    const coerced = coerceCollectionState(rawState)
-    if (coerced) collections[key] = coerced
-  }
-  return { version: 1, collections }
-}
-
-export function loadMigrationsState(statePath: string = getMigrationsStatePath()): MigrationsStateFile {
-  return readJsonFileSafe<MigrationsStateFile>(statePath, {
-    fallback: emptyMigrationsState(),
-    errorMessage: '[claude-memory] Failed to load migrations state:',
-    coerce: coerceMigrationsStateFile
-  }) ?? emptyMigrationsState()
-}
-
-function saveMigrationsState(state: MigrationsStateFile, statePath: string): void {
-  writeJsonFile(statePath, state, { ensureDir: true, pretty: 2 })
-}
 
 function computePendingMigrations(
   state: MigrationsStateFile,

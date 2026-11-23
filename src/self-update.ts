@@ -1,5 +1,10 @@
 #!/usr/bin/env -S npx tsx
 
+import { spawnSync } from 'child_process'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { pathToFileURL } from 'url'
 import { loadConfig } from './lib/config.js'
 import { runPendingMigrations, type DataMigrationsResult } from './lib/data-migrations.js'
 import { closeLanceDB } from './lib/lancedb.js'
@@ -213,6 +218,101 @@ function formatMigrationsLine(migrations: DataMigrationsResult): string {
   }
 }
 
+const FRESH_DIST_MIGRATIONS_TIMEOUT_MS = 10 * 60 * 1000
+const FRESH_DIST_MIGRATIONS_BOOTSTRAP = `
+import fs from 'node:fs'
+const [configUrl, migrationsUrl, lancedbUrl, cwd, outputFile, dryRunFlag] = process.argv.slice(1)
+const [{ loadConfig }, { runPendingMigrations }, { closeLanceDB }] = await Promise.all([
+  import(configUrl),
+  import(migrationsUrl),
+  import(lancedbUrl)
+])
+try {
+  const config = loadConfig(cwd)
+  const result = await runPendingMigrations(config, { dryRun: dryRunFlag === '1' })
+  fs.writeFileSync(outputFile, JSON.stringify(result), 'utf-8')
+} finally {
+  await closeLanceDB()
+}
+`.trim()
+
+/**
+ * Run pending migrations in a fresh child Node process loading the newly built
+ * `dist/` modules so a self-update pull + rebuild executes migrations added by
+ * the incoming release rather than the stale in-memory module graph.
+ */
+export function runMigrationsInBuiltDist(
+  root: string,
+  cwd: string,
+  options: { dryRun?: boolean; env?: NodeJS.ProcessEnv } = {}
+): DataMigrationsResult | null {
+  const configModulePath = path.join(root, 'dist', 'lib', 'config.js')
+  const migrationsModulePath = path.join(root, 'dist', 'lib', 'data-migrations.js')
+  const lancedbModulePath = path.join(root, 'dist', 'lib', 'lancedb.js')
+  if (
+    !fs.existsSync(configModulePath)
+    || !fs.existsSync(migrationsModulePath)
+    || !fs.existsSync(lancedbModulePath)
+  ) {
+    return null
+  }
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-self-update-mig-'))
+  const outputFile = path.join(tempDir, 'result.json')
+  try {
+    const proc = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        FRESH_DIST_MIGRATIONS_BOOTSTRAP,
+        pathToFileURL(configModulePath).href,
+        pathToFileURL(migrationsModulePath).href,
+        pathToFileURL(lancedbModulePath).href,
+        cwd,
+        outputFile,
+        options.dryRun ? '1' : '0'
+      ],
+      {
+        cwd,
+        env: options.env ?? process.env,
+        encoding: 'utf-8',
+        timeout: FRESH_DIST_MIGRATIONS_TIMEOUT_MS,
+        stdio: ['ignore', 'ignore', 'pipe']
+      }
+    )
+
+    if (proc.error || proc.status !== 0 || !fs.existsSync(outputFile)) {
+      const detail = proc.error?.message
+        || proc.stderr?.trim()
+        || `Fresh-dist migrations subprocess exited with status ${proc.status}`
+      return {
+        status: 'failed',
+        collectionKey: 'unknown',
+        pendingIds: [],
+        steps: [],
+        mutated: false,
+        compacted: false,
+        error: detail
+      }
+    }
+
+    return JSON.parse(fs.readFileSync(outputFile, 'utf-8')) as DataMigrationsResult
+  } catch (error) {
+    return {
+      status: 'failed',
+      collectionKey: 'unknown',
+      pendingIds: [],
+      steps: [],
+      mutated: false,
+      compacted: false,
+      error: toErrorMessage(error)
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+}
+
 async function main(): Promise<void> {
   const cli = parseArgs(process.argv.slice(2))
   if (cli.help) {
@@ -222,39 +322,56 @@ async function main(): Promise<void> {
 
   const result = runSelfUpdate(cli.selfUpdate)
   let migrations: DataMigrationsResult | undefined
+  const dryRun = cli.selfUpdate.dryRun ?? false
   const shouldRunMigrations = result.status !== 'failed'
     && !cli.selfUpdate.rollback
     && !cli.selfUpdate.clearHold
 
   if (shouldRunMigrations) {
-    try {
-      const config = loadConfig(process.cwd())
-      migrations = await runPendingMigrations(config, {
-        dryRun: cli.selfUpdate.dryRun ?? false
-      })
-    } catch (error) {
-      migrations = {
-        status: 'failed',
-        collectionKey: 'unknown',
-        pendingIds: [],
-        steps: [],
-        mutated: false,
-        compacted: false,
-        error: toErrorMessage(error)
+    const builtMigrations = !dryRun && result.build.status === 'rebuilt'
+      ? runMigrationsInBuiltDist(result.root, process.cwd(), { dryRun })
+      : null
+    if (builtMigrations) {
+      migrations = builtMigrations
+    } else {
+      try {
+        const config = loadConfig(process.cwd())
+        migrations = await runPendingMigrations(config, { dryRun })
+      } catch (error) {
+        migrations = {
+          status: 'failed',
+          collectionKey: 'unknown',
+          pendingIds: [],
+          steps: [],
+          mutated: false,
+          compacted: false,
+          error: toErrorMessage(error)
+        }
+      } finally {
+        await closeLanceDB()
       }
-    } finally {
-      await closeLanceDB()
     }
   }
 
+  const overallFailed = result.status === 'failed' || migrations?.status === 'failed'
+  const jsonOutput = migrations
+    ? {
+        ...result,
+        ...(overallFailed
+          ? { status: 'failed' as const, error: result.error ?? migrations.error }
+          : {}),
+        migrations
+      }
+    : result
+
   if (cli.json) {
-    console.log(JSON.stringify(migrations ? { ...result, migrations } : result, null, 2))
+    console.log(JSON.stringify(jsonOutput, null, 2))
   } else {
-    for (const line of formatResult(result, cli.selfUpdate.dryRun ?? false, migrations)) {
+    for (const line of formatResult(result, dryRun, migrations)) {
       console.error(`[claude-memory] ${line}`)
     }
   }
-  if (result.status === 'failed' || migrations?.status === 'failed') {
+  if (overallFailed) {
     process.exitCode = 2
   }
 }

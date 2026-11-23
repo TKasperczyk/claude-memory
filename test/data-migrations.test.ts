@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'child_process'
+import { execFileSync, spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -13,15 +13,19 @@ import {
   type DataMigrationDefinition
 } from '../src/lib/data-migrations.js'
 import {
+  backfillSearchText,
   bm25Search,
   buildLanceRow,
   closeLanceDB,
   getRecord,
   initLanceDB,
-  insertRecord
+  insertRecord,
+  resetCollection
 } from '../src/lib/lancedb.js'
 import { ensureClient } from '../src/lib/lancedb-client.js'
+import { migrateCatchAllScopeRecords } from '../src/lib/maintenance/runners/static-doc-runner.js'
 import { canonicalizePath } from '../src/lib/paths.js'
+import { runMigrationsInBuiltDist } from '../src/self-update.js'
 import {
   DEFAULT_CONFIG,
   EMBEDDING_DIM,
@@ -29,6 +33,22 @@ import {
   type Config,
   type DiscoveryRecord
 } from '../src/lib/types.js'
+
+const LOCAL_TSX_BIN = path.join(process.cwd(), 'node_modules', '.bin', 'tsx')
+
+function getGuaranteedDeadPid(): number {
+  const proc = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf-8' })
+  if (typeof proc.pid === 'number' && proc.pid > 0) {
+    return proc.pid
+  }
+  return 2147483647
+}
+
+function makeIsolatedHome(baseDir: string): string {
+  const fakeHome = path.join(baseDir, 'isolated-home')
+  fs.mkdirSync(fakeHome, { recursive: true })
+  return fakeHome
+}
 
 function unitVec(axis: number): number[] {
   const vec = new Array<number>(EMBEDDING_DIM).fill(0)
@@ -341,7 +361,8 @@ describe('versioned automatic data migrations', () => {
     expect(fs.existsSync(statePath)).toBe(false)
 
     // Stale lock held by dead PID -> reclaim and succeed.
-    fs.writeFileSync(lockPath, `999999\n${Date.now()}`)
+    const deadPid = getGuaranteedDeadPid()
+    fs.writeFileSync(lockPath, `${deadPid}\n${Date.now()}`)
     const reclaimedRes = await runPendingMigrations(config, { statePath, lockPath })
     expect(reclaimedRes.status).toBe('applied')
     expect(fs.existsSync(lockPath)).toBe(false)
@@ -470,9 +491,10 @@ describe('versioned automatic data migrations', () => {
     expect(fs.existsSync(statePath)).toBe(false)
   })
 
-  it('reports migration status cleanly in self-update CLI --dry-run --json without mutating DB', async () => {
+  it('reports migration status cleanly in self-update CLI --dry-run --json without mutating DB or HOME', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-cli-'))
     tempDirs.push(tmpDir)
+    const isolatedHome = makeIsolatedHome(tmpDir)
 
     const lancedbDir = path.join(tmpDir, 'lancedb')
     const config: Config = {
@@ -486,13 +508,14 @@ describe('versioned automatic data migrations', () => {
     await closeLanceDB()
 
     const proc = spawnSync(
-      'npx',
-      ['tsx', 'src/self-update.ts', '--dry-run', '--json'],
+      LOCAL_TSX_BIN,
+      ['src/self-update.ts', '--dry-run', '--json'],
       {
         cwd: process.cwd(),
         encoding: 'utf-8',
         env: {
           ...process.env,
+          HOME: isolatedHome,
           CC_MEMORIES_DATA_DIR: tmpDir,
           CC_MEMORIES_LANCEDB_DIR: lancedbDir,
           CC_MEMORIES_COLLECTION: 'cli_dry_run_table'
@@ -502,19 +525,113 @@ describe('versioned automatic data migrations', () => {
 
     expect(proc.status).toBe(0)
     const parsed = JSON.parse(proc.stdout) as {
+      status: string
       migrations?: { status: string; pendingIds: string[]; mutated: boolean; compacted: boolean }
     }
+    expect(parsed.status).toBe('completed')
     expect(parsed.migrations).toBeDefined()
     expect(parsed.migrations?.status).toBe('would-run')
     expect(parsed.migrations?.pendingIds).toEqual(DATA_MIGRATIONS.map(m => m.id))
     expect(parsed.migrations?.mutated).toBe(false)
     expect(parsed.migrations?.compacted).toBe(false)
     expect(fs.existsSync(path.join(tmpDir, 'migrations-state.json'))).toBe(false)
+    expect(fs.existsSync(path.join(isolatedHome, '.claude'))).toBe(false)
   })
 
-  it('runs pending migrations automatically inside post-session-worker when the table exists', async () => {
+  it('reports top-level failed status in self-update CLI --json when migrations fail', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-cli-fail-'))
+    tempDirs.push(tmpDir)
+    const isolatedHome = makeIsolatedHome(tmpDir)
+
+    const lancedbDir = path.join(tmpDir, 'lancedb')
+    const table = 'cli_fail_table'
+    const config: Config = {
+      ...DEFAULT_CONFIG,
+      lancedb: { directory: lancedbDir, table }
+    }
+    await initLanceDB(config)
+    await closeLanceDB()
+
+    // Force atomic rename of migrations-state.json to fail with EISDIR while self-update succeeds.
+    fs.mkdirSync(path.join(tmpDir, 'migrations-state.json'), { recursive: true })
+
+    const proc = spawnSync(
+      LOCAL_TSX_BIN,
+      ['src/self-update.ts', '--rebuild-only', '--json'],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          HOME: isolatedHome,
+          CC_MEMORIES_DATA_DIR: tmpDir,
+          CC_MEMORIES_LANCEDB_DIR: lancedbDir,
+          CC_MEMORIES_COLLECTION: table,
+          CC_MEMORIES_SETTING_AUTO_REBUILD_ENABLED: 'false'
+        }
+      }
+    )
+
+    expect(proc.status).toBe(2)
+    const parsed = JSON.parse(proc.stdout) as {
+      status: string
+      error?: string
+      migrations?: { status: string; error?: string }
+    }
+    expect(parsed.status).toBe('failed')
+    expect(parsed.error).toBeTruthy()
+    expect(parsed.migrations?.status).toBe('failed')
+    expect(parsed.migrations?.error).toBeTruthy()
+  })
+
+  it('executes newly compiled dist migrations in a fresh child process via runMigrationsInBuiltDist', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-fresh-dist-'))
+    tempDirs.push(tmpDir)
+
+    const fakeRoot = path.join(tmpDir, 'pkg')
+    const distLib = path.join(fakeRoot, 'dist', 'lib')
+    fs.mkdirSync(distLib, { recursive: true })
+
+    fs.writeFileSync(
+      path.join(distLib, 'config.js'),
+      'export function loadConfig(cwd) { return { cwd, lancedb: { directory: "/tmp/x", table: "t" } } }\n',
+      'utf-8'
+    )
+    fs.writeFileSync(
+      path.join(distLib, 'lancedb.js'),
+      'export async function closeLanceDB() {}\n',
+      'utf-8'
+    )
+    fs.writeFileSync(
+      path.join(distLib, 'data-migrations.js'),
+      `export async function runPendingMigrations(_config, opts) {
+        return {
+          status: opts?.dryRun ? 'would-run' : 'applied',
+          collectionKey: 'fresh-dist::t',
+          pendingIds: ['2027-01-v0.4-new-migration'],
+          steps: [{ id: '2027-01-v0.4-new-migration', status: 'applied', scanned: 3, updated: 1 }],
+          mutated: true,
+          compacted: true
+        }
+      }\n`,
+      'utf-8'
+    )
+
+    const result = runMigrationsInBuiltDist(fakeRoot, tmpDir, { dryRun: false })
+    expect(result).toEqual({
+      status: 'applied',
+      collectionKey: 'fresh-dist::t',
+      pendingIds: ['2027-01-v0.4-new-migration'],
+      steps: [{ id: '2027-01-v0.4-new-migration', status: 'applied', scanned: 3, updated: 1 }],
+      mutated: true,
+      compacted: true
+    })
+  })
+
+  it('runs pending migrations automatically inside post-session-worker with isolated HOME', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-worker-'))
     tempDirs.push(tmpDir)
+    const isolatedHome = makeIsolatedHome(tmpDir)
 
     const lancedbDir = path.join(tmpDir, 'lancedb')
     const table = 'worker_migration_table'
@@ -555,13 +672,14 @@ describe('versioned automatic data migrations', () => {
     }), 'utf-8')
 
     const proc = spawnSync(
-      'npx',
-      ['tsx', 'src/hooks/post-session-worker.ts', inputFile],
+      LOCAL_TSX_BIN,
+      ['src/hooks/post-session-worker.ts', inputFile],
       {
         cwd: process.cwd(),
         encoding: 'utf-8',
         env: {
           ...process.env,
+          HOME: isolatedHome,
           CC_MEMORIES_DATA_DIR: tmpDir,
           CC_MEMORIES_LANCEDB_DIR: lancedbDir,
           CC_MEMORIES_COLLECTION: table,
@@ -585,6 +703,7 @@ describe('versioned automatic data migrations', () => {
   it('reports pending migrations in maintenance CLI --dry-run without mutating state', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-maint-'))
     tempDirs.push(tmpDir)
+    const isolatedHome = makeIsolatedHome(tmpDir)
 
     const lancedbDir = path.join(tmpDir, 'lancedb')
     const table = 'maint_dry_run_table'
@@ -596,13 +715,14 @@ describe('versioned automatic data migrations', () => {
     await closeLanceDB()
 
     const proc = spawnSync(
-      'npx',
-      ['tsx', 'src/maintenance.ts', '--dry-run'],
+      LOCAL_TSX_BIN,
+      ['src/maintenance.ts', '--dry-run'],
       {
         cwd: process.cwd(),
         encoding: 'utf-8',
         env: {
           ...process.env,
+          HOME: isolatedHome,
           CC_MEMORIES_DATA_DIR: tmpDir,
           CC_MEMORIES_LANCEDB_DIR: lancedbDir,
           CC_MEMORIES_COLLECTION: table
@@ -613,5 +733,238 @@ describe('versioned automatic data migrations', () => {
     expect(proc.status).toBe(0)
     expect(proc.stderr).toContain('[DRY RUN] Pending data migrations (3)')
     expect(fs.existsSync(path.join(tmpDir, 'migrations-state.json'))).toBe(false)
+  })
+
+  it('re-attributes /tmp git repo subdirectories and symlinks to their git root instead of promoting to environment', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-subrepo-'))
+    tempDirs.push(tmpDir)
+
+    const repoRoot = path.join(tmpDir, 'tmp-git-repo')
+    const repoSubdir = path.join(repoRoot, 'packages', 'api')
+    fs.mkdirSync(repoSubdir, { recursive: true })
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot })
+    const canonicalRepoRoot = canonicalizePath(repoRoot)
+
+    const symlinkToRepo = path.join(tmpDir, 'tmp-git-repo-link')
+    fs.symlinkSync(repoRoot, symlinkToRepo)
+
+    const config = makeTempConfig(tmpDir, 'subrepo_table')
+    await initLanceDB(config)
+
+    const subdirRec: DiscoveryRecord = {
+      id: 'aaaa1111-1111-4111-8111-111111111111',
+      type: 'discovery',
+      what: 'Dev server listens on localhost:4000 behind nginx reverse proxy',
+      where: 'server.ts',
+      evidence: 'verified locally',
+      confidence: 'verified',
+      scope: 'project',
+      project: repoSubdir,
+      timestamp: 1000,
+      lastUsed: 1000,
+      deprecated: false,
+      embedding: unitVec(11)
+    }
+
+    const symlinkRepoRec: CommandRecord = {
+      id: 'aaaa2222-2222-4222-8222-222222222222',
+      type: 'command',
+      command: 'systemctl status caddy',
+      exitCode: 0,
+      outcome: 'success',
+      context: { project: symlinkToRepo, cwd: symlinkToRepo },
+      scope: 'project',
+      project: symlinkToRepo,
+      timestamp: 1100,
+      lastUsed: 1100,
+      deprecated: false,
+      embedding: unitVec(12)
+    }
+
+    await insertRecord(subdirRec, config)
+    await insertRecord(symlinkRepoRec, config)
+
+    const first = await migrateCatchAllScopeRecords(config)
+    expect(first.reattributedToProject).toBe(2)
+    expect(first.promotedToEnvironment).toBe(0)
+    expect(first.failed).toBe(0)
+
+    const afterSubdir = await getRecord(subdirRec.id, config)
+    expect(afterSubdir?.scope).toBe('project')
+    expect(afterSubdir?.project).toBe(canonicalRepoRoot)
+
+    const afterSymlink = await getRecord(symlinkRepoRec.id, config) as CommandRecord
+    expect(afterSymlink.scope).toBe('project')
+    expect(afterSymlink.project).toBe(canonicalRepoRoot)
+    expect(afterSymlink.context.project).toBe(canonicalRepoRoot)
+
+    // Idempotent second run updates 0 rows.
+    const second = await migrateCatchAllScopeRecords(config)
+    expect(second.migrated).toBe(0)
+    expect(second.reattributedToProject).toBe(0)
+    expect(second.promotedToEnvironment).toBe(0)
+  })
+
+  it('clears only the reset collection from migrations-state.json during resetCollection()', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-reset-'))
+    tempDirs.push(tmpDir)
+
+    const configA = makeTempConfig(tmpDir, 'reset_table_a')
+    const configB = makeTempConfig(tmpDir, 'reset_table_b')
+    await initLanceDB(configA)
+    await initLanceDB(configB)
+
+    // Uses default CLAUDE_MEMORY_ROOT (isolated by vitest global-setup).
+    expect((await runPendingMigrations(configA)).status).toBe('applied')
+    expect((await runPendingMigrations(configB)).status).toBe('applied')
+    expect(getPendingMigrations(configA)).toEqual([])
+    expect(getPendingMigrations(configB)).toEqual([])
+
+    await resetCollection(configA)
+
+    expect(getPendingMigrations(configA)).toEqual(DATA_MIGRATIONS.map(m => m.id))
+    expect(getPendingMigrations(configB)).toEqual([])
+  })
+
+  it('handles real dual-OS-subprocess lock contention cleanly without errors or corruption', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-dual-proc-'))
+    tempDirs.push(tmpDir)
+    const isolatedHome = makeIsolatedHome(tmpDir)
+
+    const lancedbDir = path.join(tmpDir, 'lancedb')
+    const table = 'dual_proc_table'
+    const config: Config = {
+      ...DEFAULT_CONFIG,
+      lancedb: { directory: lancedbDir, table },
+      embeddings: { ...DEFAULT_CONFIG.embeddings, baseUrl: 'http://127.0.0.1:1/v1' }
+    }
+    await initLanceDB(config)
+    await insertRecord({
+      id: 'bbbb1111-1111-4111-8111-111111111111',
+      type: 'discovery',
+      what: 'Concurrent migration test record',
+      where: 'README.md',
+      evidence: 'dual subprocess check',
+      confidence: 'verified',
+      project: '/srv/concurrent',
+      scope: 'project',
+      timestamp: 1000,
+      lastUsed: 1000,
+      deprecated: false,
+      deprecatedAt: 500,
+      deprecatedReason: 'stale-concurrent',
+      embedding: unitVec(15)
+    }, config)
+    await closeLanceDB()
+
+    const runnerScript = path.join(tmpDir, 'run-mig.mts')
+    fs.writeFileSync(
+      runnerScript,
+      `
+import { runPendingMigrations } from ${JSON.stringify(path.join(process.cwd(), 'src/lib/data-migrations.ts'))}
+import { closeLanceDB } from ${JSON.stringify(path.join(process.cwd(), 'src/lib/lancedb.ts'))}
+import { DEFAULT_CONFIG } from ${JSON.stringify(path.join(process.cwd(), 'src/lib/types.ts'))}
+const config = {
+  ...DEFAULT_CONFIG,
+  lancedb: { directory: process.env.CC_MEMORIES_LANCEDB_DIR!, table: process.env.CC_MEMORIES_COLLECTION! },
+  embeddings: { ...DEFAULT_CONFIG.embeddings, baseUrl: 'http://127.0.0.1:1/v1' }
+}
+try {
+  const res = await runPendingMigrations(config)
+  process.stdout.write(JSON.stringify(res))
+} finally {
+  await closeLanceDB()
+}
+`,
+      'utf-8'
+    )
+
+    const runChild = (): Promise<{ code: number | null; stdout: string; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        const child = spawn(LOCAL_TSX_BIN, [runnerScript], {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            HOME: isolatedHome,
+            CC_MEMORIES_DATA_DIR: tmpDir,
+            CC_MEMORIES_LANCEDB_DIR: lancedbDir,
+            CC_MEMORIES_COLLECTION: table
+          }
+        })
+        let stdout = ''
+        let stderr = ''
+        child.stdout.on('data', chunk => { stdout += String(chunk) })
+        child.stderr.on('data', chunk => { stderr += String(chunk) })
+        child.on('error', reject)
+        child.on('close', code => resolve({ code, stdout, stderr }))
+      })
+
+    const [childA, childB] = await Promise.all([runChild(), runChild()])
+    expect(childA.code).toBe(0)
+    expect(childB.code).toBe(0)
+
+    const resA = JSON.parse(childA.stdout) as { status: string; skipReason?: string }
+    const resB = JSON.parse(childB.stdout) as { status: string; skipReason?: string }
+    const statuses = [resA.status, resB.status]
+
+    // Exactly one child applies; the other sees either 'skipped' (locked) or 'up-to-date'.
+    expect(statuses.filter(s => s === 'applied')).toHaveLength(1)
+    const other = resA.status === 'applied' ? resB : resA
+    expect(['skipped', 'up-to-date']).toContain(other.status)
+    if (other.status === 'skipped') {
+      expect(other.skipReason).toBe('locked')
+    }
+
+    const statePath = path.join(tmpDir, 'migrations-state.json')
+    expect(getPendingMigrations(config, { statePath })).toEqual([])
+    const after = await getRecord('bbbb1111-1111-4111-8111-111111111111', config)
+    expect(after?.deprecatedAt).toBeUndefined()
+    expect(after?.deprecatedReason).toBeUndefined()
+  })
+
+  it('backfills search_text across multiple hydration chunks (>200 rows) without re-embedding', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-migrations-chunked-'))
+    tempDirs.push(tmpDir)
+
+    const config = makeTempConfig(tmpDir, 'chunked_backfill_table')
+    await initLanceDB(config)
+
+    const { table } = await ensureClient(config)
+    const vec = unitVec(21)
+    const rows = []
+    for (let i = 0; i < 205; i += 1) {
+      const rec: DiscoveryRecord = {
+        id: `cccc0000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+        type: 'discovery',
+        what: `Chunked discovery item ${i}`,
+        where: `src/mod_${i}.ts`,
+        evidence: `chunked_evidence_marker_${i}`,
+        confidence: 'verified',
+        project: '/srv/chunked',
+        scope: 'project',
+        timestamp: 1000 + i,
+        lastUsed: 1000 + i,
+        deprecated: false,
+        embedding: vec
+      }
+      const row = await buildLanceRow(rec, config)
+      row.search_text = rec.what
+      rows.push(row)
+    }
+    await table.add(rows)
+
+    const first = await backfillSearchText(config, { forceRebuildIndex: true })
+    expect(first.scanned).toBe(205)
+    expect(first.updated).toBe(205)
+    expect(first.failed).toBe(0)
+    expect(first.ftsRebuilt).toBe(true)
+
+    const hits = await bm25Search({ query: 'chunked_evidence_marker_204', project: '/srv/chunked' }, config)
+    expect(hits.map(h => h.record.id)).toContain('cccc0000-0000-4000-8000-000000000204')
+
+    const second = await backfillSearchText(config)
+    expect(second.scanned).toBe(205)
+    expect(second.updated).toBe(0)
+    expect(second.failed).toBe(0)
   })
 })

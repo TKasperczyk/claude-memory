@@ -6,6 +6,7 @@ import { OUTPUT_FIELDS, SEARCH_TEXT_MAX_LENGTH } from './lancedb-schema.js'
 import { ensureClient, ensureFtsIndex, closeLanceDB, initLanceDB, resolveDirectory } from './lancedb-client.js'
 import { escapeLikeValue } from './lancedb-search.js'
 import { getCollectionKey } from './file-store.js'
+import { clearCollectionMigrationState } from './migrations-state.js'
 import { CLAUDE_MEMORY_ROOT } from './paths.js'
 import {
   buildLanceRow,
@@ -212,8 +213,13 @@ export async function resetCollection(
     // Recreate empty table (initLanceDB will also ensure migrations)
     await initLanceDB(config)
 
-    // Clear filesystem storage
+    // Clear filesystem storage and recorded data-migration state for this collection
     clearFilesystemStorage(tableName)
+    try {
+      clearCollectionMigrationState(config)
+    } catch (error) {
+      console.error('[claude-memory] Failed to clear migrations state:', error)
+    }
 
     try {
       conn.close()
@@ -602,18 +608,23 @@ export interface BackfillSearchTextResult {
   ftsRebuilt: boolean
 }
 
+const BACKFILL_SEARCH_TEXT_BATCH_SIZE = 200
+
 /**
  * Populate expanded `search_text` (including intent, cause, resolution,
  * evidence, entities) for existing rows without re-embedding, then rebuild the
  * LanceDB native BM25 FTS index.
+ *
+ * Uses a two-pass scan (IDs without embeddings, then bounded chunk hydration)
+ * so large tables do not buffer all 4096-dim vectors in memory at once.
  */
 export async function backfillSearchText(
   config: Config = DEFAULT_CONFIG,
   options: { filter?: string; forceRebuildIndex?: boolean } = {}
 ): Promise<BackfillSearchTextResult> {
   const { table } = await ensureClient(config)
-  const fields = Array.from(new Set([...OUTPUT_FIELDS, 'embedding', 'search_text']))
-  const toUpdate: MemoryRecord[] = []
+  const scanFields = Array.from(new Set([...OUTPUT_FIELDS, 'search_text']))
+  const dirtyIds: string[] = []
   let scanned = 0
   let offset = 0
 
@@ -621,7 +632,7 @@ export async function backfillSearchText(
     const query = table.query()
     if (options.filter) query.where(options.filter)
     const rows = await query
-      .select(fields)
+      .select(scanFields)
       .offset(offset)
       .limit(QUERY_PAGE_SIZE)
       .toArray()
@@ -632,14 +643,14 @@ export async function backfillSearchText(
       scanned += 1
       const rowObj = row as Record<string, unknown>
       const record = parseRecordFromRow(rowObj)
-      if (!record || !record.embedding || record.embedding.length === 0) continue
+      if (!record) continue
       const desiredRaw = buildSearchText(record) || buildExactText(record)
       const desired = desiredRaw.length > SEARCH_TEXT_MAX_LENGTH
         ? desiredRaw.slice(0, SEARCH_TEXT_MAX_LENGTH)
         : desiredRaw
       const current = typeof rowObj.search_text === 'string' ? rowObj.search_text : ''
       if (current !== desired) {
-        toUpdate.push(record)
+        dirtyIds.push(record.id)
       }
     }
 
@@ -649,10 +660,16 @@ export async function backfillSearchText(
 
   let updated = 0
   let failed = 0
-  if (toUpdate.length > 0) {
-    const result = await batchUpdateRecords(toUpdate, {}, config)
-    updated = result.updated
-    failed = result.failed
+  for (let i = 0; i < dirtyIds.length; i += BACKFILL_SEARCH_TEXT_BATCH_SIZE) {
+    const chunkIds = dirtyIds.slice(i, i + BACKFILL_SEARCH_TEXT_BATCH_SIZE)
+    const hydrated = await fetchRecordsByIds(chunkIds, config, { includeEmbeddings: true })
+    const toPersist = hydrated.filter(
+      record => Array.isArray(record.embedding) && record.embedding.length > 0
+    )
+    if (toPersist.length === 0) continue
+    const result = await batchUpdateRecords(toPersist, {}, config)
+    updated += result.updated
+    failed += result.failed
   }
 
   const ftsRebuilt = await ensureFtsIndex(table, {

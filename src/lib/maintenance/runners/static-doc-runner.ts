@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from '../../types.js'
 import { findGitRoot } from '../../context.js'
-import { batchUpdateRecords } from '../../lancedb.js'
+import { batchUpdateRecords, fetchRecordsByIds } from '../../lancedb.js'
 import { isCatchAllDirectory, isStrictCatchAllRoot } from '../../scope-attribution.js'
 import { buildCandidateRecord, buildSearchText } from '../../shared.js'
 import { findStaticDocOverlap, loadStaticProjectDocs } from '../../static-docs.js'
@@ -167,88 +167,159 @@ function looksLikeWorkstationEnvironmentRecord(record: MemoryRecord): boolean {
   return WORKSTATION_ENVIRONMENT_SIGNAL_REGEX.test(text)
 }
 
+const CATCHALL_MIGRATION_BATCH_SIZE = 200
+
+type CatchAllMigrationPlan =
+  | { id: string; action: 'reattribute'; project: string }
+  | { id: string; action: 'environment' }
+
+function resolveGitRootForProjectPath(projectPath: string | undefined): string | null {
+  if (!projectPath || isStrictCatchAllRoot(projectPath)) return null
+  try {
+    if (!fs.existsSync(projectPath)) return null
+    const stat = fs.statSync(projectPath)
+    const dir = stat.isDirectory() ? projectPath : path.dirname(projectPath)
+    const gitRoot = findGitRoot(dir)
+    if (gitRoot && !isStrictCatchAllRoot(gitRoot)) {
+      return gitRoot
+    }
+  } catch {
+    // ignore unreadable paths
+  }
+  return null
+}
+
+function recordAlreadyMatchesProject(record: MemoryRecord, project: string): boolean {
+  const hasContextProject = 'context' in record && Boolean(record.context) && 'project' in record.context
+  const contextMatches = !hasContextProject || (record.context as { project?: string }).project === project
+  return record.project === project && contextMatches
+}
+
 /**
  * Safely migrate legacy project-scoped records attributed to catch-all directories
  * (/home/<user>, /tmp, /tmp/*, ~/Downloads) without re-embedding:
- * 1. If a record references an existing git repository on disk, re-attribute it
- *    to that real project (keeping project isolation intact).
+ * 1. If the record's own project path (e.g. a real git repo or subdirectory under /tmp/*)
+ *    or referenced filesystem paths resolve to an existing git repository on disk,
+ *    keep scope='project' and re-attribute it to that canonical git root.
  * 2. Otherwise promote to scope='environment' only when the record matches
  *    workstation/host/infrastructure signals (or when includeAllHomeRecords=true),
  *    so ad-hoc personal/Downloads notes never flood unrelated git repos.
+ *
+ * Uses a two-pass scan (metadata without embeddings, then bounded chunk hydration)
+ * so large tables do not buffer all active vectors in memory.
  */
 export async function migrateCatchAllScopeRecords(
   config: Config = DEFAULT_CONFIG,
   options: { dryRun?: boolean; includeAllHomeRecords?: boolean } = {}
 ): Promise<CatchAllScopeMigrationResult> {
-  const active = await fetchRecords('deprecated = false', config, true)
-  const candidates = active.filter(record => {
-    if (record.scope !== 'project' || !isCatchAllDirectory(record.project)) return false
-    if (!Array.isArray(record.embedding) || record.embedding.length === 0) return false
-    // A real git repo checked out under /tmp/* is a legitimate project scope (matches resolveAttributionScope).
-    if (
-      record.project
-      && !isStrictCatchAllRoot(record.project)
-      && fs.existsSync(record.project)
-      && findGitRoot(record.project) === record.project
-    ) {
-      return false
-    }
-    return true
-  })
-
-  const updatedRecords: MemoryRecord[] = []
-  let reattributedToProject = 0
-  let promotedToEnvironment = 0
+  const active = await fetchRecords('deprecated = false', config, false)
+  const plans: CatchAllMigrationPlan[] = []
   let skippedUnclassified = 0
 
-  for (const record of candidates) {
+  for (const record of active) {
+    if (record.scope !== 'project' || !isCatchAllDirectory(record.project)) continue
+
+    // A real git repo (or subdirectory / symlink inside one) checked out under /tmp/*
+    // is a legitimate project scope (matches resolveAttributionScope) and must never be
+    // promoted to 'environment'.
+    const projectGitRoot = resolveGitRootForProjectPath(record.project)
+    if (projectGitRoot) {
+      if (!recordAlreadyMatchesProject(record, projectGitRoot)) {
+        plans.push({ id: record.id, action: 'reattribute', project: projectGitRoot })
+      }
+      continue
+    }
+
     const inferredRepo = inferRealGitRepoForRecord(record)
     if (inferredRepo) {
-      const hasContextProject = 'context' in record && Boolean(record.context) && 'project' in record.context
-      const contextMatches = !hasContextProject || (record.context as { project?: string }).project === inferredRepo
-      if (record.project === inferredRepo && contextMatches) {
-        continue
+      if (!recordAlreadyMatchesProject(record, inferredRepo)) {
+        plans.push({ id: record.id, action: 'reattribute', project: inferredRepo })
       }
-      const next = { ...record, scope: 'project' as const, project: inferredRepo }
-      if ('context' in next && next.context && 'project' in next.context) {
-        next.context = { ...next.context, project: inferredRepo }
-      }
-      updatedRecords.push(next)
-      reattributedToProject += 1
       continue
     }
 
     if (options.includeAllHomeRecords || looksLikeWorkstationEnvironmentRecord(record)) {
-      const next = { ...record, scope: 'environment' as const, project: '' }
-      if ('context' in next && next.context && 'project' in next.context) {
-        next.context = { ...next.context, project: '' }
-      }
-      updatedRecords.push(next)
-      promotedToEnvironment += 1
+      plans.push({ id: record.id, action: 'environment' })
       continue
     }
 
     skippedUnclassified += 1
   }
 
-  if (options.dryRun || updatedRecords.length === 0) {
+  if (options.dryRun || plans.length === 0) {
     return {
       scanned: active.length,
-      migrated: updatedRecords.length,
-      reattributedToProject,
-      promotedToEnvironment,
+      migrated: plans.length,
+      reattributedToProject: plans.filter(plan => plan.action === 'reattribute').length,
+      promotedToEnvironment: plans.filter(plan => plan.action === 'environment').length,
       skippedUnclassified,
       failed: 0
     }
   }
 
-  const res = await batchUpdateRecords(updatedRecords, {}, config, { continueOnBatchError: true })
+  const planById = new Map(plans.map(plan => [plan.id, plan]))
+  let migrated = 0
+  let reattributedToProject = 0
+  let promotedToEnvironment = 0
+  let failed = 0
+
+  for (let i = 0; i < plans.length; i += CATCHALL_MIGRATION_BATCH_SIZE) {
+    const chunkPlans = plans.slice(i, i + CATCHALL_MIGRATION_BATCH_SIZE)
+    const hydrated = await fetchRecordsByIds(
+      chunkPlans.map(plan => plan.id),
+      config,
+      { includeEmbeddings: true }
+    )
+    const toPersist: MemoryRecord[] = []
+    let chunkReattributed = 0
+    let chunkPromoted = 0
+
+    for (const record of hydrated) {
+      const plan = planById.get(record.id)
+      if (!plan) continue
+      if (!Array.isArray(record.embedding) || record.embedding.length === 0) continue
+
+      if (plan.action === 'reattribute') {
+        const next: MemoryRecord = { ...record, scope: 'project' as const, project: plan.project }
+        if ('context' in next && next.context && 'project' in next.context) {
+          next.context = { ...next.context, project: plan.project }
+        }
+        toPersist.push(next)
+        chunkReattributed += 1
+      } else {
+        const next: MemoryRecord = { ...record, scope: 'environment' as const, project: '' }
+        if ('context' in next && next.context && 'project' in next.context) {
+          next.context = { ...next.context, project: '' }
+        }
+        toPersist.push(next)
+        chunkPromoted += 1
+      }
+    }
+
+    if (toPersist.length === 0) continue
+    const res = await batchUpdateRecords(toPersist, {}, config, { continueOnBatchError: true })
+    migrated += res.updated
+    failed += res.failed
+    if (res.failed === 0) {
+      reattributedToProject += chunkReattributed
+      promotedToEnvironment += chunkPromoted
+    } else {
+      const failedIds = new Set((res.failures ?? []).flatMap(failure => failure.recordIds))
+      for (const record of toPersist) {
+        if (failedIds.has(record.id)) continue
+        const plan = planById.get(record.id)
+        if (plan?.action === 'reattribute') reattributedToProject += 1
+        else if (plan?.action === 'environment') promotedToEnvironment += 1
+      }
+    }
+  }
+
   return {
     scanned: active.length,
-    migrated: res.updated,
+    migrated,
     reattributedToProject,
     promotedToEnvironment,
     skippedUnclassified,
-    failed: res.failed
+    failed
   }
 }
