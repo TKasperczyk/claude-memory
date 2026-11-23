@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MemoryRecord } from '../src/lib/types.js'
 import { DEFAULT_CONFIG } from '../src/lib/types.js'
 import { runEntityOverlapDiscovery } from '../src/lib/maintenance/runners/entities.js'
-import { batchUpdateRecords } from '../src/lib/lancedb.js'
+import { batchUpdateRecords, fetchRecordsByIds, iterateRecords } from '../src/lib/lancedb.js'
 import { createMockDiscoveryRecord } from './helpers.js'
 
 const mockState = vi.hoisted(() => ({
@@ -11,6 +11,10 @@ const mockState = vi.hoisted(() => ({
 
 vi.mock('../src/lib/lancedb.js', () => ({
   batchUpdateRecords: vi.fn(async (records: MemoryRecord[]) => ({ updated: records.length, failed: 0 })),
+  fetchRecordsByIds: vi.fn(async (ids: string[]) => {
+    const idSet = new Set(ids)
+    return mockState.records.filter(record => idSet.has(record.id))
+  }),
   iterateRecords: vi.fn(async function* () {
     for (const record of mockState.records) yield record
   })
@@ -56,6 +60,15 @@ describe('runEntityOverlapDiscovery', () => {
     expect(bRelations[0]).toMatchObject({ targetId: 'a', kind: 'shares_entity' })
     expect(aRelations[0].weight).toBeGreaterThan(0)
     expect(aRelations[0].weight).toBeLessThanOrEqual(1)
+    expect(iterateRecords).toHaveBeenCalledWith(
+      { filter: 'deprecated = false', includeEmbeddings: false },
+      DEFAULT_CONFIG
+    )
+    expect(fetchRecordsByIds).toHaveBeenCalledWith(
+      expect.arrayContaining(['a', 'b']),
+      DEFAULT_CONFIG,
+      { includeEmbeddings: true }
+    )
     expect(batchUpdateRecords).toHaveBeenCalledTimes(1)
   })
 

@@ -770,7 +770,7 @@ async function requestPromotionDecisions(
     model: config.extraction.model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: PROMOTION_SYSTEM_PROMPT }
+      { type: 'text', text: PROMOTION_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
     ],
     messages: [{ role: 'user', content: prompt }],
     tools: [PROMOTION_TOOL],

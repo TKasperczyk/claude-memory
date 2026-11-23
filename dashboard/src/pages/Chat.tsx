@@ -71,6 +71,45 @@ function formatToolSummary(tool: ChatToolName, input: unknown): string {
   return tool
 }
 
+const MAX_TOOL_HISTORY_CHARS = 1500
+
+function summarizeToolEntryForHistory(entry: ChatEntryTool): string {
+  const header = formatToolSummary(entry.name, entry.input)
+  let payload = ''
+  if (entry.result !== undefined) {
+    try {
+      payload = JSON.stringify(entry.result)
+    } catch {
+      payload = String(entry.result)
+    }
+  } else {
+    payload = entry.status
+  }
+  if (payload.length > MAX_TOOL_HISTORY_CHARS) {
+    payload = `${payload.slice(0, MAX_TOOL_HISTORY_CHARS)}... [truncated]`
+  }
+  return `[Tool ${entry.status}: ${header} -> ${payload}]`
+}
+
+function serializeEntriesForChatApi(entries: ChatEntry[]): ApiChatMessage[] {
+  const messages: ApiChatMessage[] = []
+  for (const entry of entries) {
+    const role: ChatRole = entry.type === 'message' ? entry.role : 'assistant'
+    const content = entry.type === 'message'
+      ? entry.content.trim()
+      : summarizeToolEntryForHistory(entry)
+    if (!content) continue
+
+    const previous = messages[messages.length - 1]
+    if (previous && previous.role === role) {
+      previous.content = `${previous.content}\n\n${content}`
+    } else {
+      messages.push({ role, content })
+    }
+  }
+  return messages
+}
+
 function ToolCallEntry({ entry }: { entry: ChatEntryTool }) {
   const [open, setOpen] = useState(false)
   const summary = formatToolSummary(entry.name, entry.input)
@@ -194,9 +233,7 @@ export default function Chat() {
     const controller = new AbortController()
     abortRef.current = controller
 
-    const messages: ApiChatMessage[] = nextEntries
-      .filter((entry): entry is ChatEntryMessage => entry.type === 'message')
-      .map(entry => ({ role: entry.role, content: entry.content }))
+    const messages = serializeEntriesForChatApi(nextEntries)
 
     try {
       await streamChat(

@@ -6,12 +6,12 @@
 
 import fs, { appendFileSync } from 'fs'
 import { randomUUID } from 'crypto'
-import { join } from 'path'
+import { basename, dirname, join } from 'path'
 import { isProcessEntrypoint } from '../lib/shared.js'
 import { batchUpdateRecords, closeLanceDB, fetchRecordsByIds, flushCollection, initLanceDB } from '../lib/lancedb.js'
 import { rateInjectedMemories, sanitizeExtractionFailure } from '../lib/extract.js'
-import { parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
-import { dedupeInjectedMemories, loadSessionTracking, removeSessionTracking } from '../lib/session-tracking.js'
+import { fileContainsMarker, parseTranscript, type Transcript, type TranscriptEvent, getFirstUserPrompt } from '../lib/transcript.js'
+import { cleanupStaleSessions, dedupeInjectedMemories, loadSessionTracking, markSessionRetrievalCounted, removeSessionTracking } from '../lib/session-tracking.js'
 import { loadConfig } from '../lib/config.js'
 import { buildExtractionRecordSummaries, getLastExtractionRunForSession, saveExtractionRun } from '../lib/extraction-log.js'
 import { runAllMaintenance } from '../lib/maintenance-api.js'
@@ -27,7 +27,7 @@ import { handlePostSession } from './post-session.js'
 import { findGitRoot } from '../lib/context.js'
 import { SKIP_EXTRACTION_MARKER } from '../lib/claude-commands.js'
 import { addTokenUsage, emptyTokenUsage, hasTokenUsage } from '../lib/token-usage.js'
-import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE, LOCKS_DIR } from '../lib/paths.js'
+import { canonicalizePath, CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE, LOCKS_DIR } from '../lib/paths.js'
 import { formatExtractionFailureSummary, isExtractionRunFailure } from '../lib/extraction-status.js'
 import { formatStageTimings } from '../lib/extraction-timings.js'
 import { runSelfUpdate } from '../lib/self-update.js'
@@ -79,24 +79,56 @@ function shortSessionId(sessionId: string | undefined): string {
 export function trimLogFile(filePath: string): void {
   try {
     if (!fs.existsSync(filePath)) return
-    const stat = fs.statSync(filePath)
-    if (stat.size <= LOG_MAX_BYTES) return
+    const initialStat = fs.statSync(filePath)
+    if (initialStat.size <= LOG_MAX_BYTES) return
 
-    const bytesToRead = Math.min(LOG_KEEP_BYTES, stat.size)
-    const buffer = Buffer.alloc(bytesToRead)
-    const fd = fs.openSync(filePath, 'r')
-    let bytesRead = 0
+    const lockHandle = acquireFileLock(join(LOCKS_DIR, 'log-trim.lock'), {
+      staleAfterMs: 30_000,
+      staleStrategy: 'pid',
+      ensureDir: true,
+      proceedOnError: false,
+      write: { data: () => `${process.pid}\n${Date.now()}` }
+    })
+    if (!lockHandle) return
+
     try {
-      bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, stat.size - bytesToRead)
-    } finally {
-      fs.closeSync(fd)
-    }
-    if (bytesRead <= 0) return
+      if (!fs.existsSync(filePath)) return
+      const stat = fs.statSync(filePath)
+      if (stat.size <= LOG_MAX_BYTES) return
 
-    const readBuffer = buffer.subarray(0, bytesRead)
-    const firstNewline = readBuffer.indexOf(0x0a)
-    const tail = firstNewline >= 0 ? readBuffer.subarray(firstNewline + 1) : readBuffer
-    fs.writeFileSync(filePath, tail)
+      const bytesToRead = Math.min(LOG_KEEP_BYTES, stat.size)
+      const buffer = Buffer.alloc(bytesToRead)
+      const fd = fs.openSync(filePath, 'r')
+      let bytesRead = 0
+      try {
+        bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, stat.size - bytesToRead)
+      } finally {
+        fs.closeSync(fd)
+      }
+      if (bytesRead <= 0) return
+
+      const readBuffer = buffer.subarray(0, bytesRead)
+      const firstNewline = readBuffer.indexOf(0x0a)
+      const tail = firstNewline >= 0 ? readBuffer.subarray(firstNewline + 1) : readBuffer
+
+      const tmpPath = join(
+        dirname(filePath),
+        `.${basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+      )
+      try {
+        fs.writeFileSync(tmpPath, tail, { flag: 'wx' })
+        fs.renameSync(tmpPath, filePath)
+      } catch (error) {
+        try {
+          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath)
+        } catch {
+          // ignore cleanup failure
+        }
+        throw error
+      }
+    } finally {
+      lockHandle.release()
+    }
   } catch {
     // ignore retention failures; logging must never block extraction
   }
@@ -113,7 +145,7 @@ function acquireWorkerLock(sessionId: string): ReturnType<typeof acquireFileLock
   const lockFile = `${LOCKS_DIR}/${sessionId}.lock`
   return acquireFileLock(lockFile, {
     staleAfterMs: LOCK_STALE_MS,
-    staleStrategy: 'mtime',
+    staleStrategy: 'pid',
     ensureDir: true,
     proceedOnError: true,
     write: { data: () => `${process.pid}\n${Date.now()}` },
@@ -253,8 +285,10 @@ async function maybeRunAutoMaintenance(config: Config): Promise<void> {
   const intervalHours = settings.autoMaintenanceIntervalHours
   if (!intervalHours || intervalHours <= 0) return
 
-  // Check timing BEFORE acquiring lock (cheap read, fast path)
-  const lastRun = getLastMaintenanceRun(config.lancedb.table)
+  // Check timing BEFORE acquiring lock (cheap read, fast path).
+  // Ignore dry-run previews and single-operation runs so they never starve auto-maintenance.
+  const autoRunFilter = { excludeDryRun: true, fullOnly: true }
+  const lastRun = getLastMaintenanceRun(config.lancedb.table, autoRunFilter)
   const intervalMs = intervalHours * 60 * 60 * 1000
   if (Date.now() - (lastRun?.timestamp ?? 0) < intervalMs) return
 
@@ -271,7 +305,7 @@ async function maybeRunAutoMaintenance(config: Config): Promise<void> {
 
   try {
     // Re-check after lock (double-check pattern — another worker may have just finished)
-    const freshLastRun = getLastMaintenanceRun(config.lancedb.table)
+    const freshLastRun = getLastMaintenanceRun(config.lancedb.table, autoRunFilter)
     if (Date.now() - (freshLastRun?.timestamp ?? 0) < intervalMs) return
 
     debugLog('Starting auto-maintenance')
@@ -282,6 +316,9 @@ async function maybeRunAutoMaintenance(config: Config): Promise<void> {
       operations: results.map(result => result.operation)
     })
     saveMaintenanceRun(run, config.lancedb.table)
+    if (typeof cleanupStaleSessions === 'function') {
+      cleanupStaleSessions(config.lancedb.table)
+    }
     debugLog(`Auto-maintenance complete: ${run.summary.totalActions} actions`)
   } finally {
     lockHandle.release()
@@ -354,7 +391,7 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
       console.error('[claude-memory] Failed to clean up memory_write hints:', error)
     }
     try {
-      const configRoot = findGitRoot(payload.cwd) ?? payload.cwd
+      const configRoot = findGitRoot(payload.cwd) ?? (payload.cwd ? canonicalizePath(payload.cwd) : payload.cwd)
       config = loadConfig(configRoot)
       collection = config.lancedb.table
 
@@ -387,10 +424,9 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
           return
         }
 
-        // Check for skip-extraction marker in transcript
+        // Check for skip-extraction marker in transcript via bounded streaming scan
         if (fs.existsSync(payload.transcript_path)) {
-          const transcriptRaw = fs.readFileSync(payload.transcript_path, 'utf-8')
-          if (transcriptRaw.includes(SKIP_EXTRACTION_MARKER)) {
+          if (await fileContainsMarker(payload.transcript_path, SKIP_EXTRACTION_MARKER)) {
             debugLog('Skipping: skip-extraction marker found in transcript')
             auditLog(`SKIP reason=skip_requested session=${payload.session_id}`)
             console.error('[claude-memory] Skip-extraction marker found; skipping extraction.')
@@ -666,13 +702,19 @@ export async function processUsefulnessRating(
   let updated = false
   let tokenUsage = emptyTokenUsage()
   let failure: string | undefined
-  try {
-    const retrievalDeltas = countRetrievalDeltas(memories)
-    if (retrievalDeltas.size > 0) {
-      updated = await batchIncrementRecordCounters(retrievalDeltas, 'retrievalCount', config) || updated
+  if (!session.retrievalCounted) {
+    try {
+      const retrievalDeltas = countRetrievalDeltas(memories)
+      if (retrievalDeltas.size > 0) {
+        const incremented = await batchIncrementRecordCounters(retrievalDeltas, 'retrievalCount', config)
+        updated = incremented || updated
+        if (incremented && typeof markSessionRetrievalCounted === 'function') {
+          markSessionRetrievalCounted(payload.session_id, collection)
+        }
+      }
+    } catch (error) {
+      console.error('[claude-memory] Failed to update retrieval counts:', error)
     }
-  } catch (error) {
-    console.error('[claude-memory] Failed to update retrieval counts:', error)
   }
 
   const deduped = dedupeInjectedMemories(memories)

@@ -84,6 +84,13 @@ export interface InProgressExtraction {
 }
 
 const IN_PROGRESS_STALE_MS = 5 * 60 * 1000
+const NON_EXTRACTION_LOCK_FILES = new Set([
+  'auto-maintenance.lock',
+  'self-update.lock',
+  'oauth-refresh.lock',
+  'maintenance.lock',
+  'log-trim.lock'
+])
 
 export function listInProgressExtractions(): InProgressExtraction[] {
   const locksDir = LOCKS_DIR
@@ -94,7 +101,7 @@ export function listInProgressExtractions(): InProgressExtraction[] {
   const inProgress: InProgressExtraction[] = []
 
   for (const file of files) {
-    if (!file.endsWith('.lock') || file === 'auto-maintenance.lock') continue
+    if (!file.endsWith('.lock') || NON_EXTRACTION_LOCK_FILES.has(file)) continue
     const lockPath = path.join(locksDir, file)
     try {
       const content = fs.readFileSync(lockPath, 'utf-8').trim()

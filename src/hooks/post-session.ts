@@ -11,7 +11,6 @@ import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { randomUUID } from 'crypto'
 import { extractRecords } from '../lib/extract.js'
-import { REMEMBER_MARKER } from '../lib/claude-commands.js'
 import { findGitRoot } from '../lib/context.js'
 import { embedBatch } from '../lib/embed.js'
 import { buildEmbeddingInput, escapeFilterValue, findSimilar, insertRecord, updateRecord, type FlushMode } from '../lib/lancedb.js'
@@ -30,7 +29,7 @@ import {
   type MemoryWriteHintEvent,
   type TokenUsage
 } from '../lib/types.js'
-import { CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE } from '../lib/paths.js'
+import { canonicalizePath, CLAUDE_MEMORY_ROOT, DEBUG_LOG_FILE } from '../lib/paths.js'
 import type { ExtractionTimingStage } from '../lib/extraction-timings.js'
 import { POST_SESSION_WORKER_SCRIPT } from '../lib/runtime-artifacts.js'
 
@@ -196,9 +195,8 @@ export async function handlePostSession(
   // Use extraction transcript for min-length check so we skip if only overlap, no real new content
   const transcript = extractionTranscript
 
-  // Check for remember marker in the raw file -- the parsed transcript strips isMeta entries
-  const rawTranscript = fs.readFileSync(input.transcript_path, 'utf-8')
-  const hasRememberMarker = rawTranscript.includes(REMEMBER_MARKER)
+  // Remember marker is detected during streaming parseTranscript() without reading the entire file into memory.
+  const hasRememberMarker = Boolean(fullTranscript.hasRememberMarker)
 
   // Skip extraction for very short conversations (~4 chars per token)
   // unless user explicitly flagged content with /remember
@@ -223,7 +221,7 @@ export async function handlePostSession(
     }
   }
 
-  const projectRoot = findGitRoot(input.cwd) ?? input.cwd
+  const projectRoot = findGitRoot(input.cwd) ?? (input.cwd ? canonicalizePath(input.cwd) : input.cwd)
   const llmStart = Date.now()
   const { records: extractedRecords, tokenUsage, error } = await extractRecords(transcript, {
     sessionId: input.session_id,
@@ -286,8 +284,20 @@ export async function handlePostSession(
 
   const flushMode = options.flush ?? 'always'
 
+  let skipUnembeddedRecords = Boolean(
+    embeddingResult.error && isEmbeddingOutageError(embeddingResult.error)
+  )
+  let unembeddedFailureCause = embeddingResult.error
+
   const storeStart = Date.now()
   for (const record of records) {
+    if (skipUnembeddedRecords && (!record.embedding || record.embedding.length === 0)) {
+      failed += 1
+      recordOutcomes.push(buildRecordOutcome(record, 'failed', {
+        storeError: unembeddedFailureCause ?? 'embedding service unavailable'
+      }))
+      continue
+    }
     try {
       const dedupFilter = record.supersedes
         ? `id <> '${escapeFilterValue(record.supersedes)}'`
@@ -337,11 +347,20 @@ export async function handlePostSession(
       recordOutcomes.push(outcome)
       await applySupersedesWithOutcome(outcome, prepared, prepared.id, config, (count) => { supersedesMissing += count }, () => { failed += 1 })
     } catch (error) {
+      const storeError = sanitizeStoreError(error)
       failed += 1
       recordOutcomes.push(buildRecordOutcome(record, 'failed', {
-        storeError: sanitizeStoreError(error)
+        storeError
       }))
       console.error(`[claude-memory] Failed to store record ${record.id ?? record.type}:`, error)
+      if (
+        embeddingResult.error
+        && (!record.embedding || record.embedding.length === 0)
+        && isEmbeddingOutageError(storeError)
+      ) {
+        skipUnembeddedRecords = true
+        unembeddedFailureCause = storeError
+      }
     }
   }
 
@@ -396,6 +415,10 @@ async function applySupersedesWithOutcome(
 function sanitizeStoreError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   return message.split('\n')[0].slice(0, 200)
+}
+
+function isEmbeddingOutageError(message: string): boolean {
+  return /timed out|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|\b50[234]\b/i.test(message)
 }
 
 function roundSimilarity(similarity: number): number {

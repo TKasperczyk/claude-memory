@@ -38,9 +38,9 @@ export function getDefaultSettings(): Settings {
   return { ...DEFAULT_SETTINGS }
 }
 
-export function loadSettings(): Settings {
+function loadPersistedSettings(): Settings {
   const defaults = getDefaultSettings()
-  const settings = readJsonFile(SETTINGS_PATH, {
+  return readJsonFile(SETTINGS_PATH, {
     fallback: defaults,
     onError: error => console.error('[claude-memory] Failed to load settings:', error),
     coerce: data => {
@@ -48,7 +48,10 @@ export function loadSettings(): Settings {
       return coerceSettings(data, defaults)
     }
   }) ?? defaults
-  return applyEnvOverrides(settings)
+}
+
+export function loadSettings(): Settings {
+  return applyEnvOverrides(loadPersistedSettings())
 }
 
 /**
@@ -93,7 +96,7 @@ export function resolveMaintenanceSettings(settings?: MaintenanceSettings): Main
 }
 
 export function saveSettings(settings: Partial<Settings>): void {
-  const current = loadSettings()
+  const current = loadPersistedSettings()
   const merged = coerceSettings({ ...current, ...settings }, current)
   writeJsonFile(SETTINGS_PATH, merged, { ensureDir: true, pretty: 2 })
 }

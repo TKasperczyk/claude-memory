@@ -180,7 +180,8 @@ function buildClustersFromComponents(
 export async function findSimilarClusters(
   similarityThreshold: number | undefined = undefined,
   config: Config = DEFAULT_CONFIG,
-  settings?: MaintenanceSettings
+  settings?: MaintenanceSettings,
+  options?: { onScannedSingletons?: (singletons: MemoryRecord[]) => void }
 ): Promise<ConsolidationCluster[]> {
   const maintenance = resolveMaintenanceSettings(settings)
   const resolvedThreshold = typeof similarityThreshold === 'number'
@@ -188,6 +189,7 @@ export async function findSimilarClusters(
     : maintenance.consolidationThreshold
   const recheckCutoff = Date.now() - maintenance.consolidationRecheckDays * 24 * 60 * 60 * 1000
   const recheckCutoffValue = Math.trunc(recheckCutoff)
+  const seedFilter = `deprecated = false AND (last_consolidation_check = 0 OR last_consolidation_check < ${recheckCutoffValue})`
 
   // Transitive clustering via union-find: collect all edges first, then merge
   // overlapping groups. This prevents greedy fragmentation where 5 related records
@@ -195,12 +197,13 @@ export async function findSimilarClusters(
   const uf = new UnionFind()
   const recordById = new Map<string, MemoryRecord>()
   const bestSimilarity = new Map<string, number>()
+  const scannedSeeds: MemoryRecord[] = []
   let offset = 0
 
   while (true) {
     const batch = await queryRecords(
       {
-        filter: 'deprecated = false',
+        filter: seedFilter,
         limit: QUERY_PAGE_SIZE,
         offset,
         includeEmbeddings: true
@@ -215,6 +218,7 @@ export async function findSimilarClusters(
       if (wasRecentlyConsolidationChecked(record, recheckCutoffValue)) continue
       if (!isValidEmbedding(record.embedding)) continue
 
+      scannedSeeds.push(record)
       recordById.set(record.id, record)
       bestSimilarity.set(record.id, Math.max(bestSimilarity.get(record.id) ?? 0, 1))
 
@@ -243,16 +247,23 @@ export async function findSimilarClusters(
     offset += batch.length
   }
 
-  return buildClustersFromComponents(
+  const clusters = buildClustersFromComponents(
     uf, recordById, bestSimilarity,
     maintenance.consolidationMaxClusterSize, false
   )
+  if (options?.onScannedSingletons) {
+    const clusteredIds = new Set(clusters.flatMap(cluster => cluster.members.map(member => member.record.id)))
+    const singletons = scannedSeeds.filter(seed => !clusteredIds.has(seed.id))
+    options.onScannedSingletons(singletons)
+  }
+  return clusters
 }
 
 export async function findCrossTypeClusters(
   similarityThreshold: number | undefined = undefined,
   config: Config = DEFAULT_CONFIG,
-  settings?: MaintenanceSettings
+  settings?: MaintenanceSettings,
+  options?: { onScannedSingletons?: (singletons: MemoryRecord[]) => void }
 ): Promise<ConsolidationCluster[]> {
   const maintenance = resolveMaintenanceSettings(settings)
   const resolvedThreshold = typeof similarityThreshold === 'number'
@@ -260,16 +271,18 @@ export async function findCrossTypeClusters(
     : maintenance.crossTypeConsolidationThreshold
   const recheckCutoff = Date.now() - maintenance.consolidationRecheckDays * 24 * 60 * 60 * 1000
   const recheckCutoffValue = Math.trunc(recheckCutoff)
+  const seedFilter = `deprecated = false AND (last_cross_type_consolidation_check = 0 OR last_cross_type_consolidation_check < ${recheckCutoffValue})`
 
   const uf = new UnionFind()
   const recordById = new Map<string, MemoryRecord>()
   const bestSimilarity = new Map<string, number>()
+  const scannedSeeds: MemoryRecord[] = []
   let offset = 0
 
   while (true) {
     const batch = await queryRecords(
       {
-        filter: 'deprecated = false',
+        filter: seedFilter,
         limit: QUERY_PAGE_SIZE,
         offset,
         includeEmbeddings: true
@@ -280,9 +293,10 @@ export async function findCrossTypeClusters(
     if (batch.length === 0) break
 
     for (const record of batch) {
-      if (wasRecentlyConsolidationChecked(record, recheckCutoffValue)) continue
+      if (wasRecentlyCrossTypeConsolidationChecked(record, recheckCutoffValue)) continue
       if (!isValidEmbedding(record.embedding)) continue
 
+      scannedSeeds.push(record)
       recordById.set(record.id, record)
       bestSimilarity.set(record.id, Math.max(bestSimilarity.get(record.id) ?? 0, 1))
 
@@ -312,10 +326,16 @@ export async function findCrossTypeClusters(
     offset += batch.length
   }
 
-  return buildClustersFromComponents(
+  const clusters = buildClustersFromComponents(
     uf, recordById, bestSimilarity,
     maintenance.consolidationMaxClusterSize, true
   )
+  if (options?.onScannedSingletons) {
+    const clusteredIds = new Set(clusters.flatMap(cluster => cluster.members.map(member => member.record.id)))
+    const singletons = scannedSeeds.filter(seed => !clusteredIds.has(seed.id))
+    options.onScannedSingletons(singletons)
+  }
+  return clusters
 }
 
 export async function consolidateCluster(
@@ -541,7 +561,7 @@ export async function llmVerifyConsolidation(
     model: config.extraction.model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: CONSOLIDATION_VERIFICATION_PROMPT }
+      { type: 'text', text: CONSOLIDATION_VERIFICATION_PROMPT, cache_control: { type: 'ephemeral' } }
     ],
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CONSOLIDATION_VERIFICATION_TOOL],
@@ -589,6 +609,11 @@ export async function selectCrossTypeRepresentative(
 
 function wasRecentlyConsolidationChecked(record: MemoryRecord, cutoff: number): boolean {
   const lastCheck = record.lastConsolidationCheck ?? 0
+  return lastCheck !== 0 && lastCheck >= cutoff
+}
+
+function wasRecentlyCrossTypeConsolidationChecked(record: MemoryRecord, cutoff: number): boolean {
+  const lastCheck = record.lastCrossTypeConsolidationCheck ?? 0
   return lastCheck !== 0 && lastCheck >= cutoff
 }
 

@@ -25,22 +25,18 @@ import {
 import { parseTranscript } from '../src/lib/transcript.js'
 import { initLanceDB, insertRecord, getRecord, findSimilar } from '../src/lib/lancedb.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
+import { loadCredentials } from '../src/lib/anthropic.js'
 import type { SessionEndInput } from '../src/lib/types.js'
-
-import { existsSync } from 'fs'
-import { homedir } from 'os'
-import { join } from 'path'
 
 // Ensure local user settings don't cause tests to early-exit extraction due to short transcripts.
 process.env.CC_MEMORIES_SETTING_EXTRACTION_MIN_TOKENS = '0'
 
-// Check for any available auth method (API key, env token, or credential files)
+// Check for any available auth method matching src/lib/anthropic.ts
 const hasAnthropicAuth = !!(
   process.env.ANTHROPIC_API_KEY ||
   process.env.OPENCODE_API_KEY ||
   process.env.ANTHROPIC_AUTH_TOKEN ||
-  existsSync(join(homedir(), '.claude', '.credentials.json')) ||
-  existsSync(join(homedir(), '.kira', 'credentials.json'))
+  loadCredentials()
 )
 
 const embeddingAvailability = await checkEmbeddingAvailability(TEST_CONFIG, { timeoutMs: 800 })

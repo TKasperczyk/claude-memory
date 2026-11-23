@@ -1,4 +1,3 @@
-import { execFileSync } from 'child_process'
 import fs from 'fs'
 import { homedir } from 'os'
 import path from 'path'
@@ -15,6 +14,79 @@ import { normalizeStep } from '../shared.js'
 export const QUERY_PAGE_SIZE = 500
 const COMMAND_EXISTS_CACHE_TTL_MS = 2 * 60 * 1000
 
+const POSIX_SHELL_BUILTINS = new Set([
+  '.',
+  ':',
+  '[',
+  '[[',
+  'alias',
+  'autoload',
+  'bg',
+  'bind',
+  'break',
+  'builtin',
+  'caller',
+  'cd',
+  'command',
+  'compgen',
+  'complete',
+  'compopt',
+  'continue',
+  'declare',
+  'dirs',
+  'disown',
+  'echo',
+  'emulate',
+  'enable',
+  'eval',
+  'exec',
+  'exit',
+  'export',
+  'false',
+  'fc',
+  'fg',
+  'getopts',
+  'hash',
+  'help',
+  'history',
+  'jobs',
+  'kill',
+  'let',
+  'local',
+  'logout',
+  'mapfile',
+  'popd',
+  'printf',
+  'pushd',
+  'pwd',
+  'read',
+  'readarray',
+  'readonly',
+  'return',
+  'set',
+  'setopt',
+  'shift',
+  'shopt',
+  'source',
+  'suspend',
+  'test',
+  'times',
+  'trap',
+  'true',
+  'type',
+  'typeset',
+  'ulimit',
+  'umask',
+  'unalias',
+  'unset',
+  'unsetopt',
+  'wait',
+  'whence',
+  'which',
+  'zmodload',
+  'zstyle'
+])
+
 interface ValidityResult {
   valid: boolean
   reason?: string
@@ -26,7 +98,8 @@ export async function findStaleRecords(
 ): Promise<MemoryRecord[]> {
   const maintenance = resolveMaintenanceSettings(settings)
   const cutoff = Date.now() - maintenance.staleDays * 24 * 60 * 60 * 1000
-  const filter = `deprecated = false AND last_used < ${Math.trunc(cutoff)}`
+  // Only command and procedure records have executable validity checks; other types always pass checkValidity().
+  const filter = `deprecated = false AND (type = 'command' OR type = 'procedure') AND last_used < ${Math.trunc(cutoff)}`
   return fetchRecords(filter, config, false)
 }
 
@@ -458,13 +531,7 @@ function looksLikePath(command: string): boolean {
 
 function isExecutablePath(command: string, cwd?: string): boolean {
   const resolved = resolveCommandPath(command, cwd)
-  if (!fs.existsSync(resolved)) return false
-  try {
-    fs.accessSync(resolved, fs.constants.X_OK)
-    return true
-  } catch {
-    return false
-  }
+  return isExecutableFile(resolved)
 }
 
 type CommandExistsCacheEntry = {
@@ -477,7 +544,7 @@ type CommandExistsCacheEntry = {
 const commandExistsCache = new Map<string, CommandExistsCacheEntry>()
 
 function commandCacheKey(command: string, cwd?: string): string {
-  const envSignature = `${process.env.PATH ?? ''}|${process.env.SHELL ?? ''}`
+  const envSignature = `${process.env.PATH ?? ''}`
   return `${envSignature}|${cwd ?? ''}|${command}`
 }
 
@@ -491,6 +558,7 @@ function isCommandCacheEntryValid(entry: CommandExistsCacheEntry): boolean {
 
 function isExecutableFile(commandPath: string): boolean {
   try {
+    if (!fs.statSync(commandPath).isFile()) return false
     fs.accessSync(commandPath, fs.constants.X_OK)
     return true
   } catch {
@@ -499,30 +567,18 @@ function isExecutableFile(commandPath: string): boolean {
 }
 
 function findCommandPath(command: string): string | null {
-  try {
-    const output = execFileSync('which', [command], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf-8'
-    }).trim()
-    if (!output) return null
-    return output.split(/\r?\n/)[0]
-  } catch {
-    return null
+  const pathEnv = process.env.PATH ?? ''
+  if (!pathEnv) return null
+  const dirs = pathEnv.split(path.delimiter).filter(Boolean)
+  for (const dir of dirs) {
+    const candidate = path.join(dir, command)
+    if (isExecutableFile(candidate)) return candidate
   }
+  return null
 }
 
 function checkType(command: string): boolean {
-  const shell = process.env.SHELL || 'bash'
-  try {
-    execFileSync(shell, ['-lc', `type -a -- ${shellEscape(command)}`], { stdio: 'ignore' })
-    return true
-  } catch {
-    return false
-  }
-}
-
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`
+  return POSIX_SHELL_BUILTINS.has(command)
 }
 
 function resolveCommandPath(command: string, cwd?: string): string {

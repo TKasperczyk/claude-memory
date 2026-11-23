@@ -12,6 +12,7 @@ import {
   type WarningRecord
 } from './types.js'
 import { getRecordTextGroups } from './record-fields.js'
+import { canonicalizePath } from './paths.js'
 import { getMemoryIdPrefix, looksLikeCommand, truncateText } from './shared.js'
 import { buildExclusionReason } from './diagnostics.js'
 
@@ -68,7 +69,7 @@ const ERROR_LINE_REGEX = /(error|exception|traceback|panic|fatal|segmentation fa
 
 export function extractSignals(prompt: string, cwd: string, projectRoot?: string): ContextSignals {
   const cleanPrompt = stripNoiseWords(prompt)
-  const resolvedProjectRoot = projectRoot ?? findGitRoot(cwd)
+  const resolvedProjectRoot = projectRoot ? canonicalizePath(projectRoot) : findGitRoot(cwd)
   const projectName = resolvedProjectRoot ? path.basename(resolvedProjectRoot) : path.basename(cwd)
   const errors = extractErrorSignals(cleanPrompt)
   const commands = extractCommandSignals(cleanPrompt)
@@ -676,20 +677,21 @@ function hasGitMarker(root: string): boolean {
 
 export function findGitRoot(cwd: string): string | undefined {
   if (!cwd) return undefined
-  const cached = readGitRootCache(cwd)
+  const canonicalCwd = canonicalizePath(cwd)
+  const cached = readGitRootCache(canonicalCwd)
   if (cached) return cached.value
   try {
     const output = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd,
+      cwd: canonicalCwd,
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf-8',
       timeout: 500
     }).trim()
-    const root = output || undefined
-    gitRootCache.set(cwd, { value: root, checkedAt: Date.now() })
+    const root = output ? canonicalizePath(output) : undefined
+    gitRootCache.set(canonicalCwd, { value: root, checkedAt: Date.now() })
     return root
   } catch {
-    gitRootCache.set(cwd, { value: undefined, checkedAt: Date.now() })
+    gitRootCache.set(canonicalCwd, { value: undefined, checkedAt: Date.now() })
     return undefined
   }
 }
@@ -701,12 +703,18 @@ export function findGitRoot(cwd: string): string | undefined {
  * parent project level.
  */
 export function findAncestorProjects(projectRoot: string): string[] {
+  const canonicalRoot = canonicalizePath(projectRoot)
   const ancestors: string[] = []
-  let dir = path.dirname(projectRoot)
-  const root = path.parse(projectRoot).root
-  while (dir !== root && dir !== projectRoot) {
+  const seen = new Set<string>([canonicalRoot])
+  let dir = path.dirname(canonicalRoot)
+  const root = path.parse(canonicalRoot).root
+  while (dir !== root && dir !== canonicalRoot) {
     if (hasGitMarker(dir)) {
-      ancestors.push(dir)
+      const canonicalAncestor = canonicalizePath(dir)
+      if (!seen.has(canonicalAncestor)) {
+        seen.add(canonicalAncestor)
+        ancestors.push(canonicalAncestor)
+      }
     }
     dir = path.dirname(dir)
   }

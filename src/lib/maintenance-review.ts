@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { createHash } from 'crypto'
 import { fetchRecordsByIds } from './lancedb.js'
-import { loadSettings, type MaintenanceSettings } from './settings.js'
+import { loadSettings, type Settings } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 import {
   coerceMaintenanceActionReviewItem,
@@ -38,10 +38,12 @@ const OPERATION_PROMPTS: Record<string, string> = {
   'quality-deprecation': 'This operation deprecates high-confidence extraction artifacts only. Goal: Remove raw tool dumps, vague transient errors, and metric dumps without touching concise but durable knowledge.',
   'warning-synthesis': 'This operation creates warning records from repeated failures. Goal: Extract actionable warnings. Key question: Are synthesized warnings useful?',
   'global-promotion': 'This operation elevates project-scoped records to global scope. Goal: Share universal knowledge. Key question: Are promoted records truly universal?',
+  'relation-discovery': 'This operation discovers relates_to edges from session co-injection and prunes stale/broken relation links. Goal: Build high-signal relation edges without creating noisy graph hubs.',
+  'entity-overlap-discovery': 'This operation builds shares_entity relation edges between records that reference shared high-specificity technical entities. Goal: Connect genuinely related memories without linking unrelated topics via overly generic terms.',
   'promotion-suggestions': 'This operation generates CLAUDE.md and skill file suggestions. Goal: Surface high-value memories for documentation.'
 }
 
-const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
+const OPERATION_SETTINGS: Record<string, Array<keyof Settings>> = {
   'stale-check': ['staleDays', 'procedureStepCheckCount'],
   'stale-unused-deprecation': ['staleUnusedDays'],
   'low-usage': ['lowUsageMinRetrievals', 'lowUsageRatioThreshold'],
@@ -76,6 +78,8 @@ const OPERATION_SETTINGS: Record<string, Array<keyof MaintenanceSettings>> = {
     'globalPromotionBatchSize',
     'globalPromotionRecheckDays'
   ],
+  'relation-discovery': ['maxRelationsPerRecord'],
+  'entity-overlap-discovery': [],
   'promotion-suggestions': []
 }
 
@@ -151,7 +155,7 @@ type ReviewPayload = {
 type MaintenanceReviewInput = {
   result: OperationResult
   records: MemoryRecord[]
-  settings: MaintenanceSettings
+  settings: Settings
 }
 
 export async function reviewMaintenanceResult(
@@ -318,7 +322,7 @@ function collectRecordIds(result: OperationResult): string[] {
 function buildMaintenanceReviewPrompt(input: {
   result: OperationResult
   records: MemoryRecord[]
-  settings: MaintenanceSettings
+  settings: Settings
 }): string {
   const { result, records, settings } = input
   const actionPayload = result.actions.slice(0, REVIEW_MAX_ACTIONS).map(formatReviewAction)
@@ -448,6 +452,7 @@ function formatReviewRecord(record: MemoryRecord): Record<string, unknown> {
     lastGeneralizationCheck: record.lastGeneralizationCheck,
     lastGlobalCheck: record.lastGlobalCheck,
     lastConsolidationCheck: record.lastConsolidationCheck,
+    lastCrossTypeConsolidationCheck: record.lastCrossTypeConsolidationCheck,
     lastConflictCheck: record.lastConflictCheck,
     lastCurrentnessCheck: record.lastCurrentnessCheck,
     lastWarningSynthesisCheck: record.lastWarningSynthesisCheck

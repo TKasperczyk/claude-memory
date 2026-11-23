@@ -20,7 +20,9 @@ import type {
 
 const EVENT_SUFFIX = '.jsonl'
 const TOKEN_USAGE_RETENTION_DAYS = 90
+const CLEANUP_THROTTLE_MS = 60 * 60 * 1000
 const eventsStore = new JsonLinesStore('token-usage-events', { suffix: EVENT_SUFFIX })
+const lastWriteCleanupByScope = new Map<string, number>()
 
 type TokenUsageFilter = TokenUsageSource | 'all'
 type TokenUsageTotals = TokenUsage & { totalTokens: number }
@@ -56,14 +58,31 @@ function normalizeOptionalId(value: unknown): string | undefined {
 }
 
 function asTokenUsageSource(value: unknown): TokenUsageSource | null {
-  if (value === 'extraction' || value === 'haiku-query' || value === 'usefulness-rating' || value === 'maintenance') {
+  if (
+    value === 'extraction'
+    || value === 'haiku-query'
+    || value === 'usefulness-rating'
+    || value === 'maintenance'
+    || value === 'review'
+    || value === 'chat'
+  ) {
     return value
   }
   return null
 }
 
-function cleanupOldEvents(options: TokenUsageStoreOptions = {}): void {
-  const cutoff = (options.now ?? Date.now()) - TOKEN_USAGE_RETENTION_DAYS * DAY_MS
+function cleanupOldEvents(options: TokenUsageStoreOptions & { throttle?: boolean } = {}): void {
+  const now = options.now ?? Date.now()
+  if (options.throttle) {
+    const scopeKey = `${options.baseDir ?? ''}::${options.collection ?? ''}`
+    const lastRun = lastWriteCleanupByScope.get(scopeKey)
+    if (lastRun !== undefined && now >= lastRun && now - lastRun < CLEANUP_THROTTLE_MS) {
+      return
+    }
+    lastWriteCleanupByScope.set(scopeKey, now)
+  }
+
+  const cutoff = now - TOKEN_USAGE_RETENTION_DAYS * DAY_MS
   const store = getEventsStore(options.baseDir)
 
   try {
@@ -174,7 +193,7 @@ export function recordTokenUsageEvents(
 
   try {
     const store = getEventsStore(options.baseDir)
-    cleanupOldEvents(options)
+    cleanupOldEvents({ ...options, throttle: true })
 
     const byDate = new Map<string, TokenUsageEvent[]>()
     const now = Date.now()

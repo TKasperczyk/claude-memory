@@ -7,13 +7,12 @@
 
 import path from 'path'
 import { homedir } from 'os'
-import { pathToFileURL } from 'url'
 import { JsonStore } from '../src/lib/file-store.js'
 import { writeJsonFile } from '../src/lib/json.js'
 import { loadConfig } from '../src/lib/config.js'
 import { getPrimaryRecordText } from '../src/lib/record-fields.js'
 import { batchUpdateRecords, closeLanceDB, escapeFilterValue, initLanceDB, iterateRecords, vectorSearchSimilar } from '../src/lib/lancedb.js'
-import { buildRecordSnippet } from '../src/lib/shared.js'
+import { buildRecordSnippet, isProcessEntrypoint } from '../src/lib/shared.js'
 import { EMBEDDING_DIM, type Config, type MemoryRecord, type RecordScope, type RecordType } from '../src/lib/types.js'
 
 const DEFAULT_TOP_K = 5
@@ -488,12 +487,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 }
 
-function isMainModule(): boolean {
-  const entry = process.argv[1]
-  return Boolean(entry && import.meta.url === pathToFileURL(path.resolve(entry)).href)
-}
-
-if (isMainModule()) {
+if (isProcessEntrypoint(import.meta.url)) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : error)
     process.exit(1)

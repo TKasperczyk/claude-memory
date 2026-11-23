@@ -153,7 +153,7 @@ export async function generateRetrievalQueryPlan(
         max_tokens: clampModelMaxTokens(HAIKU_MODEL, QUERY_MAX_TOKENS),
         system: [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-          { type: 'text', text: SYSTEM_PROMPT }
+          { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
         ],
         messages: [{ role: 'user', content: userPrompt }],
         tools: [buildQueryTool(semanticVariantCount)],

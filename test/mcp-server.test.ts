@@ -250,6 +250,20 @@ describe('MCP update_memory', () => {
     expect(result.isError).toBe(true)
     expect(mockedUpdateRecord).not.toHaveBeenCalled()
   })
+
+  it('rejects fields invalid for the target record type and supports discovery evidence', async () => {
+    const wrongType = await runUpdateMemoryTool({ id: LIVE_ID, command: 'ls -la' })
+    expect(wrongType.isError).toBe(true)
+    expect(wrongType.content[0].text).toContain('Invalid field(s) for discovery record')
+    expect(mockedUpdateRecord).not.toHaveBeenCalled()
+
+    mockedGetRecord.mockResolvedValue({ ...LIVE_DISCOVERY, evidence: 'Measured directly' })
+    mockedUpdateRecord.mockResolvedValue(true)
+    const valid = await runUpdateMemoryTool({ id: LIVE_ID, evidence: 'Measured directly' })
+    expect(valid.isError).toBeUndefined()
+    expect(mockedUpdateRecord).toHaveBeenCalledWith(LIVE_ID, { evidence: 'Measured directly' }, expect.anything())
+    expect(JSON.parse(valid.content[0].text).record.evidence).toBe('Measured directly')
+  })
 })
 
 describe('MCP deprecate_memory', () => {

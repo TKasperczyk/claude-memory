@@ -5,10 +5,8 @@ import {
   EMBEDDING_DIM,
   type CommandRecord,
   type Config,
-  type DiscoveryRecord,
   type ErrorRecord,
   type MemoryRecord,
-  type ProcedureRecord,
   type WarningRecord,
   type WarningSeverity
 } from '../types.js'
@@ -17,12 +15,10 @@ import { batchUpdateRecords, buildEmbeddingInput, buildFilter, getRecord, update
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildCandidateRecord, buildRecordSnippet, truncateSnippet } from '../shared.js'
-import { buildToolCallParams, clampModelMaxTokens } from '../model-capabilities.js'
+import { buildToolCallParams, computeMaxTokensWithThinkingHeadroom } from '../model-capabilities.js'
 import { recordTokenUsageFromResponse } from '../token-usage-events.js'
 import { upsertRelation } from '../relations.js'
 import {
-  GENERALIZATION_MAX_TOKENS,
-  GENERALIZATION_PROMPT,
   GLOBAL_PROMOTION_MAX_TOKENS,
   GLOBAL_PROMOTION_PROMPT,
   WARNING_SYNTHESIS_MAX_TOKENS,
@@ -40,15 +36,7 @@ import { fetchRecords } from './scans.js'
 export const GLOBAL_PROMOTION_MIN_CONFIDENCE = 'medium'
 
 // Warning synthesis constants
-const WARNING_SYNTHESIS_MIN_FAILURES = 2
-const WARNING_SYNTHESIS_BATCH_SIZE = 15
 const WARNING_SYNTHESIS_DEDUP_THRESHOLD = 0.9
-
-interface GeneralizationResult {
-  shouldGeneralize: boolean
-  generalizedRecord?: Partial<MemoryRecord>
-  reason?: string
-}
 
 interface GlobalPromotionResult {
   shouldPromote: boolean
@@ -64,11 +52,14 @@ export async function markDeprecated(
   const deprecatedRecord = await getRecord(id, config, { includeEmbedding: true })
   if (!deprecatedRecord) return false
 
+  const wasDeprecated = Boolean(deprecatedRecord.deprecated)
   deprecatedRecord.deprecated = true
-  if (!deprecatedRecord.deprecatedAt) {
+  if (!wasDeprecated || !deprecatedRecord.deprecatedAt) {
     deprecatedRecord.deprecatedAt = Date.now()
     if (options.reason) deprecatedRecord.deprecatedReason = options.reason
+    else delete deprecatedRecord.deprecatedReason
     if (options.supersedingRecordId) deprecatedRecord.supersedingRecordId = options.supersedingRecordId
+    else delete deprecatedRecord.supersedingRecordId
   }
   const recordsToWrite: MemoryRecord[] = [deprecatedRecord]
 
@@ -99,73 +90,6 @@ export async function promoteToGlobal(id: string, config: Config = DEFAULT_CONFI
   return updateRecord(id, { scope: 'global' }, config)
 }
 
-async function checkGeneralization(
-  record: MemoryRecord,
-  config: Config
-): Promise<GeneralizationResult> {
-  const client = await getAnthropicClient()
-  if (!client) {
-    throw new Error('No authentication available for generalization. Set ANTHROPIC_API_KEY or run kira login.')
-  }
-
-  const payload = JSON.stringify(buildGeneralizationInput(record), null, 2)
-
-  const response = await client.messages.create({
-    model: config.extraction.model,
-    max_tokens: clampModelMaxTokens(
-      config.extraction.model,
-      Math.min(GENERALIZATION_MAX_TOKENS, config.extraction.maxTokens)
-    ),
-    system: [
-      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: GENERALIZATION_PROMPT }
-    ],
-    messages: [{ role: 'user', content: `Record:\n${payload}` }]
-  })
-  recordTokenUsageFromResponse('maintenance', config.extraction.model, response, {
-    collection: config.lancedb.table
-  })
-
-  const rawText = extractResponseText(response.content)
-  const parsed = parseGeneralizationResponse(rawText)
-
-  if (!parsed.shouldGeneralize || !parsed.generalizedRecord) {
-    return parsed
-  }
-
-  const filtered = filterGeneralizationUpdates(record, parsed.generalizedRecord)
-  if (Object.keys(filtered).length === 0) {
-    return {
-      shouldGeneralize: false,
-      reason: parsed.reason ? `${parsed.reason} (no usable updates)` : 'no-usable-updates'
-    }
-  }
-
-  return {
-    shouldGeneralize: true,
-    generalizedRecord: filtered,
-    reason: parsed.reason
-  }
-}
-
-async function generalizeRecord(
-  id: string,
-  updates: Partial<MemoryRecord>,
-  config: Config
-): Promise<boolean> {
-  if (!updates || Object.keys(updates).length === 0) return false
-
-  return updateRecord(
-    id,
-    {
-      ...updates,
-      generalized: true,
-      lastGeneralizationCheck: Date.now()
-    },
-    config
-  )
-}
-
 export async function checkGlobalPromotion(
   record: MemoryRecord,
   config: Config
@@ -179,13 +103,13 @@ export async function checkGlobalPromotion(
 
   const response = await client.messages.create({
     model: config.extraction.model,
-    max_tokens: clampModelMaxTokens(
+    max_tokens: computeMaxTokensWithThinkingHeadroom(
       config.extraction.model,
       Math.min(GLOBAL_PROMOTION_MAX_TOKENS, config.extraction.maxTokens)
     ),
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: GLOBAL_PROMOTION_PROMPT }
+      { type: 'text', text: GLOBAL_PROMOTION_PROMPT, cache_control: { type: 'ephemeral' } }
     ],
     messages: [{ role: 'user', content: `Record:\n${payload}` }]
   })
@@ -195,30 +119,6 @@ export async function checkGlobalPromotion(
 
   const rawText = extractResponseText(response.content)
   return parseGlobalPromotionResponse(rawText)
-}
-
-function parseGeneralizationResponse(rawText: string): GeneralizationResult {
-  const parsed = extractJsonObject(rawText)
-  if (!isPlainObject(parsed)) {
-    return { shouldGeneralize: false, reason: 'invalid-json' }
-  }
-
-  const shouldGeneralize = coerceBoolean(parsed.shouldGeneralize)
-  const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : undefined
-
-  if (!shouldGeneralize) {
-    return { shouldGeneralize: false, ...(reason ? { reason } : {}) }
-  }
-
-  if (!isPlainObject(parsed.generalized)) {
-    return { shouldGeneralize: false, reason: reason ? `${reason} (missing generalized)` : 'missing-generalized' }
-  }
-
-  return {
-    shouldGeneralize: true,
-    generalizedRecord: parsed.generalized as Partial<MemoryRecord>,
-    ...(reason ? { reason } : {})
-  }
 }
 
 function parseGlobalPromotionResponse(rawText: string): GlobalPromotionResult {
@@ -368,7 +268,7 @@ async function synthesizeWarning(
     model: config.extraction.model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: WARNING_SYNTHESIS_PROMPT }
+      { type: 'text', text: WARNING_SYNTHESIS_PROMPT, cache_control: { type: 'ephemeral' } }
     ],
     messages: [{ role: 'user', content: `Failure records:\n${payload}` }],
     tools: [WARNING_SYNTHESIS_TOOL],
@@ -581,116 +481,4 @@ export async function runWarningSynthesis(
 function coerceSeverityValue(value: unknown): WarningSeverity | null {
   if (value === 'caution' || value === 'warning' || value === 'critical') return value
   return null
-}
-
-function filterGeneralizationUpdates(
-  record: MemoryRecord,
-  updates: Partial<MemoryRecord>
-): Partial<MemoryRecord> {
-  switch (record.type) {
-    case 'command': {
-      const filtered: Partial<CommandRecord> = {}
-      const candidate = updates as Partial<CommandRecord>
-      const command = maybeUpdateString(record.command, candidate.command)
-      if (command) filtered.command = command
-
-      const resolution = maybeUpdateString(record.resolution, candidate.resolution)
-      if (resolution) filtered.resolution = resolution
-
-      const truncatedOutput = maybeUpdateString(record.truncatedOutput, candidate.truncatedOutput)
-      if (truncatedOutput) filtered.truncatedOutput = truncatedOutput
-
-      return filtered as Partial<MemoryRecord>
-    }
-    case 'error': {
-      const filtered: Partial<ErrorRecord> = {}
-      const candidate = updates as Partial<ErrorRecord>
-      const errorText = maybeUpdateString(record.errorText, candidate.errorText)
-      if (errorText) filtered.errorText = errorText
-
-      const cause = maybeUpdateString(record.cause, candidate.cause)
-      if (cause) filtered.cause = cause
-
-      const resolution = maybeUpdateString(record.resolution, candidate.resolution)
-      if (resolution) filtered.resolution = resolution
-
-      return filtered as Partial<MemoryRecord>
-    }
-    case 'discovery': {
-      const filtered: Partial<DiscoveryRecord> = {}
-      const candidate = updates as Partial<DiscoveryRecord>
-      const what = maybeUpdateString(record.what, candidate.what)
-      if (what) filtered.what = what
-
-      const where = maybeUpdateString(record.where, candidate.where)
-      if (where) filtered.where = where
-
-      const evidence = maybeUpdateString(record.evidence, candidate.evidence)
-      if (evidence) filtered.evidence = evidence
-
-      return filtered as Partial<MemoryRecord>
-    }
-    case 'procedure': {
-      const filtered: Partial<ProcedureRecord> = {}
-      const candidate = updates as Partial<ProcedureRecord>
-      const name = maybeUpdateString(record.name, candidate.name)
-      if (name) filtered.name = name
-
-      const steps = maybeUpdateStringArray(record.steps, candidate.steps)
-      if (steps) filtered.steps = steps
-
-      const prerequisites = maybeUpdateStringArray(record.prerequisites ?? [], candidate.prerequisites)
-      if (prerequisites) filtered.prerequisites = prerequisites
-
-      const verification = maybeUpdateString(record.verification, candidate.verification)
-      if (verification) filtered.verification = verification
-
-      return filtered as Partial<MemoryRecord>
-    }
-    case 'warning': {
-      const filtered: Partial<WarningRecord> = {}
-      const candidate = updates as Partial<WarningRecord>
-      const avoid = maybeUpdateString(record.avoid, candidate.avoid)
-      if (avoid) filtered.avoid = avoid
-
-      const useInstead = maybeUpdateString(record.useInstead, candidate.useInstead)
-      if (useInstead) filtered.useInstead = useInstead
-
-      const reason = maybeUpdateString(record.reason, candidate.reason)
-      if (reason) filtered.reason = reason
-
-      return filtered as Partial<MemoryRecord>
-    }
-  }
-}
-
-function maybeUpdateString(existing: string | undefined, candidate: unknown): string | undefined {
-  if (typeof candidate !== 'string') return undefined
-  const trimmed = candidate.trim()
-  if (!trimmed) return undefined
-  if (existing && trimmed === existing.trim()) return undefined
-  return trimmed
-}
-
-function maybeUpdateStringArray(existing: string[], candidate: unknown): string[] | undefined {
-  if (!Array.isArray(candidate)) return undefined
-  const cleaned = candidate
-    .map(entry => (typeof entry === 'string' ? entry.trim() : ''))
-    .filter(entry => entry.length > 0)
-  if (cleaned.length === 0) return undefined
-
-  const existingCleaned = existing
-    .map(entry => entry.trim())
-    .filter(entry => entry.length > 0)
-  if (areStringArraysEqual(existingCleaned, cleaned)) return undefined
-
-  return cleaned
-}
-
-function areStringArraysEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false
-  }
-  return true
 }

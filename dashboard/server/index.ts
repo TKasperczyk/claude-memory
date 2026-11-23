@@ -18,16 +18,19 @@ import { createSessionsRouter } from './routes/sessions.js'
 import { createSettingsRouter } from './routes/settings.js'
 import { createChatRouter } from './routes/chat.js'
 import { startStatsSnapshotScheduler } from './lib/stats-snapshot-scheduler.js'
+import { validateCollectionHeaderMiddleware } from './utils/config.js'
 
 const logger = createLogger('server')
 const app = express()
-const PORT = process.env.PORT ?? 3001
+const HOST = process.env.HOST ?? '127.0.0.1'
+const PORT = Number(process.env.PORT ?? 3001)
 const context = createServerContext()
 
 startStatsSnapshotScheduler(context.config)
 
 app.use(cors({ origin: ['http://localhost:5000', 'http://127.0.0.1:5000'] }))
-app.use(express.json())
+app.use(express.json({ limit: '5mb' }))
+app.use(validateCollectionHeaderMiddleware)
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -62,8 +65,8 @@ if (process.env.NODE_ENV === 'production') {
   })
 }
 
-app.listen(PORT, () => {
-  logger.info(`Dashboard server running on http://localhost:${PORT}`)
+app.listen(PORT, HOST, () => {
+  logger.info(`Dashboard server running on http://${HOST}:${PORT}`)
   if (process.env.NODE_ENV === 'production') {
     logger.info('Serving frontend from built assets')
   }

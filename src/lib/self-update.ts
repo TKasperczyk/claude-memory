@@ -35,6 +35,8 @@ const logger = createLogger('self-update')
 
 const STATE_HISTORY_LIMIT = 20
 const LOCK_STALE_MS = 15 * 60 * 1000
+const AUTO_FAILURE_BACKOFF_BASE_MS = 15 * 60 * 1000
+const AUTO_FAILURE_BACKOFF_MAX_MS = 24 * 60 * 60 * 1000
 const GIT_TIMEOUT_MS = 60_000
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000
 const COMMAND_MAX_BUFFER_BYTES = 10 * 1024 * 1024
@@ -62,6 +64,7 @@ export type SelfUpdateSkipReason =
   | 'locked'
   | 'disabled'
   | 'interval'
+  | 'failure-backoff'
   | 'rebuild-disabled'
   | 'no-git'
   | 'git-root-mismatch'
@@ -187,10 +190,19 @@ export type RollbackBuildResult = {
   error?: string
 }
 
+type AutoFailureBackoff = {
+  consecutiveFailures: number
+  lastFailureAt: number
+  nextRetryAt: number
+  sourceFingerprint: string
+  installInputsFingerprint: string
+}
+
 type SelfUpdateState = {
   lastFetchAttemptAt?: number
   installedInputsFingerprint?: string
   heldSourceFingerprint?: string
+  autoFailureBackoff?: AutoFailureBackoff
   pendingBuild?: {
     targetCommit: string
     createdAt: number
@@ -284,6 +296,38 @@ export function inspectBuildState(root: string): BuildState {
     sourceFingerprint: sourceState.fingerprint,
     installInputsFingerprint
   }
+}
+
+export function writeBuildStamp(
+  root: string = PROJECT_ROOT,
+  trigger: SelfUpdateTrigger = 'cli',
+  runner: SelfUpdateCommandRunner = executeSelfUpdateCommand
+): BuildStamp {
+  const validatedRoot = validatePackageRoot(root)
+  const missingArtifacts = getMissingDistArtifacts(validatedRoot)
+  if (missingArtifacts.length > 0) {
+    throw new Error(
+      `Cannot write build stamp; dist is missing required artifacts: ${missingArtifacts.join(', ')}`
+    )
+  }
+  const sourceState = inspectSourceState(validatedRoot)
+  if (sourceState.missingInput) {
+    throw new Error('Cannot write build stamp; required source inputs are missing')
+  }
+  const installInputsFingerprint = computeInstallInputsFingerprint(validatedRoot)
+  const stamp: BuildStamp = {
+    commit: getCurrentCommit(validatedRoot, runner) ?? null,
+    builtAt: Date.now(),
+    trigger,
+    node: process.version,
+    sourceFingerprint: sourceState.fingerprint,
+    installInputsFingerprint
+  }
+  writeJsonFile(getBuildStampPath(validatedRoot), stamp, {
+    ensureDir: true,
+    pretty: 2
+  })
+  return stamp
 }
 
 export function rollbackBuild(root: string, dryRun: boolean = false): RollbackBuildResult {
@@ -392,6 +436,22 @@ export function runSelfUpdate(options: SelfUpdateOptions = {}): SelfUpdateResult
     applyBuildState(result, buildState, options.forceRebuild ?? false)
     resolveRollbackHold(result, state, buildState.sourceFingerprint, dryRun)
 
+    if (
+      trigger === 'auto'
+      && !options.forceRebuild
+      && !options.forcePull
+      && !options.rollback
+      && !options.clearHold
+      && isAutoFailureBackoffActive(state.autoFailureBackoff, buildState)
+    ) {
+      result.status = 'skipped'
+      result.pull.status = 'skipped'
+      result.pull.skipReason = 'failure-backoff'
+      result.build.status = 'skipped'
+      result.completedAt = Date.now()
+      return result
+    }
+
     if (options.clearHold) {
       if (state.heldSourceFingerprint) {
         result.hold.active = true
@@ -449,7 +509,7 @@ export function runSelfUpdate(options: SelfUpdateOptions = {}): SelfUpdateResult
 
     if (result.pull.status === 'failed') {
       result.status = 'failed'
-      return finishResult(result, root, state, dryRun)
+      return finishResult(result, root, state, dryRun, buildState)
     }
 
     buildState = inspectBuildState(root)
@@ -458,8 +518,8 @@ export function runSelfUpdate(options: SelfUpdateOptions = {}): SelfUpdateResult
 
     const pulled = result.pull.status === 'pulled'
     const forceRebuild = options.forceRebuild ?? false
-    const dependencyDrift =
-      state.installedInputsFingerprint !== buildState.installInputsFingerprint
+    const dependencyDrift = buildState.stale
+      && state.installedInputsFingerprint !== buildState.installInputsFingerprint
     const pendingBuild = state.pendingBuild
     const holdBlocksBuild = result.hold.active
     const rebuildEnabled = settings.autoRebuildEnabled || forceRebuild || pulled
@@ -472,7 +532,7 @@ export function runSelfUpdate(options: SelfUpdateOptions = {}): SelfUpdateResult
       result.status = 'failed'
       result.build.status = 'failed'
       result.build.error = pendingTargetNotReachedError(pendingBuild.targetCommit)
-      return finishResult(result, root, state, dryRun)
+      return finishResult(result, root, state, dryRun, buildState)
     }
     const shouldBuild = rebuildEnabled
       && !holdBlocksBuild
@@ -500,7 +560,7 @@ export function runSelfUpdate(options: SelfUpdateOptions = {}): SelfUpdateResult
       )
       if (result.dependencies.status === 'failed') {
         result.status = 'failed'
-        return finishResult(result, root, state, dryRun)
+        return finishResult(result, root, state, dryRun, buildState)
       }
     }
 
@@ -517,7 +577,7 @@ export function runSelfUpdate(options: SelfUpdateOptions = {}): SelfUpdateResult
         result.status = 'failed'
         result.build.status = 'failed'
         result.build.error = pendingTargetNotReachedError(pendingBuild.targetCommit)
-        return finishResult(result, root, state, dryRun)
+        return finishResult(result, root, state, dryRun, buildState)
       }
       result.build = buildProject({
         root,
@@ -572,7 +632,7 @@ export function runSelfUpdate(options: SelfUpdateOptions = {}): SelfUpdateResult
     ) {
       result.status = 'failed'
     }
-    return finishResult(result, root, state, dryRun)
+    return finishResult(result, root, state, dryRun, buildState)
   } catch (error) {
     result.status = 'failed'
     result.error = toErrorMessage(error)
@@ -757,6 +817,10 @@ function coerceSelfUpdateState(value: unknown): SelfUpdateState | null {
         createdAt: pendingCreatedAt
       }
     : undefined
+  const backoffCandidate = isPlainObject(value.autoFailureBackoff)
+    ? value.autoFailureBackoff
+    : null
+  const autoFailureBackoff = coerceAutoFailureBackoff(backoffCandidate)
   return {
     ...(lastFetchAttemptAt !== null
       ? { lastFetchAttemptAt }
@@ -767,9 +831,52 @@ function coerceSelfUpdateState(value: unknown): SelfUpdateState | null {
     ...(heldSourceFingerprint
       ? { heldSourceFingerprint }
       : {}),
+    ...(autoFailureBackoff ? { autoFailureBackoff } : {}),
     ...(pendingBuild ? { pendingBuild } : {}),
     history
   }
+}
+
+function coerceAutoFailureBackoff(
+  value: Record<string, unknown> | null
+): AutoFailureBackoff | undefined {
+  if (!value) return undefined
+  const consecutiveFailures = asInteger(value.consecutiveFailures)
+  const lastFailureAt = asInteger(value.lastFailureAt)
+  const nextRetryAt = asInteger(value.nextRetryAt)
+  const sourceFingerprint = asString(value.sourceFingerprint)
+  const installInputsFingerprint = asString(value.installInputsFingerprint)
+  if (
+    consecutiveFailures === null
+    || consecutiveFailures <= 0
+    || lastFailureAt === null
+    || nextRetryAt === null
+    || !sourceFingerprint
+    || !installInputsFingerprint
+  ) {
+    return undefined
+  }
+  return {
+    consecutiveFailures,
+    lastFailureAt,
+    nextRetryAt,
+    sourceFingerprint,
+    installInputsFingerprint
+  }
+}
+
+function isAutoFailureBackoffActive(
+  backoff: AutoFailureBackoff | undefined,
+  buildState: BuildState
+): boolean {
+  if (!backoff) return false
+  if (
+    backoff.sourceFingerprint !== buildState.sourceFingerprint
+    || backoff.installInputsFingerprint !== buildState.installInputsFingerprint
+  ) {
+    return false
+  }
+  return Date.now() < backoff.nextRetryAt
 }
 
 function saveSelfUpdateState(root: string, state: SelfUpdateState): void {
@@ -830,7 +937,8 @@ function finishResult(
   result: SelfUpdateResult,
   root: string,
   state: SelfUpdateState,
-  dryRun: boolean
+  dryRun: boolean,
+  buildState?: BuildState
 ): SelfUpdateResult {
   result.completedAt = Date.now()
   if (result.status === 'failed' && !result.error) {
@@ -844,6 +952,27 @@ function finishResult(
       ?? 'Self-update failed'
   }
   if (!dryRun) {
+    if (result.status === 'completed') {
+      delete state.autoFailureBackoff
+    } else if (result.status === 'failed' && result.trigger === 'auto' && buildState) {
+      const sameInputs = state.autoFailureBackoff !== undefined
+        && state.autoFailureBackoff.sourceFingerprint === buildState.sourceFingerprint
+        && state.autoFailureBackoff.installInputsFingerprint === buildState.installInputsFingerprint
+      const consecutiveFailures = sameInputs
+        ? state.autoFailureBackoff!.consecutiveFailures + 1
+        : 1
+      const backoffMs = Math.min(
+        AUTO_FAILURE_BACKOFF_MAX_MS,
+        AUTO_FAILURE_BACKOFF_BASE_MS * Math.pow(2, consecutiveFailures - 1)
+      )
+      state.autoFailureBackoff = {
+        consecutiveFailures,
+        lastFailureAt: result.completedAt,
+        nextRetryAt: result.completedAt + backoffMs,
+        sourceFingerprint: buildState.sourceFingerprint,
+        installInputsFingerprint: buildState.installInputsFingerprint
+      }
+    }
     state.history = [...state.history, result].slice(-STATE_HISTORY_LIMIT)
     try {
       saveSelfUpdateState(root, state)
@@ -1298,7 +1427,10 @@ function ensureDependencies(
   const install = runner('pnpm', ['install', '--frozen-lockfile'], {
     cwd: root,
     timeoutMs: COMMAND_TIMEOUT_MS,
-    env: process.env
+    env: {
+      ...process.env,
+      CI: 'true'
+    }
   })
   if (!install.ok) {
     return { status: 'failed', error: formatCommandFailure(install) }

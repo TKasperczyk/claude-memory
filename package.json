@@ -9,6 +9,7 @@
   "scripts": {
     "prebuild": "tsx -e \"import fs from 'node:fs'; import { getBuildStampPath } from './src/lib/runtime-artifacts.ts'; fs.rmSync(getBuildStampPath(process.cwd()), { force: true })\"",
     "build": "tsc && pnpm run -C dashboard build",
+    "postbuild": "tsx -e \"import { writeBuildStamp } from './src/lib/self-update.ts'; writeBuildStamp(process.cwd(), 'cli')\"",
     "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/",
     "dashboard": "pnpm run -C dashboard start",

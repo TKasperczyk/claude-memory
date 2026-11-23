@@ -166,15 +166,30 @@ export function acquireFileLock(lockPath: string, options: FileLockOptions): Fil
 
   const release = (): void => {
     if (fd === null) return
+    const currentFd = fd
+    fd = null
+
+    let ownsLock = false
     try {
-      fs.closeSync(fd)
+      const fdStat = fs.fstatSync(currentFd)
+      const pathStat = fs.lstatSync(lockPath)
+      ownsLock = fdStat.dev === pathStat.dev && fdStat.ino === pathStat.ino
+    } catch {
+      ownsLock = false
+    }
+
+    if (ownsLock) {
+      try {
+        fs.unlinkSync(lockPath)
+      } catch {
+        // Ignore unlink errors
+      }
+    }
+
+    try {
+      fs.closeSync(currentFd)
     } catch {
       // Ignore close errors
-    }
-    try {
-      fs.unlinkSync(lockPath)
-    } catch {
-      // Ignore unlink errors
     }
   }
 

@@ -1,9 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import express from 'express'
 import request from 'supertest'
+import nodeFs from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
+
+const testStorageRoot = await vi.hoisted(async () => {
+  const [fsMod, osMod, pathMod] = await Promise.all([import('fs'), import('os'), import('path')])
+  return fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'claude-memory-dashboard-routes-test-'))
+})
+
+vi.mock('../src/lib/paths.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/lib/paths.js')>('../src/lib/paths.js')
+  return {
+    ...actual,
+    CLAUDE_MEMORY_ROOT: testStorageRoot,
+    DEBUG_LOG_FILE: path.join(testStorageRoot, 'debug.log'),
+    LOCKS_DIR: path.join(testStorageRoot, 'locks'),
+    SELF_UPDATE_STATE_PATH: path.join(testStorageRoot, 'self-update-state.json'),
+    SELF_UPDATE_LOCK_PATH: path.join(testStorageRoot, 'locks', 'self-update.lock')
+  }
+})
 import { DEFAULT_CONFIG, EMBEDDING_DIM } from '../src/lib/types.js'
 import { embed } from '../src/lib/embed.js'
 import { searchRankedCandidates } from '../src/lib/ranked-search.js'
@@ -198,6 +216,7 @@ vi.mock('../src/lib/maintenance-api.js', () => ({
     { key: 'promotion-suggestions', label: 'Promotion Suggestions', allowExecute: false },
     { key: 'cleanup', label: 'Cleanup', allowExecute: true }
   ],
+  compactTableSafely: vi.fn(async () => {}),
   runAllMaintenance: vi.fn(),
   runMaintenanceOperation: vi.fn()
 }))
@@ -1644,8 +1663,8 @@ describe('maintenance routes', () => {
       const mismatch = await request(app).post('/api/maintenance/suggestions/apply').send({
         recordId: 'rec-1',
         action: 'new',
-        targetFile: 'note.txt',
-        diff: buildNewFileDiff('other.txt', ['hello'])
+        targetFile: 'note.md',
+        diff: buildNewFileDiff('other.md', ['hello'])
       })
       expect(mismatch.status).toBe(400)
       expect(mismatch.body).toEqual({ error: 'Diff target does not match targetFile' })
@@ -1653,11 +1672,29 @@ describe('maintenance routes', () => {
       const traversal = await request(app).post('/api/maintenance/suggestions/apply').send({
         recordId: 'rec-1',
         action: 'new',
-        targetFile: '../hack.txt',
-        diff: buildNewFileDiff('../hack.txt', ['hello'])
+        targetFile: '../hack.md',
+        diff: buildNewFileDiff('../hack.md', ['hello'])
       })
       expect(traversal.status).toBe(400)
       expect(traversal.body).toEqual({ error: 'Invalid targetFile path' })
+
+      const nonMarkdown = await request(app).post('/api/maintenance/suggestions/apply').send({
+        recordId: 'rec-1',
+        action: 'new',
+        targetFile: 'package.json',
+        diff: buildNewFileDiff('package.json', ['{}'])
+      })
+      expect(nonMarkdown.status).toBe(400)
+      expect(nonMarkdown.body.error).toContain('markdown (.md)')
+
+      const forbiddenDir = await request(app).post('/api/maintenance/suggestions/apply').send({
+        recordId: 'rec-1',
+        action: 'new',
+        targetFile: 'src/hack.md',
+        diff: buildNewFileDiff('src/hack.md', ['# nope'])
+      })
+      expect(forbiddenDir.status).toBe(400)
+      expect(forbiddenDir.body.error).toContain('markdown (.md)')
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true })
     }
@@ -1671,7 +1708,7 @@ describe('maintenance routes', () => {
         suggestionAllowedRoots: [tempRoot]
       })
 
-      const newTarget = 'notes/new.txt'
+      const newTarget = 'notes/new.md'
       const newDiff = buildNewFileDiff(newTarget, ['line one', 'line two'])
       const createRes = await request(app).post('/api/maintenance/suggestions/apply').send({
         recordId: 'rec-1',
@@ -1685,7 +1722,7 @@ describe('maintenance routes', () => {
       const createdContent = await fs.readFile(path.join(tempRoot, newTarget), 'utf-8')
       expect(createdContent).toBe('line one\nline two\n')
 
-      const existingTarget = 'existing.txt'
+      const existingTarget = 'existing.md'
       await fs.writeFile(path.join(tempRoot, existingTarget), 'base\n', 'utf-8')
       const editDiff = buildEditDiff(existingTarget, ['base'], ['appended'])
       const editRes = await request(app).post('/api/maintenance/suggestions/apply').send({
@@ -1711,7 +1748,7 @@ describe('maintenance routes', () => {
         suggestionAllowedRoots: [tempRoot]
       })
 
-      const target = 'exists.txt'
+      const target = 'exists.md'
       await fs.writeFile(path.join(tempRoot, target), 'base\n', 'utf-8')
       const diff = buildNewFileDiff(target, ['line'])
       const res = await request(app).post('/api/maintenance/suggestions/apply').send({
@@ -1737,9 +1774,9 @@ describe('maintenance routes', () => {
       })
 
       const invalidDiff = [
-        'diff --git a/file.txt b/file.txt',
-        '--- a/file.txt',
-        '+++ b/file.txt',
+        'diff --git a/file.md b/file.md',
+        '--- a/file.md',
+        '+++ b/file.md',
         '@@ -1,1 +1,1 @@',
         ' unchanged line'
       ].join('\n')
@@ -1747,7 +1784,7 @@ describe('maintenance routes', () => {
       const res = await request(app).post('/api/maintenance/suggestions/apply').send({
         recordId: 'rec-1',
         action: 'edit',
-        targetFile: 'file.txt',
+        targetFile: 'file.md',
         diff: invalidDiff
       })
 
@@ -1766,7 +1803,7 @@ describe('maintenance routes', () => {
         suggestionAllowedRoots: [tempRoot]
       })
 
-      const target = 'stale.txt'
+      const target = 'stale.md'
       await fs.writeFile(path.join(tempRoot, target), 'current line\n', 'utf-8')
       const staleDiff = [
         `diff --git a/${target} b/${target}`,
@@ -1792,4 +1829,49 @@ describe('maintenance routes', () => {
       await fs.rm(tempRoot, { recursive: true, force: true })
     }
   })
+
+  it('rejects invalid X-LanceDB-Table headers across dashboard routes', async () => {
+    const { app } = buildApp()
+    for (const badTable of ['.', '..', '../evil', 'a/b', 'table name']) {
+      const res = await request(app)
+        .post('/api/reset-collection')
+        .set('X-LanceDB-Table', badTable)
+      expect(res.status).toBe(400)
+    }
+    expect(mockedResetCollection).not.toHaveBeenCalled()
+  })
+
+  it('restores deprecated memories via POST /api/memories/:id/restore', async () => {
+    const { app } = buildApp()
+    mockedGetRecord
+      .mockResolvedValueOnce({
+        id: 'dep-1',
+        type: 'discovery',
+        what: 'fact',
+        where: 'src/a.ts',
+        evidence: 'ev',
+        confidence: 'verified',
+        deprecated: true
+      } as never)
+      .mockResolvedValueOnce({
+        id: 'dep-1',
+        type: 'discovery',
+        what: 'fact',
+        where: 'src/a.ts',
+        evidence: 'ev',
+        confidence: 'verified',
+        deprecated: false
+      } as never)
+    mockedUpdateRecord.mockResolvedValueOnce(true)
+
+    const res = await request(app).post('/api/memories/dep-1/restore')
+    expect(res.status).toBe(200)
+    expect(mockedUpdateRecord).toHaveBeenCalledWith('dep-1', { deprecated: false }, expect.anything())
+    expect(res.body.success).toBe(true)
+    expect(res.body.record.deprecated).toBe(false)
+  })
+})
+
+afterAll(() => {
+  nodeFs.rmSync(testStorageRoot, { recursive: true, force: true })
 })

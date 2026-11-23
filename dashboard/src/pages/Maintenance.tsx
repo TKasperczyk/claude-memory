@@ -314,9 +314,9 @@ export default function Maintenance() {
             </Button>
           </div>
         </div>
-        {bulkProgress && (
+        {bulkProgress && Object.keys(bulkProgress).length > 0 && (
           <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
-            {operations.map(op => {
+            {operations.filter(op => op.key in bulkProgress).map(op => {
               const status = bulkProgress[op.key]
               const result = results[op.key]
               return (

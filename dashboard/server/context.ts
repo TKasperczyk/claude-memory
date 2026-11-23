@@ -3,6 +3,7 @@ import { homedir } from 'os'
 import { findGitRoot } from '../../src/lib/context.js'
 import { loadConfig } from '../../src/lib/config.js'
 import {
+  canonicalizePath,
   CLAUDE_CONFIG_PATH,
   CLAUDE_SETTINGS_PATH,
   PROJECT_ROOT
@@ -14,6 +15,7 @@ export type ServerContext = {
   configRoot: string
   installationRoot: string
   config: Config
+  getConfig?: () => Config
   memoryTypes: RecordType[]
   suggestionAllowedRoots: string[]
   claudeSettingsPath: string
@@ -21,8 +23,8 @@ export type ServerContext = {
 }
 
 export function createServerContext(): ServerContext {
-  const configRoot = findGitRoot(process.cwd()) ?? process.cwd()
-  const config = loadConfig(configRoot)
+  const configRoot = canonicalizePath(findGitRoot(process.cwd()) ?? process.cwd())
+  const getConfig = (): Config => loadConfig(configRoot)
   const memoryTypes: RecordType[] = ['command', 'error', 'discovery', 'procedure', 'warning']
   const suggestionAllowedRoots = [
     path.resolve(configRoot),
@@ -31,7 +33,10 @@ export function createServerContext(): ServerContext {
   return {
     configRoot,
     installationRoot: PROJECT_ROOT,
-    config,
+    get config(): Config {
+      return getConfig()
+    },
+    getConfig,
     memoryTypes,
     suggestionAllowedRoots,
     claudeSettingsPath: CLAUDE_SETTINGS_PATH,

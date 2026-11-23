@@ -9,6 +9,8 @@ import {
 } from '../../../src/lib/lancedb.js'
 import { markDeprecated } from '../../../src/lib/maintenance/operations.js'
 import { paginateExtractionRuns, loadExtractionRunDetail } from '../../../src/lib/extraction-query.js'
+import { canonicalizePath } from '../../../src/lib/paths.js'
+import { sanitizeRecordUpdates } from '../../../src/lib/record-updates.js'
 import {
   asBoolean,
   asConfidence,
@@ -130,8 +132,10 @@ const UPDATE_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
     truncatedOutput: { type: 'string', description: 'Truncated command output (command records).' },
     errorText: { type: 'string', description: 'Error text (error records).' },
     errorType: { type: 'string', description: 'Error type/category (error records).' },
+    cause: { type: 'string', description: 'Root cause of the error (error records).' },
     what: { type: 'string', description: 'Discovery summary (discovery records).' },
     where: { type: 'string', description: 'Discovery context/location (discovery records).' },
+    evidence: { type: 'string', description: 'Supporting evidence (discovery records).' },
     confidence: {
       type: 'string',
       enum: ['verified', 'inferred', 'tentative'],
@@ -144,6 +148,12 @@ const UPDATE_TOOL_SCHEMA: Anthropic.Tool['input_schema'] = {
       minItems: 1,
       description: 'Procedure steps (procedure records).'
     },
+    prerequisites: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Prerequisites for the procedure (procedure records).'
+    },
+    verification: { type: 'string', description: 'How to verify the procedure succeeded (procedure records).' },
     avoid: { type: 'string', description: 'Warning avoid text (warning records).' },
     useInstead: { type: 'string', description: 'Warning alternative (warning records).' },
     reason: { type: 'string', description: 'Warning rationale (warning records).' },
@@ -362,7 +372,8 @@ async function runSearchTool(
   const offset = parseOffset(record.offset)
   const minSimilarity = parseMinSimilarity(record.min_similarity)
   const type = asRecordType(record.type) as RecordType | undefined
-  const project = asTrimmedString(record.project) ?? context.project
+  const rawProject = asTrimmedString(record.project) ?? context.project
+  const project = rawProject ? canonicalizePath(rawProject) : undefined
   const excludeDeprecated = asBoolean(record.exclude_deprecated) ?? true
   const searchLimit = clampNumber(limit + offset, 1, MAX_SEARCH_LIMIT)
 
@@ -404,7 +415,8 @@ async function runCreateTool(
   }
 
   const id = randomUUID()
-  const project = asTrimmedString(raw.project) ?? context.project ?? ''
+  const rawProject = asTrimmedString(raw.project) ?? context.project ?? ''
+  const project = rawProject ? canonicalizePath(rawProject) : ''
   const scope = asScope(raw.scope) ?? (project ? 'project' : 'global')
   const base = { id, type, scope, project, timestamp: Date.now() }
 
@@ -419,16 +431,16 @@ async function runCreateTool(
       if (exitCode === null) return { result: { error: 'exitCode is required for command records.' }, isError: true }
       if (!outcome) return { result: { error: 'outcome is required for command records (success/failure/partial).' }, isError: true }
       if (!intent) return { result: { error: 'intent is required for command records.' }, isError: true }
+      const resolution = asTrimmedString(raw.resolution)
+      const truncatedOutput = asTrimmedString(raw.truncatedOutput)
       record = {
         ...base, type: 'command', command,
         exitCode: Math.trunc(exitCode),
         outcome,
         context: { project, cwd: project, intent },
+        ...(resolution ? { resolution } : {}),
+        ...(truncatedOutput ? { truncatedOutput } : {}),
       } as MemoryRecord
-      const resolution = asTrimmedString(raw.resolution)
-      if (resolution) record.resolution = resolution
-      const truncatedOutput = asTrimmedString(raw.truncatedOutput)
-      if (truncatedOutput) record.truncatedOutput = truncatedOutput
       break
     }
     case 'error': {
@@ -438,12 +450,12 @@ async function runCreateTool(
       if (!errorText) return { result: { error: 'errorText is required for error records.' }, isError: true }
       if (!errorType) return { result: { error: 'errorType is required for error records.' }, isError: true }
       if (!resolution) return { result: { error: 'resolution is required for error records.' }, isError: true }
+      const cause = asTrimmedString(raw.cause)
       record = {
         ...base, type: 'error', errorText, errorType, resolution,
         context: { project },
+        ...(cause ? { cause } : {}),
       } as MemoryRecord
-      const cause = asTrimmedString(raw.cause)
-      if (cause) record.cause = cause
       break
     }
     case 'discovery': {
@@ -465,14 +477,14 @@ async function runCreateTool(
       const steps = parseSteps(raw.steps)
       if (!name) return { result: { error: 'name is required for procedure records.' }, isError: true }
       if (!steps) return { result: { error: 'steps array is required for procedure records.' }, isError: true }
+      const prerequisites = asStringArray(raw.prerequisites, { trim: true, filterEmpty: true })
+      const verification = asTrimmedString(raw.verification)
       record = {
         ...base, type: 'procedure', name, steps,
         context: { ...(project ? { project } : {}) },
+        ...(prerequisites.length > 0 ? { prerequisites } : {}),
+        ...(verification ? { verification } : {}),
       } as MemoryRecord
-      const prerequisites = asStringArray(raw.prerequisites, { trim: true, filterEmpty: true })
-      if (prerequisites.length > 0) record.prerequisites = prerequisites
-      const verification = asTrimmedString(raw.verification)
-      if (verification) record.verification = verification
       break
     }
     case 'warning': {
@@ -512,66 +524,29 @@ async function runUpdateTool(
     return { result: { error: 'id is required for update_memory.' }, isError: true }
   }
 
-  const updates: Partial<MemoryRecord> = {}
-  const deprecated = asBoolean(record.deprecated)
+  const existing = await getRecord(id, context.config)
+  if (!existing) {
+    return {
+      result: { id, success: false, updates: {}, record: null, error: 'Memory not found.' },
+      isError: true
+    }
+  }
+
+  const { id: _ignoredId, deprecated: rawDeprecated, ...restFields } = record
+  const deprecated = asBoolean(rawDeprecated)
   const shouldDeprecate = deprecated === true
-  if (deprecated === false) updates.deprecated = false
 
-  const scope = asScope(record.scope)
-  if (scope) updates.scope = scope
-
-  const command = asTrimmedString(record.command)
-  if (command) updates.command = command
-
-  const exitCode = asNumber(record.exitCode)
-  if (exitCode !== null) updates.exitCode = Math.trunc(exitCode)
-
-  const outcome = asOutcome(record.outcome)
-  if (outcome) updates.outcome = outcome
-
-  const resolution = asTrimmedString(record.resolution)
-  if (resolution) updates.resolution = resolution
-
-  const truncatedOutput = asTrimmedString(record.truncatedOutput)
-  if (truncatedOutput) updates.truncatedOutput = truncatedOutput
-
-  const errorText = asTrimmedString(record.errorText)
-  if (errorText) updates.errorText = errorText
-
-  const errorType = asTrimmedString(record.errorType)
-  if (errorType) updates.errorType = errorType
-
-  const what = asTrimmedString(record.what)
-  if (what) updates.what = what
-
-  const where = asTrimmedString(record.where)
-  if (where) updates.where = where
-
-  const confidence = asConfidence(record.confidence)
-  if (confidence) updates.confidence = confidence
-
-  const name = asTrimmedString(record.name)
-  if (name) updates.name = name
-
-  const steps = parseSteps(record.steps)
-  if (steps) updates.steps = steps
-
-  const avoid = asTrimmedString(record.avoid)
-  if (avoid) updates.avoid = avoid
-
-  const useInstead = asTrimmedString(record.useInstead)
-  if (useInstead) updates.useInstead = useInstead
-
-  const reason = asTrimmedString(record.reason)
-  if (reason) updates.reason = reason
-
-  const severity = asSeverity(record.severity)
-  if (severity) updates.severity = severity
+  const { updates, rejectedFields } = sanitizeRecordUpdates(existing, restFields)
+  if (deprecated === false) {
+    updates.deprecated = false
+  }
 
   if (Object.keys(updates).length === 0 && !shouldDeprecate) {
-    const ignoredFields = Object.keys(record).filter(key => key !== 'id')
+    const ignoredFields = rejectedFields.length > 0
+      ? rejectedFields
+      : Object.keys(record).filter(key => key !== 'id')
     const error = ignoredFields.length > 0
-      ? `No valid updates parsed from provided fields: ${ignoredFields.join(', ')}. Check field types against the tool schema.`
+      ? `No valid updates parsed for ${existing.type} record from provided fields: ${ignoredFields.join(', ')}. Check field names and types for this record type.`
       : 'No updates provided.'
     return { result: { id, success: false, updates, error }, isError: true }
   }

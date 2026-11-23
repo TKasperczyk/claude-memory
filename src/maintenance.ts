@@ -1,9 +1,8 @@
 #!/usr/bin/env -S npx tsx
 
-import path from 'path'
-import { fileURLToPath } from 'url'
 import { loadConfig } from './lib/config.js'
 import { initLanceDB } from './lib/lancedb.js'
+import { isProcessEntrypoint } from './lib/shared.js'
 import { resolveMaintenanceSettings } from './lib/settings.js'
 import {
   AUTO_MAINTENANCE_OPERATIONS,
@@ -86,9 +85,7 @@ function formatSummary(summary: Record<string, number>): string {
     .join(' ')
 }
 
-const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : ''
-const isMainModule = fileURLToPath(import.meta.url) === entryPath
-if (isMainModule) {
+if (isProcessEntrypoint(import.meta.url)) {
   main()
     .then(() => {
       process.exitCode = 0

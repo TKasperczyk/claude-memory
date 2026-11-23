@@ -57,6 +57,7 @@ export async function buildLanceRow(record: MemoryRecord, config: Config): Promi
     last_generalization_check: toInt64(normalized.lastGeneralizationCheck, 0),
     last_global_check: toInt64(normalized.lastGlobalCheck, 0),
     last_consolidation_check: toInt64(normalized.lastConsolidationCheck, 0),
+    last_cross_type_consolidation_check: toInt64(normalized.lastCrossTypeConsolidationCheck, 0),
     last_conflict_check: toInt64(normalized.lastConflictCheck, 0),
     last_currentness_check: toInt64(normalized.lastCurrentnessCheck, 0),
     last_warning_synthesis_check: toInt64(normalized.lastWarningSynthesisCheck, 0),
@@ -130,6 +131,10 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
       (row.last_consolidation_check as number | string | undefined) ?? parsed.lastConsolidationCheck,
       0
     ),
+    lastCrossTypeConsolidationCheck: toInt64(
+      (row.last_cross_type_consolidation_check as number | string | undefined) ?? parsed.lastCrossTypeConsolidationCheck,
+      0
+    ),
     lastConflictCheck: toInt64(
       (row.last_conflict_check as number | string | undefined) ?? parsed.lastConflictCheck,
       0
@@ -189,15 +194,33 @@ export function parseRecordFromRow(row: Record<string, unknown>): MemoryRecord |
 }
 
 export function mergeRecords(existing: MemoryRecord, updates: Partial<MemoryRecord>): MemoryRecord {
-  const merged = { ...existing, ...updates } as MemoryRecord
+  const safeUpdates = { ...updates } as Record<string, unknown>
+  if ('context' in safeUpdates && !isPlainObject(safeUpdates.context)) {
+    delete safeUpdates.context
+  }
+
+  const merged = { ...existing, ...safeUpdates } as MemoryRecord
 
   // Only merge context for types that have it (command, error, procedure - not discovery or warning)
-  if (existing.type !== 'discovery' && existing.type !== 'warning' && 'context' in updates && updates.context) {
+  if (
+    existing.type !== 'discovery'
+    && existing.type !== 'warning'
+    && 'context' in safeUpdates
+    && isPlainObject(safeUpdates.context)
+  ) {
     const mergedWithContext = merged as Exclude<MemoryRecord, { type: 'discovery' } | { type: 'warning' }>
     mergedWithContext.context = {
-      ...existing.context,
-      ...(updates.context as typeof existing.context)
-    }
+      ...(isPlainObject(existing.context) ? existing.context : {}),
+      ...(safeUpdates.context as typeof existing.context)
+    } as typeof existing.context
+  }
+
+  // Restoring a deprecated record clears stale deprecation provenance so any
+  // future deprecation records fresh metadata.
+  if (updates.deprecated === false) {
+    delete merged.deprecatedAt
+    delete merged.deprecatedReason
+    delete merged.supersedingRecordId
   }
 
   return merged
@@ -232,6 +255,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
   const lastGeneralizationCheck = toInt64(record.lastGeneralizationCheck, 0)
   const lastGlobalCheck = toInt64(record.lastGlobalCheck, 0)
   const lastConsolidationCheck = toInt64(record.lastConsolidationCheck, 0)
+  const lastCrossTypeConsolidationCheck = toInt64(record.lastCrossTypeConsolidationCheck, 0)
   const lastConflictCheck = toInt64(record.lastConflictCheck, 0)
   const lastCurrentnessCheck = toInt64(record.lastCurrentnessCheck, 0)
   const lastWarningSynthesisCheck = toInt64(record.lastWarningSynthesisCheck, 0)
@@ -256,6 +280,7 @@ function normalizeRecord(record: MemoryRecord): MemoryRecord {
     lastGeneralizationCheck,
     lastGlobalCheck,
     lastConsolidationCheck,
+    lastCrossTypeConsolidationCheck,
     lastConflictCheck,
     lastCurrentnessCheck,
     lastWarningSynthesisCheck,

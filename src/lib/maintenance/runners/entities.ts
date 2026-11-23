@@ -1,5 +1,5 @@
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from '../../types.js'
-import { batchUpdateRecords, iterateRecords } from '../../lancedb.js'
+import { batchUpdateRecords, fetchRecordsByIds, iterateRecords } from '../../lancedb.js'
 import { serializeRecord } from '../../lancedb-records.js'
 import { createLogger } from '../../logger.js'
 import { computeEntityIdf } from '../../entities.js'
@@ -54,10 +54,13 @@ export async function runEntityOverlapDiscovery(
   try {
     // Full JS scan (established pattern — see relations.ts cleanup pass):
     // entities live inside the content JSON, so no SQL-side filtering exists.
+    // Embeddings are omitted during scanning and hydrated only for records that actually change.
     const recordsById = new Map<string, MemoryRecord>()
-    for await (const record of iterateRecords({ filter: 'deprecated = false', includeEmbeddings: true }, config)) {
+    const initialRelationsById = new Map<string, string>()
+    for await (const record of iterateRecords({ filter: 'deprecated = false', includeEmbeddings: false }, config)) {
       scanned += 1
       recordsById.set(record.id, record)
+      initialRelationsById.set(record.id, JSON.stringify(normalizeRelations(record.relations)))
       if (record.entities && record.entities.length > 0) withEntities += 1
     }
 
@@ -117,23 +120,43 @@ export async function runEntityOverlapDiscovery(
       }))
     }
 
-    for (const record of pendingWrites.values()) {
-      const capped = capSharesEntityRelations(record, maxRelationsPerRecord)
-      if (capped) changedRecordIds.add(record.id)
+    for (const [id, record] of Array.from(pendingWrites.entries())) {
+      capSharesEntityRelations(record, maxRelationsPerRecord)
       if (serializeRecord(record).length > CONTENT_SIZE_MARGIN) {
         // Weakest-first trim keeps the record under the content ceiling.
         trimSharesEntityRelations(record, CONTENT_SIZE_MARGIN)
       }
+      if (JSON.stringify(normalizeRelations(record.relations)) === initialRelationsById.get(id)) {
+        pendingWrites.delete(id)
+        changedRecordIds.delete(id)
+      } else {
+        changedRecordIds.add(id)
+      }
     }
 
     if (!dryRun && pendingWrites.size > 0) {
-      const records = Array.from(pendingWrites.values())
-      const result = await batchUpdateRecords(records, {}, config)
-      if (result.failed > 0) {
-        errors += result.failed
-        logger.warn(`Failed to persist ${result.failed} entity-edge records`)
+      const hydrated = await fetchRecordsByIds(Array.from(pendingWrites.keys()), config, { includeEmbeddings: true })
+      const hydratedById = new Map(hydrated.map(record => [record.id, record]))
+      const toPersist: MemoryRecord[] = []
+      for (const [id, pending] of pendingWrites) {
+        const fresh = hydratedById.get(id)
+        if (!fresh) {
+          errors += 1
+          logger.warn(`Entity overlap discovery could not hydrate record ${id} for update`)
+          continue
+        }
+        fresh.relations = pending.relations
+        toPersist.push(fresh)
       }
-      updated = result.updated
+
+      if (toPersist.length > 0) {
+        const result = await batchUpdateRecords(toPersist, {}, config)
+        if (result.failed > 0) {
+          errors += result.failed
+          logger.warn(`Failed to persist ${result.failed} entity-edge records`)
+        }
+        updated = result.updated
+      }
     } else {
       updated = changedRecordIds.size
     }

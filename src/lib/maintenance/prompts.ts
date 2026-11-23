@@ -2,7 +2,6 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { createAnthropicClient } from '../anthropic.js'
 import type { MemoryRecord } from '../types.js'
 
-export const GENERALIZATION_MAX_TOKENS = 1500
 export const CONFLICT_ADJUDICATION_MAX_TOKENS = 1200
 export const CONFLICT_ADJUDICATION_TOOL_NAME = 'emit_conflict_verdict'
 export const CURRENTNESS_MAX_TOKENS = 2500
@@ -12,26 +11,6 @@ export const WARNING_SYNTHESIS_MAX_TOKENS = 1500
 export const WARNING_SYNTHESIS_TOOL_NAME = 'emit_warning'
 export const CONSOLIDATION_VERIFICATION_MAX_TOKENS = 2500
 export const CONSOLIDATION_VERIFICATION_TOOL_NAME = 'emit_consolidation_verification'
-
-export const GENERALIZATION_PROMPT = `Evaluate this memory record for reusability across different contexts.
-
-A memory is too specific if it contains details that are:
-- Tied to a particular instance/session that won't exist later
-- Specific identifiers that change between runs
-- User/machine-specific paths or configurations
-- Timestamps or dates that make the memory time-bound
-
-If the memory is too specific, provide a generalized version that:
-- Preserves the useful pattern or knowledge
-- Removes or abstracts away ephemeral details
-- Remains accurate and helpful
-
-Return JSON:
-{
-  "shouldGeneralize": boolean,
-  "reason": "why it needs generalization (or why it's fine)",
-  "generalized": { /* only if shouldGeneralize, partial record with updated fields */ }
-}`
 
 export const CONFLICT_ADJUDICATION_PROMPT = `You adjudicate conflicts between a newly extracted memory and an existing memory.
 
@@ -271,14 +250,18 @@ export const CURRENTNESS_TOOL: Anthropic.Tool = {
   }
 }
 
+const CLIENT_CACHE_TTL_MS = 5 * 60 * 1000
 let cachedAnthropicClient: Awaited<ReturnType<typeof createAnthropicClient>> | undefined
+let cachedAnthropicClientAt = 0
 
 export async function getAnthropicClient(): Promise<Awaited<ReturnType<typeof createAnthropicClient>>> {
-  if (cachedAnthropicClient !== undefined) {
+  const now = Date.now()
+  if (cachedAnthropicClient !== undefined && now - cachedAnthropicClientAt < CLIENT_CACHE_TTL_MS) {
     return cachedAnthropicClient
   }
 
   cachedAnthropicClient = await createAnthropicClient()
+  cachedAnthropicClientAt = now
   return cachedAnthropicClient
 }
 
@@ -360,22 +343,44 @@ export function coerceBoolean(value: unknown): boolean {
 }
 
 export function extractJsonObject(rawText: string): unknown {
-  const start = rawText.indexOf('{')
-  if (start === -1) return null
+  let searchFrom = 0
+  while (searchFrom < rawText.length) {
+    const start = rawText.indexOf('{', searchFrom)
+    if (start === -1) return null
 
-  let depth = 0
-  for (let i = start; i < rawText.length; i += 1) {
-    const char = rawText[i]
-    if (char === '{') depth += 1
-    if (char === '}') depth -= 1
-    if (depth === 0) {
-      const candidate = rawText.slice(start, i + 1)
-      try {
-        return JSON.parse(candidate) as unknown
-      } catch {
-        break
+    let depth = 0
+    let inString = false
+    let escaped = false
+    for (let i = start; i < rawText.length; i += 1) {
+      const char = rawText[i]
+      if (inString) {
+        if (escaped) {
+          escaped = false
+        } else if (char === '\\') {
+          escaped = true
+        } else if (char === '"') {
+          inString = false
+        }
+        continue
+      }
+
+      if (char === '"') {
+        inString = true
+        continue
+      }
+      if (char === '{') depth += 1
+      if (char === '}') depth -= 1
+      if (depth === 0) {
+        const candidate = rawText.slice(start, i + 1)
+        try {
+          return JSON.parse(candidate) as unknown
+        } catch {
+          break
+        }
       }
     }
+
+    searchFrom = start + 1
   }
 
   return null

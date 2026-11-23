@@ -1,11 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { homedir, platform, userInfo } from 'os'
-import { join } from 'path'
+import { basename, dirname, join } from 'path'
+import { acquireFileLock } from './lock.js'
+import { LOCKS_DIR } from './paths.js'
 
 // OAuth subscription auth constants (aligned with OpenCode auth plugin)
-const OAUTH_BETAS = 'oauth-2025-04-20,interleaved-thinking-2025-05-14'
 const OAUTH_BETAS_WITH_CLAUDE_CODE = 'oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14'
 const OAUTH_USER_AGENT = 'claude-cli/2.1.330 (external, cli)'
 // This MUST be sent as the first system message for OAuth to work
@@ -97,7 +98,7 @@ function transformSseEvent(event: string): string {
  * 3. Transforms tool names back in responses
  */
 function createOAuthFetch(): typeof fetch {
-  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  return async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> => {
     let requestUrl: URL
     if (typeof input === 'string') {
       requestUrl = new URL(input)
@@ -140,6 +141,32 @@ function createOAuthFetch(): typeof fetch {
           }
         }
 
+        // Transform tool_use block names in multi-turn conversation messages
+        if (Array.isArray(parsed.messages)) {
+          parsed.messages = (parsed.messages as Array<{ role?: string; content?: unknown }>).map(message => {
+            if (!message || !Array.isArray(message.content)) return message
+            let messageModified = false
+            const nextContent = message.content.map(block => {
+              if (
+                block
+                && typeof block === 'object'
+                && (block as { type?: unknown }).type === 'tool_use'
+                && typeof (block as { name?: unknown }).name === 'string'
+              ) {
+                const originalName = (block as { name: string }).name
+                const transformed = transformToolNameForOAuth(originalName)
+                if (transformed !== originalName) {
+                  messageModified = true
+                  modified = true
+                  return { ...(block as Record<string, unknown>), name: transformed }
+                }
+              }
+              return block
+            })
+            return messageModified ? { ...message, content: nextContent } : message
+          })
+        }
+
         if (modified) {
           modifiedInit = { ...init, body: JSON.stringify(parsed) }
         }
@@ -153,8 +180,8 @@ function createOAuthFetch(): typeof fetch {
     // Transform tool names back in response
     const contentType = response.headers.get('content-type') || ''
     if (contentType.includes('application/json') && !contentType.includes('stream')) {
+      const text = await response.text()
       try {
-        const text = await response.text()
         const parsed = JSON.parse(text) as Record<string, unknown>
         let modified = false
 
@@ -177,7 +204,12 @@ function createOAuthFetch(): typeof fetch {
           headers: response.headers
         })
       } catch {
-        // Parse error, return original
+        // Return a fresh Response with the buffered text instead of the already-drained original
+        return new Response(text, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers
+        })
       }
     }
 
@@ -208,6 +240,9 @@ function createOAuthFetch(): typeof fetch {
             const transformed = events.map(transformSseEvent).join('\n\n') + '\n\n'
             controller.enqueue(encoder.encode(transformed))
           }
+        },
+        async cancel(reason) {
+          await reader.cancel(reason)
         }
       })
 
@@ -314,15 +349,26 @@ function saveKeychainCredentials(creds: OAuthCredentials): void {
 }
 
 function saveFileCredentials(creds: OAuthCredentials): void {
+  const credPath = join(homedir(), '.claude', '.credentials.json')
+  const tmpPath = join(
+    dirname(credPath),
+    `.${basename(credPath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+  )
   try {
-    const path = join(homedir(), '.claude', '.credentials.json')
+    mkdirSync(dirname(credPath), { recursive: true })
     let existing: ClaudeCodeCredentials = {}
     try {
-      existing = JSON.parse(readFileSync(path, 'utf-8')) as ClaudeCodeCredentials
+      existing = JSON.parse(readFileSync(credPath, 'utf-8')) as ClaudeCodeCredentials
     } catch { /* start fresh */ }
     existing.claudeAiOauth = creds
-    writeFileSync(path, JSON.stringify(existing, null, 2))
+    writeFileSync(tmpPath, JSON.stringify(existing, null, 2), { encoding: 'utf-8', flag: 'wx', mode: 0o600 })
+    renameSync(tmpPath, credPath)
   } catch (e) {
+    try {
+      if (existsSync(tmpPath)) unlinkSync(tmpPath)
+    } catch {
+      // ignore cleanup failure
+    }
     console.error('[claude-memory] Failed to save refreshed credentials:', e)
   }
 }
@@ -378,13 +424,37 @@ async function getFreshCredentials(): Promise<{ creds: OAuthCredentials; source:
   // If we have an API key, return as-is
   if (creds.apiKey) return { creds, source }
 
-  // Refresh if expired or near expiry
+  // Refresh if expired or near expiry, serialized across concurrent processes
+  // so single-use refresh tokens cannot race and revoke each other.
   if (creds.expiresAt < Date.now() + TOKEN_REFRESH_BUFFER_MS) {
-    const refreshed = await refreshAccessToken(creds.refreshToken)
-    if (!refreshed) return null
+    const lockHandle = acquireFileLock(join(LOCKS_DIR, 'oauth-refresh.lock'), {
+      staleAfterMs: 60_000,
+      staleStrategy: 'pid',
+      ensureDir: true,
+      proceedOnError: true,
+      wait: { maxWaitMs: 10_000, retryDelayMs: 100 },
+      write: { data: () => `${process.pid}\n${Date.now()}`, ignoreErrors: true }
+    })
 
-    saveCredentials(refreshed, source)
-    creds = refreshed
+    try {
+      // Re-read after acquiring lock in case another process already refreshed.
+      const reloaded = loadCredentials()
+      if (reloaded) {
+        creds = reloaded.creds
+        source = reloaded.source
+        if (creds.apiKey || creds.expiresAt >= Date.now() + TOKEN_REFRESH_BUFFER_MS) {
+          return { creds, source }
+        }
+      }
+
+      const refreshed = await refreshAccessToken(creds.refreshToken)
+      if (!refreshed) return null
+
+      saveCredentials(refreshed, source)
+      creds = refreshed
+    } finally {
+      lockHandle?.release()
+    }
   }
 
   return { creds, source }

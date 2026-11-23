@@ -73,9 +73,17 @@ export async function runRelationDiscovery(
     eligiblePairs = pairCandidates.length
 
     const ids = uniqueIds(pairCandidates.flatMap(pair => [pair.a, pair.b]))
-    const records = await fetchRecordsByIds(ids, config, { includeEmbeddings: true })
+    const records = await fetchRecordsByIds(ids, config, { includeEmbeddings: false })
     const recordsById = new Map(records.map(record => [record.id, record]))
-    const changedRecordIds = new Set<string>()
+    const initialRelationsById = new Map<string, string>()
+    for (const record of records) {
+      initialRelationsById.set(record.id, relationsSignature(record.relations))
+      // Prune stale edges before inserting/capping so expired co-occurrences cannot evict active pairs.
+      if (record.relations && record.relations.length > 0) {
+        pruneStaleRelatesTo(record, pairCounts)
+      }
+    }
+
     const maxRelationsPerRecord = Math.max(0, Math.trunc(settings.maxRelationsPerRecord))
 
     for (const pair of pairCandidates) {
@@ -86,7 +94,10 @@ export async function runRelationDiscovery(
         continue
       }
 
-      const changedA = upsertRelation(a, {
+      const beforeA = relationsSignature(a.relations)
+      const beforeB = relationsSignature(b.relations)
+
+      upsertRelation(a, {
         targetId: b.id,
         kind: 'relates_to',
         weight: pair.weight,
@@ -94,7 +105,7 @@ export async function runRelationDiscovery(
         reinforcementMode: 'set',
         now: new Date(pair.latestTimestamp).toISOString()
       })
-      const changedB = upsertRelation(b, {
+      upsertRelation(b, {
         targetId: a.id,
         kind: 'relates_to',
         weight: pair.weight,
@@ -102,58 +113,64 @@ export async function runRelationDiscovery(
         reinforcementMode: 'set',
         now: new Date(pair.latestTimestamp).toISOString()
       })
-      const cappedA = capRelatesToRelations(a, maxRelationsPerRecord)
-      const cappedB = capRelatesToRelations(b, maxRelationsPerRecord)
+      capRelatesToRelations(a, maxRelationsPerRecord)
+      capRelatesToRelations(b, maxRelationsPerRecord)
 
-      if (changedA || changedB || cappedA || cappedB) {
-        if (dryRun) {
-          changedRecordIds.add(a.id)
-          changedRecordIds.add(b.id)
-        } else {
-          try {
-            const result = await batchUpdateRecords([a, b], {}, config)
-            if (result.updated === 2 && result.failed === 0) {
-              changedRecordIds.add(a.id)
-              changedRecordIds.add(b.id)
-            } else {
-              errors += Math.max(1, result.failed)
-              logger.warn(`Failed to persist bidirectional relation pair ${a.id}<->${b.id}; updated=${result.updated}, failed=${result.failed}`)
-            }
-          } catch (error) {
-            errors += 1
-            logger.warn(`Failed to persist bidirectional relation pair ${a.id}<->${b.id}: ${toErrorMessage(error)}`)
+      const changedA = relationsSignature(a.relations) !== beforeA
+      const changedB = relationsSignature(b.relations) !== beforeB
+      const edgeSurvived = hasRelatesTo(a, b.id) || hasRelatesTo(b, a.id)
+
+      if ((changedA || changedB) && edgeSurvived) {
+        actions.push(buildAction({
+          type: 'update',
+          recordId: a.id,
+          snippet: truncateSnippet(buildRecordSnippet(a)),
+          reason: `relates_to ${b.id} via ${pair.count} co-injections`,
+          details: {
+            targetId: b.id,
+            kind: 'relates_to',
+            cooccurrenceCount: pair.count,
+            weight: pair.weight
           }
-        }
+        }))
       }
-
-      actions.push(buildAction({
-        type: 'update',
-        recordId: a.id,
-        snippet: truncateSnippet(buildRecordSnippet(a)),
-        reason: `relates_to ${b.id} via ${pair.count} co-injections`,
-        details: {
-          targetId: b.id,
-          kind: 'relates_to',
-          cooccurrenceCount: pair.count,
-          weight: pair.weight
-        }
-      }))
     }
 
-    const cleanupRecords = await collectRelationCleanupRecords(pairCounts, maxRelationsPerRecord, config)
-    if (!dryRun && cleanupRecords.length > 0) {
-      const result = await batchUpdateRecords(cleanupRecords, {}, config)
-      if (result.updated === cleanupRecords.length && result.failed === 0) {
-        for (const record of cleanupRecords) changedRecordIds.add(record.id)
-      } else {
-        errors += Math.max(1, result.failed)
-        logger.warn(`Failed to persist ${result.failed} relation-cleanup records`)
+    const dirtyById = await collectDirtyRelationRecords(
+      pairCounts,
+      maxRelationsPerRecord,
+      recordsById,
+      initialRelationsById,
+      config
+    )
+
+    if (!dryRun && dirtyById.size > 0) {
+      const dirtyIds = Array.from(dirtyById.keys())
+      const hydrated = await fetchRecordsByIds(dirtyIds, config, { includeEmbeddings: true })
+      const hydratedById = new Map(hydrated.map(record => [record.id, record]))
+      const toPersist: MemoryRecord[] = []
+      for (const [id, dirtyRecord] of dirtyById) {
+        const fresh = hydratedById.get(id)
+        if (!fresh) {
+          errors += 1
+          logger.warn(`Relation discovery could not hydrate record ${id} for update`)
+          continue
+        }
+        fresh.relations = dirtyRecord.relations
+        toPersist.push(fresh)
+      }
+
+      if (toPersist.length > 0) {
+        const result = await batchUpdateRecords(toPersist, {}, config)
+        if (result.failed > 0) {
+          errors += result.failed
+          logger.warn(`Failed to persist ${result.failed} relation records`)
+        }
+        updated = result.updated
       }
     } else if (dryRun) {
-      for (const record of cleanupRecords) changedRecordIds.add(record.id)
+      updated = dirtyById.size
     }
-
-    updated = changedRecordIds.size
   } catch (error) {
     errors += 1
     logger.error(`Relation discovery failed: ${toErrorMessage(error)}`)
@@ -210,24 +227,48 @@ function uniqueIds(ids: string[]): string[] {
   return Array.from(new Set(ids.filter(id => id.trim().length > 0)))
 }
 
-async function collectRelationCleanupRecords(
+async function collectDirtyRelationRecords(
   observedPairs: Map<string, PairCount>,
   maxRelationsPerRecord: number,
+  workingById: Map<string, MemoryRecord>,
+  initialRelationsById: Map<string, string>,
   config: Config
-): Promise<MemoryRecord[]> {
-  const changed: MemoryRecord[] = []
+): Promise<Map<string, MemoryRecord>> {
+  const dirtyById = new Map<string, MemoryRecord>()
 
-  for await (const record of iterateRecords({ includeEmbeddings: true }, config)) {
-    if (!record.relations || record.relations.length === 0) continue
+  for await (const dbRecord of iterateRecords({ includeEmbeddings: false }, config)) {
+    const record = workingById.get(dbRecord.id) ?? dbRecord
+    const initialSignature = initialRelationsById.get(record.id) ?? relationsSignature(dbRecord.relations)
 
-    const pruned = pruneStaleRelatesTo(record, observedPairs)
-    const capped = capRelatesToRelations(record, maxRelationsPerRecord)
-    if (pruned || capped) {
-      changed.push(record)
+    if (record.relations && record.relations.length > 0) {
+      pruneStaleRelatesTo(record, observedPairs)
+      capRelatesToRelations(record, maxRelationsPerRecord)
+    }
+
+    if (relationsSignature(record.relations) !== initialSignature) {
+      dirtyById.set(record.id, record)
     }
   }
 
-  return changed
+  for (const [id, record] of workingById) {
+    if (dirtyById.has(id)) continue
+    const initialSignature = initialRelationsById.get(id) ?? '[]'
+    if (relationsSignature(record.relations) !== initialSignature) {
+      dirtyById.set(id, record)
+    }
+  }
+
+  return dirtyById
+}
+
+function relationsSignature(relations: MemoryRecord['relations']): string {
+  const normalized = normalizeRelations(relations)
+  if (normalized.length === 0) return '[]'
+  return JSON.stringify(normalized)
+}
+
+function hasRelatesTo(record: MemoryRecord, targetId: string): boolean {
+  return Boolean(record.relations?.some(relation => relation.kind === 'relates_to' && relation.targetId === targetId))
 }
 
 function pruneStaleRelatesTo(record: MemoryRecord, observedPairs: Map<string, PairCount>): boolean {

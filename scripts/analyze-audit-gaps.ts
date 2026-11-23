@@ -19,7 +19,9 @@ async function main() {
 
   for (const group of duplicateGroups) {
     console.log(`\n=== ${group.name} ===`)
-    const records = await Promise.all(group.ids.map(id => getRecord(id, DEFAULT_CONFIG)))
+    const records = await Promise.all(
+      group.ids.map(id => getRecord(id, DEFAULT_CONFIG, { includeEmbedding: true }))
+    )
 
     for (const r of records) {
       if (!r) {
@@ -49,8 +51,7 @@ async function main() {
     if (first?.embedding && second) {
       const results = await vectorSearchSimilar(first.embedding, {
         limit: 50,
-        similarityThreshold: 0.3,
-        includeDeprecated: true
+        similarityThreshold: 0.3
       }, DEFAULT_CONFIG)
       const match = results.find(r => r.record.id === second.id)
       const firstShort = first.id.slice(0, 8)

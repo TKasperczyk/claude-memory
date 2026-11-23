@@ -158,8 +158,28 @@ export function getMaintenanceRun(runId: string, collection?: string): Maintenan
   return maintenanceLog.get(runId, collection)
 }
 
-export function getLastMaintenanceRun(collection?: string): MaintenanceRun | null {
-  return maintenanceLog.getLast(collection)
+export interface LastMaintenanceRunOptions {
+  excludeDryRun?: boolean
+  fullOnly?: boolean
+  minOperations?: number
+}
+
+export function getLastMaintenanceRun(
+  collection?: string,
+  options?: LastMaintenanceRunOptions
+): MaintenanceRun | null {
+  if (!options?.excludeDryRun && !options?.fullOnly && options?.minOperations === undefined) {
+    return maintenanceLog.getLast(collection)
+  }
+  const minOperations = options.minOperations ?? (options.fullOnly ? 2 : 0)
+  const runs = maintenanceLog.list(collection)
+  for (const run of runs) {
+    if (options.excludeDryRun && run.dryRun) continue
+    if (options.fullOnly && run.trigger !== 'auto' && run.operations.length < minOperations) continue
+    if (!options.fullOnly && minOperations > 0 && run.operations.length < minOperations) continue
+    return run
+  }
+  return null
 }
 
 export function deleteMaintenanceRun(runId: string, collection?: string): boolean {

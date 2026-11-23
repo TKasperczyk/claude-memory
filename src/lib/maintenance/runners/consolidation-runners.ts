@@ -38,6 +38,7 @@ const PROTECTED_SYNTHESIS_FIELDS = new Set([
   'lastGeneralizationCheck',
   'lastGlobalCheck',
   'lastConsolidationCheck',
+  'lastCrossTypeConsolidationCheck',
   'lastConflictCheck',
   'lastCurrentnessCheck',
   'lastWarningSynthesisCheck',
@@ -234,24 +235,29 @@ function normalizeSynthesizedFields(
 async function markConsolidationChecked(
   records: MemoryRecord[],
   checkedAt: number,
-  config: Config
+  config: Config,
+  field: 'lastConsolidationCheck' | 'lastCrossTypeConsolidationCheck' = 'lastConsolidationCheck'
 ): Promise<number> {
   if (records.length === 0) return 0
 
   try {
-    // Fetch records with embeddings (needed for batchUpdateRecords)
-    const ids = records.map(r => r.id)
-    const idList = ids.map(id => `'${escapeFilterValue(id)}'`).join(', ')
-    const recordsWithEmbeddings = await queryRecords(
-      { filter: `id IN (${idList})`, includeEmbeddings: true },
-      config
-    )
+    // Reuse embeddings already present on records when all have them; otherwise fetch fresh.
+    const allHaveEmbeddings = records.every(r => Array.isArray(r.embedding) && r.embedding.length > 0)
+    let recordsWithEmbeddings = records
+    if (!allHaveEmbeddings) {
+      const ids = records.map(r => r.id)
+      const idList = ids.map(id => `'${escapeFilterValue(id)}'`).join(', ')
+      recordsWithEmbeddings = await queryRecords(
+        { filter: `id IN (${idList})`, includeEmbeddings: true },
+        config
+      )
+    }
 
     if (recordsWithEmbeddings.length === 0) return records.length
 
     const result = await batchUpdateRecords(
       recordsWithEmbeddings,
-      { lastConsolidationCheck: checkedAt },
+      { [field]: checkedAt },
       config
     )
     return result.failed
@@ -315,6 +321,7 @@ type ConsolidationVerificationOutcome = {
   verification: ConsolidationVerification | null
   verificationError?: string
   rejected: boolean
+  skippedOnError?: boolean
   checkedAt: number | null
 }
 
@@ -359,9 +366,15 @@ async function verifyConsolidationWithCache(args: {
     const message = toErrorMessage(error)
     if (message.includes('No authentication available')) throw error
     verificationError = message
-    logger.warn(`LLM verification failed, using fallback: ${message}`)
-    verification = pickConsolidationFallback(records)
+    logger.warn(`LLM verification failed; skipping unverified cluster for retry on next run: ${message}`)
     counters.errors += 1
+    return {
+      verification: null,
+      verificationError,
+      rejected: false,
+      skippedOnError: true,
+      checkedAt: null
+    }
   }
 
   if (verification.shouldMerge) {
@@ -431,7 +444,13 @@ export async function runConsolidation(
 
   try {
     counters.errors += cleanupVerdictsForRun(dryRun, config, maintenance)
-    const clusters = await findSimilarClusters(maintenance.consolidationThreshold, config, maintenance)
+    let scannedSingletons: MemoryRecord[] = []
+    const clusters = await findSimilarClusters(
+      maintenance.consolidationThreshold,
+      config,
+      maintenance,
+      { onScannedSingletons: singletons => { scannedSingletons = singletons } }
+    )
     clustersFound = clusters.length
     const thresholdPercent = Math.round(maintenance.consolidationThreshold * 100)
     logger.info(`Found ${clusters.length} consolidation clusters (threshold: ${thresholdPercent}%)`)
@@ -478,7 +497,7 @@ export async function runConsolidation(
           })
           verification = outcome.verification
           verificationError = outcome.verificationError
-          if (outcome.rejected) {
+          if (outcome.skippedOnError || outcome.rejected) {
             checkedAt = outcome.checkedAt
             continue
           }
@@ -558,12 +577,20 @@ export async function runConsolidation(
         logger.warn(`  -> Error processing cluster: ${toErrorMessage(error)}`)
       } finally {
         if (!dryRun && checkedAt) {
-          const failed = await markConsolidationChecked(clusterRecords, checkedAt, config)
+          const failed = await markConsolidationChecked(clusterRecords, checkedAt, config, 'lastConsolidationCheck')
           if (failed > 0) {
             counters.errors += failed
             logger.warn(`  -> Failed to mark ${failed}/${clusterRecords.length} records as consolidation-checked`)
           }
         }
+      }
+    }
+
+    if (!dryRun && scannedSingletons.length > 0) {
+      const failed = await markConsolidationChecked(scannedSingletons, Date.now(), config, 'lastConsolidationCheck')
+      if (failed > 0) {
+        counters.errors += failed
+        logger.warn(`Failed to mark ${failed}/${scannedSingletons.length} singleton records as consolidation-checked`)
       }
     }
   } catch (error) {
@@ -600,7 +627,13 @@ export async function runCrossTypeConsolidation(
 
   try {
     counters.errors += cleanupVerdictsForRun(dryRun, config, maintenance)
-    const clusters = await findCrossTypeClusters(maintenance.crossTypeConsolidationThreshold, config, maintenance)
+    let scannedSingletons: MemoryRecord[] = []
+    const clusters = await findCrossTypeClusters(
+      maintenance.crossTypeConsolidationThreshold,
+      config,
+      maintenance,
+      { onScannedSingletons: singletons => { scannedSingletons = singletons } }
+    )
     clustersFound = clusters.length
     const thresholdPercent = Math.round(maintenance.crossTypeConsolidationThreshold * 100)
     logger.info(`Found ${clusters.length} cross-type clusters (threshold: ${thresholdPercent}%)`)
@@ -647,7 +680,7 @@ export async function runCrossTypeConsolidation(
           })
           verification = outcome.verification
           verificationError = outcome.verificationError
-          if (outcome.rejected) {
+          if (outcome.skippedOnError || outcome.rejected) {
             checkedAt = outcome.checkedAt
             continue
           }
@@ -732,12 +765,20 @@ export async function runCrossTypeConsolidation(
         logger.warn(`  -> Error processing cluster: ${toErrorMessage(error)}`)
       } finally {
         if (!dryRun && checkedAt) {
-          const failed = await markConsolidationChecked(clusterRecords, checkedAt, config)
+          const failed = await markConsolidationChecked(clusterRecords, checkedAt, config, 'lastCrossTypeConsolidationCheck')
           if (failed > 0) {
             counters.errors += failed
-            logger.warn(`  -> Failed to mark ${failed}/${clusterRecords.length} records as consolidation-checked`)
+            logger.warn(`  -> Failed to mark ${failed}/${clusterRecords.length} records as cross-type consolidation-checked`)
           }
         }
+      }
+    }
+
+    if (!dryRun && scannedSingletons.length > 0) {
+      const failed = await markConsolidationChecked(scannedSingletons, Date.now(), config, 'lastCrossTypeConsolidationCheck')
+      if (failed > 0) {
+        counters.errors += failed
+        logger.warn(`Failed to mark ${failed}/${scannedSingletons.length} singleton records as cross-type consolidation-checked`)
       }
     }
   } catch (error) {

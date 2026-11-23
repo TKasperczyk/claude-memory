@@ -9,18 +9,23 @@ import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
 import { buildExtractionWarnings } from '../lib/extraction-warnings.js'
 import { parseNonNegativeInt } from '../utils/params.js'
-import { getRequestConfig } from '../utils/config.js'
+import {
+  getRequestConfig,
+  resolveBaseConfig,
+  validateCollectionHeaderMiddleware
+} from '../utils/config.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
 
 const logger = createLogger('extractions')
 
 export function createExtractionsRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config: baseConfig } = context
+  router.use(validateCollectionHeaderMiddleware)
+  const getBaseConfig = () => resolveBaseConfig(context)
 
   router.get('/api/extractions', (req, res) => {
     try {
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 50), 500)
       const offset = parseNonNegativeInt(req.query.offset, 0)
       const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : undefined
@@ -42,7 +47,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
   router.get('/api/extractions/warnings', (req, res) => {
     try {
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const runs = listExtractionRuns(requestConfig.lancedb.table)
       const inProgress = listInProgressExtractions()
       res.json({
@@ -57,7 +62,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
   router.get('/api/extractions/:runId', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const detail = await loadExtractionRunDetail(req.params.runId, config, { includeReview: false })
       if (!detail) {
         return res.status(404).json({ error: 'Extraction run not found' })
@@ -72,13 +77,13 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
   router.delete('/api/extractions/:runId', async (req, res) => {
     try {
       const runId = req.params.runId
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const run = getExtractionRun(runId, requestConfig.lancedb.table)
       if (!run) {
         return res.status(404).json({ error: 'Extraction run not found' })
       }
 
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const insertedIds = run.extractedRecordIds ?? []
       const updatedIds = run.updatedRecordIds ?? []
       await deleteRecordsByIds([...insertedIds, ...updatedIds], config)
@@ -94,7 +99,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
 
   router.get('/api/extractions/:runId/review', (req, res) => {
     try {
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const review = getReview(req.params.runId, requestConfig.lancedb.table)
       if (!review) {
         return res.status(404).json({ error: 'Review not found' })
@@ -109,7 +114,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
   router.post('/api/extractions/:runId/review', async (req, res) => {
     try {
       const runId = req.params.runId
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const run = getExtractionRun(runId, requestConfig.lancedb.table)
       if (!run) {
         return res.status(404).json({ error: 'Extraction run not found' })
@@ -120,7 +125,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         const stream = createSseStream(res)
 
         try {
-          const config = await ensureConfigInitialized(req, baseConfig)
+          const config = await ensureConfigInitialized(req, getBaseConfig())
           const review = await reviewExtractionStreaming(runId, config, stream.onThinking, stream.signal)
           saveReview(review, config.lancedb.table)
           stream.sendData({ result: review })
@@ -135,7 +140,7 @@ export function createExtractionsRouter(context: ServerContext): express.Router 
         return
       }
 
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const review = await reviewExtraction(runId, config)
       saveReview(review, config.lancedb.table)
       res.json(review)

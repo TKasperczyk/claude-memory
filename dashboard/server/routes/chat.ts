@@ -3,6 +3,7 @@ import express from 'express'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream } from '../lib/sse.js'
+import { resolveBaseConfig, validateCollectionHeaderMiddleware } from '../utils/config.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
 import { isPlainObject } from '../utils/params.js'
 import { CLAUDE_CODE_SYSTEM_PROMPT, createAnthropicClient } from '../../../src/lib/anthropic.js'
@@ -10,10 +11,11 @@ import { applyToolUseDelta, finalizeToolUses, type ToolUseAccumulator } from '..
 import { CHAT_TOOLS, executeChatTool, type ChatToolName } from '../lib/chat-tools.js'
 import { loadSettings } from '../../../src/lib/settings.js'
 import { UNIFIED_SEMANTIC_WEIGHT } from '../../../src/lib/ranked-search.js'
-import { clampModelMaxTokens, supportsEffort } from '../../../src/lib/model-capabilities.js'
+import { clampModelMaxTokens, getModelCapabilities, supportsEffort } from '../../../src/lib/model-capabilities.js'
 import type { Settings } from '../../../src/lib/settings.js'
 import { buildMemoryStats } from '../../../src/lib/memory-stats.js'
-import type { Config } from '../../../src/lib/types.js'
+import { recordTokenUsageEventsAsync } from '../../../src/lib/token-usage-events.js'
+import type { Config, TokenUsage } from '../../../src/lib/types.js'
 import type { MemoryStatsSummary } from '../../../shared/types.js'
 
 const logger = createLogger('chat')
@@ -23,6 +25,7 @@ const STATIC_PROMPT = readFileSync(
 )
 
 const CHAT_MAX_TOKENS = 10000
+const CHAT_THINKING_HEADROOM_TOKENS = 16000
 const MAX_TOOL_ROUNDS = 50
 
 type ChatMessage = {
@@ -72,7 +75,7 @@ function formatSettingsForPrompt(settings: Settings): string {
   return lines.join('\n')
 }
 
-async function buildSystemPrompt(config: Config, project?: string): Promise<string> {
+async function buildDynamicSystemContext(config: Config, project?: string): Promise<string> {
   const settings = loadSettings()
 
   let statsBlock = ''
@@ -85,8 +88,8 @@ async function buildSystemPrompt(config: Config, project?: string): Promise<stri
 
   const settingsBlock = formatSettingsForPrompt(settings)
 
-  const parts = [STATIC_PROMPT]
-  if (project) parts.push(`\n## Active Project\n${project}`)
+  const parts: string[] = []
+  if (project) parts.push(`## Active Project\n${project}`)
   if (settingsBlock) parts.push(settingsBlock)
   if (statsBlock) parts.push(statsBlock)
 
@@ -95,7 +98,8 @@ async function buildSystemPrompt(config: Config, project?: string): Promise<stri
 
 export function createChatRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config: baseConfig } = context
+  router.use(validateCollectionHeaderMiddleware)
+  const getBaseConfig = () => resolveBaseConfig(context)
 
   router.post('/api/chat', async (req, res) => {
     if (!isPlainObject(req.body)) {
@@ -114,7 +118,12 @@ export function createChatRouter(context: ServerContext): express.Router {
       }
       const trimmed = entry.content.trim()
       if (!trimmed) continue
-      normalizedMessages.push({ role: entry.role, content: trimmed })
+      const previous = normalizedMessages[normalizedMessages.length - 1]
+      if (previous && previous.role === entry.role) {
+        previous.content = `${previous.content}\n\n${trimmed}`
+      } else {
+        normalizedMessages.push({ role: entry.role, content: trimmed })
+      }
     }
 
     if (normalizedMessages.length === 0) {
@@ -130,8 +139,8 @@ export function createChatRouter(context: ServerContext): express.Router {
         return
       }
 
-      const config = await ensureConfigInitialized(req, baseConfig)
-      const systemPrompt = await buildSystemPrompt(config, typeof project === 'string' ? project.trim() : undefined)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
+      const dynamicSystemContext = await buildDynamicSystemContext(config, typeof project === 'string' ? project.trim() : undefined)
 
       const conversation: Array<{ role: 'user' | 'assistant'; content: unknown }> = normalizedMessages.map(message => ({
         role: message.role,
@@ -144,14 +153,22 @@ export function createChatRouter(context: ServerContext): express.Router {
         rounds += 1
 
         const { chatModel } = loadSettings()
+        const capabilities = getModelCapabilities(chatModel)
+        const requestedMaxTokens = capabilities.thinkingStyle === 'always_on' || capabilities.thinkingStyle === 'adaptive'
+          ? CHAT_MAX_TOKENS + CHAT_THINKING_HEADROOM_TOKENS
+          : CHAT_MAX_TOKENS
         logger.info(`Using chat model: ${chatModel}`)
+        const systemBlocks: Array<Record<string, unknown>> = [
+          { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+          { type: 'text', text: STATIC_PROMPT, cache_control: { type: 'ephemeral' } }
+        ]
+        if (dynamicSystemContext) {
+          systemBlocks.push({ type: 'text', text: dynamicSystemContext })
+        }
         const createParams: Record<string, unknown> = {
           model: chatModel,
-          max_tokens: clampModelMaxTokens(chatModel, CHAT_MAX_TOKENS),
-          system: [
-            { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-            { type: 'text', text: systemPrompt }
-          ],
+          max_tokens: clampModelMaxTokens(chatModel, requestedMaxTokens),
+          system: systemBlocks,
           messages: conversation,
           tools: CHAT_TOOLS,
           tool_choice: { type: 'auto' },
@@ -164,7 +181,18 @@ export function createChatRouter(context: ServerContext): express.Router {
           createParams, stream.signal ? { signal: stream.signal } : undefined
         )
 
-        const { contentBlocks, toolUses } = await consumeChatStream(responseStream, stream)
+        const { contentBlocks, toolUses, tokenUsage } = await consumeChatStream(responseStream, stream)
+        if (tokenUsage.inputTokens > 0 || tokenUsage.outputTokens > 0) {
+          recordTokenUsageEventsAsync([{
+            timestamp: Date.now(),
+            source: 'chat',
+            model: chatModel,
+            inputTokens: tokenUsage.inputTokens,
+            outputTokens: tokenUsage.outputTokens,
+            cacheCreationInputTokens: tokenUsage.cacheCreationInputTokens,
+            cacheReadInputTokens: tokenUsage.cacheReadInputTokens
+          }], { collection: config.lancedb.table })
+        }
 
         if (stream.signal.aborted) break
 
@@ -235,19 +263,60 @@ export function createChatRouter(context: ServerContext): express.Router {
   return router
 }
 
+type StreamContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'thinking'; thinking: string; signature?: string }
+  | { type: 'redacted_thinking'; data: string }
+
 async function consumeChatStream(
   responseStream: AsyncIterable<unknown>,
   stream: ReturnType<typeof createSseStream>
-): Promise<{ contentBlocks: Array<{ type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: unknown }>; toolUses: Array<{ id: string; name: string; input: unknown }> }> {
-  const contentByIndex = new Map<number, { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: unknown }>()
+): Promise<{
+  contentBlocks: StreamContentBlock[]
+  toolUses: Array<{ id: string; name: string; input: unknown }>
+  tokenUsage: TokenUsage
+}> {
+  const contentByIndex = new Map<number, StreamContentBlock>()
   const toolInputs = new Map<number, ToolUseAccumulator>()
+  const tokenUsage: TokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0
+  }
 
   for await (const rawEvent of responseStream) {
-    const event = rawEvent as { type?: string; index?: number; content_block?: any; delta?: any }
+    const event = rawEvent as {
+      type?: string
+      index?: number
+      content_block?: any
+      delta?: any
+      message?: { usage?: Record<string, unknown> }
+      usage?: Record<string, unknown>
+    }
     if (stream.signal.aborted) break
     applyToolUseDelta(toolInputs, event)
 
-    if (event.type === 'content_block_start') {
+    if (event.type === 'message_start' && event.message?.usage) {
+      const u = event.message.usage
+      if (typeof u.input_tokens === 'number') tokenUsage.inputTokens = u.input_tokens
+      if (typeof u.output_tokens === 'number') tokenUsage.outputTokens = u.output_tokens
+      if (typeof u.cache_creation_input_tokens === 'number') tokenUsage.cacheCreationInputTokens = u.cache_creation_input_tokens
+      if (typeof u.cache_read_input_tokens === 'number') tokenUsage.cacheReadInputTokens = u.cache_read_input_tokens
+      continue
+    }
+
+    if (event.type === 'message_delta' && event.usage) {
+      const u = event.usage
+      if (typeof u.input_tokens === 'number') tokenUsage.inputTokens = Math.max(tokenUsage.inputTokens, u.input_tokens)
+      if (typeof u.output_tokens === 'number') tokenUsage.outputTokens = Math.max(tokenUsage.outputTokens, u.output_tokens)
+      if (typeof u.cache_creation_input_tokens === 'number') tokenUsage.cacheCreationInputTokens = Math.max(tokenUsage.cacheCreationInputTokens, u.cache_creation_input_tokens)
+      if (typeof u.cache_read_input_tokens === 'number') tokenUsage.cacheReadInputTokens = Math.max(tokenUsage.cacheReadInputTokens, u.cache_read_input_tokens)
+      continue
+    }
+
+    if (event.type === 'content_block_start' && typeof event.index === 'number') {
       const block = event.content_block
       if (block.type === 'text') {
         const initialText = block.text ?? ''
@@ -262,12 +331,23 @@ async function consumeChatStream(
           name: block.name,
           input: block.input
         })
+      } else if (block.type === 'thinking') {
+        contentByIndex.set(event.index, {
+          type: 'thinking',
+          thinking: typeof block.thinking === 'string' ? block.thinking : '',
+          ...(typeof block.signature === 'string' ? { signature: block.signature } : {})
+        })
+      } else if (block.type === 'redacted_thinking' && typeof block.data === 'string') {
+        contentByIndex.set(event.index, {
+          type: 'redacted_thinking',
+          data: block.data
+        })
       }
       continue
     }
 
-    if (event.type === 'content_block_delta') {
-      if (event.delta.type === 'text_delta') {
+    if (event.type === 'content_block_delta' && typeof event.index === 'number') {
+      if (event.delta?.type === 'text_delta') {
         const textChunk = event.delta.text ?? ''
         if (!textChunk) continue
         const existing = contentByIndex.get(event.index)
@@ -277,6 +357,26 @@ async function consumeChatStream(
           contentByIndex.set(event.index, { type: 'text', text: textChunk })
         }
         stream.send('text', { text: textChunk })
+        continue
+      }
+      if (event.delta?.type === 'thinking_delta') {
+        const chunk = typeof event.delta.thinking === 'string' ? event.delta.thinking : ''
+        if (!chunk) continue
+        const existing = contentByIndex.get(event.index)
+        if (existing && existing.type === 'thinking') {
+          existing.thinking += chunk
+        } else {
+          contentByIndex.set(event.index, { type: 'thinking', thinking: chunk })
+        }
+        continue
+      }
+      if (event.delta?.type === 'signature_delta') {
+        const sigChunk = typeof event.delta.signature === 'string' ? event.delta.signature : ''
+        if (!sigChunk) continue
+        const existing = contentByIndex.get(event.index)
+        if (existing && existing.type === 'thinking') {
+          existing.signature = `${existing.signature ?? ''}${sigChunk}`
+        }
         continue
       }
     }
@@ -302,8 +402,11 @@ async function consumeChatStream(
     if (block.type === 'text') {
       return block.text.trim().length > 0
     }
+    if (block.type === 'thinking') {
+      return Boolean(block.thinking || block.signature)
+    }
     return true
   })
 
-  return { contentBlocks, toolUses }
+  return { contentBlocks, toolUses, tokenUsage }
 }

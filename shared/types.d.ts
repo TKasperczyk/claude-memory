@@ -32,6 +32,7 @@ export interface BaseRecord {
   lastGeneralizationCheck?: number
   lastGlobalCheck?: number
   lastConsolidationCheck?: number
+  lastCrossTypeConsolidationCheck?: number
   lastConflictCheck?: number
   lastCurrentnessCheck?: number
   lastWarningSynthesisCheck?: number
@@ -147,7 +148,7 @@ export interface RetrievalActivity {
   buckets: RetrievalActivityBucket[]
 }
 
-export type TokenUsageSource = 'extraction' | 'haiku-query' | 'usefulness-rating' | 'maintenance'
+export type TokenUsageSource = 'extraction' | 'haiku-query' | 'usefulness-rating' | 'maintenance' | 'review' | 'chat'
 
 export interface TokenUsageEvent {
   timestamp: number
@@ -214,6 +215,7 @@ export interface InjectionSessionRecord {
   previousPromptEmbedding?: number[] | null
   lastPromptAt?: string
   retrievalStateVersion?: number
+  retrievalCounted?: boolean
 }
 
 export interface MemoryWriteHintEvent {

@@ -214,12 +214,13 @@ export function uninstallCommands(claudeSettingsPath: string): Record<string, Co
 }
 
 function buildHookDefinitions(configRoot: string): Record<HookEvent, HookDefinition> {
+  const canonicalRoot = canonicalizePath(configRoot)
   const definitions = {} as Record<HookEvent, HookDefinition>
   const entries = Object.entries(HOOK_SCRIPTS) as [HookEvent, string][]
   for (const [eventName, script] of entries) {
     definitions[eventName] = {
       script,
-      command: `node "${getHookScriptPath(configRoot, script)}"`,
+      command: `node "${getHookScriptPath(canonicalRoot, script)}"`,
       matcher: (HOOK_MATCHERS as Partial<Record<HookEvent, string>>)[eventName],
       timeout: eventName === 'PostToolUse' ? MEMORY_WRITE_HOOK_TIMEOUT_SECONDS : undefined
     }
@@ -306,10 +307,23 @@ function collectHookCommands(eventConfig: unknown): string[] {
   return commands
 }
 
+function preserveCustomHookCommand(existingCommand: string, expectedCommand: string): string {
+  const trimmed = existingCommand.trim()
+  const nodeIndex = trimmed.search(/(?:^|\s)node(?:\s|$)/)
+  if (nodeIndex > 0) {
+    const prefix = trimmed.slice(0, nodeIndex).trim()
+    if (prefix) {
+      return `${prefix} ${expectedCommand}`
+    }
+  }
+  return expectedCommand
+}
+
 function ensureHookInstalled(eventConfig: unknown, hook: HookDefinition, configRoot: string): unknown[] {
   const sourceEntries = Array.isArray(eventConfig) ? eventConfig : []
   const entries: unknown[] = []
   let found = false
+  let preservedCommand: string | null = null
 
   for (const entry of sourceEntries) {
     if (!isPlainObject(entry)) {
@@ -331,11 +345,13 @@ function ensureHookInstalled(eventConfig: unknown, hook: HookDefinition, configR
       const command = typeof item.command === 'string' ? item.command : ''
       if (command && matchesClaudeHook(command, configRoot, hook.script)) {
         removedOwnedHook = true
+        const nextCommand = preserveCustomHookCommand(command, hook.command)
+        if (!preservedCommand) preservedCommand = nextCommand
         if (!found && hookEntryHasMatcher(entry, hook.matcher)) {
           retainedHooks.push({
             ...item,
             type: 'command',
-            command: hook.command,
+            command: nextCommand,
             timeout: hook.timeout ?? CLAUDE_HOOK_TIMEOUT_SECONDS
           })
           found = true
@@ -360,7 +376,7 @@ function ensureHookInstalled(eventConfig: unknown, hook: HookDefinition, configR
       hooks: [
         {
           type: 'command',
-          command: hook.command,
+          command: preservedCommand ?? hook.command,
           timeout: hook.timeout ?? CLAUDE_HOOK_TIMEOUT_SECONDS
         }
       ]
@@ -448,11 +464,27 @@ function escapeRegExp(value: string): string {
 
 function matchesClaudeHook(command: string, configRoot: string, scriptName: string): boolean {
   const normalizedCommand = normalizeHookCommand(command)
-  const resolvedConfigRoot = path.resolve(configRoot)
-  const normalizedConfigRoot = normalizeHookCommand(resolvedConfigRoot)
-  if (!normalizedCommand.includes(normalizedConfigRoot)) return false
-  const scriptPath = normalizeHookCommand(getHookScriptPath(resolvedConfigRoot, scriptName))
-  return normalizedCommand.includes(scriptPath)
+  const candidateRoots = new Set([
+    canonicalizePath(configRoot),
+    path.resolve(configRoot)
+  ])
+  const suffix = `/${getDistArtifactRelativePath(getHookArtifactRelativePath(scriptName))}`
+  const escapedSuffix = escapeRegExp(suffix)
+  const quotedPath = new RegExp(`(["'])([^"']*${escapedSuffix})\\1`, 'g')
+  const unquotedPath = new RegExp(`(?:^|\\s)(\\S*${escapedSuffix})(?=\\s|$)`, 'g')
+  for (const match of normalizedCommand.matchAll(quotedPath)) {
+    const extractedRoot = match[2].slice(0, -suffix.length)
+    if (extractedRoot && candidateRoots.has(canonicalizePath(extractedRoot))) return true
+  }
+  for (const match of normalizedCommand.matchAll(unquotedPath)) {
+    const extractedRoot = match[1].slice(0, -suffix.length)
+    if (extractedRoot && candidateRoots.has(canonicalizePath(extractedRoot))) return true
+  }
+  for (const root of candidateRoots) {
+    const scriptPath = normalizeHookCommand(getHookScriptPath(root, scriptName))
+    if (normalizedCommand.includes(scriptPath)) return true
+  }
+  return false
 }
 
 function readClaudeSettingsFile(settingsPath: string): Record<string, unknown> | null {
@@ -569,7 +601,7 @@ function removeFileIfExists(filePath: string): void {
 // --- MCP server installation ---
 
 function buildMcpCommand(configRoot: string): string {
-  return `node "${getMcpServerPath(configRoot)}"`
+  return `node "${getMcpServerPath(canonicalizePath(configRoot))}"`
 }
 
 function getMcpServerConfig(settings: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -589,8 +621,11 @@ function getMcpStatus(settings: Record<string, unknown> | null, configRoot: stri
   const args = Array.isArray(entry.args) ? entry.args as string[] : []
   const command = typeof entry.command === 'string' ? entry.command : ''
   const configured = [command, ...args].join(' ')
-  const serverPath = getMcpServerPath(configRoot)
-  const installed = configured.includes(serverPath)
+  const canonicalServerPath = getMcpServerPath(canonicalizePath(configRoot))
+  const resolvedServerPath = getMcpServerPath(path.resolve(configRoot))
+  const installed = configured.includes(canonicalServerPath)
+    || configured.includes(resolvedServerPath)
+    || args.some(arg => typeof arg === 'string' && canonicalizePath(arg) === canonicalServerPath)
   return { installed, configured, expected }
 }
 
@@ -601,7 +636,7 @@ function installMcp(claudeSettingsPath: string, configRoot: string): McpStatus {
     : {}
   settings.mcpServers = servers
 
-  const serverPath = getMcpServerPath(configRoot)
+  const serverPath = getMcpServerPath(canonicalizePath(configRoot))
   servers[MCP_SERVER_NAME] = {
     type: 'stdio',
     command: 'node',

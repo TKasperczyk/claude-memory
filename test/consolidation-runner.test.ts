@@ -3,7 +3,7 @@ import { DEFAULT_CONFIG, type MemoryRecord } from '../src/lib/types.js'
 import { DEFAULT_MAINTENANCE_SETTINGS } from '../src/lib/settings-schema.js'
 import { runConsolidation, runCrossTypeConsolidation } from '../src/lib/maintenance/runners/consolidation-runners.js'
 import { batchUpdateRecords } from '../src/lib/lancedb.js'
-import { llmVerifyConsolidation } from '../src/lib/maintenance/consolidation.js'
+import { consolidateCluster, llmVerifyConsolidation, pickConsolidationFallback } from '../src/lib/maintenance/consolidation.js'
 import {
   cleanupConsolidationNoMergeVerdicts,
   loadConsolidationNoMergeVerdict,
@@ -144,6 +144,14 @@ describe('consolidation runner no-merge verdict cache', () => {
     )
     expect(llmVerifyConsolidation).not.toHaveBeenCalled()
     expect(result.summary).toMatchObject({ rejected: 1, clustersRejectedFromCache: 1 })
+    expect(batchUpdateRecords).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'a' }),
+        expect.objectContaining({ id: 'b' })
+      ]),
+      { lastCrossTypeConsolidationCheck: expect.any(Number) },
+      DEFAULT_CONFIG
+    )
   })
 
   it('does not persist or refresh markers during a dry-run rejection', async () => {
@@ -158,5 +166,22 @@ describe('consolidation runner no-merge verdict cache', () => {
     expect(saveConsolidationNoMergeVerdict).not.toHaveBeenCalled()
     expect(cleanupConsolidationNoMergeVerdicts).not.toHaveBeenCalled()
     expect(batchUpdateRecords).not.toHaveBeenCalled()
+  })
+
+  it('skips cluster instead of falling back to blind merge when LLM verification fails', async () => {
+    vi.mocked(llmVerifyConsolidation).mockRejectedValueOnce(new Error('503 Service Unavailable'))
+
+    const result = await runConsolidation(false, DEFAULT_CONFIG, settings)
+
+    expect(pickConsolidationFallback).not.toHaveBeenCalled()
+    expect(consolidateCluster).not.toHaveBeenCalled()
+    expect(saveConsolidationNoMergeVerdict).not.toHaveBeenCalled()
+    expect(batchUpdateRecords).not.toHaveBeenCalled()
+    expect(result.summary).toMatchObject({
+      merged: 0,
+      rejected: 0,
+      deprecated: 0,
+      errors: 1
+    })
   })
 })

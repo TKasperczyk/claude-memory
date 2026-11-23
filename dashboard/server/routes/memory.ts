@@ -7,7 +7,8 @@ import {
   getRecord,
   insertRecord,
   queryRecords,
-  resetCollection
+  resetCollection,
+  updateRecord
 } from '../../../src/lib/lancedb.js'
 import { embed } from '../../../src/lib/embed.js'
 import { markDeprecated } from '../../../src/lib/maintenance/operations.js'
@@ -33,7 +34,11 @@ import {
 import type { MemoryRecord, RecordType, TokenUsageSource } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
-import { getRequestConfig } from '../utils/config.js'
+import {
+  getRequestConfig,
+  resolveBaseConfig,
+  validateCollectionHeaderMiddleware
+} from '../utils/config.js'
 import { isPlainObject, parseNonNegativeInt } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
 
@@ -41,7 +46,9 @@ const logger = createLogger('memory')
 
 export function createMemoryRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config: baseConfig, memoryTypes } = context
+  router.use(validateCollectionHeaderMiddleware)
+  const { memoryTypes } = context
+  const getBaseConfig = () => resolveBaseConfig(context)
 
   router.get('/api/memory-types', (_req, res) => {
     res.json({ types: memoryTypes })
@@ -49,7 +56,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.get('/api/stats', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const stats = await buildMemoryStats(config)
       res.json(stats)
     } catch (error) {
@@ -62,7 +69,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
     try {
       const period = parsePeriod(req.query.period, 'day')
       const limit = parseNonNegativeInt(req.query.limit, period === 'week' ? 12 : 30)
-      const config = getRequestConfig(req, baseConfig)
+      const config = getRequestConfig(req, getBaseConfig())
 
       const activity = getRetrievalActivity(period, {
         limit,
@@ -80,7 +87,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
     try {
       const period = parsePeriod(req.query.period, 'day')
       const limit = parseNonNegativeInt(req.query.limit, period === 'week' ? 12 : 30)
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
 
       const history = getStatsHistory(period, {
         limit,
@@ -99,7 +106,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const period = parsePeriod(req.query.period, 'day')
       const limit = parseNonNegativeInt(req.query.limit, period === 'week' ? 12 : 30)
       const source = parseTokenUsageSource(req.query.source, 'all')
-      const config = getRequestConfig(req, baseConfig)
+      const config = getRequestConfig(req, getBaseConfig())
 
       const activity = getTokenUsageActivity(period, {
         limit,
@@ -116,7 +123,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.post('/api/token-usage/backfill', (req, res) => {
     try {
-      const config = getRequestConfig(req, baseConfig)
+      const config = getRequestConfig(req, getBaseConfig())
       const count = backfillFromExtractionRuns(config.lancedb.table)
       res.json({ backfilledEvents: count })
     } catch (error) {
@@ -127,7 +134,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.get('/api/memories', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
 
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 100), 1000)
       const offset = parseNonNegativeInt(req.query.offset, 0)
@@ -162,7 +169,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.get('/api/memories/:id', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const record = await getRecord(req.params.id, config)
       if (!record) {
         return res.status(404).json({ error: 'Memory not found' })
@@ -174,9 +181,25 @@ export function createMemoryRouter(context: ServerContext): express.Router {
     }
   })
 
+  router.post('/api/memories/:id/restore', async (req, res) => {
+    try {
+      const config = await ensureConfigInitialized(req, getBaseConfig())
+      const record = await getRecord(req.params.id, config)
+      if (!record) {
+        return res.status(404).json({ error: 'Memory not found' })
+      }
+      await updateRecord(req.params.id, { deprecated: false }, config)
+      const restored = await getRecord(req.params.id, config)
+      res.json({ success: true, record: restored })
+    } catch (error) {
+      logger.error('Failed to restore memory', error)
+      res.status(500).json({ error: 'Failed to restore memory' })
+    }
+  })
+
   router.delete('/api/memories/:id', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const record = await getRecord(req.params.id, config)
       if (!record) {
         return res.status(404).json({ error: 'Memory not found' })
@@ -191,7 +214,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.post('/api/reset-collection', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       await resetCollection(config)
       res.json({ success: true })
     } catch (error) {
@@ -208,7 +231,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
    */
   router.post('/api/memories', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const body = req.body
 
       if (!isPlainObject(body)) {
@@ -476,7 +499,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
 
   router.get('/api/search', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
 
       const rawQuery = req.query.q as string
       const query = rawQuery?.trim()
@@ -493,7 +516,12 @@ export function createMemoryRouter(context: ServerContext): express.Router {
       const windowLimit = offset + limit + 1
       const sourceLimit = Math.max(windowLimit * 3, windowLimit)
       const settings = loadSettings()
-      const queryEmbedding = await embed(query, config)
+      let queryEmbedding: number[] | undefined
+      try {
+        queryEmbedding = await embed(query, config)
+      } catch (embedError) {
+        logger.warn('Search embedding failed; falling back to keyword-only search', embedError)
+      }
 
       const { results } = await searchRankedCandidates({
         rawKeywordQueries: [query],
@@ -503,7 +531,7 @@ export function createMemoryRouter(context: ServerContext): express.Router {
         semanticProject: project,
         type,
         excludeDeprecated: !deprecated,
-        embeddings: [queryEmbedding],
+        embeddings: queryEmbedding ? [queryEmbedding] : [],
         rawPromptEmbedding: queryEmbedding,
         sourceLimit,
         resultLimit: windowLimit
@@ -558,6 +586,8 @@ function parseTokenUsageSource(
       || normalized === 'haiku-query'
       || normalized === 'usefulness-rating'
       || normalized === 'maintenance'
+      || normalized === 'review'
+      || normalized === 'chat'
     ) {
       return normalized
     }

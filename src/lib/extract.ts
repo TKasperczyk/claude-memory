@@ -284,7 +284,7 @@ async function streamExtractionWithRetry(
         model: config.extraction.model,
         system: [
           { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-          { type: 'text', text: SYSTEM_PROMPT }
+          { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
         ],
         messages: [{ role: 'user', content: userPrompt }],
         tools: [EMIT_RECORDS_TOOL],
@@ -395,6 +395,40 @@ export async function extractRecords(
   }
 }
 
+async function streamUsefulnessWithRetry(
+  client: Anthropic,
+  transcript: Transcript,
+  injectedMemories: InjectedMemoryEntry[],
+  config: Config
+): Promise<Anthropic.Messages.Message> {
+  let transcriptCap = MAX_USEFULNESS_TRANSCRIPT_CHARS
+  let userPrompt = buildUsefulnessPrompt(transcript, injectedMemories, transcriptCap)
+  const maxTokens = Math.min(USEFULNESS_MAX_TOKENS, config.extraction.maxTokens)
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.messages.stream({
+        model: config.extraction.model,
+        system: [
+          { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
+          { type: 'text', text: USEFULNESS_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }
+        ],
+        messages: [{ role: 'user', content: userPrompt }],
+        tools: [EMIT_USEFULNESS_TOOL],
+        ...buildToolCallParams(config.extraction.model, USEFULNESS_TOOL_NAME, maxTokens)
+      }).finalMessage()
+    } catch (error) {
+      const tooLong = parsePromptTooLong(error)
+      if (!tooLong || attempt >= MAX_PROMPT_TOO_LONG_RETRIES) throw error
+      const reducedCap = Math.floor(userPrompt.length * (tooLong.limit / tooLong.actual) * PROMPT_RETRY_SAFETY)
+      if (reducedCap < MIN_RETRY_TRANSCRIPT_CHARS || reducedCap >= transcriptCap) throw error
+      console.error(`[claude-memory] Usefulness rating prompt too long (${tooLong.actual} tokens > ${tooLong.limit} max); retrying with transcript truncated ${transcriptCap} -> ${reducedCap} chars`)
+      transcriptCap = reducedCap
+      userPrompt = buildUsefulnessPrompt(transcript, injectedMemories, transcriptCap)
+    }
+  }
+}
+
 export async function rateInjectedMemories(
   transcript: Transcript,
   injectedMemories: InjectedMemoryEntry[],
@@ -410,17 +444,7 @@ export async function rateInjectedMemories(
     throw new Error('No authentication available for usefulness rating. Set ANTHROPIC_API_KEY or run kira login.')
   }
 
-  const userPrompt = buildUsefulnessPrompt(transcript, injectedMemories)
-  const response = await client.messages.create({
-    model: config.extraction.model,
-    system: [
-      { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: USEFULNESS_SYSTEM_PROMPT }
-    ],
-    messages: [{ role: 'user', content: userPrompt }],
-    tools: [EMIT_USEFULNESS_TOOL],
-    ...buildToolCallParams(config.extraction.model, USEFULNESS_TOOL_NAME, Math.min(USEFULNESS_MAX_TOKENS, config.extraction.maxTokens))
-  })
+  const response = await streamUsefulnessWithRetry(client, transcript, injectedMemories, config)
 
   const tokenUsage = extractTokenUsage(response)
   recordTokenUsageEvent('usefulness-rating', config.extraction.model, tokenUsage, config.lancedb.table, attribution)
@@ -576,8 +600,12 @@ Ensure any durable technical content in these writes and their surrounding conve
 `
 }
 
-function buildUsefulnessPrompt(transcript: Transcript, injectedMemories: InjectedMemoryEntry[]): string {
-  const transcriptText = formatTranscript(transcript.events, MAX_USEFULNESS_TRANSCRIPT_CHARS)
+function buildUsefulnessPrompt(
+  transcript: Transcript,
+  injectedMemories: InjectedMemoryEntry[],
+  maxTranscriptChars: number = MAX_USEFULNESS_TRANSCRIPT_CHARS
+): string {
+  const transcriptText = formatTranscript(transcript.events, maxTranscriptChars)
   const memoriesText = injectedMemories.map(formatInjectedMemory).join('\n')
 
   return `Question: Which of these injected memories were actually used or helpful in solving the user's task?

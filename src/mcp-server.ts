@@ -9,18 +9,18 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import fs from 'fs'
-import path from 'path'
-import { fileURLToPath } from 'url'
 import { z } from 'zod'
 import { loadConfig } from './lib/config.js'
 import { initLanceDB, closeLanceDB, getRecord, resolveMemoryRecord, updateRecord } from './lib/lancedb.js'
 import { findAncestorProjects, formatRecordSnippet } from './lib/context.js'
 import { embed } from './lib/embed.js'
 import { markDeprecated } from './lib/maintenance/operations.js'
+import { canonicalizePath } from './lib/paths.js'
+import { sanitizeRecordUpdates } from './lib/record-updates.js'
 import { extractFallbackKeywords } from './lib/retrieval.js'
 import { searchRankedCandidates } from './lib/ranked-search.js'
 import { loadSettings } from './lib/settings.js'
+import { isProcessEntrypoint } from './lib/shared.js'
 import type { MemoryRecordResolution } from './lib/lancedb.js'
 import type { Config, HybridSearchResult, MemoryRecord, RecordType } from './lib/types.js'
 
@@ -65,6 +65,7 @@ function formatRecordForTool(record: MemoryRecord): Record<string, unknown> {
     case 'discovery':
       base.what = record.what
       base.where = record.where
+      base.evidence = record.evidence
       base.confidence = record.confidence
       break
     case 'procedure':
@@ -107,7 +108,7 @@ export async function runSearchMemoriesTool({ query, project, type, limit }: Sea
   await ensureInitialized()
 
   const settings = loadSettings()
-  const projectPath = project ?? process.cwd()
+  const projectPath = canonicalizePath(project ?? process.cwd())
   const ancestorProjects = findAncestorProjects(projectPath)
   const keywordQueries = extractFallbackKeywords(query, settings.maxKeywordQueries)
   const effectiveKeywordQueries = keywordQueries.length > 0 ? keywordQueries : [query]
@@ -148,6 +149,14 @@ export async function runSearchMemoriesTool({ query, project, type, limit }: Sea
   }
 }
 
+type UpdateMemoryContextInput = {
+  project?: string
+  cwd?: string
+  intent?: string
+  file?: string
+  tool?: string
+}
+
 type UpdateMemoryToolInput = {
   id: string
   scope?: 'global' | 'project'
@@ -155,12 +164,14 @@ type UpdateMemoryToolInput = {
   exitCode?: number
   outcome?: 'success' | 'failure' | 'partial'
   resolution?: string
-  context?: string
+  truncatedOutput?: string
+  context?: UpdateMemoryContextInput
   errorText?: string
   errorType?: string
   cause?: string
   what?: string
   where?: string
+  evidence?: string
   confidence?: 'verified' | 'inferred' | 'tentative'
   name?: string
   steps?: string[]
@@ -199,11 +210,9 @@ export async function runUpdateMemoryTool({ id, ...fields }: UpdateMemoryToolInp
   const canonicalId = existing.id
   if (existing.deprecated) return toolError(`Memory ${canonicalId} is deprecated; corrections belong on the live record that superseded it.`)
 
-  const updates: Partial<MemoryRecord> = {}
-  for (const [key, value] of Object.entries(fields)) {
-    if (value === undefined) continue
-    if (typeof value === 'string' && value.trim() === '') continue
-    ;(updates as Record<string, unknown>)[key] = value
+  const { updates, rejectedFields } = sanitizeRecordUpdates(existing, fields as Record<string, unknown>)
+  if (rejectedFields.length > 0) {
+    return toolError(`Invalid field(s) for ${existing.type} record ${canonicalId}: ${rejectedFields.join(', ')}.`)
   }
   if (Object.keys(updates).length === 0) return toolError('No updates provided.')
 
@@ -286,12 +295,20 @@ server.tool(
     exitCode: z.number().int().optional().describe('Command exit code (command records)'),
     outcome: z.enum(['success', 'failure', 'partial']).optional().describe('Command outcome (command records)'),
     resolution: z.string().optional().describe('Resolution text (command/error records)'),
-    context: z.string().optional().describe('Context text (command/error records)'),
+    truncatedOutput: z.string().optional().describe('Truncated command output (command records)'),
+    context: z.object({
+      project: z.string().optional(),
+      cwd: z.string().optional(),
+      intent: z.string().optional(),
+      file: z.string().optional(),
+      tool: z.string().optional()
+    }).optional().describe('Structured context fields (command: project/cwd/intent; error: project/file/tool; procedure: project)'),
     errorText: z.string().optional().describe('Error text (error records)'),
     errorType: z.string().optional().describe('Error type/category (error records)'),
     cause: z.string().optional().describe('Root cause (error records)'),
     what: z.string().optional().describe('Discovery summary (discovery records)'),
     where: z.string().optional().describe('Discovery context/location (discovery records)'),
+    evidence: z.string().optional().describe('Supporting evidence (discovery records)'),
     confidence: z.enum(['verified', 'inferred', 'tentative']).optional().describe('Discovery confidence'),
     name: z.string().optional().describe('Procedure name (procedure records)'),
     steps: z.array(z.string()).min(1).optional().describe('Procedure steps (procedure records)'),
@@ -333,19 +350,7 @@ async function main(): Promise<void> {
   })
 }
 
-function isMainModule(): boolean {
-  const entryPoint = process.argv[1]
-  if (!entryPoint) return false
-  const modulePath = fileURLToPath(import.meta.url)
-  const entryPath = path.resolve(entryPoint)
-  try {
-    return fs.realpathSync(modulePath) === fs.realpathSync(entryPath)
-  } catch {
-    return modulePath === entryPath
-  }
-}
-
-if (isMainModule()) {
+if (isProcessEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error('[claude-memory-mcp] Fatal error:', error)
     process.exit(1)

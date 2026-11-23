@@ -95,7 +95,14 @@ export function clampModelMaxTokens(model: string, requestedMaxTokens: number): 
 
 // Thinking counts toward max_tokens; caps sized for a bare tool call would
 // truncate before the tool_use block on models that cannot skip thinking.
-const AUTO_TOOL_CHOICE_THINKING_HEADROOM_TOKENS = 16000
+export const THINKING_HEADROOM_TOKENS = 16000
+const AUTO_TOOL_CHOICE_THINKING_HEADROOM_TOKENS = THINKING_HEADROOM_TOKENS
+
+export function computeMaxTokensWithThinkingHeadroom(model: string, baseMaxTokens: number): number {
+  const { thinkingStyle } = getModelCapabilities(model)
+  const needsHeadroom = thinkingStyle === 'always_on' || thinkingStyle === 'adaptive'
+  return clampModelMaxTokens(model, needsHeadroom ? baseMaxTokens + THINKING_HEADROOM_TOKENS : baseMaxTokens)
+}
 
 export type ToolCallParams = {
   tool_choice: { type: 'tool'; name: string } | { type: 'auto' }

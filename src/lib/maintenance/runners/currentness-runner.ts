@@ -320,7 +320,7 @@ async function checkCurrentnessCluster(
     model: config.extraction.model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: CURRENTNESS_PROMPT }
+      { type: 'text', text: CURRENTNESS_PROMPT, cache_control: { type: 'ephemeral' } }
     ],
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CURRENTNESS_TOOL],
@@ -388,7 +388,70 @@ function coerceCurrentnessVerdicts(value: unknown, records: DiscoveryRecord[]): 
     byId.set(id, { id, verdict, reason })
   }
 
-  return defaults.map(defaultVerdict => byId.get(defaultVerdict.id) ?? defaultVerdict)
+  return sanitizeCurrentnessVerdicts(
+    defaults.map(defaultVerdict => byId.get(defaultVerdict.id) ?? defaultVerdict),
+    records
+  )
+}
+
+export function sanitizeCurrentnessVerdicts(
+  verdicts: CurrentnessVerdict[],
+  records: DiscoveryRecord[]
+): CurrentnessVerdict[] {
+  const recordIds = new Set(records.map(record => record.id))
+  const supersedingById = new Map<string, string>()
+
+  for (const verdict of verdicts) {
+    if (
+      verdict.verdict === 'superseded'
+      && verdict.supersedingRecordId
+      && verdict.supersedingRecordId !== verdict.id
+      && recordIds.has(verdict.supersedingRecordId)
+    ) {
+      supersedingById.set(verdict.id, verdict.supersedingRecordId)
+    }
+  }
+
+  return verdicts.map(verdict => {
+    if (verdict.verdict !== 'superseded') return verdict
+
+    const initialTarget = supersedingById.get(verdict.id)
+    if (!initialTarget) {
+      return {
+        id: verdict.id,
+        verdict: 'historical_useful',
+        reason: 'Superseded verdict omitted a valid superseding record in the cluster.'
+      }
+    }
+
+    const visited = new Set<string>([verdict.id])
+    let target: string | undefined = initialTarget
+    while (target && supersedingById.has(target)) {
+      if (visited.has(target)) {
+        return {
+          id: verdict.id,
+          verdict: 'historical_useful',
+          reason: `Superseded verdict formed a cycle (${Array.from(visited).join(' -> ')} -> ${target}); preserved as historical_useful.`
+        }
+      }
+      visited.add(target)
+      target = supersedingById.get(target)
+    }
+
+    if (!target || target === verdict.id || !recordIds.has(target)) {
+      return {
+        id: verdict.id,
+        verdict: 'historical_useful',
+        reason: 'Superseded verdict did not resolve to a surviving record in the cluster.'
+      }
+    }
+
+    if (target === verdict.supersedingRecordId) return verdict
+    return {
+      ...verdict,
+      supersedingRecordId: target
+    }
+  })
 }
 
 function coerceCurrentnessVerdict(value: unknown): CurrentnessVerdictKind {

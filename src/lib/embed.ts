@@ -2,6 +2,7 @@
  * Embedding generation via OpenAI-compatible API (LM Studio, vLLM, etc.).
  */
 
+import https from 'https'
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type Config } from './types.js'
 import { withTimeout } from './shared.js'
 import { createLogger } from './logger.js'
@@ -9,6 +10,77 @@ const logger = createLogger('embed')
 const DEFAULT_TIMEOUT_MS = 30000
 
 const config: Config = DEFAULT_CONFIG
+let insecureHttpsAgent: https.Agent | null = null
+
+function getInsecureHttpsAgent(): https.Agent {
+  if (!insecureHttpsAgent) {
+    insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false })
+  }
+  return insecureHttpsAgent
+}
+
+async function postJsonInsecureHttps(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  signal?: AbortSignal
+): Promise<{ ok: boolean; status: number; statusText: string; json: () => Promise<unknown> }> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('Embedding request aborted'))
+      return
+    }
+    const parsedUrl = new URL(url)
+    const req = https.request({
+      protocol: parsedUrl.protocol,
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port ? Number(parsedUrl.port) : undefined,
+      path: `${parsedUrl.pathname}${parsedUrl.search}`,
+      method: 'POST',
+      headers: {
+        ...headers,
+        'Content-Length': Buffer.byteLength(body)
+      },
+      agent: getInsecureHttpsAgent()
+    }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer | string) => {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
+      })
+      res.on('end', () => {
+        cleanup()
+        const status = res.statusCode ?? 0
+        const statusText = res.statusMessage ?? ''
+        const text = Buffer.concat(chunks).toString('utf-8')
+        resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          statusText,
+          json: async () => JSON.parse(text) as unknown
+        })
+      })
+      res.on('error', (error) => {
+        cleanup()
+        reject(error)
+      })
+    })
+
+    const onAbort = () => {
+      req.destroy(new Error('Embedding request aborted'))
+    }
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort)
+    }
+
+    signal?.addEventListener('abort', onAbort, { once: true })
+    req.on('error', (error) => {
+      cleanup()
+      reject(error)
+    })
+    req.write(body)
+    req.end()
+  })
+}
 
 export async function embed(
   text: string,
@@ -34,10 +106,6 @@ async function requestEmbeddings(
   signal?: AbortSignal,
   timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<number[][]> {
-  if (cfg.embeddings.insecure && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0') {
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
-  }
-
   logger.debug(`Embedding request → ${cfg.embeddings.baseUrl} model=${cfg.embeddings.model}`)
 
   const result = await withTimeout(async (timeoutSignal) => {
@@ -45,16 +113,20 @@ async function requestEmbeddings(
     if (cfg.embeddings.apiKey) {
       headers['Authorization'] = `Bearer ${cfg.embeddings.apiKey}`
     }
-    const response = await fetch(cfg.embeddings.baseUrl + '/embeddings', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        input,
-        model: cfg.embeddings.model,
-        ...(cfg.embeddings.provider ? { provider: cfg.embeddings.provider } : {})
-      }),
-      signal: timeoutSignal
+    const endpoint = cfg.embeddings.baseUrl + '/embeddings'
+    const payload = JSON.stringify({
+      input,
+      model: cfg.embeddings.model,
+      ...(cfg.embeddings.provider ? { provider: cfg.embeddings.provider } : {})
     })
+    const response = cfg.embeddings.insecure && endpoint.startsWith('https://')
+      ? await postJsonInsecureHttps(endpoint, headers, payload, timeoutSignal)
+      : await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: payload,
+          signal: timeoutSignal
+        })
 
     if (!response.ok) {
       throw new Error(`Embedding request failed: ${response.status} ${response.statusText}`)

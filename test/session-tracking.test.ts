@@ -1,9 +1,30 @@
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import { randomUUID } from 'crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+
+const testRoot = await vi.hoisted(async () => {
+  const [fsMod, osMod, pathMod] = await Promise.all([import('fs'), import('os'), import('path')])
+  return fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'claude-memory-session-tracking-test-'))
+})
+
+vi.mock('../src/lib/paths.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/lib/paths.js')>('../src/lib/paths.js')
+  return {
+    ...actual,
+    CLAUDE_MEMORY_ROOT: testRoot,
+    DEBUG_LOG_FILE: path.join(testRoot, 'debug.log'),
+    LOCKS_DIR: path.join(testRoot, 'locks')
+  }
+})
+
 import {
   appendSessionTracking,
+  cleanupStaleSessions,
   loadSessionTracking,
   markInjectedForSuppression,
+  markSessionRetrievalCounted,
   removeSessionTracking,
   updateSessionRetrievalState
 } from '../src/lib/session-tracking.js'
@@ -27,6 +48,10 @@ afterEach(() => {
   }
   activeSessions.clear()
   activeCollections.clear()
+})
+
+afterAll(() => {
+  fs.rmSync(testRoot, { recursive: true, force: true })
 })
 
 describe('session tracking suppression state', () => {
@@ -153,5 +178,26 @@ describe('session tracking suppression state', () => {
     })
 
     expect(loadSessionTracking(sessionId, collection)?.recentlyInjectedIds).toEqual([])
+  })
+
+  it('tracks retrievalCounted flag and cleans up stale sessions', () => {
+    const collection = testCollection()
+    const freshId = testSessionId('fresh')
+    const staleId = testSessionId('stale')
+
+    appendSessionTracking(freshId, [], '/repo', 'hi', 'no_matches', collection)
+    markSessionRetrievalCounted(freshId, collection)
+    expect(loadSessionTracking(freshId, collection)?.retrievalCounted).toBe(true)
+
+    appendSessionTracking(staleId, [], '/repo', 'old', 'no_matches', collection)
+    const stalePath = path.join(testRoot, 'sessions', collection, `${staleId}.json`)
+    const parsed = JSON.parse(fs.readFileSync(stalePath, 'utf-8')) as Record<string, unknown>
+    parsed.lastActivity = Date.now() - 45 * 24 * 60 * 60 * 1000
+    fs.writeFileSync(stalePath, JSON.stringify(parsed), 'utf-8')
+
+    const removed = cleanupStaleSessions(collection, 30)
+    expect(removed).toBe(1)
+    expect(loadSessionTracking(staleId, collection)).toBeNull()
+    expect(loadSessionTracking(freshId, collection)).not.toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   runMaintenance,
   type MaintenanceOperationInfo,
@@ -23,7 +23,7 @@ interface UseMaintenanceExecutionResult {
   runningMode: Record<MaintenanceOperation, RunningMode>
   bulkRunning: boolean
   bulkMode: RunningMode
-  bulkProgress: Record<MaintenanceOperation, BulkProgressState> | null
+  bulkProgress: Partial<Record<MaintenanceOperation, BulkProgressState>> | null
   detailedProgress: OperationProgressMap
   bulkError: string | null
   handleRunOperation: (operation: MaintenanceOperation, dryRun: boolean) => Promise<void>
@@ -96,7 +96,9 @@ function removeDetailedProgress(
 }
 
 function supportsOperationProgress(operation: MaintenanceOperation): boolean {
-  return operation === 'consolidation' || operation === 'cross-type-consolidation'
+  return operation === 'consolidation'
+    || operation === 'cross-type-consolidation'
+    || operation === 'currentness-check'
 }
 
 export function useMaintenanceExecution(
@@ -107,11 +109,28 @@ export function useMaintenanceExecution(
   const [runningMode, setRunningMode] = useState<Record<MaintenanceOperation, RunningMode>>({})
   const [bulkRunning, setBulkRunning] = useState(false)
   const [bulkMode, setBulkMode] = useState<RunningMode>(null)
-  const [bulkProgress, setBulkProgress] = useState<Record<MaintenanceOperation, BulkProgressState> | null>(null)
+  const [bulkProgress, setBulkProgress] = useState<Partial<Record<MaintenanceOperation, BulkProgressState>> | null>(null)
   const [detailedProgress, setDetailedProgress] = useState<OperationProgressMap>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
 
   const { openStream, closeStream } = useMaintenanceExecutionStream()
+  const activeStreamResetRef = useRef<(() => void) | null>(null)
+
+  const beginStream = useCallback((url: string, resetCurrent: () => void) => {
+    const previousReset = activeStreamResetRef.current
+    activeStreamResetRef.current = null
+    previousReset?.()
+    activeStreamResetRef.current = resetCurrent
+    return openStream(url)
+  }, [openStream])
+
+  const finishStream = useCallback((resetCurrent: () => void) => {
+    if (activeStreamResetRef.current === resetCurrent) {
+      activeStreamResetRef.current = null
+    }
+    resetCurrent()
+    closeStream()
+  }, [closeStream])
 
   useEffect(() => {
     if (operations.length === 0) return
@@ -129,7 +148,15 @@ export function useMaintenanceExecution(
     setRunningMode(prev => ({ ...prev, [operation]: dryRun ? 'preview' : 'run' }))
 
     if (supportsOperationProgress(operation)) {
-      const eventSource = openStream(`/api/maintenance/stream?dryRun=${dryRun}&operation=${operation}`)
+      const resetOperation = () => {
+        setOperationRunning(operation, false)
+        setRunningMode(prev => ({ ...prev, [operation]: null }))
+        setDetailedProgress(prev => removeDetailedProgress(prev, operation))
+      }
+      const eventSource = beginStream(
+        `/api/maintenance/stream?dryRun=${dryRun}&operation=${operation}`,
+        resetOperation
+      )
 
       eventSource.addEventListener('detailed-progress', event => {
         const data = parseSsePayload(event, 'detailed-progress')
@@ -180,16 +207,11 @@ export function useMaintenanceExecution(
       })
 
       eventSource.addEventListener('complete', () => {
-        setOperationRunning(operation, false)
-        setRunningMode(prev => ({ ...prev, [operation]: null }))
-        closeStream()
+        finishStream(resetOperation)
       })
 
       eventSource.onerror = () => {
-        setOperationRunning(operation, false)
-        setRunningMode(prev => ({ ...prev, [operation]: null }))
-        setDetailedProgress(prev => removeDetailedProgress(prev, operation))
-        closeStream()
+        finishStream(resetOperation)
       }
 
       return
@@ -208,19 +230,32 @@ export function useMaintenanceExecution(
       setOperationRunning(operation, false)
       setRunningMode(prev => ({ ...prev, [operation]: null }))
     }
-  }, [closeStream, openStream, setOperationRunning])
+  }, [beginStream, finishStream, setOperationRunning])
 
   const handleRunAll = useCallback((dryRun: boolean) => {
     if (operations.length === 0) return
 
+    const resetBulk = () => {
+      setBulkRunning(false)
+      setBulkProgress(null)
+      setDetailedProgress(null)
+      setBulkMode(null)
+    }
+
+    const eventSource = beginStream(`/api/maintenance/stream?dryRun=${dryRun}`, resetBulk)
     setBulkRunning(true)
     setBulkMode(dryRun ? 'preview' : 'run')
     setBulkError(null)
-    setBulkProgress(
-      Object.fromEntries(operations.map(op => [op.key, 'pending'])) as Record<MaintenanceOperation, BulkProgressState>
-    )
+    setBulkProgress({})
 
-    const eventSource = openStream(`/api/maintenance/stream?dryRun=${dryRun}`)
+    eventSource.addEventListener('start', event => {
+      const data = parseSsePayload(event, 'start')
+      if (!data || !Array.isArray(data.operations)) return
+      const scheduled = data.operations.filter((item): item is MaintenanceOperation => typeof item === 'string')
+      setBulkProgress(
+        Object.fromEntries(scheduled.map(op => [op, 'pending'])) as Partial<Record<MaintenanceOperation, BulkProgressState>>
+      )
+    })
 
     eventSource.addEventListener('progress', event => {
       const data = parseSsePayload(event, 'progress')
@@ -274,21 +309,13 @@ export function useMaintenanceExecution(
     })
 
     eventSource.addEventListener('complete', () => {
-      setBulkRunning(false)
-      setBulkProgress(null)
-      setDetailedProgress(null)
-      setBulkMode(null)
-      closeStream()
+      finishStream(resetBulk)
     })
 
     eventSource.onerror = () => {
-      setBulkRunning(false)
-      setBulkProgress(null)
-      setDetailedProgress(null)
-      setBulkMode(null)
-      closeStream()
+      finishStream(resetBulk)
     }
-  }, [closeStream, openStream, operations])
+  }, [beginStream, finishStream, operations])
 
   return {
     results,

@@ -1,12 +1,11 @@
 #!/usr/bin/env -S npx tsx
 
-import path from 'path'
-import { fileURLToPath } from 'url'
 import {
   runSelfUpdate,
   type SelfUpdateOptions,
   type SelfUpdateResult
 } from './lib/self-update.js'
+import { isProcessEntrypoint } from './lib/shared.js'
 import { toErrorMessage } from './lib/maintenance/runners/shared.js'
 
 const USAGE = `Usage: pnpm run self-update [options]
@@ -196,9 +195,7 @@ function main(): void {
   if (result.status === 'failed') process.exitCode = 2
 }
 
-const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : ''
-const isMainModule = fileURLToPath(import.meta.url) === entryPath
-if (isMainModule) {
+if (isProcessEntrypoint(import.meta.url)) {
   try {
     main()
   } catch (error) {

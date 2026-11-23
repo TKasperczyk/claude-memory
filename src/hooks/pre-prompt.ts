@@ -7,6 +7,7 @@ import { isProcessEntrypoint, readFileIfExists } from '../lib/shared.js'
 import { closeLanceDB } from '../lib/lancedb.js'
 import { findGitRoot, formatRecordSnippet, stripNoiseWords } from '../lib/context.js'
 import { loadConfig } from '../lib/config.js'
+import { canonicalizePath } from '../lib/paths.js'
 import { loadSettings } from '../lib/settings.js'
 import { handlePrePrompt } from '../lib/retrieval.js'
 import { recordRetrievalEvents } from '../lib/retrieval-events.js'
@@ -200,7 +201,7 @@ export async function main(runtimeOverrides: Partial<PrePromptRuntime> = {}): Pr
     }
 
     const projectRoot = runtime.findGitRoot(payload.cwd)
-    const configRoot = projectRoot ?? payload.cwd
+    const configRoot = projectRoot ?? (payload.cwd ? canonicalizePath(payload.cwd) : payload.cwd)
     const config = runtime.loadConfig(configRoot)
     const settings = runtime.loadSettings()
 

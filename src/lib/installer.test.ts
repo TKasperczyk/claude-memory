@@ -6,6 +6,7 @@ import { SKIP_EXTRACTION_MARKER, SKIP_MARKER } from './claude-commands.js'
 import {
   ClaudeSettingsError,
   getHookStatus,
+  getInstallationStatus,
   installCommands,
   installHooks,
   uninstallCommands,
@@ -250,6 +251,44 @@ describe('installer hook management', () => {
     const userPromptHooks = settings.hooks?.UserPromptSubmit ?? []
     const remainingCommands = userPromptHooks.flatMap(entry => (entry.hooks ?? []).map(hook => hook.command ?? ''))
     expect(remainingCommands).toContain(customCommand)
+  })
+
+  it('matches hooks and MCP server across symlinked configRoot and preserves custom env prefixes', () => {
+    const realRoot = path.join(tempDir, 'real-root')
+    const linkRoot = path.join(tempDir, 'link-root')
+    fs.mkdirSync(path.join(realRoot, 'dist', 'hooks'), { recursive: true })
+    fs.symlinkSync(realRoot, linkRoot)
+
+    const envPrefix = 'env ANTHROPIC_BASE_URL=https://proxy.example ANTHROPIC_AUTH_TOKEN=secret'
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [{
+          hooks: [{
+            type: 'command',
+            command: `${envPrefix} node "${path.join(realRoot, 'dist', 'hooks', 'pre-prompt.js')}"`,
+            timeout: 15
+          }]
+        }]
+      },
+      mcpServers: {
+        'claude-memory': {
+          type: 'stdio',
+          command: 'node',
+          args: [path.join(realRoot, 'dist', 'mcp-server.js')]
+        }
+      }
+    }, null, 2), 'utf-8')
+
+    // Checking status via the symlinked path recognizes both hooks and MCP
+    const status = getInstallationStatus(settingsPath, linkRoot, settingsPath)
+    expect(status.hooks.UserPromptSubmit.installed).toBe(true)
+    expect(status.mcp.installed).toBe(true)
+
+    // Re-installing hooks preserves the custom env prefix
+    const installed = installHooks(settingsPath, linkRoot)
+    expect(installed.UserPromptSubmit.configured).toBe(
+      `${envPrefix} node "${path.join(realRoot, 'dist', 'hooks', 'pre-prompt.js')}"`
+    )
   })
 })
 

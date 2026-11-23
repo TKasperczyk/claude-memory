@@ -45,6 +45,7 @@ type RunnerOptions = {
 type CommandCall = {
   command: string
   args: string[]
+  env?: NodeJS.ProcessEnv
 }
 
 let tempDir = ''
@@ -273,7 +274,7 @@ function createRunner(
   const calls: CommandCall[] = []
   let installFailuresRemaining = options.installFailures ?? 0
   const runner: SelfUpdateCommandRunner = (command, args, commandOptions) => {
-    calls.push({ command, args: [...args] })
+    calls.push({ command, args: [...args], env: commandOptions.env })
     if (command === 'git') {
       if (options.fetchFailure && args[0] === 'fetch') {
         return failureResult('simulated fetch failure')
@@ -1367,7 +1368,75 @@ describe('self-update state, reconciliation, and explicit operations', () => {
     })
     expect(explicit.dashboard.status).toBe('success')
     expect(pnpmCalls(dashboardRunner.calls)).toEqual([
-      { command: 'pnpm', args: ['run', 'dashboard:build'] }
+      expect.objectContaining({ command: 'pnpm', args: ['run', 'dashboard:build'] })
     ])
+  })
+
+  it('passes CI=true when running pnpm install --frozen-lockfile', async () => {
+    const selfUpdate = await loadSelfUpdate()
+    writeFile(path.join(fixture.root, 'pnpm-lock.yaml'), "lockfileVersion: '9.9'\n")
+    const { runner, calls } = createRunner(selfUpdate)
+
+    const result = selfUpdate.runSelfUpdate({ root: fixture.root, runner })
+
+    expect(result.dependencies.status).toBe('success')
+    const installCall = calls.find(call => call.command === 'pnpm' && call.args[0] === 'install')
+    expect(installCall).toBeDefined()
+    expect(installCall?.env?.CI).toBe('true')
+  })
+
+  it('backs off automatic retries after failure until cooldown expires, inputs change, or CLI succeeds', async () => {
+    const selfUpdate = await loadSelfUpdate()
+    writeFile(path.join(fixture.root, 'pnpm-lock.yaml'), "lockfileVersion: '9.8'\n")
+    const failingRunner = createRunner(selfUpdate, { installFailures: 1 })
+
+    const failed = selfUpdate.runSelfUpdate({
+      root: fixture.root,
+      runner: failingRunner.runner,
+      trigger: 'auto'
+    })
+    expect(failed.status).toBe('failed')
+    expect(failed.dependencies.status).toBe('failed')
+
+    // Immediate automatic retry with unchanged inputs is skipped via failure-backoff
+    const skippedRunner = createRunner(selfUpdate)
+    const skipped = selfUpdate.runSelfUpdate({
+      root: fixture.root,
+      runner: skippedRunner.runner,
+      trigger: 'auto'
+    })
+    expect(skipped.status).toBe('skipped')
+    expect(skipped.pull.skipReason).toBe('failure-backoff')
+    expect(pnpmCalls(skippedRunner.calls)).toHaveLength(0)
+
+    // Changing source inputs bypasses backoff
+    writeFile(path.join(fixture.root, 'src', 'index.ts'), 'export const recovered = true\n')
+    const recoveryRunner = createRunner(selfUpdate)
+    const recovered = selfUpdate.runSelfUpdate({
+      root: fixture.root,
+      runner: recoveryRunner.runner,
+      trigger: 'auto'
+    })
+    expect(recovered.status).toBe('completed')
+    expect(recovered.build.status).toBe('rebuilt')
+    expect(readState().autoFailureBackoff).toBeUndefined()
+  })
+
+  it('writeBuildStamp marks a manual build fresh without triggering spurious dependency rebuilds', async () => {
+    const selfUpdate = await loadSelfUpdate({ initializeBaseline: false })
+    fs.rmSync(getBuildStampPath(fixture.root), { force: true })
+    expect(selfUpdate.inspectBuildState(fixture.root).stale).toBe(true)
+
+    selfUpdate.writeBuildStamp(fixture.root, 'cli')
+    expect(selfUpdate.inspectBuildState(fixture.root).stale).toBe(false)
+
+    const { runner, calls } = createRunner(selfUpdate)
+    const result = selfUpdate.runSelfUpdate({
+      root: fixture.root,
+      runner,
+      rebuildOnly: true
+    })
+    expect(result.build.status).toBe('up-to-date')
+    expect(pnpmCalls(calls)).toHaveLength(0)
   })
 })

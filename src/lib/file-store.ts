@@ -8,7 +8,11 @@ import { CLAUDE_MEMORY_ROOT } from './paths.js'
 export function getCollectionKey(collection?: string): string {
   const fallback = DEFAULT_CONFIG.lancedb.table
   const raw = (collection ?? fallback).trim()
-  return sanitizeRunId(raw || fallback)
+  const sanitized = sanitizeRunId(raw || fallback)
+  if (!sanitized || sanitized === '.' || sanitized === '..') {
+    return sanitizeRunId(fallback)
+  }
+  return sanitized
 }
 
 export function isDefaultCollection(collection?: string): boolean {
@@ -103,8 +107,13 @@ export class NamespacedStore {
     const safeKey = options.sanitize === false ? key : this.sanitizeKeyFn(key)
     const suffix = this.resolveSuffix(options.suffix)
     const fileName = suffix ? `${safeKey}${suffix}` : safeKey
-    const base = options.legacy ? this.rootDir : this.getCollectionDir(options.collection)
-    return path.join(base, fileName)
+    const base = path.resolve(options.legacy ? this.rootDir : this.getCollectionDir(options.collection))
+    const resolved = path.resolve(base, fileName)
+    const relative = path.relative(base, resolved)
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error(`Invalid storage key "${key}" resolves outside ${base}`)
+    }
+    return resolved
   }
 
   listKeys(options: ListKeysOptions = {}): string[] {

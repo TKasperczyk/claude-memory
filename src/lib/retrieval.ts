@@ -3,6 +3,7 @@ import { closeLanceDB, initLanceDB, fetchRecordsByIds, iterateRecords } from './
 import { ENTITY_TOKEN_PATTERN, extractEntityNeedles } from './entities.js'
 import { buildContext, extractSignals, findAncestorProjects, stripNoiseWords, type ContextSignals } from './context.js'
 import { embed } from './embed.js'
+import { canonicalizePath } from './paths.js'
 import { mergeNearMisses, buildExclusionReason } from './diagnostics.js'
 import { cosineSimilarity, searchRankedCandidates, sortByScore } from './ranked-search.js'
 import { generateRetrievalQueryPlan } from './retrieval-query-generator.js'
@@ -155,6 +156,10 @@ const ENTITY_NEEDLE_CAP = 3
 // A hung embedding provider must cost one query variant, not the whole
 // pre-prompt budget; searchMemories already continues with partial embeddings.
 const HOOK_EMBEDDING_TIMEOUT_MS = 3000
+// Reserve headroom inside prePromptTimeoutMs so LanceDB search + MMR always
+// have time to complete after Haiku and embedding calls.
+const RETRIEVAL_POST_HAIKU_HEADROOM_MS = 2500
+const RETRIEVAL_SEARCH_HEADROOM_MS = 1000
 
 function applySettingsToConfig(config: Config, settings: RetrievalSettings): Config {
   return {
@@ -197,6 +202,11 @@ export type RetrievalOptions = {
   projectRoot?: string
   settingsOverride?: Partial<RetrievalSettings>
   diagnostic?: boolean
+  /**
+   * Close the shared LanceDB handle on timeout/abort. Enable only in short-lived
+   * hook processes; long-lived servers (Express dashboard) must keep the handle open.
+   */
+  closeOnTimeout?: boolean
 }
 
 /**
@@ -224,11 +234,15 @@ export async function retrieveContext(
     : baseSettings
   const runtimeConfig = applySettingsToConfig(config, settings)
   const diagnostic = options.diagnostic === true
+  const closeOnTimeout = options.closeOnTimeout === true
+  const deadlineMs = Date.now() + settings.prePromptTimeoutMs
 
   const result = await withTimeout(async (signal) => {
-    const unregister = registerAbortCleanup(signal, () => {
-      void closeLanceDB()
-    })
+    const unregister = closeOnTimeout
+      ? registerAbortCleanup(signal, () => {
+          void closeLanceDB()
+        })
+      : () => {}
     try {
       await initLanceDB(runtimeConfig)
       const searchResult = await searchMemories(
@@ -242,7 +256,8 @@ export async function retrieveContext(
           diagnostic,
           transcriptPath: input.transcriptPath,
           sessionId: input.sessionId,
-          skipSuppressionWriteback: input.skipSuppressionWriteback
+          skipSuppressionWriteback: input.skipSuppressionWriteback,
+          deadlineMs
         }
       )
       const results = searchResult.results
@@ -277,9 +292,11 @@ export async function retrieveContext(
     }
   }, {
     timeoutMs: settings.prePromptTimeoutMs,
-    onTimeout: () => {
-      void closeLanceDB()
-    }
+    ...(closeOnTimeout ? {
+      onTimeout: () => {
+        void closeLanceDB()
+      }
+    } : {})
   })
 
   if (!result.completed) {
@@ -313,7 +330,10 @@ export async function handlePrePrompt(
     cwd: input.cwd,
     transcriptPath: input.transcript_path,
     sessionId: input.session_id
-  }, config, options)
+  }, config, {
+    ...options,
+    closeOnTimeout: options.closeOnTimeout ?? true
+  })
 }
 
 type SearchMemoriesDiagnostics = {
@@ -335,7 +355,7 @@ async function searchMemories(
   settings: RetrievalSettings,
   cwd: string,
   signal?: AbortSignal,
-  options: { diagnostic?: boolean; transcriptPath?: string; sessionId?: string; skipSuppressionWriteback?: boolean } = {}
+  options: { diagnostic?: boolean; transcriptPath?: string; sessionId?: string; skipSuppressionWriteback?: boolean; deadlineMs?: number } = {}
 ): Promise<SearchMemoriesResult> {
   const cleanPrompt = stripNoiseWords(prompt)
   const diagnostic = options.diagnostic === true
@@ -344,11 +364,27 @@ async function searchMemories(
     : null
   let suppressionStateVersion = session?.retrievalStateVersion ?? 0
 
+  const rawSemanticQuery = buildSemanticQuery(cleanPrompt, signals, settings)
+  const effectiveHaikuTimeoutMs = settings.prePromptTimeoutMs > RETRIEVAL_POST_HAIKU_HEADROOM_MS + 500
+    ? Math.min(settings.haikuQueryTimeoutMs, settings.prePromptTimeoutMs - RETRIEVAL_POST_HAIKU_HEADROOM_MS)
+    : settings.haikuQueryTimeoutMs
+
+  // Start embedding the raw prompt concurrently with Haiku query planning so a slow
+  // or timed-out Haiku call does not add another serial embedding roundtrip on top.
+  const rawEmbedPromise: Promise<{ query: string; embedding?: number[]; error?: unknown } | null> = rawSemanticQuery
+    ? embed(rawSemanticQuery, config, { signal, timeoutMs: HOOK_EMBEDDING_TIMEOUT_MS })
+        .then(embedding => ({ query: rawSemanticQuery, embedding }))
+        .catch(error => {
+          if (signal?.aborted) throw error
+          return { query: rawSemanticQuery, error }
+        })
+    : Promise.resolve(null)
+
   const queryPlanResult = settings.enableHaikuRetrieval
     ? await generateRetrievalQueryPlan(
         prompt,
         options.transcriptPath,
-        { signal, timeoutMs: settings.haikuQueryTimeoutMs, expansionCount: settings.haikuExpansionCount }
+        { signal, timeoutMs: effectiveHaikuTimeoutMs, expansionCount: settings.haikuExpansionCount }
       )
     : null
   const queryPlanTokenUsage = queryPlanResult?.tokenUsage
@@ -386,24 +422,40 @@ async function searchMemories(
     ? normalizeSemanticQueries(queryPlan.semanticQueries, signals, settings)
     : normalizeSemanticQueries([buildSemanticQuery(cleanPrompt, signals, settings)], signals, settings)
   const semanticQuery = semanticQueries.join('\n')
-  const rawSemanticQuery = buildSemanticQuery(cleanPrompt, signals, settings)
-  const project = signals.projectRoot ?? cwd
+  const project = signals.projectRoot ?? (cwd ? canonicalizePath(cwd) : cwd)
   const ancestorProjects = project ? findAncestorProjects(project) : []
 
-  // Embed the raw prompt independently from Haiku variants. Haiku embeddings
-  // improve recall/ranking, but only the raw embedding may open the anchor gate.
+  // Embed any Haiku-expanded queries that differ from rawSemanticQuery using the
+  // remaining timeout budget (preserving headroom for LanceDB + MMR).
   const embeddingQueries = Array.from(new Set([
     ...(rawSemanticQuery ? [rawSemanticQuery] : []),
     ...semanticQueries
   ]))
-  const embeddingResults = await Promise.all(embeddingQueries.map(async query => {
-    try {
-      return { query, embedding: await embed(query, config, { signal, timeoutMs: HOOK_EMBEDDING_TIMEOUT_MS }) }
-    } catch (error) {
-      if (signal?.aborted) throw error
-      return { query, error }
-    }
-  }))
+  const extraQueries = embeddingQueries.filter(query => query !== rawSemanticQuery)
+  const remainingMs = options.deadlineMs !== undefined
+    ? options.deadlineMs - Date.now()
+    : HOOK_EMBEDDING_TIMEOUT_MS + RETRIEVAL_SEARCH_HEADROOM_MS
+  const extraEmbedBudgetMs = Math.min(
+    HOOK_EMBEDDING_TIMEOUT_MS,
+    Math.max(0, remainingMs - RETRIEVAL_SEARCH_HEADROOM_MS)
+  )
+
+  const extraEmbedPromise = extraQueries.length > 0 && extraEmbedBudgetMs >= 300
+    ? Promise.all(extraQueries.map(async query => {
+        try {
+          return { query, embedding: await embed(query, config, { signal, timeoutMs: extraEmbedBudgetMs }) }
+        } catch (error) {
+          if (signal?.aborted) throw error
+          return { query, error }
+        }
+      }))
+    : Promise.resolve([])
+
+  const [rawEmbedResult, extraEmbedResults] = await Promise.all([rawEmbedPromise, extraEmbedPromise])
+  const embeddingResults = [
+    ...(rawEmbedResult ? [rawEmbedResult] : []),
+    ...extraEmbedResults
+  ]
   const embeddingsByQuery = new Map<string, number[]>()
   const embeddingErrors: unknown[] = []
   for (const result of embeddingResults) {
@@ -549,7 +601,7 @@ async function searchMemories(
   }
 
   if (results.length > 0 && settings.enableRelationExpansion) {
-    results = await expandViaRelations(results, config, settings)
+    results = await expandViaRelations(results, config, settings, { project, ancestorProjects })
     if (settings.minExpandedScore > 0) {
       if (diagnostic && searchNearMisses) {
         for (const result of results) {
@@ -770,7 +822,8 @@ type RelationExpansionFrontierEntry = {
 export async function expandViaRelations(
   initialResults: HybridSearchResult[],
   config: Config,
-  settings: Pick<RetrievalSettings, 'maxRelationHops' | 'maxRelationExpansions' | 'relationHopDecay' | 'enableEntityEdges'>
+  settings: Pick<RetrievalSettings, 'maxRelationHops' | 'maxRelationExpansions' | 'relationHopDecay' | 'enableEntityEdges'>,
+  scope?: { project?: string; ancestorProjects?: string[] }
 ): Promise<HybridSearchResult[]> {
   const maxHops = Math.max(0, Math.trunc(settings.maxRelationHops))
   const maxExpansions = Math.max(0, Math.trunc(settings.maxRelationExpansions))
@@ -846,6 +899,16 @@ export async function expandViaRelations(
 
       const record = recordsById.get(candidate.targetId)
       if (!record || record.deprecated) continue
+      if (
+        scope?.project
+        && record.scope !== 'global'
+        && record.project
+        && record.project !== scope.project
+        && !(scope.ancestorProjects?.includes(record.project))
+        && !(candidate.parent.record.scope !== 'global' && candidate.parent.record.project === record.project)
+      ) {
+        continue
+      }
 
       const result: HybridSearchResult = {
         record,

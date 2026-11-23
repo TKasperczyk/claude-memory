@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_CONFIG, EMBEDDING_DIM, type MemoryRecord } from '../src/lib/types.js'
 import { runConflictResolution } from '../src/lib/maintenance.js'
-import { findSimilar } from '../src/lib/lancedb.js'
+import { batchUpdateRecords, fetchRecordsByIds, findSimilar } from '../src/lib/lancedb.js'
 import { fetchRecords } from '../src/lib/maintenance/scans.js'
 import { markDeprecated } from '../src/lib/maintenance/operations.js'
 import { CONFLICT_ADJUDICATION_TOOL } from '../src/lib/maintenance/prompts.js'
@@ -15,8 +15,9 @@ const mockState = vi.hoisted(() => ({
 }))
 
 vi.mock('../src/lib/lancedb.js', () => ({
-  batchUpdateRecords: vi.fn(async () => ({ updated: mockState.unchecked.length, failed: 0 })),
+  batchUpdateRecords: vi.fn(async (records: MemoryRecord[]) => ({ updated: records.length, failed: 0 })),
   buildFilter: vi.fn(() => 'deprecated = false'),
+  fetchRecordsByIds: vi.fn(async () => []),
   findSimilar: vi.fn(async () => mockState.matches),
   queryRecords: vi.fn(async () => []),
   updateRecord: vi.fn(async () => true),
@@ -70,6 +71,8 @@ describe('conflict resolution verdict actions', () => {
     mockState.verdictInput = {}
     mockState.llmRequest = undefined
     vi.mocked(fetchRecords).mockClear()
+    vi.mocked(fetchRecordsByIds).mockClear()
+    vi.mocked(batchUpdateRecords).mockClear()
     vi.mocked(findSimilar).mockClear()
     vi.mocked(markDeprecated).mockClear()
   })
@@ -173,5 +176,57 @@ describe('conflict resolution verdict actions', () => {
       type: 'string',
       enum: ['deprecate_existing', 'deprecate_candidate', 'keep_both']
     })
+  })
+
+  it('fetches unchecked records once, never resurrects same-batch deprecate_existing records, and preserves supersedes links', async () => {
+    const newer = createMockDiscoveryRecord({
+      id: 'newer-record',
+      what: 'Updated state after migration',
+      where: 'src/db.ts',
+      evidence: 'Observed live',
+      timestamp: Date.parse('2026-04-24T10:00:00.000Z'),
+      lastConflictCheck: 0,
+      embedding: embedding(0)
+    })
+    const older = createMockDiscoveryRecord({
+      id: 'older-record',
+      what: 'Old state before migration',
+      where: 'src/db.ts',
+      evidence: 'Observed earlier',
+      timestamp: Date.parse('2026-04-23T10:00:00.000Z'),
+      lastConflictCheck: 0,
+      embedding: embedding(1)
+    })
+    const newerWithSupersedes: MemoryRecord = {
+      ...newer,
+      supersedes: older.id,
+      relations: [{ targetId: older.id, kind: 'supersedes', weight: 1, updatedAt: '2026-04-24T10:00:00.000Z' }]
+    }
+
+    mockState.unchecked = [newer, older]
+    vi.mocked(findSimilar).mockImplementation(async (record) => {
+      if (record.id === newer.id) return [{ record: older, similarity: 0.9 }]
+      return [{ record: newer, similarity: 0.9 }]
+    })
+    mockState.verdictInput = {
+      verdict: 'deprecate_existing',
+      reason: 'Newer record supersedes older record.',
+      supersedingRecordId: newer.id
+    }
+    vi.mocked(fetchRecordsByIds).mockResolvedValueOnce([newerWithSupersedes])
+
+    const result = await runConflictResolution(false, DEFAULT_CONFIG)
+
+    expect(fetchRecords).toHaveBeenCalledTimes(1)
+    expect(markDeprecated).toHaveBeenCalledWith(older.id, DEFAULT_CONFIG, {
+      reason: `conflict-resolution:superseded-by:${newer.id}`,
+      supersedingRecordId: newer.id
+    })
+    expect(fetchRecordsByIds).toHaveBeenCalledWith([newer.id], DEFAULT_CONFIG, { includeEmbeddings: true })
+    expect(batchUpdateRecords).toHaveBeenCalledTimes(1)
+    const markedRecords = vi.mocked(batchUpdateRecords).mock.calls[0][0]
+    expect(markedRecords.map(r => r.id)).toEqual([newer.id])
+    expect(markedRecords[0].supersedes).toBe(older.id)
+    expect(result.summary.deprecatedExisting).toBe(1)
   })
 })

@@ -8,7 +8,19 @@ export function canonicalizePath(targetPath: string): string {
   try {
     return fs.realpathSync(resolvedPath)
   } catch {
-    return resolvedPath
+    const suffixParts: string[] = []
+    let current = resolvedPath
+    while (true) {
+      const parent = path.dirname(current)
+      if (parent === current) return resolvedPath
+      suffixParts.unshift(path.basename(current))
+      current = parent
+      try {
+        return path.join(fs.realpathSync(current), ...suffixParts)
+      } catch {
+        // Continue walking up to the deepest existing ancestor.
+      }
+    }
   }
 }
 

@@ -5,7 +5,7 @@ import {
   type Config,
   type MemoryRecord
 } from '../types.js'
-import { batchUpdateRecords, findSimilar } from '../lancedb.js'
+import { batchUpdateRecords, fetchRecordsByIds, findSimilar } from '../lancedb.js'
 import { resolveMaintenanceSettings, type MaintenanceSettings } from '../settings.js'
 import { isPlainObject, isToolUseBlock, type ToolUseBlock } from '../parsing.js'
 import { buildToolCallParams } from '../model-capabilities.js'
@@ -41,13 +41,12 @@ type ConflictVerdict = {
 }
 
 async function findNewConflicts(
+  unchecked: MemoryRecord[],
   config: Config = DEFAULT_CONFIG,
   settings?: MaintenanceSettings
 ): Promise<ConflictPair[]> {
   const maintenance = resolveMaintenanceSettings(settings)
   const pairs: ConflictPair[] = []
-  const filter = 'deprecated = false AND last_conflict_check = 0'
-  const unchecked = await fetchRecords(filter, config, true)
   // Track pairs we've already seen to avoid duplicates (A vs B and B vs A)
   const seenPairs = new Set<string>()
 
@@ -89,7 +88,7 @@ async function resolveConflictWithLLM(
     model: config.extraction.model,
     system: [
       { type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT },
-      { type: 'text', text: CONFLICT_ADJUDICATION_PROMPT }
+      { type: 'text', text: CONFLICT_ADJUDICATION_PROMPT, cache_control: { type: 'ephemeral' } }
     ],
     messages: [{ role: 'user', content: `Records:\n${payload}` }],
     tools: [CONFLICT_ADJUDICATION_TOOL],
@@ -166,12 +165,13 @@ export async function runConflictResolution(
 
     logger.info('Finding conflict pairs (similarity search)...')
     const searchStart = Date.now()
-    const conflictPairs = await findNewConflicts(config, maintenance)
+    const conflictPairs = await findNewConflicts(unchecked, config, maintenance)
     pairs = conflictPairs.length
     const searchDuration = Date.now() - searchStart
     logger.info(`Found ${pairs} conflict pairs in ${searchDuration}ms (threshold: ${maintenance.conflictSimilarityThreshold})`)
 
-    const deprecatedNewIds = new Set<string>()
+    const deprecatedIds = new Set<string>()
+    const mutatedSupersedingIds = new Set<string>()
     const failedNewIds = new Set<string>()
     // Stage actions per candidate so errors don't cause partial deprecations.
     let currentNewId: string | null = null
@@ -198,6 +198,7 @@ export async function runConflictResolution(
         actions.push(...pendingActions)
         for (const action of pendingActions) {
           if (!action.recordId) continue
+          deprecatedIds.add(action.recordId)
           if (action.recordId === currentNewId) {
             deprecatedNew += 1
           } else {
@@ -234,6 +235,10 @@ export async function runConflictResolution(
         }
         if (updatedRecord) {
           actions.push(action)
+          deprecatedIds.add(action.recordId)
+          if (supersedingRecordId) {
+            mutatedSupersedingIds.add(supersedingRecordId)
+          }
           if (action.recordId === currentNewId) {
             deprecatedNew += 1
           } else {
@@ -263,7 +268,13 @@ export async function runConflictResolution(
           resetPending(newId)
         }
 
-        if (deprecatedNewIds.has(newId) || failedNewIds.has(newId)) continue
+        if (
+          deprecatedIds.has(newId)
+          || deprecatedIds.has(pair.existingRecord.id)
+          || failedNewIds.has(newId)
+        ) {
+          continue
+        }
 
         try {
           const verdict = normalizeConflictVerdictForPair(
@@ -323,7 +334,7 @@ export async function runConflictResolution(
 
             pendingActions = [action]
             pendingKeptBoth = 0
-            deprecatedNewIds.add(newId)
+            deprecatedIds.add(newId)
           } else {
             pendingKeptBoth += 1
           }
@@ -345,17 +356,35 @@ export async function runConflictResolution(
       logger.info(`Verdicts: ${deprecatedExisting} deprecate_existing, ${deprecatedNew} deprecate_candidate, ${keptBoth} keep_both`)
     }
 
-    const recordsToMark = unchecked.filter(r => !deprecatedNewIds.has(r.id) && !failedNewIds.has(r.id))
-    if (recordsToMark.length > 0) {
+    const candidatesToMark = unchecked.filter(r => !deprecatedIds.has(r.id) && !failedNewIds.has(r.id))
+    if (candidatesToMark.length > 0) {
       if (dryRun) {
-        processed = recordsToMark.length
+        processed = candidatesToMark.length
       } else {
-        logger.info(`Marking ${recordsToMark.length} records as conflict-checked (batch)...`)
-        const checkedAt = Date.now()
-        const batchResult = await batchUpdateRecords(recordsToMark, { lastConflictCheck: checkedAt }, config)
-        processed = batchResult.updated
-        if (batchResult.failed > 0) {
-          logger.warn(`Failed to mark ${batchResult.failed} records`)
+        // Re-fetch records mutated by markDeprecated() (supersedes relations) so
+        // batchUpdateRecords does not overwrite them with pre-deprecation snapshots.
+        const idsToRefresh = candidatesToMark
+          .filter(r => mutatedSupersedingIds.has(r.id))
+          .map(r => r.id)
+        const refreshedById = new Map<string, MemoryRecord>()
+        if (idsToRefresh.length > 0) {
+          const refreshed = await fetchRecordsByIds(idsToRefresh, config, { includeEmbeddings: true })
+          for (const record of refreshed) {
+            refreshedById.set(record.id, record)
+          }
+        }
+        const recordsToMark = candidatesToMark
+          .map(r => refreshedById.get(r.id) ?? r)
+          .filter(r => !r.deprecated)
+
+        if (recordsToMark.length > 0) {
+          logger.info(`Marking ${recordsToMark.length} records as conflict-checked (batch)...`)
+          const checkedAt = Date.now()
+          const batchResult = await batchUpdateRecords(recordsToMark, { lastConflictCheck: checkedAt }, config)
+          processed = batchResult.updated
+          if (batchResult.failed > 0) {
+            logger.warn(`Failed to mark ${batchResult.failed} records`)
+          }
         }
       }
     }

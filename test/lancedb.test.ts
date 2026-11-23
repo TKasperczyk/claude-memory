@@ -425,4 +425,24 @@ describe('LanceDB core API', () => {
 
     expect(seenIds.size).toBe(totalRecords)
   })
+
+  it('clears stale deprecation provenance when restoring a record via updateRecord', async () => {
+    const record = makeCommandRecord({
+      embedding: makeEmbedding(11),
+      deprecated: true,
+      deprecatedAt: 1700000000000,
+      deprecatedReason: 'stale:old',
+      supersedingRecordId: 'other-id'
+    })
+    await insertRecord(record, config)
+
+    const updated = await updateRecord(record.id, { deprecated: false }, config)
+    expect(updated).toBe(true)
+
+    const restored = await getRecord(record.id, config)
+    expect(restored?.deprecated).toBe(false)
+    expect(restored?.deprecatedAt).toBeUndefined()
+    expect(restored?.deprecatedReason).toBeUndefined()
+    expect(restored?.supersedingRecordId).toBeUndefined()
+  })
 })

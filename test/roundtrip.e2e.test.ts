@@ -10,6 +10,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { TEST_CONFIG, TEST_PROJECT } from './config.js'
+import { checkEmbeddingAvailability } from './embedding-availability.js'
 import {
   dropTestCollection,
   createMockTranscript,
@@ -19,23 +20,22 @@ import {
 import { initLanceDB, insertRecord } from '../src/lib/lancedb.js'
 import { handlePrePrompt } from '../src/hooks/pre-prompt.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
+import { loadCredentials } from '../src/lib/anthropic.js'
 import type { CommandRecord, UserPromptSubmitInput, SessionEndInput } from '../src/lib/types.js'
 import { randomUUID } from 'crypto'
-import { existsSync } from 'fs'
-import { homedir } from 'os'
-import { join } from 'path'
 
 // Ensure local user settings don't cause tests to early-exit extraction due to short transcripts.
 process.env.CC_MEMORIES_SETTING_EXTRACTION_MIN_TOKENS = '0'
 
-// Check for any available auth method (API key, env token, or credential files)
+// Check for any available auth method matching src/lib/anthropic.ts
 const hasAnthropicAuth = !!(
   process.env.ANTHROPIC_API_KEY ||
   process.env.OPENCODE_API_KEY ||
   process.env.ANTHROPIC_AUTH_TOKEN ||
-  existsSync(join(homedir(), '.claude', '.credentials.json')) ||
-  existsSync(join(homedir(), '.kira', 'credentials.json'))
+  loadCredentials()
 )
+const embeddingAvailability = await checkEmbeddingAvailability(TEST_CONFIG, { timeoutMs: 800 })
+const hasEmbeddings = embeddingAvailability.available
 
 describe('Round-Trip E2E', () => {
   beforeAll(async () => {
@@ -53,7 +53,7 @@ describe('Round-Trip E2E', () => {
     await initLanceDB(TEST_CONFIG)
   })
 
-  describe.skipIf(!hasAnthropicAuth)('Full Round-Trip (With Extraction)', () => {
+  describe.skipIf(!hasAnthropicAuth || !hasEmbeddings)('Full Round-Trip (With Extraction)', () => {
     it('should extract from transcript and inject in subsequent query', async () => {
       // Step 1: Create a transcript with interesting commands
       const now = new Date().toISOString()
@@ -137,7 +137,7 @@ describe('Round-Trip E2E', () => {
     })
   })
 
-  describe('Edge Cases', () => {
+  describe.skipIf(!hasEmbeddings)('Edge Cases', () => {
     it('should prioritize exact keyword matches', async () => {
       // Insert a record with specific keyword
       const record: CommandRecord = {

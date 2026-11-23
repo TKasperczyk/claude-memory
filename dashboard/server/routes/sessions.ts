@@ -6,23 +6,31 @@ import { dedupeInjectedMemories, listAllSessions, loadSessionTracking } from '..
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
-import { getRequestConfig } from '../utils/config.js'
+import {
+  getRequestConfig,
+  resolveBaseConfig,
+  validateCollectionHeaderMiddleware
+} from '../utils/config.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
 
 const logger = createLogger('sessions')
 
 export function createSessionsRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config: baseConfig } = context
+  router.use(validateCollectionHeaderMiddleware)
+  const getBaseConfig = () => resolveBaseConfig(context)
 
   router.get('/api/sessions', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
-      const sessions = listAllSessions(config.lancedb.table).map(session => ({
-        ...session,
-        memoriesRaw: session.memories,
-        memories: dedupeInjectedMemories(session.memories)
-      }))
+      const config = await ensureConfigInitialized(req, getBaseConfig())
+      const sessions = listAllSessions(config.lancedb.table).map(session => {
+        const { previousPromptEmbedding: _embedding, ...sessionWithoutEmbedding } = session
+        return {
+          ...sessionWithoutEmbedding,
+          memoriesRaw: session.memories,
+          memories: dedupeInjectedMemories(session.memories)
+        }
+      })
 
       const allIds = sessions.flatMap(session => session.memories.map(memory => memory.id))
       const statsMap = await getRecordStats(allIds, config)
@@ -53,7 +61,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
 
   router.get('/api/sessions/:sessionId/review', (req, res) => {
     try {
-      const config = getRequestConfig(req, baseConfig)
+      const config = getRequestConfig(req, getBaseConfig())
       const review = getInjectionReview(req.params.sessionId, config.lancedb.table)
       if (!review) {
         return res.status(404).json({ error: 'Review not found' })
@@ -68,7 +76,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
   router.post('/api/sessions/:sessionId/review', async (req, res) => {
     try {
       const sessionId = req.params.sessionId
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const session = loadSessionTracking(sessionId, requestConfig.lancedb.table)
       if (!session) {
         return res.status(404).json({ error: 'Session not found' })
@@ -79,7 +87,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
         const stream = createSseStream(res)
 
         try {
-          const config = await ensureConfigInitialized(req, baseConfig)
+          const config = await ensureConfigInitialized(req, getBaseConfig())
           const review = await reviewInjectionStreaming(sessionId, config, stream.onThinking, stream.signal)
           saveInjectionReview(review, config.lancedb.table)
           stream.sendData({ result: review })
@@ -94,7 +102,7 @@ export function createSessionsRouter(context: ServerContext): express.Router {
         return
       }
 
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const review = await reviewInjection(sessionId, config)
       saveInjectionReview(review, config.lancedb.table)
       res.json(review)

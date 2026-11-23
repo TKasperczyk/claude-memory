@@ -33,7 +33,6 @@ export interface TranscriptMessage {
   cwd?: string
   toolCalls?: ToolCall[]
   toolResults?: ToolResult[]
-  rawContent?: unknown
 }
 
 export type TranscriptEvent =
@@ -72,6 +71,7 @@ export interface Transcript {
   toolCalls: ToolCall[]
   toolResults: ToolResult[]
   parseErrors: number
+  hasRememberMarker?: boolean
 }
 
 export type CCContentBlock =
@@ -107,10 +107,38 @@ const TOOL_OUTPUT_MAX_CHARS = 30000
 const TOOL_SNIPPET_MAX_CHARS = 1000
 const MESSAGE_TEXT_MAX_CHARS = 60000
 const PARSE_WARN_LIMIT = 5
+const TRANSCRIPT_TURNS_TAIL_BYTES = 4 * 1024 * 1024
+const MARKER_SCAN_CHUNK_BYTES = 256 * 1024
 
 export type TranscriptTurn = {
   user: string
   assistant?: string
+}
+
+/**
+ * Scan a file for an exact marker string in bounded chunks so arbitrarily
+ * large transcripts (>512 MiB) never exceed V8's maximum string length.
+ */
+export async function fileContainsMarker(filePath: string, marker: string): Promise<boolean> {
+  if (!marker) return false
+  const overlapLen = Math.max(0, marker.length - 1)
+  const stream = fs.createReadStream(filePath, {
+    encoding: 'utf-8',
+    highWaterMark: MARKER_SCAN_CHUNK_BYTES
+  })
+  let tail = ''
+  try {
+    for await (const chunk of stream) {
+      const text = tail + String(chunk)
+      if (text.includes(marker)) {
+        return true
+      }
+      tail = overlapLen > 0 ? text.slice(-overlapLen) : ''
+    }
+    return false
+  } finally {
+    stream.destroy()
+  }
 }
 
 export async function parseTranscript(path: string): Promise<Transcript> {
@@ -122,6 +150,7 @@ export async function parseTranscript(path: string): Promise<Transcript> {
   let parseErrors = 0
   let parseWarned = 0
   let pendingParseError: { line: number; message: string } | null = null
+  let transcriptHasRememberMarker = false
 
   const commitParseError = (pending: { line: number; message: string }): void => {
     parseErrors += 1
@@ -164,11 +193,17 @@ export async function parseTranscript(path: string): Promise<Transcript> {
       }
 
       if (!entry || typeof entry !== 'object') continue
-      // Let remember-marker entries through even if isMeta
-      const hasRememberMarker = entry.isMeta && typeof entry.message?.content === 'object'
-        ? JSON.stringify(entry.message.content).includes(REMEMBER_MARKER)
-        : false
-      if (entry.isSidechain || (entry.isMeta && !hasRememberMarker)) continue
+      // Let remember-marker entries through even if isMeta (supports both string and block array content)
+      const rawMessageContent = entry.message?.content
+      const entryHasRememberMarker = typeof rawMessageContent === 'string'
+        ? rawMessageContent.includes(REMEMBER_MARKER)
+        : (typeof rawMessageContent === 'object' && rawMessageContent !== null
+            ? JSON.stringify(rawMessageContent).includes(REMEMBER_MARKER)
+            : false)
+      if (entryHasRememberMarker || trimmed.includes(REMEMBER_MARKER)) {
+        transcriptHasRememberMarker = true
+      }
+      if (entry.isSidechain || (entry.isMeta && !entryHasRememberMarker)) continue
 
       const { rawTimestamp, timestampMs } = parseTimestamp(entry.timestamp)
       const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined
@@ -217,8 +252,7 @@ export async function parseTranscript(path: string): Promise<Transcript> {
           rawTimestamp,
           cwd,
           toolCalls: extracted.toolCalls,
-          toolResults: extracted.toolResults,
-          rawContent: content
+          toolResults: extracted.toolResults
         })
         events.push({
           type: role,
@@ -285,7 +319,8 @@ export async function parseTranscript(path: string): Promise<Transcript> {
     events,
     toolCalls,
     toolResults,
-    parseErrors
+    parseErrors,
+    ...(transcriptHasRememberMarker ? { hasRememberMarker: true } : {})
   }
 }
 
@@ -294,6 +329,8 @@ export async function parseTranscriptTurns(
   maxTurns: number,
   signal?: AbortSignal
 ): Promise<TranscriptTurn[]> {
+  if (maxTurns <= 0 || signal?.aborted) return []
+
   const turns: TranscriptTurn[] = []
   let currentTurn: TranscriptTurn | null = null
 
@@ -303,12 +340,33 @@ export async function parseTranscriptTurns(
     if (turns.length > maxTurns) turns.shift()
   }
 
-  const input = fs.createReadStream(transcriptPath, { encoding: 'utf-8' })
+  let startOffset = 0
+  let skipFirstLine = false
+  try {
+    const stats = await fs.promises.stat(transcriptPath)
+    if (stats.size > TRANSCRIPT_TURNS_TAIL_BYTES) {
+      // Start 1 byte earlier so we can check if the tail boundary falls right after '\n'.
+      startOffset = stats.size - TRANSCRIPT_TURNS_TAIL_BYTES - 1
+      skipFirstLine = true
+    }
+  } catch {
+    return []
+  }
+
+  const input = fs.createReadStream(transcriptPath, {
+    encoding: 'utf-8',
+    ...(startOffset > 0 ? { start: startOffset } : {})
+  })
   const rl = readline.createInterface({ input, crlfDelay: Infinity })
 
   try {
     for await (const line of rl) {
       if (signal?.aborted) break
+      if (skipFirstLine) {
+        // The first chunk up to '\n' starts mid-line (or is empty if startOffset landed on '\n').
+        skipFirstLine = false
+        continue
+      }
       const trimmed = line.trim()
       if (!trimmed) continue
 
@@ -727,6 +785,7 @@ export function sliceTranscript(transcript: Transcript, startEventIndex: number)
     messages: slicedMessages,
     toolCalls: transcript.toolCalls.filter(tc => tc.id && slicedToolCallIds.has(tc.id)),
     toolResults: transcript.toolResults.filter(tr => tr.toolUseId && slicedToolResultIds.has(tr.toolUseId)),
-    parseErrors: transcript.parseErrors
+    parseErrors: transcript.parseErrors,
+    ...(transcript.hasRememberMarker ? { hasRememberMarker: true } : {})
   }
 }

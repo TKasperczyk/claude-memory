@@ -3,8 +3,8 @@
  *
  * Reads a JSON file with entries `{id, decision, reason}` where decision is
  * "RESTORE" or "KEEP_DEPRECATED". For each RESTORE entry, sets `deprecated`
- * to false on the live record. Preserves all metadata fields
- * (deprecatedAt, deprecatedReason, supersedingRecordId) as audit history.
+ * to false on the live record and clears stale deprecation provenance
+ * (deprecatedAt, deprecatedReason, supersedingRecordId).
  *
  * Usage: pnpm tsx scripts/restore-deprecated-records.ts <decisions.json> [--apply]
  */
@@ -29,7 +29,7 @@ async function main() {
     process.exit(1)
   }
 
-  const config = (await loadConfig()) ?? DEFAULT_CONFIG
+  const config = loadConfig(process.cwd()) ?? DEFAULT_CONFIG
 
   const raw = await readFile(resolve(decisionsPath), 'utf-8')
   const decisions = JSON.parse(raw) as Decision[]
@@ -60,14 +60,21 @@ async function main() {
 
     for (const record of withEmbedding) {
       record.deprecated = false
+      delete record.deprecatedAt
+      delete record.deprecatedReason
+      delete record.supersedingRecordId
     }
 
     if (!apply) {
       console.error(`\nDry-run: would restore ${withEmbedding.length} records`)
       console.error(`First 5:`)
       for (const r of withEmbedding.slice(0, 5)) {
-        const text = (r as Record<string, unknown>).what
-          ?? (r as Record<string, unknown>).name
+        const recordObj = r as unknown as Record<string, unknown>
+        const text = recordObj.what
+          ?? recordObj.name
+          ?? recordObj.command
+          ?? recordObj.errorText
+          ?? recordObj.avoid
           ?? '(no summary)'
         const summary = String(text).slice(0, 80)
         console.error(`  - ${r.id} [${r.type}] ${summary}`)

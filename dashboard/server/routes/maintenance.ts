@@ -7,10 +7,13 @@ import {
   AUTO_MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATIONS,
   MAINTENANCE_OPERATION_DEFINITIONS,
+  compactTableSafely,
   runAllMaintenance,
   runMaintenanceOperation,
   type MaintenanceOperation
 } from '../../../src/lib/maintenance-api.js'
+import { acquireFileLock, type FileLockHandle } from '../../../src/lib/lock.js'
+import { LOCKS_DIR } from '../../../src/lib/paths.js'
 import {
   buildMaintenanceRun,
   deleteMaintenanceRun,
@@ -24,11 +27,57 @@ import { getMaintenanceReview, saveMaintenanceReview } from '../../../src/lib/re
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
 import { createSseStream, sendSseError } from '../lib/sse.js'
-import { getRequestConfig } from '../utils/config.js'
+import {
+  getRequestConfig,
+  resolveBaseConfig,
+  validateCollectionHeaderMiddleware
+} from '../utils/config.js'
 import { isPlainObject, parseNonNegativeInt } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
 
 const logger = createLogger('maintenance')
+const MAINTENANCE_LOCK_STALE_MS = 10 * 60 * 1000
+const activeMaintenanceTables = new Set<string>()
+
+type MaintenanceLockLease = {
+  release: () => void
+}
+
+function acquireDashboardMaintenanceLock(table: string, dryRun: boolean): MaintenanceLockLease | null {
+  if (dryRun) {
+    return { release: () => {} }
+  }
+  if (activeMaintenanceTables.has(table)) {
+    return null
+  }
+  let fileLock: FileLockHandle | null = null
+  try {
+    fileLock = acquireFileLock(path.join(LOCKS_DIR, 'auto-maintenance.lock'), {
+      staleAfterMs: MAINTENANCE_LOCK_STALE_MS,
+      staleStrategy: 'pid',
+      ensureDir: true,
+      proceedOnError: false,
+      write: { data: () => `${process.pid}\n${Date.now()}` }
+    })
+  } catch (error) {
+    logger.warn('Failed to acquire maintenance file lock; falling back to in-process lock', error)
+    fileLock = { locked: false, release: () => {} }
+  }
+  if (!fileLock) {
+    return null
+  }
+
+  activeMaintenanceTables.add(table)
+  let released = false
+  return {
+    release: () => {
+      if (released) return
+      released = true
+      activeMaintenanceTables.delete(table)
+      fileLock?.release()
+    }
+  }
+}
 
 type SuggestionApplyAction = 'new' | 'edit'
 
@@ -48,11 +97,13 @@ class DiffApplyError extends Error {
 
 export function createMaintenanceRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config: baseConfig, configRoot, suggestionAllowedRoots } = context
+  router.use(validateCollectionHeaderMiddleware)
+  const { configRoot, suggestionAllowedRoots } = context
+  const getBaseConfig = () => resolveBaseConfig(context)
 
   router.get('/api/maintenance/runs', (req, res) => {
     try {
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const runs = listMaintenanceRuns(requestConfig.lancedb.table)
       const limit = Math.min(parseNonNegativeInt(req.query.limit, 50), 500)
       const offset = parseNonNegativeInt(req.query.offset, 0)
@@ -73,7 +124,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
   router.get('/api/maintenance/runs/last', (req, res) => {
     try {
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const run = getLastMaintenanceRun(requestConfig.lancedb.table)
       if (!run) {
         return res.status(404).json({ error: 'Maintenance run not found' })
@@ -87,7 +138,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
   router.get('/api/maintenance/runs/:runId', (req, res) => {
     try {
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const run = getMaintenanceRun(req.params.runId, requestConfig.lancedb.table)
       if (!run) {
         return res.status(404).json({ error: 'Maintenance run not found' })
@@ -101,7 +152,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
   router.delete('/api/maintenance/runs/:runId', (req, res) => {
     try {
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const deleted = deleteMaintenanceRun(req.params.runId, requestConfig.lancedb.table)
       if (!deleted) {
         return res.status(404).json({ error: 'Maintenance run not found' })
@@ -116,7 +167,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
   router.get('/api/maintenance/:operation/review/:resultId', (req, res) => {
     try {
       const { operation, resultId } = req.params
-      const requestConfig = getRequestConfig(req, baseConfig)
+      const requestConfig = getRequestConfig(req, getBaseConfig())
       const review = getMaintenanceReview(resultId, operation, requestConfig.lancedb.table)
       if (!review) {
         return res.status(404).json({ error: 'Review not found' })
@@ -164,7 +215,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         const stream = createSseStream(res)
 
         try {
-          const config = await ensureConfigInitialized(req, baseConfig)
+          const config = await ensureConfigInitialized(req, getBaseConfig())
           const review = await reviewMaintenanceResultStreaming(normalizedResult, config, stream.onThinking, stream.signal)
           saveMaintenanceReview(review, config.lancedb.table)
           stream.sendData({ result: review })
@@ -179,7 +230,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         return
       }
 
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const review = await reviewMaintenanceResult(normalizedResult, config)
       saveMaintenanceReview(review, config.lancedb.table)
       res.json(review)
@@ -291,8 +342,9 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
   })
 
   router.post('/api/maintenance/run', async (req, res) => {
+    let lockLease: MaintenanceLockLease | null = null
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const { operation, dryRun } = req.body ?? {}
       if (!operation || typeof operation !== 'string') {
         return res.status(400).json({ error: 'Operation required' })
@@ -304,6 +356,11 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       const definition = MAINTENANCE_OPERATION_DEFINITIONS.find(item => item.key === operation)
       if (!dryRun && definition?.allowExecute === false) {
         return res.status(403).json({ error: 'Operation is preview-only' })
+      }
+
+      lockLease = acquireDashboardMaintenanceLock(config.lancedb.table, Boolean(dryRun))
+      if (!lockLease) {
+        return res.status(409).json({ error: 'Maintenance is already running' })
       }
 
       const mode = dryRun ? 'preview' : 'run'
@@ -326,13 +383,20 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
     } catch (error) {
       logger.error('Failed to run maintenance operation', error)
       res.status(500).json({ error: 'Failed to run maintenance operation' })
+    } finally {
+      lockLease?.release()
     }
   })
 
   router.post('/api/maintenance/run-all', async (req, res) => {
+    let lockLease: MaintenanceLockLease | null = null
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const { dryRun } = req.body ?? {}
+      lockLease = acquireDashboardMaintenanceLock(config.lancedb.table, Boolean(dryRun))
+      if (!lockLease) {
+        return res.status(409).json({ error: 'Maintenance is already running' })
+      }
       const results = await runAllMaintenance(Boolean(dryRun), config)
       const run = buildMaintenanceRun(results, {
         dryRun: Boolean(dryRun),
@@ -344,12 +408,14 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
     } catch (error) {
       logger.error('Failed to run all maintenance operations', error)
       res.status(500).json({ error: 'Failed to run maintenance operations' })
+    } finally {
+      lockLease?.release()
     }
   })
 
   router.post('/api/maintenance/purge-deprecated', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const deleted = await deleteByFilter('deprecated = true', config)
       logger.info(`Purged ${deleted} deprecated records`)
       res.json({ deleted })
@@ -361,7 +427,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
 
   router.get('/api/maintenance/deprecated-count', async (req, res) => {
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const count = await countRecords({ filter: 'deprecated = true' }, config)
       res.json({ count })
     } catch (error) {
@@ -381,6 +447,12 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       return res.status(400).json({ error: 'Unknown operation' })
     }
 
+    const requestConfig = getRequestConfig(req, getBaseConfig())
+    const lockLease = acquireDashboardMaintenanceLock(requestConfig.lancedb.table, dryRun)
+    if (!lockLease) {
+      return res.status(409).json({ error: 'Maintenance is already running' })
+    }
+
     const stream = createSseStream(res, {
       onClose: () => {
         logger.info('Client disconnected from maintenance stream')
@@ -392,7 +464,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
     }
 
     try {
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
       const streamedResults: Awaited<ReturnType<typeof runMaintenanceOperation>>[] = []
 
       sendEvent('start', {
@@ -436,6 +508,10 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
         }
       }
 
+      if (!dryRun && !stream.signal.aborted && streamedResults.length > 0) {
+        await compactTableSafely(config)
+      }
+
       if (!stream.signal.aborted) {
         const run = buildMaintenanceRun(streamedResults, {
           dryRun,
@@ -451,6 +527,7 @@ export function createMaintenanceRouter(context: ServerContext): express.Router 
       const message = error instanceof Error ? error.message : String(error)
       sendEvent('error', { error: message })
     } finally {
+      lockLease.release()
       if (!res.writableEnded) {
         stream.end()
       }
@@ -506,6 +583,24 @@ async function resolveRealPath(targetPath: string): Promise<string> {
   return path.join(realParent, relative)
 }
 
+const FORBIDDEN_SUGGESTION_SEGMENTS = new Set(['.git', 'node_modules', 'dist', 'src', 'dashboard', 'scripts'])
+
+function isSafeSuggestionTarget(realTarget: string, realAllowedRoot: string): boolean {
+  if (path.extname(realTarget).toLowerCase() !== '.md') {
+    return false
+  }
+  const relative = path.relative(realAllowedRoot, realTarget)
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return false
+  }
+  const segments = relative.split(path.sep).filter(Boolean)
+  for (const segment of segments) {
+    if (FORBIDDEN_SUGGESTION_SEGMENTS.has(segment)) return false
+    if (segment.startsWith('.') && segment !== '.claude') return false
+  }
+  return true
+}
+
 async function resolveSuggestionTarget(
   targetFile: string,
   configRoot: string,
@@ -530,6 +625,9 @@ async function resolveSuggestionTarget(
   const realTarget = await resolveRealPath(resolved)
   if (!isPathWithin(realTarget, realAllowedRoot)) {
     throw new SuggestionTargetError('Invalid targetFile path')
+  }
+  if (!isSafeSuggestionTarget(realTarget, realAllowedRoot)) {
+    throw new SuggestionTargetError('Target file must be a safe markdown (.md) documentation or skill file')
   }
 
   return resolved

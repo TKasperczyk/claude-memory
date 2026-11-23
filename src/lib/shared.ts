@@ -72,15 +72,35 @@ export function isProcessEntrypoint(importMetaUrl: string): boolean {
     // Keep the unresolved path; comparison below still covers the direct case.
   }
   const modulePath = fileURLToPath(importMetaUrl)
-  return modulePath === realEntryPath || modulePath === entryPath
+  let realModulePath = modulePath
+  try {
+    realModulePath = fs.realpathSync(modulePath)
+  } catch {
+    // Keep the unresolved path; comparison below still covers the direct case.
+  }
+  return realModulePath === realEntryPath || modulePath === entryPath
+}
+
+export const LANCEDB_TABLE_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
+
+export function isValidTableName(name: string): boolean {
+  return LANCEDB_TABLE_NAME_PATTERN.test(name)
+}
+
+function sanitizePathSegment(value: string, fallback: string = '_'): string {
+  const sanitized = value
+    .replace(/[\0\\/]/g, '_')
+    .replace(/\.\./g, '_')
+    .replace(/^\.+/, dots => '_'.repeat(dots.length))
+  return sanitized.length > 0 ? sanitized : fallback
 }
 
 export function sanitizeRunId(runId: string): string {
-  return runId.replace(/[\\/]/g, '_')
+  return sanitizePathSegment(runId)
 }
 
 export function sanitizeSessionId(sessionId: string): string {
-  return sessionId.replace(/[\\/]/g, '_')
+  return sanitizePathSegment(sessionId)
 }
 
 export function escapeFilterValue(value: string): string {

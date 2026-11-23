@@ -6,6 +6,7 @@ import { stripRecordEmbedding, stripSearchResultEmbedding } from '../../../src/l
 import type { NearMissRecord } from '../../../shared/types.js'
 import type { ServerContext } from '../context.js'
 import { createLogger } from '../lib/logger.js'
+import { resolveBaseConfig, validateCollectionHeaderMiddleware } from '../utils/config.js'
 import { isPlainObject, parseOptionalBoolean } from '../utils/params.js'
 import { ensureConfigInitialized } from '../utils/lancedb.js'
 
@@ -13,7 +14,8 @@ const logger = createLogger('preview')
 
 export function createPreviewRouter(context: ServerContext): express.Router {
   const router = express.Router()
-  const { config: baseConfig } = context
+  router.use(validateCollectionHeaderMiddleware)
+  const getBaseConfig = () => resolveBaseConfig(context)
 
   router.post('/api/preview', async (req, res) => {
     try {
@@ -26,7 +28,7 @@ export function createPreviewRouter(context: ServerContext): express.Router {
       const cwd = typeof body.cwd === 'string' && body.cwd.trim().length > 0 ? body.cwd : '/tmp'
       const rawSettingsOverride = body.settings
 
-      const config = await ensureConfigInitialized(req, baseConfig)
+      const config = await ensureConfigInitialized(req, getBaseConfig())
 
       const diagnostic = parseOptionalBoolean(req.query.diagnostic ?? body.diagnostic)
       const settingsOverride = isPlainObject(rawSettingsOverride)

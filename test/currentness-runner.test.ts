@@ -227,4 +227,61 @@ describe('currentness runner', () => {
       supersedingRecordId: currentRecord.id
     })
   })
+
+  it('downgrades mutual cyclic superseded verdicts to historical_useful without deprecating either record', async () => {
+    const recA = discovery('cycle-a', 'Version A state.', '2026-05-08T09:00:00.000Z', 5)
+    const recB = discovery('cycle-b', 'Version B state.', '2026-05-10T09:00:00.000Z', 6)
+
+    mockState.records = [recA, recB]
+    mockState.matchesBySeed.set(recA.id, [recB.id])
+    mockState.verdictInput = {
+      records: [
+        { id: recA.id, verdict: 'superseded', reason: 'Superseded by B.', supersedingRecordId: recB.id },
+        { id: recB.id, verdict: 'superseded', reason: 'Superseded by A.', supersedingRecordId: recA.id }
+      ]
+    }
+
+    const result = await runCurrentnessCheck(false, DEFAULT_CONFIG, settings)
+
+    expect(markDeprecated).not.toHaveBeenCalled()
+    expect(result.summary).toMatchObject({
+      deprecated: 0,
+      historical: 2,
+      current: 0,
+      errors: 0
+    })
+  })
+
+  it('flattens acyclic supersession chains so all superseded records point at the surviving record', async () => {
+    const recA = discovery('chain-a', 'Oldest version.', '2026-05-01T09:00:00.000Z', 7)
+    const recB = discovery('chain-b', 'Middle version.', '2026-05-05T09:00:00.000Z', 8)
+    const recC = discovery('chain-c', 'Latest version.', '2026-05-10T09:00:00.000Z', 9)
+
+    mockState.records = [recA, recB, recC]
+    mockState.matchesBySeed.set(recA.id, [recB.id, recC.id])
+    mockState.verdictInput = {
+      records: [
+        { id: recA.id, verdict: 'superseded', reason: 'Replaced by B.', supersedingRecordId: recB.id },
+        { id: recB.id, verdict: 'superseded', reason: 'Replaced by C.', supersedingRecordId: recC.id },
+        { id: recC.id, verdict: 'current', reason: 'Latest version.' }
+      ]
+    }
+
+    const result = await runCurrentnessCheck(false, DEFAULT_CONFIG, settings)
+
+    expect(result.summary).toMatchObject({
+      deprecated: 2,
+      current: 1,
+      historical: 0,
+      errors: 0
+    })
+    expect(markDeprecated).toHaveBeenCalledWith(recA.id, DEFAULT_CONFIG, {
+      reason: `currentness:superseded-by:${recC.id}`,
+      supersedingRecordId: recC.id
+    })
+    expect(markDeprecated).toHaveBeenCalledWith(recB.id, DEFAULT_CONFIG, {
+      reason: `currentness:superseded-by:${recC.id}`,
+      supersedingRecordId: recC.id
+    })
+  })
 })

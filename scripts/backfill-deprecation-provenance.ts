@@ -5,11 +5,10 @@
  *   pnpm tsx scripts/backfill-deprecation-provenance.ts [--apply] [--collection <name>]
  */
 
-import { pathToFileURL } from 'url'
-import path from 'path'
 import { loadConfig } from '../src/lib/config.js'
 import { JsonStore } from '../src/lib/file-store.js'
 import { batchUpdateRecords, closeLanceDB, fetchRecordsByIds, initLanceDB } from '../src/lib/lancedb.js'
+import { isProcessEntrypoint } from '../src/lib/shared.js'
 import type { Config, MemoryRecord } from '../src/lib/types.js'
 
 const MERGE_OPERATIONS = new Set(['consolidation', 'cross-type-consolidation'])
@@ -492,12 +491,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 }
 
-function isMainModule(): boolean {
-  const entry = process.argv[1]
-  return Boolean(entry && import.meta.url === pathToFileURL(path.resolve(entry)).href)
-}
-
-if (isMainModule()) {
+if (isProcessEntrypoint(import.meta.url)) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : error)
     process.exit(1)

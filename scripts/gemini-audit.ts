@@ -82,7 +82,7 @@ interface AuditResult {
 
 function formatRecordForAudit(record: MemoryRecord): string {
   const lines: string[] = []
-  lines.push(`[${record.id}] type=${record.type} scope=${record.scope ?? 'project'} project=${record.project ?? 'unknown'} domain=${record.domain ?? 'unknown'}`)
+  lines.push(`[${record.id}] type=${record.type} scope=${record.scope ?? 'project'} project=${record.project ?? 'unknown'}`)
 
   switch (record.type) {
     case 'command':
@@ -353,7 +353,7 @@ async function applyConflicts(
           reason: `audit:conflict:superseded-by:${resolvedKeepId}`
         })
       }
-      console.log(`${c.green}✓${c.reset} Kept ${conflict.keepId.slice(0, 8)}..., deprecated ${deprecateIds.length} others`)
+      console.log(`${c.green}✓${c.reset} Kept ${resolvedKeepId.slice(0, 8)}..., deprecated ${deprecateIds.length} others`)
       applied += deprecateIds.length
     }
   }

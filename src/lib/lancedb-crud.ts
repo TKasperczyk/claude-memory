@@ -234,11 +234,18 @@ function clearFilesystemStorage(table?: string): void {
     'retrieval-events',
     'token-usage-events',
     'stats-snapshots',
-    'consolidation-verdicts'
+    'consolidation-verdicts',
+    'maintenance-runs'
   ]
 
   for (const dir of dirsToClean) {
-    const dirPath = path.join(baseDir, dir, collectionKey)
+    const featureDir = path.resolve(baseDir, dir)
+    const dirPath = path.resolve(featureDir, collectionKey)
+    const relative = path.relative(featureDir, dirPath)
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      console.error(`[claude-memory] Refusing to clear unsafe path for ${dir}: ${dirPath}`)
+      continue
+    }
     try {
       if (fs.existsSync(dirPath)) {
         fs.rmSync(dirPath, { recursive: true })

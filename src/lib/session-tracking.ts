@@ -93,11 +93,47 @@ export function saveSessionTracking(record: InjectionSessionRecord, collection?:
     sessionStore.write(record.sessionId, record, {
       collection,
       ensureDir: true,
-      pretty: 2
+      pretty: false
     })
   } catch (error) {
     console.error('[claude-memory] Failed to write session tracking file:', error)
   }
+}
+
+export function markSessionRetrievalCounted(sessionId: string, collection?: string): void {
+  if (!sessionId) return
+  withSessionLock(sessionId, () => {
+    const existing = loadSessionTracking(sessionId, collection)
+    if (!existing || existing.retrievalCounted) return
+    saveSessionTracking({ ...existing, retrievalCounted: true }, collection)
+  }, collection)
+}
+
+export function cleanupStaleSessions(collection?: string, maxAgeDays: number = 30): number {
+  const maxAgeMs = Math.max(1, maxAgeDays) * 24 * 60 * 60 * 1000
+  const cutoff = Date.now() - maxAgeMs
+  let removed = 0
+  try {
+    const ids = sessionStore.list({
+      collection,
+      includeLegacyForDefault: isDefaultCollection(collection)
+    })
+    for (const sessionId of ids) {
+      const record = loadSessionTracking(sessionId, collection)
+      if (!record) {
+        removeSessionTracking(sessionId, collection)
+        removed += 1
+        continue
+      }
+      if (record.lastActivity < cutoff) {
+        removeSessionTracking(sessionId, collection)
+        removed += 1
+      }
+    }
+  } catch (error) {
+    console.error('[claude-memory] Failed to clean up stale sessions:', error)
+  }
+  return removed
 }
 
 export function appendRecentlyInjectedIds(
@@ -153,7 +189,8 @@ export function updateSessionRetrievalState(
         ? update.previousPromptEmbedding ?? null
         : existing?.previousPromptEmbedding ?? null,
       lastPromptAt: update.lastPromptAt ?? existing?.lastPromptAt,
-      retrievalStateVersion: currentVersion + 1
+      retrievalStateVersion: currentVersion + 1,
+      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {})
     }
     saveSessionTracking(record, collection)
     return record
@@ -192,7 +229,8 @@ export function updateSessionPromptStateIfVersion(
       recentlyInjectedIds: existing?.recentlyInjectedIds ?? [],
       previousPromptEmbedding: update.previousPromptEmbedding,
       lastPromptAt: update.lastPromptAt,
-      retrievalStateVersion: currentVersion + 1
+      retrievalStateVersion: currentVersion + 1,
+      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {})
     }
     saveSessionTracking(record, collection)
     return record
@@ -237,7 +275,8 @@ export function updateSessionRetrievalStateAtomic(
       recentlyInjectedIds,
       previousPromptEmbedding: existing?.previousPromptEmbedding ?? null,
       lastPromptAt: existing?.lastPromptAt,
-      retrievalStateVersion: currentVersion + 1
+      retrievalStateVersion: currentVersion + 1,
+      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {})
     }
     saveSessionTracking(record, collection)
     return record
@@ -299,7 +338,8 @@ export function appendSessionTracking(
       recentlyInjectedIds: existing?.recentlyInjectedIds ?? [],
       previousPromptEmbedding: existing?.previousPromptEmbedding ?? null,
       lastPromptAt: existing?.lastPromptAt,
-      retrievalStateVersion: existing?.retrievalStateVersion ?? 0
+      retrievalStateVersion: existing?.retrievalStateVersion ?? 0,
+      ...(existing?.retrievalCounted ? { retrievalCounted: true } : {})
     }
     saveSessionTracking(record, collection)
     return record
@@ -383,6 +423,7 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
   const createdAt = asInteger(record.createdAt) ?? now
 
   const hasReview = asBoolean(record.hasReview)
+  const retrievalCounted = asBoolean(record.retrievalCounted)
 
   return {
     sessionId: asString(record.sessionId) ?? sessionId,
@@ -398,7 +439,8 @@ function coerceSessionRecord(value: unknown, sessionId: string): InjectionSessio
     recentlyInjectedIds,
     previousPromptEmbedding,
     lastPromptAt: asString(record.lastPromptAt),
-    retrievalStateVersion: asInteger(record.retrievalStateVersion) ?? 0
+    retrievalStateVersion: asInteger(record.retrievalStateVersion) ?? 0,
+    ...(retrievalCounted ? { retrievalCounted: true } : {})
   }
 }
 

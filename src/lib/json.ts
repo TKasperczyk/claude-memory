@@ -62,12 +62,28 @@ export function writeJsonFile(filePath: string, value: unknown, options: WriteJs
       ? options.pretty
       : 2
 
+  let tmpPath: string | null = null
   try {
+    const dir = path.dirname(filePath)
     if (options.ensureDir) {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+      fs.mkdirSync(dir, { recursive: true })
     }
-    fs.writeFileSync(filePath, JSON.stringify(value, null, spacing))
+    const serialized = JSON.stringify(value, null, spacing)
+    tmpPath = path.join(
+      dir,
+      `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+    )
+    fs.writeFileSync(tmpPath, serialized, { encoding: 'utf-8', flag: 'wx' })
+    fs.renameSync(tmpPath, filePath)
+    tmpPath = null
   } catch (error) {
+    if (tmpPath) {
+      try {
+        fs.unlinkSync(tmpPath)
+      } catch {
+        // Ignore cleanup failure and report original write error
+      }
+    }
     if (options.onError) {
       options.onError(error)
       return

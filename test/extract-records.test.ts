@@ -322,7 +322,7 @@ describe('extractRecords', () => {
 
 describe('rateInjectedMemories', () => {
   it('records usefulness token usage with session and planned run ids', async () => {
-    mockedCreate.mockResolvedValueOnce({
+    mockedFinalMessage.mockResolvedValueOnce({
       usage: {
         input_tokens: 7,
         output_tokens: 2,
@@ -345,7 +345,7 @@ describe('rateInjectedMemories', () => {
     )
 
     expect(result.helpfulIds).toEqual(['mem-1'])
-    expect(mockedCreate.mock.calls[0][0]).not.toHaveProperty('temperature')
+    expect(mockedStream.mock.calls[0][0]).not.toHaveProperty('temperature')
     expect(mockedRecordTokenUsageEventsAsync).toHaveBeenCalledWith([
       expect.objectContaining({
         source: 'usefulness-rating',
@@ -360,7 +360,7 @@ describe('rateInjectedMemories', () => {
 
   it('treats refusal as no helpful memories for usefulness rating', async () => {
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    mockedCreate.mockResolvedValueOnce({
+    mockedFinalMessage.mockResolvedValueOnce({
       stop_reason: 'refusal',
       usage: {
         input_tokens: 7,
@@ -383,6 +383,41 @@ describe('rateInjectedMemories', () => {
       expect(result.tokenUsage.inputTokens).toBe(7)
     } finally {
       consoleWarn.mockRestore()
+    }
+  })
+
+  it('retries usefulness rating with a shorter transcript on prompt-too-long error', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const largeTranscript = manyEventsTranscript(40, 2000)
+    mockedFinalMessage
+      .mockRejectedValueOnce(promptTooLongError(250_000, 200_000))
+      .mockResolvedValueOnce({
+        usage: {
+          input_tokens: 100,
+          output_tokens: 5,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0
+        },
+        content: [{
+          type: 'tool_use',
+          id: 'tool-1',
+          name: 'emit_usefulness',
+          input: { helpfulIds: ['mem-1'] }
+        }]
+      })
+
+    try {
+      const result = await rateInjectedMemories(
+        largeTranscript,
+        [{ id: 'mem-1', snippet: 'useful memory', injectedAt: Date.now() }],
+        DEFAULT_CONFIG
+      )
+
+      expect(result.helpfulIds).toEqual(['mem-1'])
+      expect(mockedStream).toHaveBeenCalledTimes(2)
+      expect(userContentLength(1)).toBeLessThan(userContentLength(0))
+    } finally {
+      consoleError.mockRestore()
     }
   })
 })
