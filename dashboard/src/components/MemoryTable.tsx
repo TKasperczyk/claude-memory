@@ -56,7 +56,7 @@ export default function MemoryTable({
             <TableHead className="w-32 px-4">Project</TableHead>
             <TableHead className="w-20 px-4">Scope</TableHead>
             {hasRestorableRows && (
-              <TableHead className="w-28 px-4 text-right">Actions</TableHead>
+              <TableHead className="w-36 px-4 text-right whitespace-nowrap">Actions</TableHead>
             )}
           </TableRow>
         </TableHeader>
@@ -94,7 +94,7 @@ export default function MemoryTable({
                 </TableCell>
                 {hasRestorableRows && (
                   <TableCell
-                    className="px-4 py-2 text-right"
+                    className="px-4 py-2 text-right whitespace-nowrap"
                     onClick={record.deprecated ? e => e.stopPropagation() : undefined}
                   >
                     {record.deprecated && onRestore && (

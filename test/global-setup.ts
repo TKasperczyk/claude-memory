@@ -2,8 +2,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+function resolveDataDir(raw: string): string {
+  const trimmed = raw.trim()
+  if (trimmed === '~') return os.homedir()
+  if (trimmed.startsWith('~/')) return path.join(os.homedir(), trimmed.slice(2))
+  return path.resolve(trimmed)
+}
+
 export function setup() {
-  if (process.env.CC_MEMORIES_DATA_DIR?.trim()) {
+  const existing = process.env.CC_MEMORIES_DATA_DIR?.trim()
+  const userRoot = path.resolve(os.homedir(), '.claude-memory')
+  if (existing && resolveDataDir(existing) !== userRoot) {
     return
   }
 

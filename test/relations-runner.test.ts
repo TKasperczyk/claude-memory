@@ -109,4 +109,45 @@ describe('runRelationDiscovery', () => {
     expect(result.actions).toHaveLength(0)
     expect(batchUpdateRecords).not.toHaveBeenCalled()
   })
+
+  it('does not write when capping relates_to only reorders mixed relates_to and shares_entity edges', async () => {
+    const now = Date.now()
+    const iso = new Date(now + 4).toISOString()
+    const strongRelates = (targetId: string) => ({
+      targetId,
+      kind: 'relates_to' as const,
+      weight: 0.9,
+      createdAt: iso,
+      lastReinforcedAt: iso,
+      reinforcementCount: 9
+    })
+    const sharesEntity = (targetId: string) => ({
+      targetId,
+      kind: 'shares_entity' as const,
+      weight: 0.8,
+      createdAt: iso,
+      lastReinforcedAt: iso,
+      reinforcementCount: 1
+    })
+
+    // Records hold [relates_to, shares_entity] (the order capSharesEntityRelations produces).
+    // capRelatesToRelations reorders to [shares_entity, relates_to] when evicting the weaker new edge.
+    mockState.records = [
+      createMockCommandRecord({ id: 'a', command: 'cmd-a', relations: [strongRelates('x'), sharesEntity('e1')] }),
+      createMockCommandRecord({ id: 'b', command: 'cmd-b', relations: [strongRelates('y'), sharesEntity('e2')] }),
+      createMockCommandRecord({ id: 'x', command: 'cmd-x', relations: [strongRelates('a'), sharesEntity('e3')] }),
+      createMockCommandRecord({ id: 'y', command: 'cmd-y', relations: [strongRelates('b'), sharesEntity('e4')] })
+    ]
+
+    coInject(['a', 'x'], 9, now - 4)
+    coInject(['b', 'y'], 9, now - 4)
+    coInject(['a', 'b'], 3, now)
+
+    const result = await runRelationDiscovery(false, DEFAULT_CONFIG, { maxRelationsPerRecord: 1 })
+
+    expect(result.summary.eligiblePairs).toBe(3)
+    expect(result.summary.updated).toBe(0)
+    expect(result.actions).toHaveLength(0)
+    expect(batchUpdateRecords).not.toHaveBeenCalled()
+  })
 })

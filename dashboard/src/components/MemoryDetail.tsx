@@ -233,16 +233,16 @@ export default function MemoryDetail({
   onRestored
 }: MemoryDetailProps) {
   const [isDeleting, setIsDeleting] = useState(false)
-  const [isRestoring, setIsRestoring] = useState(false)
+  const [restoringId, setRestoringId] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [restoreError, setRestoreError] = useState<string | null>(null)
+  const [restoreErrorState, setRestoreErrorState] = useState<{ id: string; message: string } | null>(null)
   const [restoredOverride, setRestoredOverride] = useState<MemoryRecord | null>(null)
   const queryClient = useQueryClient()
 
   useEffect(() => {
     setRestoredOverride(null)
-    setRestoreError(null)
+    setRestoreErrorState(null)
     setDeleteError(null)
     setConfirmDelete(false)
   }, [record?.id])
@@ -250,30 +250,37 @@ export default function MemoryDetail({
   const displayRecord = restoredOverride && record && restoredOverride.id === record.id
     ? restoredOverride
     : record
+  const isRestoring = Boolean(displayRecord && restoringId === displayRecord.id)
+  const restoreError = displayRecord && restoreErrorState?.id === displayRecord.id
+    ? restoreErrorState.message
+    : null
   const isActive = open ?? Boolean(displayRecord)
   const isLoading = isActive && loading
 
   const handleRestore = async () => {
-    if (!displayRecord || !displayRecord.deprecated || isRestoring || isDeleting || loading) return
-    setIsRestoring(true)
-    setRestoreError(null)
+    if (!displayRecord || !displayRecord.deprecated || restoringId === displayRecord.id || isDeleting || loading) return
+    const targetRecord = displayRecord
+    const targetId = targetRecord.id
+    setRestoringId(targetId)
+    setRestoreErrorState(prev => (prev?.id === targetId ? null : prev))
     try {
-      const response = await restoreMemory(displayRecord.id)
+      const response = await restoreMemory(targetId)
       const restoredRecord = response.record ?? {
-        ...displayRecord,
+        ...targetRecord,
         deprecated: false,
         deprecatedAt: undefined,
-        deprecatedReason: undefined
+        deprecatedReason: undefined,
+        supersedingRecordId: undefined
       }
       setRestoredOverride(restoredRecord)
       void queryClient.invalidateQueries({ queryKey: ['memories'] })
       void queryClient.invalidateQueries({ queryKey: ['stats'] })
-      onRestored?.(displayRecord.id, restoredRecord)
+      onRestored?.(targetId, restoredRecord)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to restore memory'
-      setRestoreError(message)
+      setRestoreErrorState({ id: targetId, message })
     } finally {
-      setIsRestoring(false)
+      setRestoringId(prev => (prev === targetId ? null : prev))
     }
   }
 
@@ -297,7 +304,7 @@ export default function MemoryDetail({
   const handleOpenChange = (open: boolean) => {
     if (!open) {
       setDeleteError(null)
-      setRestoreError(null)
+      setRestoreErrorState(null)
       setRestoredOverride(null)
       setConfirmDelete(false)
       onClose()
@@ -336,12 +343,18 @@ export default function MemoryDetail({
                     <SheetTitle className="text-lg font-semibold tracking-tight truncate text-foreground/95">
                       {getMemoryTitle(displayRecord)}
                     </SheetTitle>
-                    <SheetDescription className="text-[11px] text-muted-foreground/60 font-mono mt-1.5">
+                    <SheetDescription className="text-[11px] text-muted-foreground/60 font-mono mt-1.5 truncate">
                       {displayRecord.id}
                     </SheetDescription>
                   </>
                 ) : (
                   <>
+                    <SheetTitle className="sr-only">
+                      {error ? 'Memory unavailable' : 'Loading memory'}
+                    </SheetTitle>
+                    <SheetDescription className="sr-only">
+                      {error ?? 'Loading memory details'}
+                    </SheetDescription>
                     <Skeleton className="h-6 w-3/4" />
                     <Skeleton className="h-3 w-32 mt-2" />
                   </>
@@ -395,13 +408,18 @@ export default function MemoryDetail({
                 </div>
               )}
 
-              {displayRecord.deprecated && (displayRecord.deprecatedReason || displayRecord.deprecatedAt) && (
+              {displayRecord.deprecated && (displayRecord.deprecatedReason || displayRecord.deprecatedAt || displayRecord.supersedingRecordId) && (
                 <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm space-y-1">
                   <div className="text-[10px] uppercase tracking-[0.06em] text-destructive/80 font-medium">
                     Deprecation details
                   </div>
                   {displayRecord.deprecatedReason && (
                     <div className="text-foreground/85">{displayRecord.deprecatedReason}</div>
+                  )}
+                  {displayRecord.supersedingRecordId && (
+                    <div className="text-xs text-muted-foreground font-mono truncate">
+                      Superseded by {displayRecord.supersedingRecordId}
+                    </div>
                   )}
                   {displayRecord.deprecatedAt && (
                     <div className="text-xs text-muted-foreground">

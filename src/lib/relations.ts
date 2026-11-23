@@ -25,6 +25,17 @@ export function normalizeRelations(value: unknown): Relation[] {
   return relations
 }
 
+export function relationsSignature(relations: MemoryRecord['relations']): string {
+  const normalized = normalizeRelations(relations)
+  if (normalized.length === 0) return '[]'
+  normalized.sort((a, b) => {
+    const kindCmp = a.kind.localeCompare(b.kind)
+    if (kindCmp !== 0) return kindCmp
+    return a.targetId.localeCompare(b.targetId)
+  })
+  return JSON.stringify(normalized)
+}
+
 export function upsertRelation(record: MemoryRecord, input: RelationInput): boolean {
   const targetId = input.targetId.trim()
   if (!targetId || targetId === record.id) return false

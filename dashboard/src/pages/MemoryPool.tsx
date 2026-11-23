@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
@@ -58,6 +58,7 @@ export default function MemoryPool() {
   const [page, setPage] = useState(0)
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [restoringIds, setRestoringIds] = useState<Set<string>>(() => new Set())
+  const restoringIdsRef = useRef<Set<string>>(new Set())
   const { selectedId, selected, detailLoading, detailError, handleSelect, handleClose, updateSelected } = useSelectedMemory()
   const queryClient = useQueryClient()
 
@@ -118,8 +119,8 @@ export default function MemoryPool() {
   }
 
   const handleRestored = (id: string, restored: MemoryRecord | null) => {
-    if (selected?.id === id && restored) {
-      updateSelected(restored)
+    if (restored) {
+      updateSelected(prev => (prev?.id === id ? restored : prev))
     }
     setNotice({ type: 'success', message: `Restored memory ${id}` })
     queryClient.invalidateQueries({ queryKey: ['memories'] })
@@ -127,7 +128,8 @@ export default function MemoryPool() {
   }
 
   const handleRestoreFromTable = async (record: MemoryRecord) => {
-    if (!record.deprecated || restoringIds.has(record.id)) return
+    if (!record.deprecated || restoringIdsRef.current.has(record.id)) return
+    restoringIdsRef.current.add(record.id)
     setRestoringIds(prev => {
       const next = new Set(prev)
       next.add(record.id)
@@ -135,11 +137,19 @@ export default function MemoryPool() {
     })
     try {
       const response = await restoreMemory(record.id)
-      handleRestored(record.id, response.record)
+      const restoredRecord = response.record ?? {
+        ...record,
+        deprecated: false,
+        deprecatedAt: undefined,
+        deprecatedReason: undefined,
+        supersedingRecordId: undefined
+      }
+      handleRestored(record.id, restoredRecord)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to restore memory'
       setNotice({ type: 'error', message })
     } finally {
+      restoringIdsRef.current.delete(record.id)
       setRestoringIds(prev => {
         const next = new Set(prev)
         next.delete(record.id)

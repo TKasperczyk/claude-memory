@@ -5,7 +5,7 @@
  * These are pure unit tests -- no LLM or embedding service needed.
  */
 
-import { describe, it, expect } from 'vitest'
+import { afterAll, describe, it, expect } from 'vitest'
 import {
   parseTranscript,
   computeIncrementalStartIndex,
@@ -13,7 +13,7 @@ import {
   type TranscriptEvent,
   type Transcript
 } from '../src/lib/transcript.js'
-import { createMockTranscript, buildTypicalTranscriptEntries } from './helpers.js'
+import { cleanupTempFiles, createMockTranscript, buildTypicalTranscriptEntries } from './helpers.js'
 import { handlePostSession } from '../src/hooks/post-session.js'
 import { TEST_CONFIG, TEST_CWD, TEST_PROJECT } from './config.js'
 import type { SessionEndInput } from '../src/lib/types.js'
@@ -165,6 +165,10 @@ describe('sliceTranscript', () => {
 })
 
 describe('handlePostSession incremental', () => {
+  afterAll(() => {
+    cleanupTempFiles()
+  })
+
   it('should return no_new_events when event count has not changed', async () => {
     const entries = buildTypicalTranscriptEntries()
     const transcriptPath = createMockTranscript(entries)

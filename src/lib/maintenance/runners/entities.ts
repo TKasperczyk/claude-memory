@@ -3,7 +3,7 @@ import { batchUpdateRecords, fetchRecordsByIds, iterateRecords } from '../../lan
 import { serializeRecord } from '../../lancedb-records.js'
 import { createLogger } from '../../logger.js'
 import { computeEntityIdf } from '../../entities.js'
-import { normalizeRelations, upsertRelation } from '../../relations.js'
+import { normalizeRelations, relationsSignature, upsertRelation } from '../../relations.js'
 import { buildRecordSnippet, truncateSnippet } from '../../shared.js'
 import { loadSettings, type RetrievalSettings } from '../../settings.js'
 import { buildAction, buildErrorResult, buildResult, toErrorMessage } from './shared.js'
@@ -60,7 +60,7 @@ export async function runEntityOverlapDiscovery(
     for await (const record of iterateRecords({ filter: 'deprecated = false', includeEmbeddings: false }, config)) {
       scanned += 1
       recordsById.set(record.id, record)
-      initialRelationsById.set(record.id, JSON.stringify(normalizeRelations(record.relations)))
+      initialRelationsById.set(record.id, relationsSignature(record.relations))
       if (record.entities && record.entities.length > 0) withEntities += 1
     }
 
@@ -119,7 +119,7 @@ export async function runEntityOverlapDiscovery(
         // Weakest-first trim keeps the record under the content ceiling.
         trimSharesEntityRelations(record, CONTENT_SIZE_MARGIN)
       }
-      if (JSON.stringify(normalizeRelations(record.relations)) === initialRelationsById.get(id)) {
+      if (relationsSignature(record.relations) === initialRelationsById.get(id)) {
         pendingWrites.delete(id)
         changedRecordIds.delete(id)
       } else {
@@ -127,12 +127,47 @@ export async function runEntityOverlapDiscovery(
       }
     }
 
+    let effectiveRecordIds: Set<string>
+    if (!dryRun && pendingWrites.size > 0) {
+      const hydrated = await fetchRecordsByIds(Array.from(pendingWrites.keys()), config, { includeEmbeddings: true })
+      const hydratedById = new Map(hydrated.map(record => [record.id, record]))
+      const toPersist: MemoryRecord[] = []
+      for (const [id, pending] of pendingWrites) {
+        const fresh = hydratedById.get(id)
+        if (!fresh) {
+          errors += 1
+          logger.warn(`Entity overlap discovery could not hydrate record ${id} for update`)
+          continue
+        }
+        fresh.relations = pending.relations
+        toPersist.push(fresh)
+      }
+
+      effectiveRecordIds = new Set<string>()
+      if (toPersist.length > 0) {
+        const result = await batchUpdateRecords(toPersist, {}, config)
+        if (result.failed > 0) {
+          errors += result.failed
+          logger.warn(`Failed to persist ${result.failed} entity-edge records`)
+        }
+        updated = result.updated
+        if (result.updated > 0) {
+          for (const persisted of toPersist) {
+            effectiveRecordIds.add(persisted.id)
+          }
+        }
+      }
+    } else {
+      updated = changedRecordIds.size
+      effectiveRecordIds = changedRecordIds
+    }
+
     for (const pair of addedPairs) {
       const a = recordsById.get(pair.a)
       const b = recordsById.get(pair.b)
       if (!a || !b) continue
-      const keptOnA = hasSharesEntity(a, b.id) && changedRecordIds.has(a.id)
-      const keptOnB = hasSharesEntity(b, a.id) && changedRecordIds.has(b.id)
+      const keptOnA = hasSharesEntity(a, b.id) && effectiveRecordIds.has(a.id)
+      const keptOnB = hasSharesEntity(b, a.id) && effectiveRecordIds.has(b.id)
       if (!keptOnA && !keptOnB) continue
 
       const primary = keptOnA ? a : b
@@ -149,33 +184,6 @@ export async function runEntityOverlapDiscovery(
           weight: pair.weight
         }
       }))
-    }
-
-    if (!dryRun && pendingWrites.size > 0) {
-      const hydrated = await fetchRecordsByIds(Array.from(pendingWrites.keys()), config, { includeEmbeddings: true })
-      const hydratedById = new Map(hydrated.map(record => [record.id, record]))
-      const toPersist: MemoryRecord[] = []
-      for (const [id, pending] of pendingWrites) {
-        const fresh = hydratedById.get(id)
-        if (!fresh) {
-          errors += 1
-          logger.warn(`Entity overlap discovery could not hydrate record ${id} for update`)
-          continue
-        }
-        fresh.relations = pending.relations
-        toPersist.push(fresh)
-      }
-
-      if (toPersist.length > 0) {
-        const result = await batchUpdateRecords(toPersist, {}, config)
-        if (result.failed > 0) {
-          errors += result.failed
-          logger.warn(`Failed to persist ${result.failed} entity-edge records`)
-        }
-        updated = result.updated
-      }
-    } else {
-      updated = changedRecordIds.size
     }
   } catch (error) {
     errors += 1

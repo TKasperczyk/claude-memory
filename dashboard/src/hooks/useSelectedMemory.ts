@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { fetchMemory, type MemoryRecord } from '@/lib/api'
 
@@ -9,7 +9,7 @@ type SelectedMemoryState = {
   detailError: string | null
   handleSelect: (recordOrId: MemoryRecord | string) => void
   handleClose: () => void
-  updateSelected: (record: MemoryRecord | null) => void
+  updateSelected: Dispatch<SetStateAction<MemoryRecord | null>>
 }
 
 export function useSelectedMemory(): SelectedMemoryState {

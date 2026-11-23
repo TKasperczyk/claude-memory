@@ -183,10 +183,20 @@ export function createMockWarningRecord(overrides: Partial<WarningRecord> = {}):
 }
 
 /**
+ * Return the temp directory for mock test transcripts.
+ * Isolated inside CLAUDE_MEMORY_ROOT when CC_MEMORIES_DATA_DIR is set.
+ */
+export function getTempTranscriptDir(): string {
+  return process.env.CC_MEMORIES_DATA_DIR?.trim()
+    ? path.join(CLAUDE_MEMORY_ROOT, 'transcripts-test')
+    : path.join(os.tmpdir(), 'claude-memory-test')
+}
+
+/**
  * Create a mock transcript JSONL file.
  */
 export function createMockTranscript(entries: object[]): string {
-  const tempDir = '/tmp/claude-memory-test'
+  const tempDir = getTempTranscriptDir()
   fs.mkdirSync(tempDir, { recursive: true })
   const filePath = path.join(tempDir, `transcript-${randomUUID()}.jsonl`)
   const content = entries.map(entry => JSON.stringify(entry)).join('\n') + '\n'
@@ -390,7 +400,7 @@ export function buildErrorTranscriptEntries(): object[] {
  * Cleanup temp files.
  */
 export function cleanupTempFiles(): void {
-  const tempDir = '/tmp/claude-memory-test'
+  const tempDir = getTempTranscriptDir()
   if (fs.existsSync(tempDir)) {
     fs.rmSync(tempDir, { recursive: true, force: true })
   }

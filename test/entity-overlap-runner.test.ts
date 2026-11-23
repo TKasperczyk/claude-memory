@@ -195,6 +195,84 @@ describe('runEntityOverlapDiscovery', () => {
     expect(dryRunResult.summary.updated).toBe(0)
     expect(dryRunResult.actions).toHaveLength(0)
     expect(batchUpdateRecords).not.toHaveBeenCalled()
+
+    const liveResult = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, { maxRelationsPerRecord: 0 })
+    expect(liveResult.summary.pairs).toBe(1)
+    expect(liveResult.summary.updated).toBe(0)
+    expect(liveResult.actions).toHaveLength(0)
+    expect(batchUpdateRecords).not.toHaveBeenCalled()
+  })
+
+  it('does not write when capping only reorders mixed shares_entity and relates_to edges', async () => {
+    const now = new Date().toISOString()
+    const sharesEdge = (targetId: string) => ({
+      targetId,
+      kind: 'shares_entity' as const,
+      weight: 1,
+      createdAt: now,
+      lastReinforcedAt: now,
+      reinforcementCount: 1
+    })
+    const relatesEdge = (targetId: string) => ({
+      targetId,
+      kind: 'relates_to' as const,
+      weight: 0.5,
+      createdAt: now,
+      lastReinforcedAt: now,
+      reinforcementCount: 3
+    })
+
+    // Records hold [shares_entity, relates_to] (the order capRelatesToRelations produces).
+    // capSharesEntityRelations reorders to [relates_to, shares_entity] when evicting the weaker new edge;
+    // canonical signature comparison must recognize that the relation set is unchanged.
+    mockState.records = [
+      record('a', ['shared-tool'], { relations: [sharesEdge('x'), relatesEdge('r1')] }),
+      record('b', ['shared-tool'], { relations: [sharesEdge('y'), relatesEdge('r2')] }),
+      record('c', ['shared-tool'], { relations: [sharesEdge('z'), relatesEdge('r3')] }),
+      ...filler(27)
+    ]
+
+    const result = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, { maxRelationsPerRecord: 1 })
+
+    expect(result.summary.pairs).toBe(3)
+    expect(result.summary.updated).toBe(0)
+    expect(result.actions).toHaveLength(0)
+    expect(batchUpdateRecords).not.toHaveBeenCalled()
+  })
+
+  it('omits actions for records that fail hydration before persistence', async () => {
+    mockState.records = [
+      record('a', ['phantom']),
+      record('b', ['phantom']),
+      ...filler(28)
+    ]
+
+    // Simulate record 'a' disappearing between scan and hydration while 'b' remains.
+    vi.mocked(fetchRecordsByIds).mockResolvedValueOnce(
+      mockState.records.filter(candidate => candidate.id === 'b')
+    )
+
+    const partialResult = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, SETTINGS)
+    expect(partialResult.summary.errors).toBe(1)
+    expect(partialResult.summary.updated).toBe(1)
+    expect(partialResult.actions).toHaveLength(1)
+    expect(partialResult.actions[0]).toMatchObject({
+      recordId: 'b',
+      details: expect.objectContaining({ targetId: 'a', kind: 'shares_entity' })
+    })
+
+    // Simulate both sides missing on hydration: no updates and no actions.
+    mockState.records = [
+      record('a', ['phantom']),
+      record('b', ['phantom']),
+      ...filler(28)
+    ]
+    vi.mocked(fetchRecordsByIds).mockResolvedValueOnce([])
+
+    const emptyResult = await runEntityOverlapDiscovery(false, DEFAULT_CONFIG, SETTINGS)
+    expect(emptyResult.summary.errors).toBe(2)
+    expect(emptyResult.summary.updated).toBe(0)
+    expect(emptyResult.actions).toHaveLength(0)
   })
 
   it('omits actions and writes when trimSharesEntityRelations evicts edges due to content size ceiling', async () => {

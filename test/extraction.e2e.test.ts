@@ -20,6 +20,7 @@ import {
   buildErrorTranscriptEntries,
   cleanupTestCollectionData,
   cleanupTempFiles,
+  getTempTranscriptDir,
   createMockCommandRecord,
   createMockErrorRecord
 } from './helpers.js'
@@ -118,7 +119,7 @@ describe('Extraction E2E', () => {
       }))
 
       // Need to write raw (some invalid JSON)
-      const tempDir = '/tmp/claude-memory-test'
+      const tempDir = getTempTranscriptDir()
       fs.mkdirSync(tempDir, { recursive: true })
       const badPath = path.join(tempDir, 'bad-transcript.jsonl')
       fs.writeFileSync(badPath, `{"type":"user","message":{"role":"user","content":"hello"}}

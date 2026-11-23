@@ -1,7 +1,7 @@
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from '../../types.js'
 import { batchUpdateRecords, fetchRecordsByIds, iterateRecords } from '../../lancedb.js'
 import { createLogger } from '../../logger.js'
-import { normalizeRelations, upsertRelation } from '../../relations.js'
+import { normalizeRelations, relationsSignature, upsertRelation } from '../../relations.js'
 import { buildRecordSnippet, truncateSnippet } from '../../shared.js'
 import { listRetrievalEvents } from '../../retrieval-events.js'
 import { loadSettings, type RetrievalSettings } from '../../settings.js'
@@ -259,12 +259,6 @@ async function collectDirtyRelationRecords(
   }
 
   return dirtyById
-}
-
-function relationsSignature(relations: MemoryRecord['relations']): string {
-  const normalized = normalizeRelations(relations)
-  if (normalized.length === 0) return '[]'
-  return JSON.stringify(normalized)
 }
 
 function hasRelatesTo(record: MemoryRecord, targetId: string): boolean {
