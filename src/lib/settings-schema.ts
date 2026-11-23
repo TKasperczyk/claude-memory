@@ -1091,6 +1091,49 @@ export const DEFAULT_SETTINGS: Settings = {
   ...DEFAULT_MODEL_SETTINGS
 }
 
+export const CURRENT_SETTINGS_VERSION = 2 as const
+
+export type HistoricalDefaultSettings = Partial<{
+  [K in keyof Settings]: readonly Settings[K][]
+}>
+
+/**
+ * Known historical defaults for settings whose shipped defaults changed across
+ * releases (verified from git history of settings-schema.ts and constants.ts).
+ *
+ * Used ONLY during the one-time legacy settings migration (settingsVersion < 2 -> 2)
+ * and when interpreting an unmigrated pre-v2 settings.json, so upgrading users do
+ * not stay pinned to superseded defaults that were previously written in full.
+ *
+ * Intentionally excluded:
+ * - `autoUpdateIntervalHours: 0` (Jul 30 -> Aug 11, 2026): 0 explicitly disables
+ *   automatic git pulls; dropping it could silently re-enable pulls for opt-out users.
+ * - `enableHaikuRetrieval: true`: never a shipped default (always defaulted to false).
+ * - Pre-schema Feb 2026 limits (`maxRecords: 5`, `maxTokens: 2000`, etc.): common
+ *   intentional user customizations.
+ */
+export const HISTORICAL_DEFAULT_SETTINGS: HistoricalDefaultSettings = {
+  // Retrieval defaults changed in 8f8468bb (Jul 2026) and a7652e9a (v0.3.0)
+  minSemanticSimilarity: [0.7],
+  semanticAnchorThreshold: [0.7],
+  usageRatioWeight: [0.2],
+  topicChangeThreshold: [0.3],
+  recentlyInjectedWindow: [20],
+  suppressionMode: ['soft'],
+  fallbackKeywordSemanticFloor: [false],
+  maxSemanticQueryChars: [3000],
+  prePromptTimeoutMs: [5000, 8000],
+  haikuQueryTimeoutMs: [2500],
+  // Maintenance defaults changed in 4fa15b10 (Feb 2026) and 81e05d19 (Mar 2026)
+  consolidationThreshold: [0.85],
+  crossTypeConsolidationThreshold: [0.93],
+  maxTranscriptChars: [500000],
+  // Model defaults changed in f004bec8 (Jun 2026), 581f46f0 (Aug 2026), 79d93d85 (Nov 2026)
+  extractionModel: ['claude-sonnet-4-5-20250929', 'claude-sonnet-4-6', 'claude-sonnet-5'],
+  reviewModel: ['claude-opus-4-5-20251101', 'claude-opus-4-8', 'claude-opus-5'],
+  chatModel: ['claude-opus-4-5-20251101', 'claude-opus-4-8', 'claude-opus-5']
+}
+
 export const SETTING_RULES = ALL_SETTINGS_FIELDS.reduce((acc, field) => {
   if (field.kind === 'bool') {
     acc[field.key] = { kind: 'bool' }

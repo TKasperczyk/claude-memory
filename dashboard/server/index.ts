@@ -9,6 +9,7 @@ import cors from 'cors'
 import express from 'express'
 import { createServerContext } from './context.js'
 import { createLogger } from './lib/logger.js'
+import { migrateSettingsIfNeeded } from '../../src/lib/settings.js'
 import { createExtractionsRouter } from './routes/extractions.js'
 import { createInstallationRouter } from './routes/installation.js'
 import { createMaintenanceRouter } from './routes/maintenance.js'
@@ -25,6 +26,20 @@ const app = express()
 const HOST = process.env.HOST ?? '127.0.0.1'
 const PORT = Number(process.env.PORT ?? 3001)
 const context = createServerContext()
+
+try {
+  const settingsMigration = migrateSettingsIfNeeded()
+  if (settingsMigration.status === 'migrated') {
+    logger.info(
+      `Migrated settings.json v${settingsMigration.fromVersion ?? 1}->v${settingsMigration.toVersion} `
+      + `(${settingsMigration.droppedKeys.length} dropped, ${settingsMigration.keptKeys.length} kept)`
+    )
+  } else if (settingsMigration.status === 'failed' || settingsMigration.status === 'skipped') {
+    logger.warn(`Settings migration ${settingsMigration.status}: ${settingsMigration.error ?? settingsMigration.skipReason ?? 'unknown'}`)
+  }
+} catch (error) {
+  logger.warn('Settings migration check failed', error)
+}
 
 startStatsSnapshotScheduler(context.config)
 

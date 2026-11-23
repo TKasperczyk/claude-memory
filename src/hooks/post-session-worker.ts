@@ -534,11 +534,17 @@ export async function runPostSessionWorker(inputFile: string | undefined): Promi
         const migrationResult = await runPendingMigrations(config)
         if (migrationResult.status === 'applied') {
           const totalUpdated = migrationResult.steps.reduce((sum, step) => sum + step.updated, 0)
+          const settingsSummary = migrationResult.settingsMigration
+            ? ` settings=${migrationResult.settingsMigration.status}(dropped=${migrationResult.settingsMigration.droppedKeys.length},kept=${migrationResult.settingsMigration.keptKeys.length})`
+            : ''
           debugLog(
-            `Data migrations applied: count=${migrationResult.steps.length} updated=${totalUpdated} compacted=${migrationResult.compacted}`
+            `Data migrations applied: count=${migrationResult.steps.length} updated=${totalUpdated} compacted=${migrationResult.compacted}${settingsSummary}`
           )
         } else if (migrationResult.status === 'failed') {
           console.error('[claude-memory] Data migrations failed:', migrationResult.error ?? 'unknown error')
+        }
+        if (migrationResult.settingsMigration?.status === 'skipped' && migrationResult.settingsMigration.error) {
+          console.error('[claude-memory] Settings migration skipped:', migrationResult.settingsMigration.error)
         }
       } catch (error) {
         console.error('[claude-memory] Data migrations failed:', error)

@@ -196,25 +196,59 @@ function formatResult(
   return lines
 }
 
+function formatSettingsMigrationDetail(
+  settingsMigration: NonNullable<DataMigrationsResult['settingsMigration']>
+): string {
+  const fromVersion = settingsMigration.fromVersion ?? 1
+  switch (settingsMigration.status) {
+    case 'migrated':
+      return `settings v${fromVersion}->v${settingsMigration.toVersion}: ${settingsMigration.droppedKeys.length} dropped, ${settingsMigration.keptKeys.length} kept`
+    case 'would-run':
+      return `settings v${fromVersion}->v${settingsMigration.toVersion}: ${settingsMigration.droppedKeys.length} to drop, ${settingsMigration.keptKeys.length} to keep`
+    case 'skipped':
+      return `settings skipped (${settingsMigration.skipReason ?? 'unknown'})`
+    case 'failed':
+      return 'settings failed'
+    case 'up-to-date':
+      return ''
+  }
+}
+
 function formatMigrationsLine(migrations: DataMigrationsResult): string {
+  const settingsDetail = migrations.settingsMigration
+    ? formatSettingsMigrationDetail(migrations.settingsMigration)
+    : ''
+
   switch (migrations.status) {
     case 'up-to-date':
-      return 'Migrations: up-to-date'
-    case 'would-run':
-      return `Migrations: would-run (${migrations.pendingIds.length} pending: ${migrations.pendingIds.join(', ')})`
+      return settingsDetail ? `Migrations: up-to-date (${settingsDetail})` : 'Migrations: up-to-date'
+    case 'would-run': {
+      const parts = [
+        ...(migrations.pendingIds.length > 0
+          ? [`${migrations.pendingIds.length} pending: ${migrations.pendingIds.join(', ')}`]
+          : []),
+        ...(settingsDetail ? [settingsDetail] : [])
+      ]
+      return `Migrations: would-run (${parts.join('; ')})`
+    }
     case 'applied': {
       const totalUpdated = migrations.steps.reduce((sum, step) => sum + step.updated, 0)
       const parts = [
-        `${migrations.steps.length} ran`,
-        `${totalUpdated} updated`,
+        ...(migrations.steps.length > 0 ? [`${migrations.steps.length} ran`, `${totalUpdated} updated`] : []),
+        ...(settingsDetail ? [settingsDetail] : []),
         ...(migrations.compacted ? ['compacted'] : [])
       ]
       return `Migrations: applied (${parts.join(', ')})`
     }
-    case 'skipped':
-      return `Migrations: skipped (reason=${migrations.skipReason ?? 'unknown'})`
+    case 'skipped': {
+      const parts = [
+        `reason=${migrations.skipReason ?? 'unknown'}`,
+        ...(settingsDetail ? [settingsDetail] : [])
+      ]
+      return `Migrations: skipped (${parts.join('; ')})`
+    }
     case 'failed':
-      return 'Migrations: failed'
+      return settingsDetail ? `Migrations: failed (${settingsDetail})` : 'Migrations: failed'
   }
 }
 

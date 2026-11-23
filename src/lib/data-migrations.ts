@@ -25,6 +25,7 @@ import {
   type MigrationsStateFile
 } from './migrations-state.js'
 import { canonicalizePath } from './paths.js'
+import { migrateSettingsIfNeeded, type SettingsMigrationResult } from './settings.js'
 import { DEFAULT_CONFIG, type Config, type MemoryRecord } from './types.js'
 
 const CANONICAL_PATH_BATCH_SIZE = 200
@@ -80,6 +81,7 @@ export interface DataMigrationsResult {
   steps: DataMigrationStepResult[]
   mutated: boolean
   compacted: boolean
+  settingsMigration?: SettingsMigrationResult
   error?: string
 }
 
@@ -88,6 +90,9 @@ export interface RunMigrationsOptions {
   statePath?: string
   lockPath?: string
   migrations?: readonly DataMigrationDefinition[]
+  settingsPath?: string
+  settingsLockPath?: string
+  skipSettingsMigration?: boolean
 }
 
 export interface CanonicalPathAndRestorePlan {
@@ -326,11 +331,52 @@ export function getPendingMigrations(
   return computePendingMigrations(state, collectionKey, migrations).map(m => m.id)
 }
 
+function finalizeMigrationResult(
+  base: DataMigrationsResult,
+  settingsMigration?: SettingsMigrationResult
+): DataMigrationsResult {
+  if (!settingsMigration) return base
+
+  const merged: DataMigrationsResult = {
+    ...base,
+    settingsMigration
+  }
+
+  if (settingsMigration.status === 'failed') {
+    const settingsError = `settings migration: ${settingsMigration.error ?? 'unknown error'}`
+    merged.status = 'failed'
+    merged.error = base.error ? `${base.error}; ${settingsError}` : settingsError
+    return merged
+  }
+
+  if (settingsMigration.status === 'migrated') {
+    if (base.status === 'up-to-date' || (base.status === 'skipped' && base.skipReason === 'table-not-found')) {
+      merged.status = 'applied'
+      delete merged.skipReason
+    }
+    return merged
+  }
+
+  if (settingsMigration.status === 'would-run') {
+    if (base.status === 'up-to-date' || (base.status === 'skipped' && base.skipReason === 'table-not-found')) {
+      merged.status = 'would-run'
+      delete merged.skipReason
+    }
+    return merged
+  }
+
+  return merged
+}
+
 /**
- * Run pending versioned data migrations for a collection.
+ * Run pending versioned data migrations for a collection (plus one-time global
+ * settings.json migration from legacy v1 full dumps to sparse v2 overrides).
  *
- * - O(1) fast-path skip (reads only migrations-state.json) once all migrations are applied.
- * - Skips cleanly when the LanceDB table does not yet exist on disk.
+ * - Runs global settings migration first so it still applies even when all
+ *   LanceDB migrations are up-to-date or the table does not yet exist on disk.
+ * - O(1) fast-path skip (reads only settings.json + migrations-state.json) once
+ *   all migrations are applied.
+ * - Skips LanceDB steps cleanly when the LanceDB table does not yet exist on disk.
  * - Guards execution with an exclusive PID-aware lock file and double-checks state after locking.
  * - Persists each applied migration atomically immediately upon completion.
  * - Compacts the LanceDB table (and refreshes FTS index) if any migration mutated rows.
@@ -338,6 +384,27 @@ export function getPendingMigrations(
 export async function runPendingMigrations(
   config: Config = DEFAULT_CONFIG,
   options: RunMigrationsOptions = {}
+): Promise<DataMigrationsResult> {
+  const dryRun = options.dryRun ?? false
+  let settingsMigration: SettingsMigrationResult | undefined
+  if (!options.skipSettingsMigration) {
+    const rawSettingsResult = migrateSettingsIfNeeded({
+      dryRun,
+      settingsPath: options.settingsPath,
+      lockPath: options.settingsLockPath
+    })
+    if (rawSettingsResult.status !== 'up-to-date') {
+      settingsMigration = rawSettingsResult
+    }
+  }
+
+  const lanceResult = await runLanceDbMigrations(config, options)
+  return finalizeMigrationResult(lanceResult, settingsMigration)
+}
+
+async function runLanceDbMigrations(
+  config: Config,
+  options: RunMigrationsOptions
 ): Promise<DataMigrationsResult> {
   const statePath = options.statePath ?? getMigrationsStatePath()
   const lockPath = options.lockPath ?? getMigrationsLockPath()
